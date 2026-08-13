@@ -248,6 +248,18 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn no_temporary_files(directory: &Path) -> bool {
+        fs::read_dir(directory)
+            .expect("directory entries")
+            .all(|entry| {
+                !entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+    }
+
     #[test]
     fn safe_path_rejects_traversal_and_absolute_paths() {
         let directory = tempdir().expect("temporary directory");
@@ -266,6 +278,27 @@ mod tests {
             contained_path(&root, Path::new("nested/../../outside"), false),
             Err(AppError::PathEscape)
         ));
+
+        for invalid in ["", ".", "..", "../outside", "nested/../../../outside"] {
+            assert!(matches!(
+                validate_relative(Path::new(invalid)),
+                Err(AppError::PathEscape)
+            ));
+        }
+        assert!(validate_relative(Path::new("nested/contained/file.txt")).is_ok());
+
+        let outside_sentinel = directory.path().join("outside-sentinel.txt");
+        fs::write(&outside_sentinel, b"outside sentinel").expect("outside sentinel");
+        for invalid in [
+            "../outside-sentinel.txt",
+            "nested/../../outside-sentinel.txt",
+        ] {
+            assert!(contained_path(&root, Path::new(invalid), false).is_err());
+        }
+        assert_eq!(
+            fs::read(&outside_sentinel).expect("unchanged outside sentinel"),
+            b"outside sentinel"
+        );
     }
 
     #[cfg(unix)]
@@ -303,6 +336,29 @@ mod tests {
             contained_path(&original_root, Path::new("file.txt"), false),
             Err(AppError::Symlink(_))
         ));
+
+        let nested = root.join("nested");
+        fs::create_dir(&nested).expect("nested directory");
+        symlink(&outside, nested.join("escape")).expect("nested escape symlink");
+        assert!(matches!(
+            contained_path(&root, Path::new("nested/escape/file.txt"), false),
+            Err(AppError::Symlink(_))
+        ));
+
+        let contained_target = root.join("contained-target");
+        fs::create_dir(&contained_target).expect("contained target");
+        symlink(&contained_target, root.join("contained-link")).expect("contained symlink");
+        assert!(matches!(
+            contained_path(&root, Path::new("contained-link/file.txt"), false),
+            Err(AppError::Symlink(_))
+        ));
+
+        let outside_sentinel = outside.join("sentinel.txt");
+        fs::write(&outside_sentinel, b"outside sentinel").expect("outside sentinel");
+        assert_eq!(
+            fs::read(&outside_sentinel).expect("unchanged outside sentinel"),
+            b"outside sentinel"
+        );
     }
 
     #[test]
@@ -330,5 +386,93 @@ mod tests {
             fs::read(&target).expect("read preserved result"),
             b"second complete version"
         );
+    }
+
+    #[test]
+    fn atomic_and_copy_failures_preserve_existing_state_and_clean_temporaries() {
+        let directory = tempdir().expect("temporary directory");
+        let occupied_directory = directory.path().join("occupied");
+        fs::create_dir(&occupied_directory).expect("occupied destination directory");
+        let sentinel = occupied_directory.join("sentinel.txt");
+        fs::write(&sentinel, b"preserve me").expect("destination sentinel");
+
+        assert!(atomic_write(&occupied_directory, b"must fail").is_err());
+        assert_eq!(
+            fs::read(&sentinel).expect("preserved destination sentinel"),
+            b"preserve me"
+        );
+        assert!(no_temporary_files(directory.path()));
+
+        let existing = directory.path().join("existing.bin");
+        fs::write(&existing, b"existing bytes").expect("existing destination");
+        let source = directory.path().join("source.bin");
+        fs::write(&source, b"source bytes").expect("copy source");
+        assert!(matches!(
+            copy_new(&source, &existing),
+            Err(AppError::Collision(_))
+        ));
+        assert_eq!(
+            fs::read(&source).expect("source preserved"),
+            b"source bytes"
+        );
+        assert_eq!(
+            fs::read(&existing).expect("destination preserved"),
+            b"existing bytes"
+        );
+        assert!(no_temporary_files(directory.path()));
+
+        let missing = directory.path().join("missing.bin");
+        let destination = directory.path().join("new.bin");
+        assert!(matches!(
+            copy_new(&missing, &destination),
+            Err(AppError::Io { .. })
+        ));
+        assert!(!destination.exists());
+        assert!(no_temporary_files(directory.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_and_atomic_creation_reject_symlink_endpoints() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().expect("temporary directory");
+        let real_source = directory.path().join("real-source.bin");
+        let source_link = directory.path().join("source-link.bin");
+        fs::write(&real_source, b"source bytes").expect("real source");
+        symlink(&real_source, &source_link).expect("source symlink");
+        let destination = directory.path().join("destination.bin");
+        assert!(matches!(
+            copy_new(&source_link, &destination),
+            Err(AppError::Symlink(_))
+        ));
+        assert!(!destination.exists());
+
+        let dangling_target = directory.path().join("outside-target.bin");
+        let destination_link = directory.path().join("destination-link.bin");
+        symlink(&dangling_target, &destination_link).expect("destination symlink");
+        assert!(matches!(
+            atomic_write_new(&destination_link, b"must not escape"),
+            Err(AppError::Collision(_))
+        ));
+        assert!(!dangling_target.exists());
+        assert!(no_temporary_files(directory.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_rejects_non_utf8_managed_file_name_without_side_effects() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let directory = tempdir().expect("temporary directory");
+        let invalid_name = OsString::from_vec(vec![b'f', b'i', 0xff]);
+        let target = directory.path().join(invalid_name);
+        assert!(matches!(
+            atomic_write(&target, b"must not be written"),
+            Err(AppError::Validation(_))
+        ));
+        assert!(!target.exists());
+        assert!(no_temporary_files(directory.path()));
     }
 }

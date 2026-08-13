@@ -38,7 +38,10 @@ pub fn verify(track_root: &Path) -> Result<IntegrityState> {
     let mut mismatch_files = Vec::new();
     for (line_number, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
-            continue;
+            return Err(AppError::Data(format!(
+                "Empty SHA256SUMS line {}.",
+                line_number + 1
+            )));
         }
         let (expected, path) = line.split_once("  ").ok_or_else(|| {
             AppError::Data(format!("Invalid SHA256SUMS line {}.", line_number + 1))
@@ -146,6 +149,22 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempdir().expect("temporary directory");
+        let track_root = directory.path().join("track");
+        fs::create_dir_all(track_root.join("01_RELEASE")).expect("release directory");
+        fs::create_dir_all(track_root.join("03_DOCUMENTATION")).expect("documentation directory");
+        fs::write(track_root.join("01_RELEASE/final.wav"), b"release audio")
+            .expect("release fixture");
+        (directory, track_root)
+    }
+
+    fn write_manifest(track_root: &Path, content: &str) {
+        fs::write(track_root.join(HASH_FILE), content).expect("SHA256SUMS fixture");
+    }
+
     #[test]
     fn hash_generation_verifies_exact_set_and_detects_added_file() {
         let directory = tempdir().expect("temporary directory");
@@ -212,5 +231,92 @@ mod tests {
             .mismatch_files
             .iter()
             .any(|path| path == "01_RELEASE/.suno-doc/provenance.json"));
+    }
+
+    #[test]
+    fn hash_verification_detects_changed_deleted_and_added_files() {
+        let (_directory, track_root) = fixture();
+        calculate(&track_root).expect("initial hashes");
+
+        fs::write(track_root.join("01_RELEASE/final.wav"), b"changed release")
+            .expect("change listed file");
+        let changed = verify(&track_root).expect("changed-file result");
+        assert!(!changed.verified);
+        assert_eq!(changed.mismatch_files, vec!["01_RELEASE/final.wav"]);
+
+        calculate(&track_root).expect("accept changed revision");
+        fs::remove_file(track_root.join("01_RELEASE/final.wav")).expect("delete listed file");
+        let deleted = verify(&track_root).expect("deleted-file result");
+        assert!(!deleted.verified);
+        assert_eq!(deleted.mismatch_files, vec!["01_RELEASE/final.wav"]);
+
+        fs::write(
+            track_root.join("01_RELEASE/replacement.wav"),
+            b"replacement release",
+        )
+        .expect("add unlisted file");
+        let replaced = verify(&track_root).expect("replacement-set result");
+        assert!(!replaced.verified);
+        assert!(replaced
+            .mismatch_files
+            .iter()
+            .any(|path| path == "01_RELEASE/final.wav"));
+        assert!(replaced
+            .mismatch_files
+            .iter()
+            .any(|path| path == "01_RELEASE/replacement.wav"));
+    }
+
+    #[test]
+    fn hash_verifier_rejects_malformed_and_unsafe_manifest_entries() {
+        let (_directory, track_root) = fixture();
+        let invalid_manifests = [
+            format!("{DIGEST}  01_RELEASE/final.wav\n{DIGEST}  01_RELEASE/final.wav\n"),
+            "short  01_RELEASE/final.wav\n".into(),
+            format!("{DIGEST}  /absolute.wav\n"),
+            format!("{DIGEST}  ../escape.wav\n"),
+            format!("{DIGEST}  .archive/hidden.wav\n"),
+            format!("{DIGEST}  .summary/hidden.wav\n"),
+            format!("{DIGEST}  06_CERTIFICATE/hidden.wav\n"),
+            format!("{DIGEST}  {HASH_FILE}\n"),
+            format!("{DIGEST}  01_RELEASE/control\tname.wav\n"),
+            format!("{DIGEST}  01_RELEASE/final.wav\n\n{DIGEST}  01_RELEASE/other.wav\n"),
+        ];
+
+        for manifest in invalid_manifests {
+            write_manifest(&track_root, &manifest);
+            assert!(
+                verify(&track_root).is_err(),
+                "unsafe manifest was accepted: {manifest:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hash_generation_rejects_file_and_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let (directory, track_root) = fixture();
+        let outside_file = directory.path().join("outside.wav");
+        fs::write(&outside_file, b"outside").expect("outside file");
+        symlink(&outside_file, track_root.join("01_RELEASE/link.wav")).expect("file symlink");
+        assert!(matches!(
+            hash_entries(&track_root),
+            Err(AppError::Symlink(_))
+        ));
+
+        fs::remove_file(track_root.join("01_RELEASE/link.wav")).expect("remove file symlink");
+        let outside_directory = directory.path().join("outside-directory");
+        fs::create_dir(&outside_directory).expect("outside directory");
+        symlink(
+            &outside_directory,
+            track_root.join("01_RELEASE/linked-directory"),
+        )
+        .expect("directory symlink");
+        assert!(matches!(
+            hash_entries(&track_root),
+            Err(AppError::Symlink(_))
+        ));
     }
 }

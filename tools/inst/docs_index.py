@@ -79,7 +79,14 @@ def normalize_generated_english(project_root: Path = ROOT) -> int:
 
 
 def _command_for(script: Path, args: argparse.Namespace) -> list[str]:
-    command = [sys.executable, str(script), "--docs-dir", args.docs_dir]
+    # PATH commonly exposes PyGitIndex through an executable shell wrapper.
+    # Only actual Python sources should be forced through this interpreter.
+    command = (
+        [sys.executable, str(script)]
+        if script.suffix.casefold() in {".py", ".pyw"}
+        else [str(script)]
+    )
+    command.extend(["--docs-dir", args.docs_dir])
     if args.dry_run:
         command.append("--dry-run")
     if args.force:

@@ -26,7 +26,7 @@ Accept disclosure generation when applicable artwork produces a separate visible
 
 ### Included
 
-- default and alternate transparency-policy modes;
+- the three transparency-policy modes;
 - AI-generated and AI-assisted applicability;
 - local text rendering and placement;
 - original/output traceability and deterministic behavior; and
@@ -61,7 +61,7 @@ Accept disclosure generation when applicable artwork produces a separate visible
 | --- | --- | --- |
 | TD-01 | AI original | Fixed synthetic 1024×1024 PNG |
 | TD-02 | Default disclosure | Policy `Always add visible AI disclosure`, text `AI-assisted`, bottom-right placement |
-| TD-03 | Custom disclosure | Short visible text and a supported alternate configured placement |
+| TD-03 | Custom disclosure | Short visible text at the sole supported fixed bottom-right placement |
 | TD-04 | Human-only artwork | Same dimensions, origin declared human-only |
 
 ## Acceptance steps
@@ -73,7 +73,7 @@ Accept disclosure generation when applicable artwork produces a separate visible
 | 3 | `REQ-ART-002` | Compare TD-01 before and after. | Path, size, and SHA-256 are unchanged; no write targets the original. | The local generator retained the original SHA-256 and created a distinct `AI_EDITED` output; a second call was rejected as a collision. | PASS | Rust `artwork_disclosure_preserves_original_and_creates_traceable_copy`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
 | 4 | `REQ-ART-002` | Inspect the TD-02 output. | `AI-assisted` is visible, not clipped, and located at the configured bottom-right position. | Not run | NOT RUN | — |
 | 5 | `REQ-ART-002` | Repeat TD-02 from identical input and settings. | Output bytes or the documented deterministic pixel representation match according to the implementation contract. | Not run | NOT RUN | — |
-| 6 | `REQ-ART-002` | Generate TD-03. | The supported custom text and placement appear and metadata records the exact settings. | Not run | NOT RUN | — |
+| 6 | `REQ-ART-002` | Generate TD-03. | The supported custom text appears at the fixed bottom-right placement and lineage metadata records the exact normalized text. | Not run | NOT RUN | — |
 | 7 | `REQ-ART-002` | Review `AI_USAGE.md` and `artwork_process.md`. | Both identify service, AI base image, human changes, policy, applied result, text, and final relative output. | Not run | NOT RUN | — |
 | 8 | `REQ-ART-002` | Set policy to `Decide per artwork`. | The track requires an explicit decision; no automatic claim or silent processing occurs. | Not run | NOT RUN | — |
 | 9 | `REQ-ART-002` | Set policy to `No automatic visible disclosure`. | The choice and result are documented; the app does not falsely report that disclosure was applied. | Not run | NOT RUN | — |
@@ -96,7 +96,7 @@ The reviewer checks separate input/output paths, input digest preservation, visi
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | Network isolation, pixel/placement inspection, deterministic repeat, policy branches, process-document review, and alternate placement remain unexecuted. | High | Product team | Execute steps 1, 2, and 4–10; implement/test alternate placement or revise the acceptance contract. | open |
+| DEV-01 | Network isolation, pixel/placement inspection, deterministic repeat, policy branches, and process-document review remain unexecuted. The version 0.1 contract intentionally supports bottom-right placement only. | High | Product team | Execute steps 1, 2, and 4–10 against the fixed bottom-right contract. | open |
 
 ## Result
 

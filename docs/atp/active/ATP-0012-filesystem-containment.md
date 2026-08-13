@@ -44,7 +44,7 @@ Accept the native filesystem boundary when every read/write target is derived fr
 
 The product rejects absolute inputs, traversal, and symbolic-link components that exist when native path validation runs. Its version 0.1 implementation is path-based rather than descriptor-relative across the complete operation. It therefore does not claim protection when another process with the same user's workspace permissions swaps a checked component before the later open, copy, rename, or delete.
 
-No symbolic-link path is intentionally supported for product-managed operations, including a link whose current target is contained. Existing-link rejection does not close the concurrent-swap race. Race-resistant descriptor-relative operations and a target-platform adversarial fixture remain ATP work, so the version 0.1 requirement must not be reported as fully satisfied on the basis of static-link tests alone.
+No symbolic-link path is intentionally supported for product-managed operations, including a link whose current target is contained. Existing-link rejection does not close the concurrent-swap race. Version 0.1 explicitly accepts that residual risk for workspaces without an untrusted concurrent same-user writer; it must never be described as descriptor-relative or fully race-safe.
 
 ## Risks
 
@@ -52,7 +52,7 @@ No symbolic-link path is intentionally supported for product-managed operations,
 | --- | --- | --- |
 | Canonicalization occurs after write | Outside file modification | Place sentinels and compare before/after every hostile input |
 | Symlink escapes root | Access outside authorized workspace | Test existing link and swapped-link scenarios where feasible |
-| Same-user link swap races path validation | Outside read or write despite an earlier contained result | Keep shared hostile writers outside the version 0.1 threat model; retain descriptor-relative hardening and adversarial race execution as open work |
+| Same-user link swap races path validation | Outside read or write despite an earlier contained result | Accepted version 0.1 residual risk: do not use a workspace shared with an untrusted same-user writer; retain descriptor-relative hardening as a post-0.1 improvement |
 | Failed rename leaves partial content | Corrupt managed document | Inject write/rename failure and inspect old/temp files |
 | Generic native command broadens authority | Webview compromise gains filesystem control | Inspect registered commands and Tauri capabilities |
 
@@ -82,7 +82,7 @@ No symbolic-link path is intentionally supported for product-managed operations,
 | 2 | `REQ-ARC-003` | Submit each TD-01 value through every relevant typed path-bearing use case. | Each escape is rejected before I/O; outside sentinels and workspace state remain unchanged. | Not run | NOT RUN | — |
 | 3 | `REQ-ARC-003` | Submit TD-02. | Absolute injected paths are rejected; portable records never store them. | The contained-path test rejected a native absolute path; integrated evidence and manifest assertions contained only track-relative portable paths and no workspace root. | PASS | Rust `safe_path_rejects_traversal_and_absolute_paths` and end-to-end manifest assertions |
 | 4 | `REQ-LEG-004` | Scan/import/write through TD-03. | An escaping symbolic link is rejected without reading or writing its outside target. | Unix tests rejected an escaping path component and a symlinked `.suno-doc`; no outside database was created. | PASS | Rust `safe_path_rejects_symlink_escape` and `persistence_rejects_symlinked_admin_directory` |
-| 5 | `REQ-ARC-003` | Exercise an explicitly supported contained symlink case. | Behavior matches the documented policy and cannot be swapped into an escape between validation and write. | Not run | NOT RUN | — |
+| 5 | `REQ-ARC-003` | Exercise a symlink whose current target is contained. | The operation rejects it according to the no-managed-symlinks policy; this static test does not claim protection from a later same-user component swap. | A Unix test created a link to a contained directory and native path validation rejected it as a symbolic-link component. | PASS | Rust `safe_path_rejects_symlink_escape`; accepted version 0.1 threat-model boundary above |
 | 6 | `REQ-ARC-003` | Import a disposable source into occupied TD-04. | Collision is reported; source and destination remain byte-identical and no success metadata is committed. | Duplicate evidence import returned `Collision`; both source and managed destination bytes remained unchanged. | PASS | Rust `evidence_import_validates_type_preserves_source_and_rejects_collision` |
 | 7 | `REQ-ARC-003` | Generate over TD-05 with injected temporary-write failure. | Previous document remains intact, no partial destination is exposed, and a controlled error is returned. | Not run | NOT RUN | — |
 | 8 | `REQ-ARC-003` | Inject rename failure in a fresh TD-05 copy. | Previous document remains valid, temporary state is recoverable/reported, and index freshness is not falsely advanced. | Not run | NOT RUN | — |
@@ -116,13 +116,13 @@ Attach platform details, before/after sentinel hashes, path-case matrix, symboli
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | The all-command traversal matrix, same-user symbolic-link swap race, write/rename failure injection, and complete filesystem error matrix remain unresolved or unexecuted. | High | Product team | Introduce descriptor-relative race hardening or explicitly retain the narrower threat model, then execute steps 2, 5, 7, 8, and 11 with outside sentinels, a concurrent swap fixture, and injected failures. | open |
+| DEV-01 | The all-command traversal matrix, write/rename failure injection, and complete filesystem error matrix remain unresolved or unexecuted. The same-user swap race is an accepted version 0.1 boundary, not a claimed protection. | High | Product team | Execute steps 2, 7, 8, and 11 with outside sentinels and injected failures; consider descriptor-relative hardening after version 0.1. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 3, 4, 6, 9, and 10 passed; five mandatory steps remain `NOT RUN`.
-- Residual risks: Symbolic-link swap races and atomic-write failure behavior still require target-specific execution.
+- Summary: Steps 1, 3–6, 9, and 10 passed; four mandatory steps remain `NOT RUN`.
+- Residual risks: Same-user symbolic-link swap races are explicitly accepted outside the version 0.1 threat model; atomic-write failure behavior still requires target-specific execution.
 
 ## Sign-off
 

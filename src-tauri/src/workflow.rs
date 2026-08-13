@@ -74,6 +74,14 @@ pub fn config() -> Result<WorkflowConfig> {
     Ok(config)
 }
 
+#[cfg(test)]
+pub fn config_with_version_for_test(version: &str) -> Result<WorkflowConfig> {
+    let mut config = config()?;
+    config.version = version.to_owned();
+    validate_config(&config)?;
+    Ok(config)
+}
+
 fn validate_config(config: &WorkflowConfig) -> Result<()> {
     if config.schema_version != 1 || config.id.trim().is_empty() || config.version.trim().is_empty()
     {
@@ -119,6 +127,9 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
     let mut ids = HashSet::new();
     let mut orders = HashSet::new();
     for step in &config.steps {
+        if step.id.trim().is_empty() {
+            return Err(AppError::Data("Workflow step id must not be empty.".into()));
+        }
         if !ids.insert(step.id.as_str()) {
             return Err(AppError::Data(format!(
                 "Duplicate workflow step: {}",
@@ -610,4 +621,185 @@ fn field_requirement_met(
 pub fn evidence_role_from_str(value: &str) -> Result<EvidenceRole> {
     serde_json::from_str(&format!("\"{}\"", value.replace('"', "")))
         .map_err(|_| AppError::Validation(format!("Unknown evidence role: {value}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn disclosure_track(origin: &str, applied: Option<bool>) -> TrackRecord {
+        TrackRecord {
+            id: "track".into(),
+            relative_path: "track".into(),
+            status: crate::model::TrackStatus::Active,
+            workflow_id: "suno-track".into(),
+            workflow_version: "1.0".into(),
+            profile_snapshot: Profile::default(),
+            fields: crate::model::TrackFields {
+                artwork_origin: origin.into(),
+                disclosure_applied: applied,
+                ..Default::default()
+            },
+            documents: Default::default(),
+            integrity: Default::default(),
+            certificate: Default::default(),
+            created_at: "2026-08-13T00:00:00Z".into(),
+            updated_at: "2026-08-13T00:00:00Z".into(),
+            legacy: false,
+        }
+    }
+
+    fn embedded_config() -> WorkflowConfig {
+        toml::from_str(WORKFLOW_SOURCE).expect("embedded workflow must deserialize")
+    }
+
+    fn assert_data_error(config: &WorkflowConfig, expected: &str) {
+        match validate_config(config) {
+            Err(AppError::Data(message)) => assert_eq!(message, expected),
+            Err(error) => panic!("expected data error {expected:?}, got {error:?}"),
+            Ok(()) => panic!("expected data error {expected:?}, validation succeeded"),
+        }
+    }
+
+    fn workflow_value() -> toml::Value {
+        toml::from_str(WORKFLOW_SOURCE).expect("embedded workflow TOML value")
+    }
+
+    #[test]
+    fn valid_version_1_0_configuration_is_accepted() {
+        let config = embedded_config();
+
+        validate_config(&config).expect("valid workflow 1.0");
+
+        assert_eq!(config.schema_version, 1);
+        assert_eq!(config.id, "suno-track");
+        assert_eq!(config.version, "1.0");
+        assert_eq!(config.steps.len(), 10);
+        assert_eq!(config.steps.first().map(|step| step.order), Some(1));
+        assert_eq!(config.steps.last().map(|step| step.order), Some(10));
+    }
+
+    #[test]
+    fn unsupported_schema_version_is_rejected() {
+        let mut config = embedded_config();
+        config.schema_version = 2;
+
+        assert_data_error(&config, "Unsupported workflow metadata.");
+    }
+
+    #[test]
+    fn empty_step_id_is_rejected_even_when_requirements_use_the_same_id() {
+        for empty_id in ["", "   "] {
+            let mut config = embedded_config();
+            let original_id = config.steps[0].id.clone();
+            config.steps[0].id = empty_id.into();
+            for requirement in &mut config.requirements {
+                if requirement.step_id == original_id {
+                    requirement.step_id = empty_id.into();
+                }
+            }
+
+            assert_data_error(&config, "Workflow step id must not be empty.");
+        }
+    }
+
+    #[test]
+    fn duplicate_step_ids_are_rejected() {
+        let mut config = embedded_config();
+        let duplicate = config.steps[0].id.clone();
+        config.steps[1].id = duplicate.clone();
+
+        assert_data_error(&config, &format!("Duplicate workflow step: {duplicate}"));
+    }
+
+    #[test]
+    fn unknown_requirement_kind_is_rejected() {
+        let mut config = embedded_config();
+        config.requirements[0].kind = "arbitrary_step_type".into();
+
+        assert_data_error(
+            &config,
+            "Unknown workflow requirement kind: arbitrary_step_type",
+        );
+    }
+
+    #[test]
+    fn missing_required_toml_fields_fail_deserialization() {
+        let mut missing_schema = workflow_value();
+        missing_schema
+            .as_table_mut()
+            .expect("workflow table")
+            .remove("schema_version");
+
+        let mut missing_step_required = workflow_value();
+        missing_step_required
+            .get_mut("steps")
+            .and_then(toml::Value::as_array_mut)
+            .and_then(|steps| steps.first_mut())
+            .and_then(toml::Value::as_table_mut)
+            .expect("first workflow step")
+            .remove("required");
+
+        let mut missing_requirement_message = workflow_value();
+        missing_requirement_message
+            .get_mut("requirements")
+            .and_then(toml::Value::as_array_mut)
+            .and_then(|requirements| requirements.first_mut())
+            .and_then(toml::Value::as_table_mut)
+            .expect("first workflow requirement")
+            .remove("missing_message");
+
+        for (case, value, field) in [
+            ("workflow metadata", missing_schema, "schema_version"),
+            ("workflow step", missing_step_required, "required"),
+            (
+                "workflow requirement",
+                missing_requirement_message,
+                "missing_message",
+            ),
+        ] {
+            let source = toml::to_string(&value).expect("serialize malformed workflow fixture");
+            let error = match toml::from_str::<WorkflowConfig>(&source) {
+                Err(error) => error,
+                Ok(_) => panic!("{case} unexpectedly deserialized"),
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing field `{field}`")),
+                "{case} reported an unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_mandatory_step_is_rejected() {
+        let mut config = embedded_config();
+        config.steps.pop();
+
+        assert_data_error(&config, "The Suno workflow must contain exactly ten steps.");
+    }
+
+    #[test]
+    fn disclosure_requirement_matrix_matches_origin_policy_and_track_decision() {
+        for origin in ["ai_generated", "ai_assisted", "human", "none"] {
+            for policy in ["always", "per_artwork", "none"] {
+                for applied in [None, Some(false), Some(true)] {
+                    let track = disclosure_track(origin, applied);
+                    let profile = Profile {
+                        artwork_transparency_policy: policy.into(),
+                        ..Default::default()
+                    };
+                    let expected = matches!(origin, "ai_generated" | "ai_assisted")
+                        && (policy == "always"
+                            || (policy == "per_artwork" && applied == Some(true)));
+                    assert_eq!(
+                        disclosure_required(&track, &profile),
+                        expected,
+                        "origin={origin}, policy={policy}, applied={applied:?}"
+                    );
+                }
+            }
+        }
+    }
 }

@@ -48,6 +48,7 @@ fn main() {
             commands::finalize_track,
             commands::invalidate_certificate,
             commands::create_revision,
+            commands::re_evaluate_track,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Suno Documentation Manager");

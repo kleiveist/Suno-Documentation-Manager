@@ -13,7 +13,6 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
 pub const CERTIFICATE_DIR: &str = "06_CERTIFICATE";
 pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md";
@@ -49,6 +48,7 @@ pub fn generate(
     deviations: &[BlockingDeviation],
     certificate_id: &str,
     finalized_at: &str,
+    transaction_id: &str,
 ) -> Result<()> {
     let hash_manifest = contained_path(track_root, Path::new(HASH_FILE), true)?;
     let hash_manifest_sha = sha256_file(&hash_manifest)?;
@@ -170,6 +170,7 @@ pub fn generate(
         &manifest_bytes,
         certificate.as_bytes(),
         certificate_hashes.as_bytes(),
+        transaction_id,
     )?;
     Ok(())
 }
@@ -193,21 +194,115 @@ fn publish_certificate_set(
     manifest: &[u8],
     certificate: &[u8],
     certificate_hashes: &[u8],
+    transaction_id: &str,
 ) -> Result<()> {
+    publish_certificate_set_impl(
+        track_root,
+        manifest,
+        certificate,
+        certificate_hashes,
+        transaction_id,
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CertificatePublicationFailure {
+    StagingDirectoryCreate,
+    ManifestWrite,
+    CertificateWrite,
+    CertificateHashWrite,
+    PublishRename,
+    PostPublishVerification,
+}
+
+#[cfg(test)]
+impl CertificatePublicationFailure {
+    fn label(self) -> &'static str {
+        match self {
+            Self::StagingDirectoryCreate => "staging-directory-create",
+            Self::ManifestWrite => "manifest-write",
+            Self::CertificateWrite => "certificate-write",
+            Self::CertificateHashWrite => "certificate-hash-write",
+            Self::PublishRename => "publish-rename",
+            Self::PostPublishVerification => "post-publish-verification",
+        }
+    }
+
+    fn stage_id(self) -> String {
+        format!("failure-injection-{}", self.label())
+    }
+}
+
+#[cfg(test)]
+fn inject_certificate_publication_failure(
+    configured: Option<CertificatePublicationFailure>,
+    phase: CertificatePublicationFailure,
+) -> Result<()> {
+    if configured == Some(phase) {
+        return Err(AppError::Data(format!(
+            "Injected certificate publication failure at {}.",
+            phase.label()
+        )));
+    }
+    Ok(())
+}
+
+fn publish_certificate_set_impl(
+    track_root: &Path,
+    manifest: &[u8],
+    certificate: &[u8],
+    certificate_hashes: &[u8],
+    transaction_id: &str,
+    #[cfg(test)] failure: Option<CertificatePublicationFailure>,
+) -> Result<()> {
+    #[cfg(test)]
+    let stage_id = failure
+        .map(CertificatePublicationFailure::stage_id)
+        .unwrap_or_else(|| transaction_id.to_owned());
+    #[cfg(not(test))]
+    let stage_id = transaction_id.to_owned();
     let stage_relative = PathBuf::from(".archive")
         .join("certificate-staging")
-        .join(Uuid::new_v4().to_string());
+        .join(stage_id);
+    #[cfg(test)]
+    inject_certificate_publication_failure(
+        failure,
+        CertificatePublicationFailure::StagingDirectoryCreate,
+    )?;
     let stage = ensure_contained_directory(track_root, &stage_relative)?;
     let publish_result = (|| -> Result<()> {
         let staged_manifest = stage.join("EVIDENCE_MANIFEST.json");
         let staged_certificate = stage.join("DOCUMENTATION_CERTIFICATE.md");
         let staged_hashes = stage.join("CERTIFICATE_SHA256.txt");
+        #[cfg(test)]
+        inject_certificate_publication_failure(
+            failure,
+            CertificatePublicationFailure::ManifestWrite,
+        )?;
         atomic_write_new(&staged_manifest, manifest)?;
+        #[cfg(test)]
+        inject_certificate_publication_failure(
+            failure,
+            CertificatePublicationFailure::CertificateWrite,
+        )?;
         atomic_write_new(&staged_certificate, certificate)?;
+        #[cfg(test)]
+        inject_certificate_publication_failure(
+            failure,
+            CertificatePublicationFailure::CertificateHashWrite,
+        )?;
         atomic_write_new(&staged_hashes, certificate_hashes)?;
         verify_staged_set(track_root, &stage)?;
 
         let destination = contained_path(track_root, Path::new(CERTIFICATE_DIR), false)?;
+        #[cfg(test)]
+        inject_certificate_publication_failure(
+            failure,
+            CertificatePublicationFailure::PublishRename,
+        )?;
         if destination.exists() {
             if !destination.is_dir() {
                 return Err(AppError::Collision(destination.display().to_string()));
@@ -222,7 +317,15 @@ fn publish_certificate_set(
             fs::remove_dir(&destination).map_err(|error| AppError::io(&destination, error))?;
         }
         fs::rename(&stage, &destination).map_err(|error| AppError::io(&destination, error))?;
-        if let Err(verification_error) = verify(track_root) {
+        #[cfg(test)]
+        let post_publish_verification = inject_certificate_publication_failure(
+            failure,
+            CertificatePublicationFailure::PostPublishVerification,
+        )
+        .and_then(|()| verify(track_root));
+        #[cfg(not(test))]
+        let post_publish_verification = verify(track_root);
+        if let Err(verification_error) = post_publish_verification {
             let rollback = fs::rename(&destination, &stage);
             return match rollback {
                 Ok(()) => Err(verification_error),
@@ -372,6 +475,141 @@ mod tests {
 
     const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+    fn parse_main_hash_fixture(content: &str) -> Result<BTreeMap<String, String>> {
+        let workspace = tempfile::tempdir().expect("temporary directory");
+        let sums = workspace.path().join("SHA256SUMS.txt");
+        fs::write(&sums, content).expect("write SHA256SUMS fixture");
+        parse_hashes(&sums)
+    }
+
+    fn publication_fixture(track_root: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let main_hashes = b"fixture main hash manifest\n";
+        let main_hash_path = track_root.join(HASH_FILE);
+        fs::create_dir_all(
+            main_hash_path
+                .parent()
+                .expect("main hash manifest parent directory"),
+        )
+        .expect("create documentation fixture directory");
+        fs::write(&main_hash_path, main_hashes).expect("write main hash manifest fixture");
+        let manifest = b"{\"fixture\":true}\n".to_vec();
+        let certificate = b"# Fixture certificate\n".to_vec();
+        let certificate_hashes = format!(
+            "{}  {}\n{}  {}\n{}  {}\n",
+            sha256_bytes(main_hashes),
+            HASH_FILE,
+            sha256_bytes(&manifest),
+            MANIFEST_FILE,
+            sha256_bytes(&certificate),
+            CERTIFICATE_FILE
+        )
+        .into_bytes();
+        (manifest, certificate, certificate_hashes)
+    }
+
+    fn assert_injected_publication_failure(failure: CertificatePublicationFailure) {
+        let workspace = tempfile::tempdir().expect("temporary directory");
+        let track_root = workspace.path();
+        let (manifest, certificate, certificate_hashes) = publication_fixture(track_root);
+        let live = track_root.join(CERTIFICATE_DIR);
+        let live_started_empty = failure != CertificatePublicationFailure::PostPublishVerification;
+        if live_started_empty {
+            fs::create_dir(&live).expect("create empty live certificate directory");
+        }
+        let correlated_stage = track_root
+            .join(".archive")
+            .join("certificate-staging")
+            .join(failure.stage_id());
+
+        let error = publish_certificate_set_impl(
+            track_root,
+            &manifest,
+            &certificate,
+            &certificate_hashes,
+            &failure.stage_id(),
+            Some(failure),
+        )
+        .expect_err("injected publication failure");
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Invalid stored data: Injected certificate publication failure at {}.",
+                failure.label()
+            )
+        );
+        assert!(
+            verify(track_root).is_err(),
+            "incomplete live certificate unexpectedly verified after {} failure",
+            failure.label()
+        );
+        if live_started_empty {
+            assert!(
+                live.is_dir(),
+                "empty live certificate directory was removed"
+            );
+            assert!(
+                fs::read_dir(&live)
+                    .expect("read restored certificate directory")
+                    .next()
+                    .is_none(),
+                "live certificate directory is not empty after {} failure",
+                failure.label()
+            );
+        } else {
+            assert!(
+                !live.exists(),
+                "absent live certificate directory was not restored after {} failure",
+                failure.label()
+            );
+        }
+        assert!(
+            !correlated_stage.exists(),
+            "correlated staging directory was not cleaned after {} failure",
+            failure.label()
+        );
+        let staging_parent = track_root.join(".archive/certificate-staging");
+        assert!(
+            !staging_parent.exists()
+                || fs::read_dir(&staging_parent)
+                    .expect("read certificate staging directory")
+                    .next()
+                    .is_none(),
+            "certificate staging contains residue after {} failure",
+            failure.label()
+        );
+    }
+
+    #[test]
+    fn staging_directory_creation_failure_is_controlled_and_cleaned() {
+        assert_injected_publication_failure(CertificatePublicationFailure::StagingDirectoryCreate);
+    }
+
+    #[test]
+    fn manifest_write_failure_is_controlled_and_cleaned() {
+        assert_injected_publication_failure(CertificatePublicationFailure::ManifestWrite);
+    }
+
+    #[test]
+    fn certificate_write_failure_is_controlled_and_cleaned() {
+        assert_injected_publication_failure(CertificatePublicationFailure::CertificateWrite);
+    }
+
+    #[test]
+    fn certificate_hash_write_failure_is_controlled_and_cleaned() {
+        assert_injected_publication_failure(CertificatePublicationFailure::CertificateHashWrite);
+    }
+
+    #[test]
+    fn publish_rename_failure_is_controlled_and_cleaned() {
+        assert_injected_publication_failure(CertificatePublicationFailure::PublishRename);
+    }
+
+    #[test]
+    fn post_publish_verification_failure_rolls_back_and_cleans_staging() {
+        assert_injected_publication_failure(CertificatePublicationFailure::PostPublishVerification);
+    }
+
     #[test]
     fn certificate_hash_parser_requires_exact_complete_unique_set() {
         let valid = format!(
@@ -407,5 +645,69 @@ mod tests {
         fs::write(&sums, format!("{DIGEST}  06_CERTIFICATE/hidden.txt\n"))
             .expect("write excluded sums");
         assert!(parse_hashes(&sums).is_err());
+    }
+
+    #[test]
+    fn certificate_hash_parser_rejects_empty_missing_extra_and_unsafe_entries() {
+        let invalid_sets = [
+            String::new(),
+            format!("{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n"),
+            format!(
+                "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {CERTIFICATE_HASH_FILE}\n"
+            ),
+            format!(
+                "{DIGEST}  {HASH_FILE}\n\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n"
+            ),
+            format!(
+                "{DIGEST}  {HASH_FILE}\n{DIGEST}  ../EVIDENCE_MANIFEST.json\n{DIGEST}  {CERTIFICATE_FILE}\n"
+            ),
+            format!(
+                "{DIGEST}  {HASH_FILE}\n{DIGEST}  /absolute.json\n{DIGEST}  {CERTIFICATE_FILE}\n"
+            ),
+            format!(
+                "{DIGEST}  {HASH_FILE}\n{DIGEST}  06_CERTIFICATE/control\tmanifest.json\n{DIGEST}  {CERTIFICATE_FILE}\n"
+            ),
+        ];
+
+        for content in invalid_sets {
+            assert!(
+                parse_certificate_hashes(&content).is_err(),
+                "invalid certificate set was accepted: {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_manifest_hash_parser_covers_format_and_path_edge_cases() {
+        let invalid_entries = [
+            String::new(),
+            "not-a-digest  01_RELEASE/song.wav\n".into(),
+            format!("{DIGEST}  /absolute.wav\n"),
+            format!("{DIGEST}  ../escape.wav\n"),
+            format!("{DIGEST}  01_RELEASE\\windows.wav\n"),
+            format!("{DIGEST}  01_RELEASE/control\tname.wav\n"),
+            format!("{DIGEST}  {HASH_FILE}\n"),
+            format!("{DIGEST}  .archive/hidden.wav\n"),
+            format!("{DIGEST}  .summary/hidden.wav\n"),
+            format!("{DIGEST}  .suno-doc/workspace.sqlite\n"),
+            format!("{DIGEST}  {CERTIFICATE_FILE}\n"),
+            format!("{DIGEST}  01_RELEASE/song.wav\n\n{DIGEST}  02_SUNO/song.wav\n"),
+            format!("{DIGEST}  01_RELEASE/song.wav\n{DIGEST}  01_RELEASE/song.wav\n"),
+        ];
+
+        for content in invalid_entries {
+            assert!(
+                parse_main_hash_fixture(&content).is_err(),
+                "invalid main hash entry was accepted: {content:?}"
+            );
+        }
+
+        let uppercase = DIGEST.to_ascii_uppercase();
+        let parsed = parse_main_hash_fixture(&format!(
+            "{uppercase}  01_RELEASE/song.wav\n{DIGEST}  02_SUNO/source.wav\n"
+        ))
+        .expect("portable valid hash list");
+        assert_eq!(parsed["01_RELEASE/song.wav"], DIGEST);
+        assert_eq!(parsed.len(), 2);
     }
 }

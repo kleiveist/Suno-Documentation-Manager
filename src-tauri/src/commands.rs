@@ -285,3 +285,8 @@ pub fn invalidate_certificate(
 pub fn create_revision(state: State<'_, AppState>, track_id: String) -> Result<ActionResult> {
     with_workspace(&state, |app| app.create_revision(&track_id))
 }
+
+#[tauri::command]
+pub fn re_evaluate_track(state: State<'_, AppState>, track_id: String) -> Result<ActionResult> {
+    with_workspace(&state, |app| app.re_evaluate_track(&track_id))
+}

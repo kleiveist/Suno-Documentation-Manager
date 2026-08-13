@@ -193,4 +193,30 @@ mod tests {
             Err(AppError::Image(_))
         ));
     }
+
+    #[test]
+    fn disclosure_renderer_is_deterministic_and_bottom_right_only() {
+        let source = RgbaImage::from_pixel(640, 640, Rgba([20, 40, 80, 255]));
+        let first = draw_label(
+            DynamicImage::ImageRgba8(source.clone()),
+            "Custom disclosure",
+        )
+        .expect("first disclosure render");
+        let second = draw_label(
+            DynamicImage::ImageRgba8(source.clone()),
+            "Custom disclosure",
+        )
+        .expect("second disclosure render");
+        assert_eq!(first.as_raw(), second.as_raw(), "rendered pixels differ");
+
+        let changed = first
+            .enumerate_pixels()
+            .filter(|(x, y, pixel)| pixel != &source.get_pixel(*x, *y))
+            .map(|(x, y, _)| (x, y))
+            .collect::<Vec<_>>();
+        assert!(!changed.is_empty(), "disclosure did not change any pixel");
+        assert!(changed.iter().all(|(x, y)| *x >= 348 && *y >= 604));
+        assert!(changed.iter().any(|(x, y)| *x > 620 && *y > 620));
+        assert_eq!(first.get_pixel(0, 0), source.get_pixel(0, 0));
+    }
 }

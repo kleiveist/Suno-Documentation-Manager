@@ -107,6 +107,34 @@ impl Persistence {
         Ok(())
     }
 
+    pub fn save_track_clearing_steps(&self, track: &TrackRecord) -> Result<()> {
+        let json = serde_json::to_string(track)?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO tracks(id,title,relative_path,status,workflow_id,workflow_version,data_json,created_at,updated_at,legacy)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(id) DO UPDATE SET title=excluded.title,relative_path=excluded.relative_path,
+             status=excluded.status,workflow_id=excluded.workflow_id,workflow_version=excluded.workflow_version,
+             data_json=excluded.data_json,updated_at=excluded.updated_at,legacy=excluded.legacy",
+            params![
+                track.id,
+                track.fields.title,
+                track.relative_path,
+                track.status.as_str(),
+                track.workflow_id,
+                track.workflow_version,
+                json,
+                track.created_at,
+                track.updated_at,
+                track.legacy as i64
+            ],
+        )?;
+        transaction.execute("DELETE FROM step_states WHERE track_id=?1", [&track.id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn track(&self, id: &str) -> Result<TrackRecord> {
         let json: Option<String> = self
             .open()?
@@ -672,6 +700,120 @@ mod tests {
             .expect("future table count");
         assert_eq!(version, 99);
         assert_eq!(future_table, 1);
+    }
+
+    #[test]
+    fn sqlite_failed_migration_rolls_back_columns_data_and_user_version() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE tracks(id TEXT PRIMARY KEY,legacy INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE evidence(
+                   id TEXT PRIMARY KEY,track_id TEXT NOT NULL,
+                   role TEXT NOT NULL,file_name TEXT NOT NULL,relative_path TEXT NOT NULL,
+                   sha256 TEXT,size_bytes INTEGER NOT NULL,imported_at TEXT NOT NULL,verified INTEGER NOT NULL,
+                   verification_error TEXT,source_global_evidence_id TEXT,coverage_start TEXT,coverage_end TEXT,
+                   derived_from_evidence_id TEXT,
+                   UNIQUE(track_id,relative_path)
+                 );
+                 CREATE TABLE migration_sentinel(value TEXT NOT NULL);
+                 INSERT INTO tracks(id,legacy) VALUES('legacy-track',1);
+                 INSERT INTO evidence(
+                   id,track_id,role,file_name,relative_path,size_bytes,imported_at,verified,
+                   derived_from_evidence_id
+                 ) VALUES(
+                   'evidence-1','legacy-track','other','history.txt','03_DOCUMENTATION/history.txt',7,
+                   '2026-08-01T00:00:00Z',0,'preexisting-column-for-failure'
+                 );
+                 INSERT INTO migration_sentinel(value) VALUES('preserve-me');
+                 PRAGMA user_version=1;",
+            )
+            .expect("failing v1 fixture");
+
+        let error = migrate(&mut connection).expect_err("duplicate migration column must fail");
+        assert!(matches!(error, AppError::Database(_)));
+
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("rolled-back schema version");
+        assert_eq!(version, 1);
+        let columns = connection
+            .prepare("PRAGMA table_info(evidence)")
+            .expect("evidence columns statement")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("evidence columns")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("column names");
+        assert!(columns.contains(&"derived_from_evidence_id".to_owned()));
+        assert!(!columns.contains(&"provenance".to_owned()));
+        assert!(!columns.contains(&"generator_version".to_owned()));
+        assert!(!columns.contains(&"generated_disclosure_text".to_owned()));
+        let sentinel: String = connection
+            .query_row("SELECT value FROM migration_sentinel", [], |row| row.get(0))
+            .expect("preserved sentinel");
+        assert_eq!(sentinel, "preserve-me");
+        let evidence_count: i64 = connection
+            .query_row("SELECT count(*) FROM evidence", [], |row| row.get(0))
+            .expect("preserved evidence row");
+        assert_eq!(evidence_count, 1);
+    }
+
+    #[test]
+    fn deleted_database_is_recreated_without_touching_portable_track_files() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let persistence = Persistence::initialize(&workspace).expect("initial persistence");
+        persistence
+            .set_meta("fixture", "before deletion")
+            .expect("seed metadata");
+        let portable_file = workspace.join("Portable Track/03_DOCUMENTATION/README.md");
+        std::fs::create_dir_all(portable_file.parent().expect("portable parent"))
+            .expect("portable track directories");
+        std::fs::write(&portable_file, b"portable track bytes").expect("portable track fixture");
+        std::fs::remove_file(workspace.join(DATABASE_RELATIVE_PATH)).expect("delete database");
+
+        let recreated = Persistence::initialize(&workspace).expect("recreate database");
+        assert_eq!(
+            std::fs::read(&portable_file).expect("portable track remains"),
+            b"portable track bytes"
+        );
+        assert_eq!(recreated.get_meta("fixture").expect("new metadata"), None);
+        let version: i64 = recreated
+            .open()
+            .expect("recreated connection")
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("recreated schema version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn corrupted_database_returns_controlled_error_without_touching_track_files() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir_all(workspace.join(".suno-doc")).expect("admin directory");
+        std::fs::create_dir_all(workspace.join("Track/01_RELEASE"))
+            .expect("portable track directory");
+        let track_file = workspace.join("Track/01_RELEASE/final.wav");
+        std::fs::write(&track_file, b"portable evidence bytes").expect("track evidence");
+        std::fs::write(
+            workspace.join(DATABASE_RELATIVE_PATH),
+            b"this is deliberately not a SQLite database",
+        )
+        .expect("corrupt database fixture");
+
+        let error = Persistence::initialize(&workspace).expect_err("corrupt database must fail");
+        assert!(matches!(error, AppError::Database(_)));
+        assert_eq!(
+            std::fs::read(&track_file).expect("track evidence remains"),
+            b"portable evidence bytes"
+        );
+        assert_eq!(
+            std::fs::read(workspace.join(DATABASE_RELATIVE_PATH))
+                .expect("corrupt database remains for recovery"),
+            b"this is deliberately not a SQLite database"
+        );
     }
 
     #[cfg(unix)]

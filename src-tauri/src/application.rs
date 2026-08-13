@@ -41,6 +41,12 @@ pub struct WorkspaceApp {
     persistence: Persistence,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FinalizationFailure {
+    DatabaseCommit,
+}
+
 impl WorkspaceApp {
     pub fn open(path: &Path, create: bool) -> Result<Self> {
         let root = canonical_workspace(path, create)?;
@@ -155,26 +161,37 @@ impl WorkspaceApp {
                         "Finalization recovery marker does not match its track.".into(),
                     ));
                 }
-                if !directory_is_empty_or_missing(&live)? {
-                    let recovery_id = marker
-                        .get("transaction_id")
-                        .and_then(|value| value.as_str())
-                        .ok_or_else(|| {
-                            AppError::Data(
-                                "Finalization recovery marker has no transaction ID.".into(),
-                            )
-                        })?;
+                let recovery_id = marker
+                    .get("transaction_id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        AppError::Data("Finalization recovery marker has no transaction ID.".into())
+                    })?;
+                let staging_relative =
+                    PathBuf::from(".archive/certificate-staging").join(recovery_id);
+                let staging = contained_path(&root, &staging_relative, false)?;
+                let live_needs_recovery = !directory_is_empty_or_missing(&live)?;
+                let staging_needs_recovery = staging.exists();
+                if live_needs_recovery || staging_needs_recovery {
                     let recovery_relative = PathBuf::from(".archive/recovery").join(recovery_id);
                     let recovery = ensure_contained_directory(&root, &recovery_relative)?;
                     let metadata = serde_json::to_vec_pretty(&serde_json::json!({
                         "schema_version": 1,
                         "track_id": track.id,
                         "recovered_at": now(),
-                        "reason": "certificate files existed before the database committed FINALIZED",
+                        "reason": "certificate publication was interrupted before the database committed FINALIZED",
+                        "live_certificate_recovered": live_needs_recovery,
+                        "staging_recovered": staging_needs_recovery,
                     }))?;
                     atomic_write_new(&recovery.join("recovery.json"), &metadata)?;
-                    fs::rename(&live, recovery.join("certificate"))
-                        .map_err(|error| AppError::io(&live, error))?;
+                    if live_needs_recovery {
+                        fs::rename(&live, recovery.join("certificate"))
+                            .map_err(|error| AppError::io(&live, error))?;
+                    }
+                    if staging_needs_recovery {
+                        fs::rename(&staging, recovery.join("certificate-staging"))
+                            .map_err(|error| AppError::io(&staging, error))?;
+                    }
                     ensure_contained_directory(&root, Path::new(certificate::CERTIFICATE_DIR))?;
                 }
                 fs::remove_file(&finalization_marker)
@@ -907,6 +924,18 @@ impl WorkspaceApp {
     }
 
     pub fn finalize_track(&self, id: &str) -> Result<ActionResult> {
+        self.finalize_track_impl(
+            id,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn finalize_track_impl(
+        &self,
+        id: &str,
+        #[cfg(test)] failure: Option<FinalizationFailure>,
+    ) -> Result<ActionResult> {
         let mut track = self.mutable_track(id)?;
         let validation = self.validation_for(track.clone())?;
         if !validation.valid {
@@ -934,6 +963,7 @@ impl WorkspaceApp {
         )?;
         let finalized_at = now();
         let certificate_id = format!("SDM-{}", Uuid::new_v4());
+        let transaction_id = Uuid::new_v4().to_string();
         let track_root = self.track_root(&track)?;
         let live_certificate =
             contained_path(&track_root, Path::new(certificate::CERTIFICATE_DIR), false)?;
@@ -950,7 +980,7 @@ impl WorkspaceApp {
         )?;
         let marker = serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
-            "transaction_id": Uuid::new_v4().to_string(),
+            "transaction_id": transaction_id,
             "track_id": track.id,
             "certificate_id": certificate_id,
             "started_at": now(),
@@ -965,15 +995,20 @@ impl WorkspaceApp {
             &deviations,
             &certificate_id,
             &finalized_at,
+            &transaction_id,
         );
         if let Err(error) = publication {
-            let _ = fs::remove_file(&finalization_marker);
+            if directory_is_empty_or_missing(&live_certificate).unwrap_or(false) {
+                let _ = fs::remove_file(&finalization_marker);
+            }
             return Err(error);
         }
         if let Err(error) = certificate::verify(&track_root) {
             let rolled_back = rollback_certificate_set(&track_root, error);
-            let _ = fs::remove_file(&finalization_marker);
-            return Err(rolled_back);
+            if rolled_back.complete {
+                let _ = fs::remove_file(&finalization_marker);
+            }
+            return Err(rolled_back.error);
         }
         let post_publish_integrity = match integrity::verify(&track_root) {
             Ok(state) if state.verified => state,
@@ -985,13 +1020,17 @@ impl WorkspaceApp {
                         state.mismatch_files.join(", ")
                     )),
                 );
-                let _ = fs::remove_file(&finalization_marker);
-                return Err(rolled_back);
+                if rolled_back.complete {
+                    let _ = fs::remove_file(&finalization_marker);
+                }
+                return Err(rolled_back.error);
             }
             Err(error) => {
                 let rolled_back = rollback_certificate_set(&track_root, error);
-                let _ = fs::remove_file(&finalization_marker);
-                return Err(rolled_back);
+                if rolled_back.complete {
+                    let _ = fs::remove_file(&finalization_marker);
+                }
+                return Err(rolled_back.error);
             }
         };
         track.integrity = post_publish_integrity;
@@ -1005,10 +1044,22 @@ impl WorkspaceApp {
             invalidation_reason: None,
         };
         track.updated_at = now();
-        if let Err(error) = self.persistence.save_track(&track) {
+        #[cfg(test)]
+        let database_commit = if failure == Some(FinalizationFailure::DatabaseCommit) {
+            Err(AppError::Data(
+                "Injected finalization database commit failure.".into(),
+            ))
+        } else {
+            self.persistence.save_track(&track)
+        };
+        #[cfg(not(test))]
+        let database_commit = self.persistence.save_track(&track);
+        if let Err(error) = database_commit {
             let rolled_back = rollback_certificate_set(&track_root, error);
-            let _ = fs::remove_file(&finalization_marker);
-            return Err(rolled_back);
+            if rolled_back.complete {
+                let _ = fs::remove_file(&finalization_marker);
+            }
+            return Err(rolled_back.error);
         }
         // The database commit is authoritative. A stale marker is harmless and is
         // removed during the next workspace recovery if this best-effort cleanup fails.
@@ -1123,6 +1174,64 @@ impl WorkspaceApp {
         }
         Ok(ActionResult {
             message: format!("Previous certificate archived as revision {revision_id}."),
+            track: Some(self.detail_from_record(track, false)?),
+        })
+    }
+
+    pub fn re_evaluate_track(&self, id: &str) -> Result<ActionResult> {
+        let current = workflow::config()?;
+        self.re_evaluate_track_with_workflow(id, &current)
+    }
+
+    fn re_evaluate_track_with_workflow(
+        &self,
+        id: &str,
+        current: &workflow::WorkflowConfig,
+    ) -> Result<ActionResult> {
+        let previous = self.persistence.track(id)?;
+        if previous.workflow_id == current.id && previous.workflow_version == current.version {
+            return Err(AppError::Validation(
+                "The track already uses the current workflow version.".into(),
+            ));
+        }
+
+        let archived = previous.status == TrackStatus::Finalized;
+        if archived {
+            self.create_revision(id)?;
+        }
+
+        let mut track = self.persistence.track(id)?;
+        track.workflow_id = current.id.clone();
+        track.workflow_version = current.version.clone();
+        track.status = TrackStatus::Active;
+        track.documents.current = false;
+        track.integrity = IntegrityState::default();
+        track.certificate = CertificateState::default();
+        track.updated_at = now();
+
+        let root = self.track_root(&track)?;
+        let live_hashes = contained_path(&root, Path::new(integrity::HASH_FILE), false)?;
+        if live_hashes.is_file() {
+            fs::remove_file(&live_hashes).map_err(|error| AppError::io(&live_hashes, error))?;
+        } else if live_hashes.exists() {
+            return Err(AppError::Validation(
+                "The current SHA256SUMS path is not a regular file.".into(),
+            ));
+        }
+        self.persistence.save_track_clearing_steps(&track)?;
+
+        Ok(ActionResult {
+            message: if archived {
+                format!(
+                    "Previous certificate archived; track is ready for reevaluation with workflow {} {}.",
+                    current.id, current.version
+                )
+            } else {
+                format!(
+                    "Track is ready for reevaluation with workflow {} {}.",
+                    current.id, current.version
+                )
+            },
             track: Some(self.detail_from_record(track, false)?),
         })
     }
@@ -1657,29 +1766,49 @@ fn rollback_removed_file(archived: &Path, original: &Path, cause: AppError) -> A
     }
 }
 
-fn rollback_certificate_set(track_root: &Path, cause: AppError) -> AppError {
-    let certificate_dir =
-        match contained_path(track_root, Path::new(certificate::CERTIFICATE_DIR), false) {
-            Ok(path) => path,
-            Err(rollback_error) => {
-                return AppError::Data(format!(
-                "Finalization failed ({cause}); certificate rollback path failed: {rollback_error}"
-            ));
-            }
-        };
+struct CertificateRollback {
+    error: AppError,
+    complete: bool,
+}
+
+fn rollback_certificate_set(track_root: &Path, cause: AppError) -> CertificateRollback {
+    let certificate_dir = match contained_path(
+        track_root,
+        Path::new(certificate::CERTIFICATE_DIR),
+        false,
+    ) {
+        Ok(path) => path,
+        Err(rollback_error) => {
+            return CertificateRollback {
+                    error: AppError::Data(format!(
+                        "Finalization failed ({cause}); certificate rollback path failed: {rollback_error}"
+                    )),
+                    complete: false,
+                };
+        }
+    };
     if certificate_dir.exists() {
         if let Err(rollback_error) = fs::remove_dir_all(&certificate_dir) {
-            return AppError::Data(format!(
-                "Finalization failed ({cause}); certificate cleanup failed: {rollback_error}"
-            ));
+            return CertificateRollback {
+                error: AppError::Data(format!(
+                    "Finalization failed ({cause}); certificate cleanup failed: {rollback_error}"
+                )),
+                complete: false,
+            };
         }
     }
     if let Err(rollback_error) = fs::create_dir(&certificate_dir) {
-        return AppError::Data(format!(
-            "Finalization failed ({cause}); empty certificate directory recovery failed: {rollback_error}"
-        ));
+        return CertificateRollback {
+            error: AppError::Data(format!(
+                "Finalization failed ({cause}); empty certificate directory recovery failed: {rollback_error}"
+            )),
+            complete: false,
+        };
     }
-    cause
+    CertificateRollback {
+        error: cause,
+        complete: true,
+    }
 }
 
 fn rollback_revision_state(
@@ -2057,6 +2186,13 @@ mod tests {
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
+    #[derive(Debug)]
+    struct ParsedCertificate {
+        fields: BTreeMap<String, String>,
+        completed_steps: BTreeMap<String, String>,
+        na_reasons: BTreeMap<String, String>,
+    }
+
     fn complete_profile() -> Profile {
         Profile {
             artist_name: "Acceptance Artist".into(),
@@ -2264,6 +2400,108 @@ mod tests {
             )
         })
         .collect()
+    }
+
+    fn parse_certificate_document(content: &str) -> ParsedCertificate {
+        enum Section {
+            Fields,
+            CompletedSteps,
+            NaReasons,
+            Other,
+        }
+
+        let mut fields = BTreeMap::new();
+        let mut completed_steps = BTreeMap::new();
+        let mut na_reasons = BTreeMap::new();
+        let mut section = Section::Fields;
+        for line in content.lines() {
+            section = match line {
+                "## Mandatory steps completed" => Section::CompletedSteps,
+                "## N/A steps with reasons" => Section::NaReasons,
+                "## Scope and disclaimer" => Section::Other,
+                _ => section,
+            };
+            if !line.starts_with("- ") {
+                continue;
+            }
+            let entry = &line[2..];
+            match section {
+                Section::Fields => {
+                    let (key, value) = entry
+                        .split_once(": ")
+                        .unwrap_or_else(|| panic!("malformed certificate field: {line}"));
+                    assert!(
+                        fields
+                            .insert(key.into(), unquote_certificate_value(value))
+                            .is_none(),
+                        "duplicate certificate field: {key}"
+                    );
+                }
+                Section::CompletedSteps => {
+                    let (step_id, status) = entry
+                        .split_once(": ")
+                        .unwrap_or_else(|| panic!("malformed completed step: {line}"));
+                    assert!(
+                        completed_steps
+                            .insert(step_id.into(), status.into())
+                            .is_none(),
+                        "duplicate completed step: {step_id}"
+                    );
+                }
+                Section::NaReasons if entry != "None" => {
+                    let (step_id, reason) = entry
+                        .split_once(" — ")
+                        .unwrap_or_else(|| panic!("malformed N/A reason: {line}"));
+                    assert!(
+                        na_reasons.insert(step_id.into(), reason.into()).is_none(),
+                        "duplicate N/A step: {step_id}"
+                    );
+                }
+                Section::NaReasons | Section::Other => {}
+            }
+        }
+        ParsedCertificate {
+            fields,
+            completed_steps,
+            na_reasons,
+        }
+    }
+
+    fn unquote_certificate_value(value: &str) -> String {
+        value
+            .strip_prefix('`')
+            .and_then(|value| value.strip_suffix('`'))
+            .or_else(|| {
+                value
+                    .strip_prefix("**")
+                    .and_then(|value| value.strip_suffix("**"))
+            })
+            .unwrap_or(value)
+            .into()
+    }
+
+    fn parse_sha256sums(content: &str) -> BTreeMap<String, String> {
+        content
+            .lines()
+            .map(|line| {
+                let (digest, relative) = line
+                    .split_once("  ")
+                    .unwrap_or_else(|| panic!("malformed SHA256SUMS entry: {line}"));
+                assert_eq!(digest.len(), 64, "SHA-256 digest length for {relative}");
+                assert!(
+                    digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "non-hex SHA-256 digest for {relative}"
+                );
+                (relative.into(), digest.to_ascii_lowercase())
+            })
+            .collect()
+    }
+
+    fn manifest_string<'a>(manifest: &'a serde_json::Value, pointer: &str) -> &'a str {
+        manifest
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("manifest field {pointer} must be a string"))
     }
 
     #[test]
@@ -2662,6 +2900,342 @@ mod tests {
         assert!(manifest.contains("05_ARTWORK/End-To-End_AI_EDITED.png"));
         assert!(manifest.contains("05_ARTWORK/End-To-End_FINAL.png"));
         assert!(manifest.contains("sourceGlobalEvidenceId"));
+    }
+
+    #[test]
+    fn finalized_certificate_fields_cross_check_sqlite_track_evidence_hashes_and_manifest() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Certificate Field Cross Check".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+            })
+            .expect("track creation");
+        let updated = app
+            .update_track(
+                &created.id,
+                TrackPatch {
+                    production_end_date: Some("2026-08-02".into()),
+                    suno_model: Some("v4.5".into()),
+                    suno_project_url: Some("https://suno.com/song/certificate-cross-check".into()),
+                    suno_plan_at_creation: Some("Pro".into()),
+                    final_export_date: Some("2026-08-03".into()),
+                    lyrics_source: Some("instrumental".into()),
+                    external_audio_uploaded: Some(false),
+                    own_audio_uploaded: Some(false),
+                    third_party_samples_uploaded: Some(false),
+                    human_editing_performed: Some(false),
+                    post_export_editing_performed: Some(false),
+                    commercial_use_intended: Some(false),
+                    artwork_origin: Some("human".into()),
+                    depicts_real_person: Some(false),
+                    depicts_real_event: Some(false),
+                    contains_trademark: Some(false),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("track facts");
+
+        let fixture_root = directory.path().join("fixtures");
+        fs::create_dir(&fixture_root).expect("fixture directory");
+        let suno_export = fixture_root.join("cross-check-suno.wav");
+        let release_master = fixture_root.join("cross-check-release.wav");
+        let final_artwork = fixture_root.join("cross-check-final.png");
+        fs::write(&suno_export, b"RIFF\x08\0\0\0WAVEsuno cross-check")
+            .expect("Suno export fixture");
+        fs::write(&release_master, b"RIFF\x08\0\0\0WAVErelease cross-check")
+            .expect("release fixture");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([32, 64, 96, 255]))
+            .save(&final_artwork)
+            .expect("final artwork fixture");
+        app.import_evidence_from(&updated.id, EvidenceRole::SunoFinalExport, &suno_export)
+            .expect("Suno evidence import");
+        app.import_evidence_from(&updated.id, EvidenceRole::ReleaseWav, &release_master)
+            .expect("release evidence import");
+        app.import_evidence_from(&updated.id, EvidenceRole::FinalArtwork, &final_artwork)
+            .expect("final artwork import");
+
+        let na_reason = "AI transparency is not applicable to human artwork.";
+        app.set_step_status(
+            &updated.id,
+            "ai_transparency",
+            StepStatus::NotApplicable,
+            Some(na_reason.into()),
+        )
+        .expect("store justified N/A");
+        let deviation_detail = app
+            .add_deviation(
+                &updated.id,
+                DeviationInput {
+                    description: "Resolved certificate cross-check note".into(),
+                    blocking: true,
+                },
+            )
+            .expect("blocking deviation fixture");
+        let deviation_id = deviation_detail
+            .blocking_deviations
+            .iter()
+            .find(|deviation| deviation.blocking && !deviation.resolved)
+            .expect("unresolved fixture deviation")
+            .id
+            .clone();
+        app.resolve_deviation(&updated.id, &deviation_id)
+            .expect("resolved deviation fixture");
+
+        app.generate_documents(&updated.id, false)
+            .expect("document generation");
+        app.calculate_hashes(&updated.id)
+            .expect("SHA256SUMS generation");
+        let validation = app.validate_track(&updated.id).expect("native gate");
+        assert!(
+            validation.valid,
+            "missing={:?}; blocking={:?}",
+            validation.missing_items, validation.blocking_items
+        );
+        let finalized = app
+            .finalize_track(&updated.id)
+            .expect("real finalization")
+            .track
+            .expect("finalized detail");
+        assert_eq!(finalized.status, TrackStatus::Finalized);
+
+        let stored_track = app
+            .persistence
+            .track(&updated.id)
+            .expect("SQLite track record");
+        let stored_evidence = app
+            .persistence
+            .evidence(&updated.id)
+            .expect("SQLite evidence records");
+        let stored_steps = app
+            .persistence
+            .stored_steps(&updated.id)
+            .expect("SQLite step states");
+        let stored_deviations = app
+            .persistence
+            .deviations(&updated.id)
+            .expect("SQLite deviations");
+        let track_root = app.root().join(&stored_track.relative_path);
+        let sums_bytes = fs::read(track_root.join(integrity::HASH_FILE)).expect("SHA256SUMS bytes");
+        let sums =
+            parse_sha256sums(std::str::from_utf8(&sums_bytes).expect("SHA256SUMS must be UTF-8"));
+        let manifest_bytes =
+            fs::read(track_root.join(certificate::MANIFEST_FILE)).expect("evidence manifest bytes");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).expect("evidence manifest JSON");
+        let certificate_text = fs::read_to_string(track_root.join(certificate::CERTIFICATE_FILE))
+            .expect("certificate document");
+        let certificate = parse_certificate_document(&certificate_text);
+
+        let certificate_id = stored_track
+            .certificate
+            .certificate_id
+            .as_deref()
+            .expect("stored certificate ID");
+        let finalized_at = stored_track
+            .certificate
+            .finalized_at
+            .as_deref()
+            .expect("stored finalization timestamp");
+        assert_eq!(
+            finalized.certificate.certificate_id.as_deref(),
+            Some(certificate_id)
+        );
+        assert_eq!(
+            finalized.certificate.finalized_at.as_deref(),
+            Some(finalized_at)
+        );
+        assert_eq!(
+            manifest_string(&manifest, "/certificate/id"),
+            certificate_id
+        );
+        assert_eq!(certificate.fields["Certificate ID"], certificate_id);
+
+        assert_eq!(finalized.title, stored_track.fields.title);
+        assert_eq!(
+            manifest_string(&manifest, "/track/title"),
+            stored_track.fields.title
+        );
+        assert_eq!(certificate.fields["Track"], stored_track.fields.title);
+        assert_eq!(
+            manifest_string(&manifest, "/artist/name"),
+            stored_track.profile_snapshot.artist_name
+        );
+        assert_eq!(
+            certificate.fields["Artist"],
+            stored_track.profile_snapshot.artist_name
+        );
+        assert_eq!(
+            manifest_string(&manifest, "/workflow/id"),
+            stored_track.workflow_id
+        );
+        assert_eq!(certificate.fields["Workflow ID"], stored_track.workflow_id);
+        assert_eq!(
+            manifest_string(&manifest, "/workflow/version"),
+            stored_track.workflow_version
+        );
+        assert_eq!(
+            certificate.fields["Workflow version"],
+            stored_track.workflow_version
+        );
+        assert_eq!(
+            manifest_string(&manifest, "/workflow/application_version"),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            certificate.fields["Application version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            manifest_string(&manifest, "/finalization/timestamp"),
+            finalized_at
+        );
+        assert_eq!(certificate.fields["Finalization timestamp"], finalized_at);
+
+        let manifest_evidence = manifest["evidence"]
+            .as_array()
+            .expect("manifest evidence array");
+        let verified_evidence = stored_evidence
+            .iter()
+            .filter(|item| {
+                item.verified && item.sha256.is_some() && item.verification_error.is_none()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(manifest_evidence.len(), verified_evidence.len());
+        assert_eq!(
+            certificate.fields["Evidence file count"],
+            verified_evidence.len().to_string()
+        );
+        let manifest_evidence_by_id = manifest_evidence
+            .iter()
+            .map(|item| {
+                let id = item["id"].as_str().expect("manifest evidence ID");
+                (id, item)
+            })
+            .collect::<BTreeMap<_, _>>();
+        for evidence in &verified_evidence {
+            let manifest_item = manifest_evidence_by_id
+                .get(evidence.id.as_str())
+                .unwrap_or_else(|| panic!("manifest evidence missing: {}", evidence.id));
+            assert_eq!(manifest_item["role"].as_str(), Some(evidence.role.as_str()));
+            assert_eq!(
+                manifest_item["relativePath"].as_str(),
+                Some(evidence.relative_path.as_str())
+            );
+            assert_eq!(manifest_item["sha256"].as_str(), evidence.sha256.as_deref());
+        }
+
+        let release = verified_evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("stored release WAV");
+        let artwork = verified_evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::FinalArtwork)
+            .expect("stored final artwork");
+        assert_eq!(
+            sums.get(&release.relative_path),
+            release.sha256.as_ref(),
+            "release WAV hash must agree between SHA256SUMS and SQLite"
+        );
+        assert_eq!(
+            sums.get(&artwork.relative_path),
+            artwork.sha256.as_ref(),
+            "final artwork hash must agree between SHA256SUMS and SQLite"
+        );
+        assert_eq!(
+            manifest["hashes"]
+                .get(&release.relative_path)
+                .and_then(serde_json::Value::as_str),
+            release.sha256.as_deref()
+        );
+        assert_eq!(
+            manifest["hashes"]
+                .get(&artwork.relative_path)
+                .and_then(serde_json::Value::as_str),
+            artwork.sha256.as_deref()
+        );
+        assert_eq!(
+            certificate.fields["Release WAV SHA-256"],
+            release.sha256.as_deref().unwrap()
+        );
+        assert_eq!(
+            certificate.fields["Final artwork SHA-256"],
+            artwork.sha256.as_deref().unwrap()
+        );
+
+        let sums_sha =
+            sha256_file(&track_root.join(integrity::HASH_FILE)).expect("SHA256SUMS file hash");
+        let manifest_sha = sha256_file(&track_root.join(certificate::MANIFEST_FILE))
+            .expect("evidence manifest file hash");
+        assert_eq!(
+            manifest_string(&manifest, "/certificate/sha256sums_sha256"),
+            sums_sha
+        );
+        assert_eq!(certificate.fields["SHA256SUMS.txt SHA-256"], sums_sha);
+        assert_eq!(
+            certificate.fields["Evidence manifest SHA-256"],
+            manifest_sha
+        );
+        assert_eq!(
+            manifest["hashes"],
+            serde_json::to_value(&sums).expect("serialize parsed SHA256SUMS")
+        );
+
+        assert_eq!(
+            manifest["deviations"],
+            serde_json::to_value(&stored_deviations).unwrap()
+        );
+        let open_blocking = stored_deviations
+            .iter()
+            .filter(|deviation| deviation.blocking && !deviation.resolved)
+            .count();
+        assert_eq!(
+            certificate.fields["Blocking deviations"],
+            open_blocking.to_string()
+        );
+
+        let manifest_steps = manifest["steps"].as_array().expect("manifest steps");
+        let manifest_na_reasons = manifest_steps
+            .iter()
+            .filter(|step| step["status"].as_str() == Some("N_A"))
+            .map(|step| {
+                (
+                    step["id"].as_str().expect("N/A step ID").to_owned(),
+                    step["naReason"].as_str().expect("N/A reason").to_owned(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(manifest_na_reasons, certificate.na_reasons);
+        assert_eq!(
+            certificate
+                .na_reasons
+                .get("ai_transparency")
+                .map(String::as_str),
+            Some(na_reason)
+        );
+        assert!(stored_steps.iter().any(|step| {
+            step.id == "ai_transparency"
+                && step.status == StepStatus::NotApplicable
+                && step.na_reason.as_deref() == Some(na_reason)
+        }));
+        let manifest_completed = manifest_steps
+            .iter()
+            .filter(|step| matches!(step["status"].as_str(), Some("PASS" | "N_A")))
+            .map(|step| {
+                let id = step["id"].as_str().expect("completed step ID").to_owned();
+                let status = match step["status"].as_str().expect("completed status") {
+                    "PASS" => "Pass",
+                    "N_A" => "NotApplicable",
+                    status => panic!("unexpected completed status: {status}"),
+                };
+                (id, status.to_owned())
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(certificate.completed_steps, manifest_completed);
     }
 
     #[test]
@@ -3413,6 +3987,50 @@ mod tests {
     }
 
     #[test]
+    fn finalization_database_commit_failure_rolls_back_publication_and_reopens_cleanly() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Database Commit Failure",
+        );
+        let track_root = workspace.join(&ready.relative_path);
+
+        let error = app
+            .finalize_track_impl(&ready.id, Some(FinalizationFailure::DatabaseCommit))
+            .expect_err("injected database commit failure");
+        assert!(error
+            .to_string()
+            .contains("Injected finalization database commit failure"));
+        let stored = app
+            .persistence
+            .track(&ready.id)
+            .expect("stored active track");
+        assert_ne!(stored.status, TrackStatus::Finalized);
+        assert!(!stored.certificate.valid);
+        assert!(
+            directory_is_empty_or_missing(&track_root.join(certificate::CERTIFICATE_DIR))
+                .expect("empty certificate directory")
+        );
+        assert!(!track_root
+            .join(".archive/finalization-in-progress.json")
+            .exists());
+        drop(app);
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("clean workspace reopen");
+        let detail = reopened.load_track(&ready.id).expect("load active track");
+        assert_ne!(detail.status, TrackStatus::Finalized);
+        assert!(!detail.certificate.valid);
+        assert!(
+            directory_is_empty_or_missing(&track_root.join(certificate::CERTIFICATE_DIR))
+                .expect("empty certificate after reopen")
+        );
+    }
+
+    #[test]
     fn workspace_reopen_recovers_filesystem_database_commit_windows() {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory.path().join("workspace");
@@ -3444,6 +4062,15 @@ mod tests {
             .expect("finalization recovery marker"),
         )
         .expect("write finalization recovery marker");
+        let interrupted_stage = active_root
+            .join(".archive/certificate-staging")
+            .join(interrupted_transaction);
+        fs::create_dir_all(&interrupted_stage).expect("interrupted staging directory");
+        fs::write(
+            interrupted_stage.join("EVIDENCE_MANIFEST.json"),
+            b"staged before process exit",
+        )
+        .expect("interrupted staged artifact");
         drop(app);
 
         let reopened = WorkspaceApp::open(&workspace, false).expect("recovered workspace");
@@ -3468,6 +4095,17 @@ mod tests {
             .expect("marker-selected recovery snapshot"),
             b"published before database commit"
         );
+        assert_eq!(
+            fs::read(
+                active_root
+                    .join(".archive/recovery")
+                    .join(interrupted_transaction)
+                    .join("certificate-staging/EVIDENCE_MANIFEST.json")
+            )
+            .expect("correlated staging recovery"),
+            b"staged before process exit"
+        );
+        assert!(!interrupted_stage.exists());
         assert!(!active_root
             .join(".archive/finalization-in-progress.json")
             .exists());
@@ -3762,5 +4400,85 @@ mod tests {
             .expect("recovered finalized track");
         assert_eq!(recovered.status, TrackStatus::Finalized);
         assert!(recovered.certificate.valid);
+    }
+
+    #[test]
+    fn workflow_upgrade_archives_finalized_v1_and_requires_fresh_v11_outputs() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let finalized =
+            finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
+        assert_eq!(finalized.workflow_version, "1.0");
+        let track_root = app.root().join(&finalized.relative_path);
+        let certificate_before = certificate_file_snapshot(&track_root);
+        let hashes_before =
+            fs::read(track_root.join(integrity::HASH_FILE)).expect("read finalized SHA256SUMS");
+        app.persistence
+            .save_step(
+                &finalized.id,
+                &StepState {
+                    id: "source".into(),
+                    status: StepStatus::Fail,
+                    na_reason: None,
+                    updated_at: Some("2026-08-13T12:00:00Z".into()),
+                },
+            )
+            .expect("stored old-workflow override");
+
+        let workflow_v11 = workflow::config_with_version_for_test("1.1")
+            .expect("test-only workflow 1.1 configuration");
+        let upgraded = app
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v11)
+            .expect("explicit workflow reevaluation")
+            .track
+            .expect("upgraded track detail");
+
+        assert_eq!(upgraded.status, TrackStatus::Active);
+        assert_eq!(upgraded.workflow_id, "suno-track");
+        assert_eq!(upgraded.workflow_version, "1.1");
+        assert!(!upgraded.documents.current);
+        assert!(!upgraded.integrity.generated);
+        assert!(!upgraded.integrity.verified);
+        assert!(!upgraded.certificate.valid);
+        assert!(upgraded.certificate.certificate_id.is_none());
+        assert!(!track_root.join(integrity::HASH_FILE).exists());
+        assert!(app
+            .persistence
+            .stored_steps(&finalized.id)
+            .expect("stored steps after upgrade")
+            .is_empty());
+
+        let archives = fs::read_dir(track_root.join(".archive/revisions"))
+            .expect("revision archive")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("revision entries");
+        assert_eq!(archives.len(), 1);
+        let archive = archives[0].path();
+        assert_eq!(
+            fs::read(archive.join(integrity::HASH_FILE)).expect("archived SHA256SUMS"),
+            hashes_before
+        );
+        for (relative, bytes) in certificate_before {
+            let file_name = Path::new(&relative)
+                .file_name()
+                .expect("certificate file name");
+            assert_eq!(
+                fs::read(archive.join("certificate").join(file_name))
+                    .expect("archived certificate byte snapshot"),
+                bytes
+            );
+        }
+
+        assert!(matches!(
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v11),
+            Err(AppError::Validation(_))
+        ));
+        assert_eq!(
+            fs::read_dir(track_root.join(".archive/revisions"))
+                .expect("unchanged revision archive")
+                .count(),
+            1
+        );
     }
 }

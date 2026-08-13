@@ -57,6 +57,27 @@ interface AppState {
   toast: ToastState | null;
 }
 
+export type WorkspaceScopedUiState = Pick<
+  AppState,
+  "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" |
+  "showNewTrack" | "query" | "trackFilter"
+> & { draftDirty: boolean };
+
+export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
+  return {
+    ...state,
+    track: null,
+    trackDraft: null,
+    activeStep: null,
+    trackTab: "overview",
+    scanResult: null,
+    showNewTrack: false,
+    query: "",
+    trackFilter: "all",
+    draftDirty: false
+  };
+}
+
 export const MAIN_NAVIGATION: ReadonlyArray<{ id: MainView; label: string; iconName: "dashboard" | "tracks" | "current" | "workspace" | "settings" }> = [
   { id: "dashboard", label: "Dashboard", iconName: "dashboard" },
   { id: "tracks", label: "Tracks", iconName: "tracks" },
@@ -73,6 +94,26 @@ export function missingProfileFields(profile: GlobalProfile): string[] {
     ["artworkTransparencyPolicy", "Artwork-Transparenzrichtlinie"], ["disclosureText", "Standard-Hinweistext"]
   ];
   return fields.filter(([key]) => typeof profile[key] !== "string" || String(profile[key]).trim() === "").map(([, label]) => label);
+}
+
+export interface WorkflowUpgradePresentation {
+  message: string;
+  action: "re-evaluate-track";
+}
+
+export function workflowUpgradePresentation(
+  track: Pick<TrackDetail, "status" | "workflowId" | "workflowVersion" | "certificate">,
+  current: Pick<WorkflowDefinitionDto, "id" | "version"> | null
+): WorkflowUpgradePresentation | null {
+  if (!current || (track.workflowId === current.id && track.workflowVersion === current.version)) return null;
+  const previous = `${track.workflowId} ${track.certificate.workflowVersion ?? track.workflowVersion}`;
+  const next = `${current.id} ${current.version}`;
+  return {
+    message: track.status === "FINALIZED"
+      ? `Finalized with workflow ${previous} / Current workflow ${next}`
+      : `Track uses workflow ${previous} / Current workflow ${next}`,
+    action: "re-evaluate-track"
+  };
 }
 
 const evidenceRoles: EvidenceRole[] = [
@@ -155,6 +196,22 @@ export class SunoDocumentationApp {
 
   private async enterWorkspace(workspace: WorkspaceSummary): Promise<void> {
     this.state.workspace = workspace;
+    // The native command has already switched its authoritative workspace.
+    // Clear every workspace-scoped selection before loading the new index so a
+    // track from the previous workspace can never be rendered or mutated here.
+    const { draftDirty, ...resetState } = resetWorkspaceScopedUiState({
+      track: this.state.track,
+      trackDraft: this.state.trackDraft,
+      activeStep: this.state.activeStep,
+      trackTab: this.state.trackTab,
+      scanResult: this.state.scanResult,
+      showNewTrack: this.state.showNewTrack,
+      query: this.state.query,
+      trackFilter: this.state.trackFilter,
+      draftDirty: this.draftDirty
+    });
+    Object.assign(this.state, resetState);
+    this.draftDirty = draftDirty;
     const loaded = await this.withBusy("Workspace wird eingelesen …", async () => {
       const [profile, tracks, workflow, globalEvidence] = await Promise.all([
         this.api.getProfile(), this.api.listTracks(), this.api.getWorkflow(), this.api.listGlobalEvidence()
@@ -377,6 +434,7 @@ export class SunoDocumentationApp {
     const track = this.state.track;
     if (!track) return this.emptyState("current", "Kein Track ausgewählt", "Wähle einen Track aus deiner Bibliothek.", "go-tracks", "Tracks öffnen");
     const tabs: Array<[TrackTab, string]> = [["overview", "Übersicht"], ["suno", "Suno"], ["artwork", "Artwork"], ["release", "Release"], ["evidence", "Evidence"], ["certificate", "Zertifikat"]];
+    const workflowUpgrade = workflowUpgradePresentation(track, this.state.workflow);
     return `<div class="track-page">
       <section class="track-hero">
         <div class="track-cover track-cover--hero">${escapeHtml(titleInitials(track.title))}<i></i></div>
@@ -384,7 +442,7 @@ export class SunoDocumentationApp {
         <div class="hero-progress"><strong>${track.progress}%</strong><span>dokumentiert</span><progress class="progress-track" max="100" value="${track.progress}" aria-label="Dokumentationsfortschritt ${track.progress} Prozent"></progress></div>
       </section>
       <nav class="track-tabs" aria-label="Track-Ansichten">${tabs.map(([id, label]) => `<button class="${this.state.trackTab === id ? "is-active" : ""}" data-track-tab="${id}">${label}</button>`).join("")}</nav>
-      <div class="track-content">${this.renderTrackTab(track)}</div>
+      <div class="track-content">${workflowUpgrade ? `<div class="policy-card">${icon("info")}<div><p class="overline">Workflow-Upgrade verfügbar</p><h4>${escapeHtml(workflowUpgrade.message)}</h4><p>Der bisherige Zertifikatssnapshot bleibt unverändert. Die Neubewertung verlangt aktuelle Dokumente, Prüfsummen und ein neues Zertifikat.</p></div><button class="button button--secondary" data-action="${workflowUpgrade.action}">Mit aktuellem Workflow neu bewerten</button></div>` : ""}${this.renderTrackTab(track)}</div>
     </div>`;
   }
 
@@ -812,6 +870,9 @@ export class SunoDocumentationApp {
         break;
       case "create-revision":
         if (window.confirm("Neue Revision anlegen? Der bisherige Certificate-/Manifest-Snapshot wird zuerst unter .archive/revisions gesichert.")) await this.runAction("Neue Revision wird angelegt …", () => this.api.createRevision(this.requireTrack().id));
+        break;
+      case "re-evaluate-track":
+        if (window.confirm("Track mit dem aktuellen Workflow neu bewerten? Ein finalisierter Snapshot wird zuerst unverändert als Revision archiviert; Dokumente, Prüfsummen und Zertifikat müssen danach neu erzeugt werden.")) await this.runAction("Workflow wird aktualisiert und neu bewertet …", () => this.api.reEvaluateTrack(this.requireTrack().id));
         break;
     }
   }

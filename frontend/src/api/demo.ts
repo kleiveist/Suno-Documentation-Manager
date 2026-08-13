@@ -425,6 +425,34 @@ export function createDemoApi(): DesktopApi {
       track.documents.current = false;
       refresh(track);
       return result(track, "Der bisherige Snapshot wurde archiviert und eine neue Revision angelegt.");
+    },
+    async reEvaluateTrack(trackId) {
+      await wait();
+      const track = get(trackId);
+      if (track.workflowId === WORKFLOW_ID && track.workflowVersion === WORKFLOW_VERSION) {
+        throw new Error("Der Track verwendet bereits die aktuelle Workflow-Version.");
+      }
+      const archived = track.status === "FINALIZED";
+      track.workflowId = WORKFLOW_ID;
+      track.workflowVersion = WORKFLOW_VERSION;
+      track.status = "ACTIVE";
+      track.certificate = { valid: false };
+      track.documents.current = false;
+      track.integrity = {
+        generated: false,
+        verified: false,
+        fileCount: 0,
+        verifiedCount: 0,
+        mismatchFiles: []
+      };
+      track.steps = [];
+      refresh(track);
+      return result(
+        track,
+        archived
+          ? "Der bisherige Snapshot wurde archiviert; die Neubewertung verwendet den aktuellen Workflow."
+          : "Die Neubewertung verwendet jetzt den aktuellen Workflow."
+      );
     }
   };
 }

@@ -91,3 +91,13 @@ def test_index_dry_run_does_not_normalize_files(monkeypatch, tmp_path) -> None:
 
     assert docs_index.main(_args(script, dry_run=True)) == 0
     assert normalized == []
+
+
+def test_executable_wrapper_is_invoked_directly(tmp_path) -> None:
+    wrapper = tmp_path / "PyGitIndex"
+    wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+
+    command = docs_index._command_for(wrapper, _args(wrapper, dry_run=True))
+
+    assert command == [str(wrapper), "--docs-dir", "docs", "--dry-run"]

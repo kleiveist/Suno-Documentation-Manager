@@ -51,6 +51,7 @@ export interface DesktopApi {
   finalizeTrack(trackId: string): Promise<ActionResult>;
   invalidateCertificate(trackId: string): Promise<ActionResult>;
   createRevision(trackId: string): Promise<ActionResult>;
+  reEvaluateTrack(trackId: string): Promise<ActionResult>;
 }
 
 interface TauriWindow extends Window {
@@ -221,6 +222,10 @@ class TauriDesktopApi implements DesktopApi {
   createRevision(trackId: string): Promise<ActionResult> {
     return command("create_revision", { trackId });
   }
+
+  reEvaluateTrack(trackId: string): Promise<ActionResult> {
+    return command("re_evaluate_track", { trackId });
+  }
 }
 
 export class DesktopCommandError extends Error {
@@ -246,6 +251,6 @@ export function toUserMessage(error: unknown): string {
   return "Die lokale Aktion konnte nicht abgeschlossen werden.";
 }
 
-export function createDesktopApi(): DesktopApi {
-  return isTauriRuntime() ? new TauriDesktopApi() : createDemoApi();
+export function createDesktopApi(target: Window = window): DesktopApi {
+  return isTauriRuntime(target) ? new TauriDesktopApi() : createDemoApi();
 }

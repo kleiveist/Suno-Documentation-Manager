@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DesktopCommandError, isTauriRuntime, toUserMessage } from "./desktop";
+const invokeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+
+import { createDesktopApi, DesktopCommandError, isTauriRuntime, toUserMessage } from "./desktop";
+
+beforeEach(() => invokeMock.mockReset());
 
 describe("error presentation", () => {
   it("presents structured, string and unknown errors in German UI-safe text", () => {
@@ -20,5 +26,15 @@ describe("runtime selection", () => {
   it("distinguishes Tauri from the clearly labeled browser demo", () => {
     expect(isTauriRuntime({} as Window)).toBe(false);
     expect(isTauriRuntime({ __TAURI_INTERNALS__: {} } as unknown as Window)).toBe(true);
+  });
+
+  it("maps workflow reevaluation to its narrow native command", async () => {
+    invokeMock.mockResolvedValue({ message: "ready for reevaluation" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await expect(api.reEvaluateTrack("track-1")).resolves.toEqual({
+      message: "ready for reevaluation"
+    });
+    expect(invokeMock).toHaveBeenCalledWith("re_evaluate_track", { trackId: "track-1" });
   });
 });
