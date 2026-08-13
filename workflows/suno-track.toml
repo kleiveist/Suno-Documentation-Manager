@@ -1,0 +1,504 @@
+schema_version = 1
+id = "suno-track"
+version = "1.0"
+name = "Suno Track Documentation"
+blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
+
+[[steps]]
+id = "track"
+order = 1
+name = "01 Track"
+required = true
+when = "always"
+description = "Track identity, dates, commercial intent, and workflow snapshot."
+
+[[steps]]
+id = "source"
+order = 2
+name = "02 Source"
+required = true
+when = "always"
+description = "External, own, and third-party audio declarations with conditional evidence."
+
+[[steps]]
+id = "suno"
+order = 3
+name = "03 Suno"
+required = true
+when = "always"
+description = "Suno model, project, plan, export, and project evidence."
+
+[[steps]]
+id = "human_work"
+order = 4
+name = "04 Human Work"
+required = true
+when = "always"
+description = "Lyrics source and only the confirmed human and post-export editing work."
+
+[[steps]]
+id = "artwork"
+order = 5
+name = "05 Artwork"
+required = true
+when = "always"
+description = "Artwork origin, actual production stages, evidence, and conditional content checks."
+
+[[steps]]
+id = "ai_transparency"
+order = 6
+name = "06 AI Transparency"
+required = true
+when = "ai_artwork"
+description = "AI artwork service, project transparency policy, and visible disclosure result when applicable."
+
+[[steps]]
+id = "release"
+order = 7
+name = "07 Release"
+required = true
+when = "always"
+description = "Final release assets, final artwork when applicable, and export facts."
+
+[[steps]]
+id = "evidence_licenses"
+order = 8
+name = "08 Evidence & Licenses"
+required = true
+when = "always"
+description = "Required evidence coverage and portable copies of selected license or subscription evidence."
+
+[[steps]]
+id = "integrity"
+order = 9
+name = "09 Integrity"
+required = true
+when = "always"
+description = "Current generated documents plus complete native SHA-256 generation and verification."
+
+[[steps]]
+id = "finalize"
+order = 10
+name = "10 Finalize"
+required = true
+when = "always"
+description = "Final blocking-deviation check and native certificate transaction."
+
+[[requirements]]
+key = "track.title"
+step_id = "track"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Tracktitel fehlt."
+
+[[requirements]]
+key = "track.production_start"
+step_id = "track"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Produktionsbeginn fehlt."
+
+[[requirements]]
+key = "track.production_end"
+step_id = "track"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Produktionsende fehlt."
+
+[[requirements]]
+key = "track.commercial_use_intended"
+step_id = "track"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die beabsichtigte kommerzielle Nutzung ist nicht bestätigt."
+
+[[requirements]]
+key = "profile.artist_name"
+step_id = "track"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der globale Künstlername fehlt."
+
+[[requirements]]
+key = "profile.suno_profile_name"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der globale Suno-Profilname fehlt."
+
+[[requirements]]
+key = "profile.suno_handle"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der globale Suno-Handle fehlt."
+
+[[requirements]]
+key = "profile.suno_plan"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der globale Suno-Tarif fehlt."
+
+[[requirements]]
+key = "profile.subscription_start_date"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Das Startdatum des globalen Suno-Abonnements fehlt."
+
+[[requirements]]
+key = "profile.artwork_transparency_policy"
+step_id = "track"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die globale Transparenzrichtlinie für AI-Artwork fehlt."
+
+[[requirements]]
+key = "profile.default_ai_image_service"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "ai_artwork"
+missing_message = "Der globale Standarddienst für AI-Bilder fehlt."
+
+[[requirements]]
+key = "source.external_audio_uploaded"
+step_id = "source"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Angabe zu extern hochgeladenem Audio fehlt."
+
+[[requirements]]
+key = "source.external_audio_details"
+step_id = "source"
+kind = "field"
+required = true
+when = "external_audio"
+missing_message = "Quelle und Rechteangaben für externes Audio fehlen."
+
+[[requirements]]
+key = "source.external_audio_file"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "external_audio"
+missing_message = "Die hochgeladene externe Audiodatei fehlt."
+evidence_role = "external_audio_file"
+
+[[requirements]]
+key = "source.external_audio_license"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "external_audio"
+missing_message = "Der Lizenznachweis für externes Audio fehlt."
+evidence_role = "external_audio_license"
+
+[[requirements]]
+key = "source.own_audio_uploaded"
+step_id = "source"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Angabe zu eigenem hochgeladenem Audio fehlt."
+
+[[requirements]]
+key = "source.own_audio_details"
+step_id = "source"
+kind = "field"
+required = true
+when = "own_audio"
+missing_message = "Quelle und Bestätigung für eigenes Audio fehlen."
+
+[[requirements]]
+key = "source.own_audio_file"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "own_audio"
+missing_message = "Die eigene hochgeladene Audiodatei fehlt."
+evidence_role = "own_audio_file"
+
+[[requirements]]
+key = "source.third_party_samples_uploaded"
+step_id = "source"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Angabe zu Samples Dritter fehlt."
+
+[[requirements]]
+key = "source.third_party_sample_details"
+step_id = "source"
+kind = "field"
+required = true
+when = "third_party_samples"
+missing_message = "Quelle und Rechteangaben für Samples Dritter fehlen."
+
+[[requirements]]
+key = "source.third_party_sample_license"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "third_party_samples"
+missing_message = "Der Lizenznachweis für Samples Dritter fehlt."
+evidence_role = "third_party_sample_license"
+
+[[requirements]]
+key = "source.third_party_sample_file"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "third_party_samples"
+missing_message = "Die hochgeladene Audiodatei mit Samples Dritter fehlt."
+evidence_role = "third_party_sample_file"
+
+[[requirements]]
+key = "suno.model"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Das verwendete Suno-Modell fehlt."
+
+[[requirements]]
+key = "suno.project_url"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Suno-Projekt-URL fehlt."
+
+[[requirements]]
+key = "suno.plan_at_creation"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der Suno-Tarif bei Erstellung fehlt."
+
+[[requirements]]
+key = "suno.final_export_date"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Das Datum des finalen Exports fehlt."
+
+[[requirements]]
+key = "suno.final_export"
+step_id = "suno"
+kind = "evidence"
+required = true
+when = "always"
+missing_message = "Der finale Suno-Export fehlt."
+evidence_role = "suno_final_export"
+
+[[requirements]]
+key = "human_work.lyrics_source"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Herkunft der Lyrics fehlt."
+
+[[requirements]]
+key = "human_work.human_lyrics_details"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "human_lyrics"
+missing_message = "Die Angaben zu menschlich erstellten Lyrics fehlen."
+
+[[requirements]]
+key = "human_work.human_editing_performed"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Angabe zur menschlichen Bearbeitung fehlt."
+
+[[requirements]]
+key = "human_work.human_editing_details"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "human_editing"
+missing_message = "Die tatsächlich ausgeführten menschlichen Bearbeitungsschritte fehlen."
+
+[[requirements]]
+key = "human_work.post_export_editing_performed"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Angabe zur Bearbeitung nach dem Export fehlt."
+
+[[requirements]]
+key = "human_work.post_export_editing_details"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "post_export_editing"
+missing_message = "Die Bearbeitungsschritte nach dem Export fehlen."
+
+[[requirements]]
+key = "artwork.origin"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Herkunft des Artworks fehlt."
+
+[[requirements]]
+key = "artwork.ai_original"
+step_id = "artwork"
+kind = "evidence"
+required = true
+when = "ai_artwork"
+missing_message = "Das unveränderte AI-Artwork-Original fehlt."
+evidence_role = "ai_artwork_original"
+
+[[requirements]]
+key = "artwork.final"
+step_id = "artwork"
+kind = "evidence"
+required = true
+when = "artwork_present"
+missing_message = "Das finale Artwork fehlt."
+evidence_role = "final_artwork"
+
+[[requirements]]
+key = "artwork.real_person"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "artwork_present"
+missing_message = "Die Angabe zur Darstellung einer realen Person fehlt."
+
+[[requirements]]
+key = "artwork.real_person_note"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "real_person"
+missing_message = "Die sachliche Notiz zur dargestellten realen Person fehlt."
+
+[[requirements]]
+key = "artwork.real_event"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "artwork_present"
+missing_message = "Die Angabe zur Darstellung eines realen Ereignisses fehlt."
+
+[[requirements]]
+key = "artwork.real_event_note"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "real_event"
+missing_message = "Die sachliche Notiz zum dargestellten realen Ereignis fehlt."
+
+[[requirements]]
+key = "artwork.trademark_or_logo"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "artwork_present"
+missing_message = "Die Angabe zu Marken oder Logos im Artwork fehlt."
+
+[[requirements]]
+key = "artwork.trademark_or_logo_note"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "trademark_or_logo"
+missing_message = "Die sachliche Notiz zur Marke oder zum Logo fehlt."
+
+[[requirements]]
+key = "ai_transparency.image_service"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "ai_artwork"
+missing_message = "Der verwendete AI-Bilddienst fehlt."
+
+[[requirements]]
+key = "ai_transparency.policy"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "ai_artwork"
+missing_message = "Die Transparenzrichtlinie für AI-Artwork fehlt."
+
+[[requirements]]
+key = "ai_transparency.disclosure_result"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "ai_artwork"
+missing_message = "Das Ergebnis der sichtbaren AI-Kennzeichnung fehlt."
+
+[[requirements]]
+key = "release.final_audio"
+step_id = "release"
+kind = "evidence"
+required = true
+when = "always"
+missing_message = "Die finale Release-Audiodatei fehlt."
+evidence_role = "release_wav"
+
+[[requirements]]
+key = "release.final_artwork"
+step_id = "release"
+kind = "evidence"
+required = true
+when = "artwork_present"
+missing_message = "Das finale Release-Cover fehlt."
+evidence_role = "final_artwork"
+
+[[requirements]]
+key = "evidence_licenses.portable_copy"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "commercial_use"
+missing_message = "Die portable Kopie des ausgewählten Abo-Nachweises fehlt im Track."
+evidence_role = "subscription_payment"
+
+[[requirements]]
+key = "integrity.documents_current"
+step_id = "integrity"
+kind = "generated_document"
+required = true
+when = "always"
+missing_message = "Mindestens ein Pflichtdokument fehlt oder ist nicht aktuell."
+
+[[requirements]]
+key = "integrity.hashes_verified"
+step_id = "integrity"
+kind = "hash_verification"
+required = true
+when = "always"
+missing_message = "Die SHA-256-Prüfung fehlt oder ist fehlgeschlagen."
+
+[[requirements]]
+key = "finalize.blocking_deviations_resolved"
+step_id = "finalize"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Mindestens eine blockierende Abweichung ist offen."

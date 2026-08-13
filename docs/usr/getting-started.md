@@ -1,0 +1,184 @@
+<!-- AUTO-GENERATED:backlink START -->
+[← Back](usr.md)
+<!-- AUTO-GENERATED:backlink END -->
+# Getting started with Suno Documentation Manager
+
+| Field | Value |
+| --- | --- |
+| Status | Active |
+| Owner | Project team |
+| Last review | 2026-08-13 |
+| Audience | Suno Documentation Manager users |
+| Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md) |
+
+## Purpose
+
+This guide explains how to open the local desktop application, create or select a workspace, enter reusable settings, and start documenting a track without exposing private data or overwriting existing evidence.
+
+## Scope
+
+### Included
+
+- first launch and workspace selection;
+- minimal global settings;
+- new-track creation and the ten-step navigation;
+- evidence import and missing-item feedback; and
+- reopening or scanning an existing workspace.
+
+### Excluded
+
+- building release packages;
+- accepting a legacy document as application-managed content;
+- detailed finalization and revision handling; and
+- legal advice about a track, license, or artwork.
+
+## Before you begin
+
+Choose a local folder that you can read and write and that can contain one child folder per track. Keep an independent backup appropriate for your music projects. Normal product use does not require an account, backend service, or internet connection.
+
+The application asks only for documentation facts. Do not enter credentials or unrelated personal data. A birthday, private telephone number, private email address, Google account, and other private account details are not required global fields.
+
+## Launch the application
+
+Open the installed desktop application. Contributors can launch a complete development instance from the repository root with:
+
+```sh
+python tools/control.py tauri run --foreground
+```
+
+Use the Tauri window for workspace and evidence operations. A standalone browser preview cannot perform the native file, SQLite, hashing, artwork, or certificate operations.
+
+## Create or open a workspace
+
+On first launch the application shows that no workspace is open and offers two native actions:
+
+- `Workspace auswählen` selects an existing local music-project folder.
+- `Neuen Workspace anlegen` creates a new local folder and initializes it as a workspace.
+
+The application canonicalizes the selected root before it creates or opens `<workspace>/.suno-doc/`. This hidden management folder holds the local SQLite index and reusable workspace evidence. It is not part of any track evidence set.
+
+Selecting a workspace does not authorize access outside that root. If the application reports a symbolic-link, traversal, permission, or collision error, choose a normal contained folder or correct its local permissions; do not bypass the check with a broader filesystem allowlist.
+
+## Complete reusable settings
+
+Open `Einstellungen` and enter the minimal defaults:
+
+| Setting | What to enter |
+| --- | --- |
+| Artist name | The artist label that should appear in track snapshots |
+| Suno profile name | The relevant public profile name |
+| Suno handle | The relevant public handle |
+| Suno plan | The default plan; confirm the actual plan for each track |
+| Suno subscription start date | The factual subscription start date |
+| Default commercial use intended | The normal intent; confirm it per track |
+| Default AI image service | The service used when artwork is AI-generated or AI-assisted |
+| AI artwork transparency policy | `Always add visible AI disclosure`, `Decide per artwork`, or `No automatic visible disclosure` |
+
+The project default transparency policy is `Always add visible AI disclosure`. This is a project transparency choice, not a statement that a particular watermark is universally required by law. The default disclosure text is `AI-assisted` and can be configured.
+
+Later changes to global settings do not rewrite a finalized track. Generated documents contain a snapshot of the values actually used for that track.
+
+## Register subscription evidence
+
+If you reuse a Suno subscription or payment document across production periods, register it once as global evidence. Record only the coverage information needed to select it. The source is preserved.
+
+When documenting a track, select the evidence that covers its production period. Before finalization, the application copies the selected file into the track evidence structure, calculates its hash, records `global_copy` provenance and the workspace source record ID, and includes those fields with the relative path in the manifest. The track therefore remains self-contained if the workspace index is later unavailable.
+
+## Create a track
+
+Open `Tracks`, choose the new-track action, and enter a title. Confirm the proposed contained folder name before creation. If a file or folder already occupies the destination, the application reports a collision and does not overwrite it.
+
+A new track begins as `DRAFT`. The application creates the standard directories but no empty WAV, MP3, MP4, image, PDF, or ZIP placeholders. Only imported real evidence fills evidence roles.
+
+## Follow the documentation steps
+
+Use the current-track view to work through:
+
+1. `01 Track`
+2. `02 Source`
+3. `03 Suno`
+4. `04 Human Work`
+5. `05 Artwork`
+6. `06 AI Transparency`
+7. `07 Release`
+8. `08 Evidence & Licenses`
+9. `09 Integrity`
+10. `10 Finalize`
+
+The application displays one task-oriented set of questions at a time. A negative controlling answer closes its branch. For example, answering `No` to external audio upload means source, ownership, license, and uploaded-file details for external audio are not requested. Answering `Yes` makes those details applicable.
+
+Record only work that occurred. Do not select arrangement, mixing, mastering, or another editing label unless it accurately describes confirmed work on this track.
+
+## Import evidence
+
+Use the native evidence picker from the relevant step:
+
+1. Select the original local file.
+2. Choose or confirm its evidence role.
+3. Review the proposed destination and any detected conflict.
+4. Confirm the copy.
+5. Check that the application reports the copied file, size, SHA-256 digest, and updated workflow state.
+
+The application copies evidence; it does not move or delete the source. A normal track import receives `managed_copy` provenance. It never silently replaces an existing destination. If a same-name file already exists, resolve the conflict explicitly instead of assuming that the files are identical.
+
+The provenance label in the evidence list distinguishes a managed import from a copied global record, a locally generated disclosure, or a file discovered in a historical folder. A role describes the file's purpose; it is not proof of how the file was created.
+
+## Read the dashboard
+
+The track dashboard emphasizes progress and concrete missing items. Step labels use these meanings:
+
+| Status | Meaning |
+| --- | --- |
+| `NOT RUN` | The step has no valid result yet. |
+| `PASS` | All applicable mandatory requirements in the step pass. |
+| `FAIL` | At least one evaluated requirement failed. |
+| `BLOCKED` | A prerequisite or deviation prevents completion. |
+| `N/A` | The item does not apply and a reason is stored. |
+| `NOT VERIFIED` | Imported historical information exists but has not been verified. |
+
+`FAIL`, `BLOCKED`, and `NOT VERIFIED` block finalization. A percentage is a navigation aid; it is not a certificate.
+
+## Reopen or scan a workspace
+
+Use `Workspace auswählen` to reopen the same root. The SQLite index restores mutable working state. Use the scan action to discover unindexed existing track folders.
+
+A scan never changes candidate track files. It adds conservative local index records so found tracks are visible, reports missing and unknown information, and records discovered evidence as `indexed_legacy` and `NOT VERIFIED`. Confirm separately before adopting current workspace profile data or replacing an unmanaged document. See [Legacy track import](../dev/legacy-track-import.md).
+
+If you explicitly remove indexed legacy evidence after review, the application moves a present file to `.archive/removals/<removal-id>/`, writes a `removal.json` audit record, and removes it from the index. It does not permanently delete the historical bytes, and a later scan does not re-add the archived path. There is no automatic restore action in version 0.1, so preserve the removal directory if you may need manual recovery.
+
+## Verification
+
+For a manual smoke check, use a temporary workspace containing no private or production data:
+
+1. Create the workspace and confirm `.suno-doc/` appears only inside it.
+2. Save the minimal global settings and close the application.
+3. Reopen the workspace and confirm the settings are restored.
+4. Create a track and confirm the standard directories exist with no fake evidence files.
+5. Import a disposable evidence file and confirm the source still exists.
+6. Attempt the same destination again and confirm that the application reports a collision.
+
+Executed results and outstanding manual checks are recorded in [ATP-0001](../atp/active/ATP-0001-workspace-creation-and-loading.md), [ATP-0002](../atp/active/ATP-0002-track-creation.md), and the relevant evidence ATP.
+
+## Troubleshooting
+
+- If no native dialog opens, confirm that you launched the Tauri application rather than only a browser preview.
+- If a workspace cannot be opened, verify local read/write permissions and that it is a directory.
+- If a path is rejected, remove traversal components or an escaping symbolic link; do not widen application permissions.
+- If an evidence import collides, compare the files and choose an explicit resolution. The application preserves both the source and existing destination.
+- If a historical track remains `NOT VERIFIED`, supply factual information or evidence; do not invent a value solely to increase progress.
+- Do not place a workspace where an untrusted process running as the same operating-system user can modify it concurrently. Version 0.1 rejects observed symbolic links but does not claim race-free protection against a path component swapped after validation.
+
+## Related documents
+
+- [Finalizing a track](finalizing-a-track.md)
+- [Track documentation model](../def/track-documentation-model.md)
+- [Workflow model](../def/workflow-model.md)
+- [Persistence and recovery](../def/persistence.md)
+- [Legacy track import](../dev/legacy-track-import.md)
+
+## Change log
+
+| Date | Change | Author |
+| --- | --- | --- |
+| 2026-08-13 | Explained evidence provenance and recoverable indexed-legacy removal. | Project team |
+| 2026-08-13 | Added the first-workspace and first-track guide. | Project team |

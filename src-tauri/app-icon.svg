@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Suno Documentation Manager icon</title>
+  <defs>
+    <linearGradient id="background" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3157d5" />
+      <stop offset="1" stop-color="#172033" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#background)" />
+  <path d="M128 148h256v216H128z" fill="#fff" opacity=".14" />
+  <path d="M164 112h184v72H164zM164 220h184v72H164zM164 328h184v72H164z" fill="#fff" />
+  <path d="M196 148h120M196 256h120M196 364h120" stroke="#3157d5" stroke-width="16" stroke-linecap="round" />
+</svg>

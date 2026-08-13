@@ -1,0 +1,63 @@
+# Project and backup archives
+/.archive/
+**/.archive/
+*.zip
+/.dist/
+/.report/
+/.generated/
+tools/.runtime/
+
+# Local and editor files
+*.kate-swp
+*.swp
+*.swo
+*~
+*.tmp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.obsidian/
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node, Vite and tests
+node_modules/
+dist/
+out/
+.vite/
+*.tsbuildinfo
+coverage/
+test-results/
+playwright-report/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Rust and Tauri
+target/
+src-tauri/gen/schemas/**
+!src-tauri/gen/schemas/
+!src-tauri/gen/schemas/.gitkeep
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+*.msi
+*.exe
+*.app
