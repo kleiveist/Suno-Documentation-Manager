@@ -199,7 +199,7 @@ Acceptance execution and remaining manual checks are recorded in the files under
 
 ## 📁 DEV
 - 🗂️ [Overview](docs/dev/dev.md)
-- 📝 [Acceptance execution report — 2026-08-13](docs/dev/acceptance-report.md)
+- 📝 [Acceptance execution report — 2026-08-14](docs/dev/acceptance-report.md)
 - 📝 [Legacy track import and managed-document adoption](docs/dev/legacy-track-import.md)
 - 📝 [Upstream template final acceptance — historical reference](docs/dev/template-final-acceptance.md)
 

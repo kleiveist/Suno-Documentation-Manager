@@ -12,7 +12,7 @@ The template final-acceptance page below is an inherited upstream historical rec
 <!-- AUTO-GENERATED:docs-index START -->
 
 ## 📄 Pages
-- 📝 [Acceptance execution report — 2026-08-13](acceptance-report.md)
+- 📝 [Acceptance execution report — 2026-08-14](acceptance-report.md)
 - 📝 [Legacy track import and managed-document adoption](legacy-track-import.md)
 - 📝 [Upstream template final acceptance — historical reference](template-final-acceptance.md)
 

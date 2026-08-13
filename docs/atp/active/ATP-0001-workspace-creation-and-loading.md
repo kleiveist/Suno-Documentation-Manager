@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automation and packaged offline observation |
 | Requirement | [`REQ-PER-001`](../../def/persistence.md#requirements-and-atp-mapping), [`REQ-ARC-003`](../../def/product-architecture.md#product-requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; Rust core tests and Chromium visual smoke review |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` host plus disposable Debian 13.2 VM; Rust core tests and installed-DEB offline observations |
 
 ## Purpose
 
@@ -71,7 +71,7 @@ Accept workspace onboarding when the application initializes its management area
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `REQ-PER-001` | Launch with no previously selected workspace. | The UI states that no workspace is open and offers native select and create actions. | Welcome view and both actions were present in the responsive Chromium smoke review. | PASS | [Central execution report](../../dev/acceptance-report.md) |
 | 2 | `REQ-PER-001` | Cancel the native create action. | No workspace is selected and no folder or database is created. | Not run | NOT RUN | — |
-| 3 | `REQ-PER-001` | Create a workspace below TD-01. | The selected root opens and contains one `.suno-doc/` management area with a usable `workspace.sqlite`. | A temporary workspace opened with a usable `.suno-doc/workspace.sqlite` and zero initial tracks. | PASS | Rust `workspace_creation_initializes_local_database`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 3 | `REQ-PER-001` | Create a workspace below TD-01. | The selected root opens and contains one `.suno-doc/` management area with a usable `workspace.sqlite`. | A temporary workspace opened with a usable `.suno-doc/workspace.sqlite` and zero initial tracks. | PASS | Rust `workspace_creation_initializes_local_database`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 4 | `REQ-ARC-003` | Compare TD-01's parent and sibling trees before and after creation. | No product-managed file is written outside the selected workspace. | Not run | NOT RUN | — |
 | 5 | `REQ-PER-001` | Save TD-04 in settings, close the app, disable network access, and reopen the same workspace. | The app opens offline and restores all saved values exactly. | Not run | NOT RUN | — |
 | 6 | `REQ-PER-001` | Inspect stored and rendered fields. | No birthday, telephone, private email, credentials, or unrelated account fields are requested or introduced. | Static model/form scan found only the documented profile facts; the frontend profile test asserts the required field set. | PASS | Frontend `missingProfileFields`; [central report](../../dev/acceptance-report.md) |
@@ -110,7 +110,7 @@ The acceptance owner records screenshots of the first-launch and reopened states
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

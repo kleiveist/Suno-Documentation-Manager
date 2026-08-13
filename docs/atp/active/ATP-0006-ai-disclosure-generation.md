@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-ART-002`](../../def/track-documentation-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; local Rust image fixture; network-isolated desktop run not performed |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; local Rust image fixture; packaged Debian app was launched offline, but the complete disclosure GUI path was not finished |
 
 ## Purpose
 
@@ -70,9 +70,9 @@ Accept disclosure generation when applicable artwork produces a separate visible
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `REQ-ART-002` | Open global policy defaults. | `Always add visible AI disclosure` is selected and described as project transparency policy, not universal law. | Not run | NOT RUN | — |
 | 2 | `REQ-ART-002` | Generate TD-02 with runtime network disabled. | Processing completes locally and creates a separate final candidate. | Not run | NOT RUN | — |
-| 3 | `REQ-ART-002` | Compare TD-01 before and after. | Path, size, and SHA-256 are unchanged; no write targets the original. | The local generator retained the original SHA-256 and created a distinct `AI_EDITED` output; a second call was rejected as a collision. | PASS | Rust `artwork_disclosure_preserves_original_and_creates_traceable_copy`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 3 | `REQ-ART-002` | Compare TD-01 before and after. | Path, size, and SHA-256 are unchanged; no write targets the original. | The local generator retained the original SHA-256 and created a distinct `AI_EDITED` output; a second call was rejected as a collision. | PASS | Rust `artwork_disclosure_preserves_original_and_creates_traceable_copy`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 4 | `REQ-ART-002` | Inspect the TD-02 output. | `AI-assisted` is visible, not clipped, and located at the configured bottom-right position. | Not run | NOT RUN | — |
-| 5 | `REQ-ART-002` | Repeat TD-02 from identical input and settings. | Output bytes or the documented deterministic pixel representation match according to the implementation contract. | Not run | NOT RUN | — |
+| 5 | `REQ-ART-002` | Repeat TD-02 from identical input and settings. | Output bytes or the documented deterministic pixel representation match according to the implementation contract. | Two renders from identical 640×640 pixels and custom text produced identical raw output; changed pixels were asserted to remain in the fixed bottom-right region. | PASS | Rust `disclosure_renderer_is_deterministic_and_bottom_right_only` |
 | 6 | `REQ-ART-002` | Generate TD-03. | The supported custom text appears at the fixed bottom-right placement and lineage metadata records the exact normalized text. | Not run | NOT RUN | — |
 | 7 | `REQ-ART-002` | Review `AI_USAGE.md` and `artwork_process.md`. | Both identify service, AI base image, human changes, policy, applied result, text, and final relative output. | Not run | NOT RUN | — |
 | 8 | `REQ-ART-002` | Set policy to `Decide per artwork`. | The track requires an explicit decision; no automatic claim or silent processing occurs. | Not run | NOT RUN | — |
@@ -83,7 +83,8 @@ Accept disclosure generation when applicable artwork produces a separate visible
 
 ```sh
 cd src-tauri
-cargo test artwork_disclosure_preserves_original
+cargo test artwork_disclosure_preserves_original_and_creates_traceable_copy
+cargo test disclosure_renderer_is_deterministic_and_bottom_right_only
 ```
 
 Expected Rust evidence is `tests::artwork_disclosure_preserves_original`. Attach pixel/digest comparison, offline processing, branch, and document-output results when executed.
@@ -96,19 +97,19 @@ The reviewer checks separate input/output paths, input digest preservation, visi
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | Network isolation, pixel/placement inspection, deterministic repeat, policy branches, and process-document review remain unexecuted. The version 0.1 contract intentionally supports bottom-right placement only. | High | Product team | Execute steps 1, 2, and 4–10 against the fixed bottom-right contract. | open |
+| DEV-01 | Complete GUI-path network isolation, visual clipping review, custom-output metadata review, policy branches, and process-document review remain unexecuted. The version 0.1 contract intentionally supports bottom-right placement only. | High | Product team | Execute steps 1, 2, 4, and 6–10 against the fixed bottom-right contract. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Original preservation (step 3) passed; nine mandatory acceptance steps remain `NOT RUN`.
+- Summary: Original preservation and deterministic fixed placement (steps 3 and 5) passed; eight mandatory acceptance steps remain `NOT RUN`.
 - Residual risks: Visibility, placement, offline operation, policy enforcement, and codec consistency are not accepted yet.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

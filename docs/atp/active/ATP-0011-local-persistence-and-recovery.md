@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-PER-002` through `REQ-PER-004`](../../def/persistence.md#requirements-and-atp-mapping), [`REQ-ARC-004`, `REQ-ARC-005`](../../def/product-architecture.md#product-requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; in-memory SQLite fixtures and static command/schema review |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; SQLite migration/recovery fixtures and static command/schema review |
 
 ## Purpose
 
@@ -73,9 +73,9 @@ Accept local persistence when Rust alone owns SQLite, supported migrations are t
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `REQ-PER-002` | Create and reopen TD-01. | Global values, tracks, workflow states, and evidence metadata round-trip exactly through native typed operations. | Not run | NOT RUN | — |
 | 2 | `REQ-PER-002` | Inspect frontend/native command contracts and database contents. | No frontend raw-SQL command exists; evidence binaries remain files rather than SQLite blobs. | Static review found only narrow typed commands; SQLite stores evidence metadata and portable paths, with binary evidence copied as files. | PASS | [Central execution report](../../dev/acceptance-report.md); native invoke/schema review |
-| 3 | `REQ-PER-003` | Open TD-02. | Ordered migrations complete transactionally, preserve data, and record the current schema version only after success. | Not run | NOT RUN | — |
-| 4 | `REQ-PER-003` | Open TD-03. | Migration rolls back, prior data/version remain recoverable, and a controlled error is returned. | Not run | NOT RUN | — |
-| 5 | `REQ-PER-003` | Open TD-04. | The application refuses to guess or downgrade and reports an unsupported-newer-schema error without mutation. | Schema version 99 was rejected; its version and sentinel table remained unchanged. | PASS | Rust `sqlite_migration_refuses_newer_schema_without_modifying_it`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 3 | `REQ-PER-003` | Open TD-02. | Ordered migrations complete transactionally, preserve data, and record the current schema version only after success. | Idempotent migration and the version-1 legacy provenance fixture preserved legacy data, backfilled conservative provenance, reached the current version, and remained stable on a second run. | PASS | Rust `sqlite_migrations_are_idempotent`; `sqlite_v1_migration_backfills_legacy_provenance_conservatively` |
+| 4 | `REQ-PER-003` | Open TD-03. | Migration rolls back, prior data/version remain recoverable, and a controlled error is returned. | A forced duplicate-column migration failure returned a controlled database error; `user_version`, evidence row, sentinel table/data, and preexisting columns were preserved while new migration columns were absent. | PASS | Rust `sqlite_failed_migration_rolls_back_columns_data_and_user_version` |
+| 5 | `REQ-PER-003` | Open TD-04. | The application refuses to guess or downgrade and reports an unsupported-newer-schema error without mutation. | Schema version 99 was rejected; its version and sentinel table remained unchanged. | PASS | Rust `sqlite_migration_refuses_newer_schema_without_modifying_it`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 6 | `REQ-ARC-005` | Inject a metadata-commit failure after a disposable evidence file is safely placed. | The app reports partial recoverable state without panic or source deletion; scan discovers the unindexed file. | Not run | NOT RUN | — |
 | 7 | `REQ-PER-004` | Remove only the disposable SQLite index for TD-05 and start recovery. | Scan proposes both tracks from portable content and never modifies their files. | Not run | NOT RUN | — |
 | 8 | `REQ-ARC-004` | Confirm reindex of TD-05. | Valid finalized snapshot is recovered after full verification; incomplete track retains exact missing/`NOT VERIFIED` facts. | Not run | NOT RUN | — |
@@ -87,6 +87,8 @@ Accept local persistence when Rust alone owns SQLite, supported migrations are t
 ```sh
 cd src-tauri
 cargo test sqlite_migrations_are_idempotent
+cargo test sqlite_v1_migration_backfills_legacy_provenance_conservatively
+cargo test sqlite_failed_migration_rolls_back_columns_data_and_user_version
 cargo test workspace_creation_initializes_local_database
 cargo test global_evidence_is_copied_portably
 cargo test legacy_scan_is_read_only_and_not_verified
@@ -102,19 +104,19 @@ The reviewer checks schema versions before/after, transaction rollback, controll
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | Full state round-trip, data-preserving and failed migrations, commit failure, index-loss recovery, and unknown-value review remain unexecuted. | High | Product team | Execute steps 1, 3, 4, and 6–9 with retained database/tree evidence. | open |
+| DEV-01 | Full state round-trip, metadata-commit failure, index-loss recovery, and unknown-value review remain unexecuted. | High | Product team | Execute steps 1 and 6–9 with retained database/tree evidence. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 2, 5, and 10 passed; seven mandatory steps remain `NOT RUN`.
+- Summary: Steps 2–5 and 10 passed; five mandatory steps remain `NOT RUN`.
 - Residual risks: Crash reconciliation and index-independent recovery are not accepted yet; facts absent from portable files remain unrecoverable by design.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

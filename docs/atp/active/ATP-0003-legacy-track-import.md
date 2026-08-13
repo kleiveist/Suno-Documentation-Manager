@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated legacy fixture execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated legacy fixture execution |
 | Requirement | [`REQ-LEG-001` through `REQ-LEG-003`](../../dev/legacy-track-import.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; disposable partial legacy track fixture |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; disposable partial legacy track fixtures |
 
 ## Purpose
 
@@ -110,7 +110,7 @@ The reviewer confirms zero scan-time mutations, honest unknowns, explicit mappin
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

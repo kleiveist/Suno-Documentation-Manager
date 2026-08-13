@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-TRK-001`, `REQ-TRK-002`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-WFL-002`](../../def/workflow-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; temporary Rust workspaces and Vitest workflow fixtures |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary Rust workspaces and Vitest workflow fixtures |
 
 ## Purpose
 
@@ -69,11 +69,11 @@ Accept track creation when a unique title produces exactly one contained `DRAFT`
 
 | Step | Requirement | Action | Expected result | Actual result | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `REQ-TRK-001` | Create TD-02 in a workspace without TD-03. | One contained track is created with lifecycle `DRAFT` and workflow ID/version. | A temporary track was created as `DRAFT` with workflow `suno-track` `1.0`. | PASS | Rust `track_creation_builds_exact_folders`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 1 | `REQ-TRK-001` | Create TD-02 in a workspace without TD-03. | One contained track is created with lifecycle `DRAFT` and workflow ID/version. | A temporary track was created as `DRAFT` with workflow `suno-track` `1.0`. | PASS | Rust `track_creation_builds_exact_folders`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 2 | `REQ-TRK-001` | Inspect the new tree. | `.archive/` and directories `01_RELEASE` through `06_CERTIFICATE` exist in the documented structure. | The Rust test asserted every documented directory in the temporary track. | PASS | Rust `track_creation_builds_exact_folders` |
 | 3 | `REQ-TRK-001` | Search the new tree for media, PDF, and ZIP files. | No empty or fake audio, video, image, PDF, or archive evidence exists. | Not run | NOT RUN | — |
 | 4 | `REQ-TRK-001` | Open the track facts. | TD-01 defaults appear as editable track values and later document generation can snapshot them. | Not run | NOT RUN | — |
-| 5 | `REQ-TRK-002` | Answer `No` to external, own, and third-party audio upload. | Dependent source, ownership, license, and file questions are hidden and excluded from the applicable requirement set. | Vitest confirmed hidden fields and exclusion from the applicable set for negative controllers. | PASS | Frontend `conditional fields` and `progress` suites; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 5 | `REQ-TRK-002` | Answer `No` to external, own, and third-party audio upload. | Dependent source, ownership, license, and file questions are hidden and excluded from the applicable requirement set. | Vitest confirmed hidden fields and exclusion from the applicable set for negative controllers. | PASS | Frontend `conditional fields` and `progress` suites; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 6 | `REQ-WFL-002` | Change external audio upload to `Yes`. | Source, ownership, license evidence, and uploaded-file requirements appear as missing items. | Vitest produced the four external-source, ownership, file, and license missing items. | PASS | Frontend `lists only applicable missing items` |
 | 7 | `REQ-TRK-002` | Answer `No` to human editing and post-export editing. | Specific editing fields are hidden and no generic arrangement, mixing, or mastering claim is selected. | Not run | NOT RUN | — |
 | 8 | `REQ-WFL-002` | Declare AI-assisted artwork and then human-only artwork in separate runs. | AI evidence/disclosure requirements appear only for the AI-assisted run; the whole AI Transparency step can be stored as N/A for the human-only run only with a reason. | Not run | NOT RUN | — |
@@ -111,7 +111,7 @@ Record the relative tree, initial view model, branch-specific missing items, col
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

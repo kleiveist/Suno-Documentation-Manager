@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution; packaged offline path not run |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automation plus packaged offline launch/dialog observations; complete GUI workflow not finished |
 | Requirement | [`REQ-ARC-001`](../../def/product-architecture.md#product-requirements-and-atp-mapping) and the integrated requirements referenced by ATP-0001 through ATP-0012 |
-| Tested commit/build | Product `0.1.0`; Linux DEB/RPM built; exact artifact digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; native core integration and frontend tests; no packaged network isolation |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; exact DEB/RPM digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` host; disposable Debian 13.2 KDE/Wayland VM with NIC down; installed DEB plus native core/frontend tests |
 
 ## Purpose
 
@@ -69,7 +69,7 @@ Accept the version 0.1 integrated product when a user can create a workspace and
 | Step | Requirement | Action | Expected result | Actual result | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `REQ-ARC-001` | Disable network, launch the identified packaged app, and observe connections. | App starts with no backend, local HTTP sidecar, telemetry, remote API, or required connection. | Not run | NOT RUN | — |
-| 2 | ATP-0001 | Create a new workspace and save TD-01. | Local management area initializes and settings persist. | The native integration fixture created the workspace, initialized SQLite, and saved a complete synthetic profile. | PASS | Rust `end_to_end_documentation_workflow_creates_portable_certificate`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 2 | ATP-0001 | Create a new workspace and save TD-01. | Local management area initializes and settings persist. | The native integration fixture created the workspace, initialized SQLite, and saved a complete synthetic profile. | PASS | Rust `end_to_end_documentation_workflow_creates_portable_certificate`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 3 | ATP-0002 | Create TD-02 and complete conditional questions truthfully. | Standard tree exists, only relevant questions appear, and concrete missing items update. | Native creation produced the standard tree; frontend fixtures verified relevant conditional fields and concrete missing-item updates. | PASS | Rust end-to-end plus frontend `conditional fields`/`missing requirements` suites |
 | 4 | ATP-0005 | Import TD-03 through native pickers. | Sources remain unchanged; contained copies, roles, sizes, hashes, and workflow reevaluation succeed. | Not run | NOT RUN | — |
 | 5 | ATP-0004 | Generate all required documents. | Versioned factual outputs exist, contain track snapshots, and have no legal guarantee. | The native path generated and freshness-checked the complete eight-file version `1.0` document set. | PASS | Rust end-to-end test; static document disclaimer review |
@@ -105,19 +105,19 @@ Attach the identified artifact, network-isolation method, connection observation
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | The mandatory packaged, network-isolated desktop flow was not run; native picker, restart, copied-folder recovery, and runtime connection observations remain open. | High | Product team | Install one built Linux package and execute steps 1, 4, and 10–12 while offline with retained evidence. | open |
+| DEV-01 | The installed DEB launched with the VM NIC down and native workspace/evidence dialogs plus restart were observed, but the mandatory uninterrupted GUI track flow, copied-folder verification, and complete runtime observation were not finished. | High | Product team | Repeat steps 1, 4, and 10–12 as one clean finalized workflow with retained evidence. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
 - Summary: Core steps 2, 3, and 5–9 passed; five mandatory packaged/offline steps remain `NOT RUN`.
-- Residual risks: The packaged desktop may still differ from the tested native core path; the focused ATP gaps remain open.
+- Residual risks: The packaged app starts offline, but the full packaged happy path and portable-copy proof remain open.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

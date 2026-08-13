@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-HSH-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; native disposable track trees |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; native disposable track trees |
 
 ## Purpose
 
@@ -68,7 +68,7 @@ Accept integrity handling when every required current track file is listed once,
 
 | Step | Requirement | Action | Expected result | Actual result | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `REQ-HSH-001` | Generate hashes for TD-01 and TD-02. | `03_DOCUMENTATION/SHA256SUMS.txt` is created by native code. | Native Rust generation created the main hash list in a disposable track. | PASS | Rust `hash_generation_verifies_exact_set_and_detects_added_file`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 1 | `REQ-HSH-001` | Generate hashes for TD-01 and TD-02. | `03_DOCUMENTATION/SHA256SUMS.txt` is created by native code. | Native Rust generation created the main hash list in a disposable track. | PASS | Rust `hash_generation_verifies_exact_set_and_detects_added_file`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 2 | `REQ-HSH-001` | Compare listed paths with the expected TD-01 set. | Every included regular file appears exactly once and the count matches. | The test asserted an exact two-file current set and a matching count; parser code rejects duplicate paths. | PASS | Rust integrity and certificate parser tests |
 | 3 | `REQ-HSH-001` | Search for every TD-02 sentinel and excluded prefix. | No excluded file, hash list self-entry, certificate, archive, summary, or workspace management data appears. | Not run | NOT RUN | — |
 | 4 | `REQ-HSH-001` | Inspect path format. | Every path is normalized and relative to the track root; no local absolute path exists. | Native entries were emitted from stripped track-root paths and accepted by the strict relative-path parser. | PASS | Rust `hash_generation_verifies_exact_set_and_detects_added_file`; static containment review |
@@ -76,14 +76,15 @@ Accept integrity handling when every required current track file is listed once,
 | 6 | `REQ-HSH-001` | Run the optional independent check from the track root. | `sha256sum -c 03_DOCUMENTATION/SHA256SUMS.txt` accepts the format and reports each test file valid. | Not run | NOT RUN | — |
 | 7 | `REQ-HSH-001` | Apply TD-03 and verify again without regenerating. | The changed path is identified, result is `FAIL`, and finalization becomes blocked. | Not run | NOT RUN | — |
 | 8 | `REQ-HSH-001` | Remove one listed disposable file and verify again. | The missing path is identified and the result blocks finalization. | Not run | NOT RUN | — |
-| 9 | `REQ-HSH-001` | Regenerate after intentionally accepting the new working revision. | The new set is written atomically, reread, and verified; partial output is not exposed. | Not run | NOT RUN | — |
+| 9 | `REQ-HSH-001` | Regenerate after intentionally accepting the new working revision. | The new set is written atomically, reread, and verified; partial output is not exposed. | Hash generation published a newly calculated exact set through the atomic-write helper, immediately reread and verified it, while atomic-write failure fixtures preserved the prior destination and cleaned temporary state. | PASS | Rust `hash_generation_verifies_exact_set_and_detects_added_file`; `atomic_writes_publish_complete_bytes_and_never_clobber_new_files`; `atomic_and_copy_failures_preserve_existing_state_and_clean_temporaries` |
 | 10 | `REQ-HSH-001` | Verify TD-04 from its new root. | Root-relative entries remain valid without editing the list. | Not run | NOT RUN | — |
 
 ## Automated checks
 
 ```sh
 cd src-tauri
-cargo test hash_generation_and_verification_detect_changes
+cargo test hash_generation_verifies_exact_set_and_detects_added_file
+cargo test hash_verification_detects_changed_deleted_and_added_files
 ```
 
 Expected Rust evidence is `tests::hash_generation_and_verification_detect_changes`.
@@ -102,19 +103,19 @@ Attach the expected/actual set comparison, native counts, mismatch output, moved
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | The full exclusion sentinel matrix, independent CLI check, changed/missing listed files, accepted regeneration, and copied-root verification remain unexecuted. | Medium | Product team | Execute steps 3 and 6–10 with retained manifests and command output. | open |
+| DEV-01 | The full exclusion sentinel matrix, independent CLI check, compound changed/missing-file ATP steps, and copied-root verification remain unexecuted. | Medium | Product team | Execute steps 3, 6–8, and 10 with retained manifests and command output. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 2, 4, and 5 passed; six mandatory steps remain `NOT RUN`.
-- Residual risks: Missing-file and portability behavior are implemented but not accepted through the specified fixtures.
+- Summary: Steps 1, 2, 4, 5, and 9 passed; five mandatory steps remain `NOT RUN`.
+- Residual risks: Independent verification, compound mismatch reporting, and portability remain unaccepted through the specified fixtures.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

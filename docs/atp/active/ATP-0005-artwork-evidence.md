@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-EVD-001`, `REQ-ART-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; temporary native image/evidence fixtures |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary native image/evidence fixtures |
 
 ## Purpose
 
@@ -76,7 +76,7 @@ Accept artwork evidence when real files are copied into contained roles, origina
 | 5 | `REQ-EVD-001` | Attempt TD-04 as artwork. | Type validation rejects the file with a controlled error and creates no evidence record. | A `.png` containing plain-text bytes was rejected by signature validation before copy/indexing. | PASS | Rust `artwork_import_uses_documented_role_naming`; [central report](../../dev/acceptance-report.md) |
 | 6 | `REQ-ART-001` | Model an AI original followed directly by a final output. | AI-edited and human-edited intermediate stages are not required. | Not run | NOT RUN | — |
 | 7 | `REQ-ART-001` | Model the full TD-01/TD-03 production sequence. | Present stages use `AI_ORIGINAL`, optional `AI_EDITED` where supplied, `EDITED`, and `FINAL` roles in order. | Not run | NOT RUN | — |
-| 8 | `REQ-ART-001` | Answer `No` to each TD-05 content check. | Each branch ends without unrelated follow-up requirements. | Not run | NOT RUN | — |
+| 8 | `REQ-ART-001` | Answer `No` to each TD-05 content check. | Each branch ends without unrelated follow-up requirements. | Native patch normalization set all three declarations to `false`, cleared their stale notes, and did not create unrelated conditional requirements. | PASS | Rust `track_patches_clear_values_from_inactive_conditional_branches`; frontend conditional-field tests |
 | 9 | `REQ-ART-001` | Answer `Yes` separately for real person, real event, and trademark/logo. | A factual note and configured evidence become applicable; no legal result is generated. | Not run | NOT RUN | — |
 | 10 | `REQ-EVD-001` | Remove an imported disposable role through the product action. | Only the explicitly selected managed evidence is affected according to confirmation; the original source remains untouched and workflow reevaluates. | Not run | NOT RUN | — |
 
@@ -99,19 +99,19 @@ Evidence includes source and destination digests, relative paths, role metadata,
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | Native picker use, optional/full stage sequences, content-declaration branches, and product removal remain unexecuted. | Medium | Product team | Execute steps 1 and 6–10 with retained UI and file metadata evidence. | open |
+| DEV-01 | Native picker use, optional/full stage sequences, positive content-declaration branches, and product removal remain unexecuted. | Medium | Product team | Execute steps 1, 6, 7, 9, and 10 with retained UI and file metadata evidence. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 2–5 passed; six mandatory steps remain `NOT RUN`.
+- Summary: Steps 2–5 and 8 passed; five mandatory steps remain `NOT RUN`.
 - Residual risks: Native picker behavior, content declarations, removal, and platform decoder differences are not accepted yet.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

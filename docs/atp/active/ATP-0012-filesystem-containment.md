@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-ARC-002`, `REQ-ARC-003`](../../def/product-architecture.md#product-requirements-and-atp-mapping), [`REQ-LEG-004`](../../dev/legacy-track-import.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; temporary workspaces with Unix symbolic-link support |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary workspaces with Unix symbolic-link support |
 
 ## Purpose
 
@@ -78,7 +78,7 @@ No symbolic-link path is intentionally supported for product-managed operations,
 
 | Step | Requirement | Action | Expected result | Actual result | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `REQ-ARC-003` | Create/open a normal contained workspace and track. | Canonical roots are accepted and named operations reach only calculated contained destinations. | Native temporary workspace and track creation succeeded through calculated contained roots. | PASS | Rust workspace, track, and end-to-end tests; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 1 | `REQ-ARC-003` | Create/open a normal contained workspace and track. | Canonical roots are accepted and named operations reach only calculated contained destinations. | Native temporary workspace and track creation succeeded through calculated contained roots. | PASS | Rust workspace, track, and end-to-end tests; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 2 | `REQ-ARC-003` | Submit each TD-01 value through every relevant typed path-bearing use case. | Each escape is rejected before I/O; outside sentinels and workspace state remain unchanged. | Not run | NOT RUN | — |
 | 3 | `REQ-ARC-003` | Submit TD-02. | Absolute injected paths are rejected; portable records never store them. | The contained-path test rejected a native absolute path; integrated evidence and manifest assertions contained only track-relative portable paths and no workspace root. | PASS | Rust `safe_path_rejects_traversal_and_absolute_paths` and end-to-end manifest assertions |
 | 4 | `REQ-LEG-004` | Scan/import/write through TD-03. | An escaping symbolic link is rejected without reading or writing its outside target. | Unix tests rejected an escaping path component and a symlinked `.suno-doc`; no outside database was created. | PASS | Rust `safe_path_rejects_symlink_escape` and `persistence_rejects_symlinked_admin_directory` |
@@ -96,8 +96,9 @@ No symbolic-link path is intentionally supported for product-managed operations,
 cd src-tauri
 cargo test safe_path_rejects_traversal
 cargo test safe_path_rejects_symlink_escape
-cargo test atomic_write_replaces_complete_file
-cargo test evidence_import_validates_type_and_rejects_collision
+cargo test atomic_writes_publish_complete_bytes_and_never_clobber_new_files
+cargo test atomic_and_copy_failures_preserve_existing_state_and_clean_temporaries
+cargo test evidence_import_validates_type_preserves_source_and_rejects_collision
 ```
 
 Static review commands from the repository root:
@@ -128,7 +129,7 @@ Attach platform details, before/after sentinel hashes, path-case matrix, symboli
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

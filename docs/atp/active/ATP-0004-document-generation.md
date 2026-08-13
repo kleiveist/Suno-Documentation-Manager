@@ -8,11 +8,11 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-13 |
-| Executed | 2026-08-13 — partial automated execution |
+| Last review | 2026-08-14 |
+| Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-DOC-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-PER-006`](../../def/persistence.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; unversioned source tree; Linux package digests in the central report |
-| Environment | Linux `7.0.8-1-cachyos` `x86_64`; native temporary end-to-end fixture |
+| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; native disposable document/adoption fixtures |
 
 ## Purpose
 
@@ -69,22 +69,23 @@ Accept document generation when identical normalized inputs produce identical by
 
 | Step | Requirement | Action | Expected result | Actual result | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `REQ-DOC-001` | Generate documents for TD-01. | All required outputs under `02_SUNO`, `03_DOCUMENTATION`, `04_LICENSES`, and `05_ARTWORK` exist as text files. | The native end-to-end test generated a current set; freshness verification reads and compares all eight required files. | PASS | Rust `end_to_end_documentation_workflow_creates_portable_certificate`; [final suite](../../../.report/test-report-20260813-144834-suite-all-ok.md) |
+| 1 | `REQ-DOC-001` | Generate documents for TD-01. | All required outputs under `02_SUNO`, `03_DOCUMENTATION`, `04_LICENSES`, and `05_ARTWORK` exist as text files. | The native end-to-end test generated a current set; freshness verification reads and compares all eight required files. | PASS | Rust `end_to_end_documentation_workflow_creates_portable_certificate`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 2 | `REQ-DOC-001` | Review TD-01 output. | Negative source/editing answers are factual; no arrangement, mixing, mastering, or copyright guarantee is invented. | Not run | NOT RUN | — |
 | 3 | `REQ-DOC-001` | Generate TD-02. | Applicable source, human-work, AI, artwork, and disclosure facts appear with evidence references. | Not run | NOT RUN | — |
-| 4 | `REQ-DOC-001` | Generate a second time from identical normalized TD-02 input. | Every managed output is byte-identical and ordering is stable. | Not run | NOT RUN | — |
+| 4 | `REQ-DOC-001` | Generate a second time from identical normalized TD-02 input. | Every managed output is byte-identical and ordering is stable. | All eight managed outputs matched committed golden bytes, then a second generation matched the first byte for byte. | PASS | Rust `all_documents_match_golden_bytes_and_exclude_forbidden_content` |
 | 5 | `REQ-DOC-001` | Apply TD-03 and regenerate without changing the track snapshot. | The track's snapshotted artist and plan remain unchanged in output. | Not run | NOT RUN | — |
 | 6 | `REQ-DOC-001` | Change a confirmed track input. | Affected documents become stale until regeneration; unaffected documents retain their expected state. | Not run | NOT RUN | — |
-| 7 | `REQ-PER-006` | Inspect every generated path reference. | Paths are relative to the track root and contain no local absolute path. | Not run | NOT RUN | — |
-| 8 | `REQ-DOC-001` | Attempt generation over TD-04. | Generation stops and requests explicit adoption; sentinel content remains unchanged. | Not run | NOT RUN | — |
-| 9 | `REQ-DOC-001` | Confirm adoption in a fresh fixture. | The sentinel is backed up below `.archive/` before an atomic managed write succeeds. | Not run | NOT RUN | — |
-| 10 | `REQ-DOC-001` | Scan generated prose for prohibited certification or legal-guarantee claims. | No invented legality, ownership, governmental certification, or guaranteed-noninfringement statement exists. | Not run | NOT RUN | — |
+| 7 | `REQ-PER-006` | Inspect every generated path reference. | Paths are relative to the track root and contain no local absolute path. | Golden outputs were generated from portable evidence paths; private fixture values including an absolute home path were asserted absent from the complete output set. | PASS | Rust `all_documents_match_golden_bytes_and_exclude_forbidden_content` |
+| 8 | `REQ-DOC-001` | Attempt generation over TD-04. | Generation stops and requests explicit adoption; sentinel content remains unchanged. | Generation without adoption returned `AdoptionRequired`; the exact binary sentinel remained unchanged and no other managed output was written. | PASS | Rust `adopt_existing_false_leaves_unmanaged_sentinel_unchanged` |
+| 9 | `REQ-DOC-001` | Confirm adoption in a fresh fixture. | The sentinel is backed up below `.archive/` before an atomic managed write succeeds. | Confirmed adoption archived the exact sentinel bytes under `.archive/adoptions/` before the managed golden replacement appeared. | PASS | Rust `adopt_existing_true_archives_exact_bytes_before_managed_replacement` |
+| 10 | `REQ-DOC-001` | Scan generated prose for prohibited certification or legal-guarantee claims. | No invented legality, ownership, governmental certification, or guaranteed-noninfringement statement exists. | The combined eight-file golden output was scanned against the prohibited-claim list; no forbidden claim was present. | PASS | Rust `all_documents_match_golden_bytes_and_exclude_forbidden_content` |
 
 ## Automated checks
 
 ```sh
 cd src-tauri
-cargo test document_generation_is_deterministic_and_requires_adoption
+cargo test all_documents_match_golden_bytes_and_exclude_forbidden_content
+cargo test adopt_existing
 ```
 
 Expected Rust evidence is `tests::document_generation_is_deterministic_and_requires_adoption`. Attach golden-output or deterministic-comparison results when executed.
@@ -97,19 +98,19 @@ Evidence includes the template version, normalized fixture, two output-tree dige
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | Golden prose, repeated byte comparison, snapshot/staleness changes, complete adoption, and prohibited-claim fixture scans were not executed. | Medium | Product team | Execute steps 2–10 with retained output-tree digests and adoption backup evidence. | open |
+| DEV-01 | Negative-only prose review, global-profile snapshot stability, and stale-input propagation remain unexecuted as complete ATP fixtures. | Medium | Product team | Execute steps 2, 3, 5, and 6 with retained output-tree digests. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Step 1 passed through the native integrated path; nine mandatory steps remain `NOT RUN`.
-- Residual risks: Determinism and archive-before-adoption behavior have implementation support but no complete acceptance fixture.
+- Summary: Steps 1, 4, and 7–10 passed; four mandatory steps remain `NOT RUN`.
+- Residual risks: Negative-only prose, snapshot stability, and stale-input propagation still require complete acceptance fixtures.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-13 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents
