@@ -17,12 +17,14 @@ import {
   type GlobalProfile,
   type ScanResult,
   type StepId,
+  type SubscriptionBillingCycle,
   type TrackDetail,
   type TrackFields,
   type TrackSummary,
   type WorkflowDefinitionDto,
   type WorkspaceSummary
 } from "./domain/types";
+import { subscriptionCoverageEnd } from "./domain/subscription";
 import { escapeHtml, formatBytes, formatDate, titleInitials } from "./ui/format";
 import { icon } from "./ui/icons";
 
@@ -54,13 +56,14 @@ interface AppState {
   busyLabel: string;
   sidebarOpen: boolean;
   showNewTrack: boolean;
+  showSubscriptionEvidence: boolean;
   toast: ToastState | null;
 }
 
 export type WorkspaceScopedUiState = Pick<
   AppState,
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" |
-  "showNewTrack" | "query" | "trackFilter"
+  "showNewTrack" | "showSubscriptionEvidence" | "query" | "trackFilter"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -72,10 +75,15 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     trackTab: "overview",
     scanResult: null,
     showNewTrack: false,
+    showSubscriptionEvidence: false,
     query: "",
     trackFilter: "all",
     draftDirty: false
   };
+}
+
+export function shouldIgnoreModalBackdropClick(isBackdrop: boolean, isDirectClick: boolean): boolean {
+  return isBackdrop && !isDirectClick;
 }
 
 export const MAIN_NAVIGATION: ReadonlyArray<{ id: MainView; label: string; iconName: "dashboard" | "tracks" | "current" | "workspace" | "settings" }> = [
@@ -150,6 +158,7 @@ export class SunoDocumentationApp {
     busyLabel: "",
     sidebarOpen: false,
     showNewTrack: false,
+    showSubscriptionEvidence: false,
     toast: null
   };
 
@@ -206,6 +215,7 @@ export class SunoDocumentationApp {
       trackTab: this.state.trackTab,
       scanResult: this.state.scanResult,
       showNewTrack: this.state.showNewTrack,
+      showSubscriptionEvidence: this.state.showSubscriptionEvidence,
       query: this.state.query,
       trackFilter: this.state.trackFilter,
       draftDirty: this.draftDirty
@@ -271,7 +281,7 @@ export class SunoDocumentationApp {
           ${this.renderTopbar()}
           <div class="view-shell">${view}</div>
         </main>
-        ${this.state.showNewTrack ? this.renderNewTrackDialog() : ""}
+        ${this.state.showNewTrack ? this.renderNewTrackDialog() : this.state.showSubscriptionEvidence ? this.renderSubscriptionEvidenceDialog() : ""}
         ${this.renderToast()}
         ${this.state.busy ? `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>` : ""}
       </div>`;
@@ -353,6 +363,26 @@ export class SunoDocumentationApp {
         ${this.dateField("productionStartDate", "Produktionsstart", new Date().toISOString().slice(0, 10), true)}
         <label class="toggle-row"><span><strong>Kommerzielle Nutzung vorgesehen</strong><small>Wird als Track-Snapshot gespeichert.</small></span><input type="checkbox" name="commercialUseIntended" ${this.state.profile.defaultCommercialUse ? "checked" : ""}><i></i></label>
         <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("plus")} Track anlegen</button></div>
+      </form>
+    </section></div>`;
+  }
+
+  private renderSubscriptionEvidenceDialog(): string {
+    const coverageStart = new Date().toISOString().slice(0, 8) + "01";
+    const coverageEnd = subscriptionCoverageEnd(coverageStart, "monthly") ?? "";
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal subscription-evidence-modal" role="dialog" aria-modal="true" aria-labelledby="subscription-evidence-title" data-modal-panel>
+      <div class="modal-head"><div><p class="overline">Wiederverwendbarer Nachweis</p><h2 id="subscription-evidence-title">Suno-Abo-Nachweis registrieren</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
+      <form id="subscription-evidence-form" class="form-stack">
+        <fieldset class="billing-cycle-field"><legend>Bezahlrhythmus *</legend><div>
+          <label><input type="radio" name="billingCycle" value="monthly" checked><span><strong>Monatlich</strong><small>Ein Kalendermonat ab dem Startdatum</small></span></label>
+          <label><input type="radio" name="billingCycle" value="annual"><span><strong>Jährlich</strong><small>Zwölf Kalendermonate ab dem Startdatum</small></span></label>
+        </div></fieldset>
+        <div class="field-grid two-col">
+          ${this.dateField("coverageStart", "Beginn laut Rechnung", coverageStart, true)}
+          <label class="field"><span class="field-label">Automatisch abgedeckt bis</span><input type="date" name="coverageEnd" value="${coverageEnd}" readonly aria-readonly="true"></label>
+        </div>
+        <div class="evidence-guidance">${icon("info")}<p>Übernimm den tatsächlichen Beginn vom Beleg. Das Enddatum wird bis zum Tag vor der nächsten Zahlung berechnet; der Inhalt der Datei wird nicht automatisch ausgelesen. Pro Registrierung wird genau eine Rechnung oder ein Beleg ausgewählt.</p></div>
+        <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("upload")} Datei auswählen und registrieren</button></div>
       </form>
     </section></div>`;
   }
@@ -689,7 +719,7 @@ export class SunoDocumentationApp {
         <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
         <div class="form-save settings-save"><span>${icon("shield")} Stammdaten verbleiben in der lokalen Workspace-Datenbank.</span><button class="button button--primary" type="submit">${icon("check")} Einstellungen speichern</button></div>
       </form>
-      <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere Rechnungen einmal und ordne den passenden Produktionszeitraum einem Track zu.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
+      <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
         ${this.state.globalEvidence.length ? `<div class="global-evidence-list">${this.state.globalEvidence.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globalen Nachweis entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
       </section>
     </div>`;
@@ -738,7 +768,10 @@ export class SunoDocumentationApp {
     const target = event.target as HTMLElement;
     const button = target.closest<HTMLElement>("button, [data-action], [data-view], [data-track-open], [data-step-open], [data-track-tab]");
     if (!button) return;
-    if (button.closest("[data-modal-panel]") && target === button.closest("[data-modal-panel]")) return;
+    if (shouldIgnoreModalBackdropClick(
+      button.matches('.modal-backdrop[data-action="close-modal"]'),
+      target === button
+    )) return;
 
     const view = button.dataset.view as MainView | undefined;
     if (view) {
@@ -842,12 +875,13 @@ export class SunoDocumentationApp {
           this.showToast("info", "Zuerst Stammdaten vervollständigen", `Für einen unveränderlichen Track-Snapshot fehlen: ${missing.join(", ")}.`);
           this.render();
         } else {
+          this.state.showSubscriptionEvidence = false;
           this.state.showNewTrack = true;
           this.render();
         }
         break;
       }
-      case "close-modal": this.state.showNewTrack = false; this.render(); break;
+      case "close-modal": this.state.showNewTrack = false; this.state.showSubscriptionEvidence = false; this.render(); break;
       case "open-sidebar": this.state.sidebarOpen = true; this.render(); break;
       case "close-sidebar": this.state.sidebarOpen = false; this.render(); break;
       case "dismiss-toast": this.state.toast = null; this.render(); break;
@@ -858,7 +892,7 @@ export class SunoDocumentationApp {
         if (window.confirm("Treffen die aktuellen Workspace-Stammdaten auf diesen historischen Track zu? Sie werden als Track-Snapshot übernommen.")) await this.trackMutation("Stammdaten werden als Legacy-Snapshot übernommen …", () => this.api.adoptLegacyProfile(this.requireTrack().id), "Legacy-Snapshot übernommen");
         break;
       case "import-evidence": await this.chooseEvidenceRole(); break;
-      case "import-global-evidence": await this.importGlobalEvidence(); break;
+      case "import-global-evidence": this.state.showNewTrack = false; this.state.showSubscriptionEvidence = true; this.render(); break;
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
@@ -904,6 +938,35 @@ export class SunoDocumentationApp {
       }
       return;
     }
+    if (form.id === "subscription-evidence-form") {
+      const data = new FormData(form);
+      const coverageStart = String(data.get("coverageStart") ?? "");
+      const rawBillingCycle = String(data.get("billingCycle") ?? "");
+      if (rawBillingCycle !== "monthly" && rawBillingCycle !== "annual") {
+        this.showToast("error", "Bezahlrhythmus fehlt", "Wähle monatliche oder jährliche Zahlung aus.");
+        this.render();
+        return;
+      }
+      const billingCycle: SubscriptionBillingCycle = rawBillingCycle;
+      const coverageEnd = subscriptionCoverageEnd(coverageStart, billingCycle);
+      if (!coverageEnd) {
+        this.showToast("error", "Startdatum ungültig", "Gib den Beginn des auf der Rechnung abgedeckten Zeitraums an.");
+        this.render();
+        return;
+      }
+      const imported = await this.withBusy("Abo-Nachweis wird registriert …", async () => {
+        const item = await this.api.importGlobalEvidence("subscription_payment", coverageStart, billingCycle);
+        if (!item) return null;
+        return { item, globalEvidence: await this.api.listGlobalEvidence() };
+      });
+      if (imported) {
+        this.state.globalEvidence = imported.globalEvidence;
+        this.state.showSubscriptionEvidence = false;
+        this.showToast("success", "Abo-Nachweis registriert", `Abgedeckter Zeitraum: ${formatDate(coverageStart)} – ${formatDate(imported.item.coverageEnd ?? coverageEnd)}.`);
+        this.render();
+      }
+      return;
+    }
     if (form.id === "profile-form") {
       const data = new FormData(form);
       const profile: GlobalProfile = {
@@ -924,6 +987,11 @@ export class SunoDocumentationApp {
 
   private handleChange(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+    const subscriptionForm = input.closest<HTMLFormElement>("#subscription-evidence-form");
+    if (subscriptionForm) {
+      this.updateSubscriptionEvidencePreview(subscriptionForm);
+      return;
+    }
     if (!input.closest("#track-step-form") || !this.state.trackDraft) return;
     const key = input.name as keyof TrackFields;
     if (!key) return;
@@ -936,6 +1004,11 @@ export class SunoDocumentationApp {
 
   private handleInput(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLTextAreaElement;
+    const subscriptionForm = input.closest<HTMLFormElement>("#subscription-evidence-form");
+    if (subscriptionForm) {
+      this.updateSubscriptionEvidencePreview(subscriptionForm);
+      return;
+    }
     if (input.matches("[data-track-search]")) {
       this.state.query = input.value;
       this.render();
@@ -948,6 +1021,15 @@ export class SunoDocumentationApp {
       (this.state.trackDraft as unknown as Record<string, unknown>)[input.name] = input.value;
       this.draftDirty = true;
     }
+  }
+
+  private updateSubscriptionEvidencePreview(form: HTMLFormElement): void {
+    const coverageStart = form.elements.namedItem("coverageStart") as HTMLInputElement | null;
+    const selectedCycle = form.querySelector<HTMLInputElement>('input[name="billingCycle"]:checked');
+    const coverageEnd = form.elements.namedItem("coverageEnd") as HTMLInputElement | null;
+    if (!coverageStart || !selectedCycle || !coverageEnd) return;
+    const cycle = selectedCycle.value as SubscriptionBillingCycle;
+    coverageEnd.value = subscriptionCoverageEnd(coverageStart.value, cycle) ?? "";
   }
 
   private requireTrack(): TrackDetail {
@@ -988,15 +1070,6 @@ export class SunoDocumentationApp {
     const role = evidenceRoles[Number(choice) - 1];
     if (!role) { this.showToast("error", "Ungültige Rolle", "Wähle eine Nummer aus der angezeigten Liste."); return; }
     await this.importEvidence(role);
-  }
-
-  private async importGlobalEvidence(): Promise<void> {
-    const coverageStart = window.prompt("Beginn des abgedeckten Zeitraums (JJJJ-MM-TT):", new Date().toISOString().slice(0, 8) + "01");
-    if (!coverageStart) return;
-    const coverageEnd = window.prompt("Ende des abgedeckten Zeitraums (JJJJ-MM-TT):", new Date().toISOString().slice(0, 10));
-    if (!coverageEnd) return;
-    const item = await this.withBusy("Abo-Nachweis wird registriert …", () => this.api.importGlobalEvidence("subscription_payment", coverageStart, coverageEnd));
-    if (item) { this.state.globalEvidence = await this.api.listGlobalEvidence(); this.showToast("success", "Abo-Nachweis registriert", "Er kann nun passenden Track-Zeiträumen zugeordnet werden."); }
   }
 
   private async addDeviation(): Promise<void> {

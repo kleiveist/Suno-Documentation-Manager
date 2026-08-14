@@ -37,6 +37,7 @@ export type EvidenceRole =
 export type ArtworkOrigin = "none" | "human" | "ai_generated" | "ai_assisted";
 export type LyricsSource = "instrumental" | "human" | "suno" | "mixed";
 export type DisclosurePolicy = "always" | "per_artwork" | "none";
+export type SubscriptionBillingCycle = "monthly" | "annual";
 
 export interface WorkspaceSummary {
   id: string;

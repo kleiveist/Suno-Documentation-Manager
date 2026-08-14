@@ -7,6 +7,7 @@ import {
   WORKFLOW_ID,
   WORKFLOW_VERSION
 } from "../domain/workflow";
+import { subscriptionCoverageEnd } from "../domain/subscription";
 import {
   emptyProfile,
   emptyTrackFields,
@@ -211,8 +212,11 @@ export function createDemoApi(): DesktopApi {
       await wait();
       return clone(globalEvidence);
     },
-    async importGlobalEvidence(role, coverageStart, coverageEnd) {
+    async importGlobalEvidence(role, coverageStart, billingCycle) {
       await wait();
+      const coverageEnd = coverageStart && billingCycle
+        ? subscriptionCoverageEnd(coverageStart, billingCycle) ?? undefined
+        : undefined;
       const item = { ...evidence(role, `subscription_${new Date().toISOString().slice(0, 7)}.pdf`), coverageStart, coverageEnd };
       globalEvidence.push(item);
       return clone(item);

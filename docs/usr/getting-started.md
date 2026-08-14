@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-14 |
 | Audience | Suno Documentation Manager users |
 | Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md) |
 
@@ -80,9 +80,18 @@ Later changes to global settings do not rewrite a finalized track. Generated doc
 
 ## Register subscription evidence
 
-If you reuse a Suno subscription or payment document across production periods, register it once as global evidence. Record only the coverage information needed to select it. The source is preserved.
+Register each Suno subscription invoice or payment document as its own global-evidence record:
 
-When documenting a track, select the evidence that covers its production period. Before finalization, the application copies the selected file into the track evidence structure, calculates its hash, records `global_copy` provenance and the workspace source record ID, and includes those fields with the relative path in the manifest. The track therefore remains self-contained if the workspace index is later unavailable.
+1. Choose the billing cadence shown by that invoice: `Monatlich` or `Jährlich`.
+2. Enter the factual first day of the period covered by that invoice. This is the invoice coverage start, not automatically the account-level subscription start date from the reusable settings.
+3. Select exactly one supported evidence file in the native file picker: PDF, PNG/JPEG, TXT, or Markdown. Register additional invoices separately; the action does not import a folder or a batch of files.
+4. Review the concrete inclusive coverage end that the application calculates from the cadence and start date. A monthly record ends on the day before the next monthly payment date; an annual record ends on the day before the payment date twelve calendar months later. For example, a monthly period beginning `2026-07-01` ends `2026-07-31`, while an annual period beginning `2026-01-01` ends `2026-12-31`.
+
+For a start near the end of a month, the next payment date is first clamped to the last valid day of its target month, then the inclusive end is the preceding day. For example, a monthly period beginning `2026-01-31` ends `2026-02-27`. The same rule handles leap years.
+
+The cadence is a calculation rule for this one document, not permission to extrapolate it indefinitely. A monthly document does not prove later months, and an annual document does not prove a later subscription year. Register the next actual invoice as a separate record, and do not use the calculated period if cancellation, refund, a partial period, or the document itself shows narrower coverage. The source file is preserved.
+
+When documenting a track, select only evidence whose materialized start and end dates actually cover its production period. Before finalization, the application copies the selected file into the track evidence structure, calculates its hash, records `global_copy` provenance and the workspace source record ID, and includes those fields, the exact coverage dates, and the relative path in the manifest. Portability therefore does not depend on rerunning the cadence calculation: the track retains the concrete interval and remains self-contained if the workspace index is later unavailable.
 
 ## Create a track
 
@@ -165,6 +174,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 - If a workspace cannot be opened, verify local read/write permissions and that it is a directory.
 - If a path is rejected, remove traversal components or an escaping symbolic link; do not widen application permissions.
 - If an evidence import collides, compare the files and choose an explicit resolution. The application preserves both the source and existing destination.
+- If removable storage reports that a file operation is not permitted, first verify that the selected filesystem is mounted read/write and retry with the current build. The Linux/exFAT regression check is recorded in ATP-0012; this does not establish support for every removable filesystem or operating system.
 - If a historical track remains `NOT VERIFIED`, supply factual information or evidence; do not invent a value solely to increase progress.
 - Do not place a workspace where an untrusted process running as the same operating-system user can modify it concurrently. Version 0.1 rejects observed symbolic links but does not claim race-free protection against a path component swapped after validation.
 
@@ -180,5 +190,6 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Documented per-invoice billing cadence, single-file registration, materialized coverage, and the no-extrapolation rule. | Project team |
 | 2026-08-13 | Explained evidence provenance and recoverable indexed-legacy removal. | Project team |
 | 2026-08-13 | Added the first-workspace and first-track guide. | Project team |

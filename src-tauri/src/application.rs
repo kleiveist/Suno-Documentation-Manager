@@ -7,8 +7,8 @@ use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
     DocumentPreview, DocumentState, EvidenceItem, EvidenceProvenance, EvidenceRole,
     GlobalEvidenceItem, IntegrityState, LegacyCandidate, Profile, StepState, StepStatus,
-    TrackDetail, TrackPatch, TrackRecord, TrackStatus, TrackSummary, ValidationResult,
-    WorkspaceScan, WorkspaceSummary,
+    SubscriptionBillingCycle, TrackDetail, TrackPatch, TrackRecord, TrackStatus, TrackSummary,
+    ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -16,7 +16,7 @@ use crate::security::{
     portable_relative, sha256_file, slugify,
 };
 use crate::workflow;
-use chrono::{NaiveDate, Utc};
+use chrono::{Months, NaiveDate, Utc};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -475,6 +475,27 @@ impl WorkspaceApp {
             return Err(error);
         }
         Ok(item)
+    }
+
+    pub fn register_global_evidence_for_billing_cycle(
+        &self,
+        role: EvidenceRole,
+        source: &Path,
+        coverage_start: &str,
+        billing_cycle: SubscriptionBillingCycle,
+    ) -> Result<GlobalEvidenceItem> {
+        if role != EvidenceRole::SubscriptionPayment {
+            return Err(AppError::Validation(
+                "A billing cycle can only be used for subscription/payment evidence.".into(),
+            ));
+        }
+        let coverage_end = subscription_coverage_end(coverage_start, billing_cycle)?;
+        self.register_global_evidence(
+            role,
+            source,
+            Some(coverage_start.to_owned()),
+            Some(coverage_end),
+        )
     }
 
     pub fn remove_global_evidence(&self, evidence_id: &str) -> Result<()> {
@@ -1875,6 +1896,28 @@ fn parse_date(name: &str, value: &str) -> Result<NaiveDate> {
         .map_err(|_| AppError::Validation(format!("{name} must use YYYY-MM-DD.")))
 }
 
+fn subscription_coverage_end(
+    coverage_start: &str,
+    billing_cycle: SubscriptionBillingCycle,
+) -> Result<String> {
+    let start = parse_date("Subscription coverage start", coverage_start)?;
+    let months = match billing_cycle {
+        SubscriptionBillingCycle::Monthly => 1,
+        SubscriptionBillingCycle::Annual => 12,
+    };
+    let next_period_start = start
+        .checked_add_months(Months::new(months))
+        .ok_or_else(|| {
+            AppError::Validation(
+                "Subscription coverage date is outside the supported range.".into(),
+            )
+        })?;
+    let end = next_period_start.pred_opt().ok_or_else(|| {
+        AppError::Validation("Subscription coverage date is outside the supported range.".into())
+    })?;
+    Ok(end.format("%Y-%m-%d").to_string())
+}
+
 fn validate_optional_date(name: &str, value: &str) -> Result<()> {
     if !value.trim().is_empty() {
         parse_date(name, value)?;
@@ -2271,6 +2314,142 @@ mod tests {
             .expect("finalization")
             .track
             .expect("finalized track detail")
+    }
+
+    #[test]
+    fn monthly_subscription_coverage_uses_one_calendar_month() {
+        assert_eq!(
+            subscription_coverage_end("2026-08-15", SubscriptionBillingCycle::Monthly)
+                .expect("monthly coverage"),
+            "2026-09-14"
+        );
+        assert_eq!(
+            serde_json::to_string(&SubscriptionBillingCycle::Monthly)
+                .expect("monthly billing-cycle serialization"),
+            "\"monthly\""
+        );
+    }
+
+    #[test]
+    fn annual_subscription_coverage_uses_twelve_calendar_months() {
+        assert_eq!(
+            subscription_coverage_end("2026-08-15", SubscriptionBillingCycle::Annual)
+                .expect("annual coverage"),
+            "2027-08-14"
+        );
+        assert_eq!(
+            serde_json::to_string(&SubscriptionBillingCycle::Annual)
+                .expect("annual billing-cycle serialization"),
+            "\"annual\""
+        );
+    }
+
+    #[test]
+    fn monthly_subscription_coverage_clamps_month_end_before_subtracting_a_day() {
+        assert_eq!(
+            subscription_coverage_end("2026-01-31", SubscriptionBillingCycle::Monthly)
+                .expect("month-end coverage"),
+            "2026-02-27"
+        );
+    }
+
+    #[test]
+    fn subscription_coverage_handles_leap_years() {
+        assert_eq!(
+            subscription_coverage_end("2024-02-01", SubscriptionBillingCycle::Monthly)
+                .expect("leap-month coverage"),
+            "2024-02-29"
+        );
+        assert_eq!(
+            subscription_coverage_end("2023-03-01", SubscriptionBillingCycle::Annual)
+                .expect("annual coverage ending in a leap year"),
+            "2024-02-29"
+        );
+        assert_eq!(
+            subscription_coverage_end("2024-02-29", SubscriptionBillingCycle::Annual)
+                .expect("annual coverage beginning on leap day"),
+            "2025-02-27"
+        );
+    }
+
+    #[test]
+    fn subscription_coverage_rejects_invalid_start_dates() {
+        let error = subscription_coverage_end("2026-02-30", SubscriptionBillingCycle::Monthly)
+            .expect_err("invalid coverage start must fail");
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(error
+            .to_string()
+            .contains("Subscription coverage start must use YYYY-MM-DD"));
+    }
+
+    #[test]
+    fn billing_cycle_registration_derives_and_persists_exact_coverage_dates() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        let monthly_source = directory.path().join("subscription-monthly.pdf");
+        let annual_source = directory.path().join("subscription-annual.pdf");
+        fs::write(&monthly_source, b"%PDF-1.7\nmonthly receipt\n%%EOF\n")
+            .expect("monthly subscription fixture");
+        fs::write(&annual_source, b"%PDF-1.7\nannual receipt\n%%EOF\n")
+            .expect("annual subscription fixture");
+
+        let monthly = app
+            .register_global_evidence_for_billing_cycle(
+                EvidenceRole::SubscriptionPayment,
+                &monthly_source,
+                "2026-08-01",
+                SubscriptionBillingCycle::Monthly,
+            )
+            .expect("monthly billing-cycle registration");
+        let annual = app
+            .register_global_evidence_for_billing_cycle(
+                EvidenceRole::SubscriptionPayment,
+                &annual_source,
+                "2026-08-01",
+                SubscriptionBillingCycle::Annual,
+            )
+            .expect("annual billing-cycle registration");
+
+        assert_eq!(
+            monthly.evidence.coverage_start.as_deref(),
+            Some("2026-08-01")
+        );
+        assert_eq!(monthly.evidence.coverage_end.as_deref(), Some("2026-08-31"));
+        assert_eq!(
+            annual.evidence.coverage_start.as_deref(),
+            Some("2026-08-01")
+        );
+        assert_eq!(annual.evidence.coverage_end.as_deref(), Some("2027-07-31"));
+        assert_eq!(
+            fs::read(&monthly_source).expect("preserved monthly source"),
+            b"%PDF-1.7\nmonthly receipt\n%%EOF\n"
+        );
+        assert_eq!(
+            fs::read(&annual_source).expect("preserved annual source"),
+            b"%PDF-1.7\nannual receipt\n%%EOF\n"
+        );
+
+        drop(app);
+        let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");
+        let persisted = reopened
+            .global_evidence()
+            .expect("persisted global evidence");
+        assert_eq!(persisted.len(), 2);
+        for registered in [monthly, annual] {
+            let stored = persisted
+                .iter()
+                .find(|item| item.evidence.id == registered.evidence.id)
+                .expect("registered billing-cycle evidence persisted");
+            assert_eq!(
+                stored.evidence.coverage_start,
+                registered.evidence.coverage_start
+            );
+            assert_eq!(
+                stored.evidence.coverage_end,
+                registered.evidence.coverage_end
+            );
+        }
     }
 
     fn track_tree_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {

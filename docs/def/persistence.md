@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-14 |
 | Audience | Product developers and recovery reviewers |
 | Related ATP | [ATP-0011: Local persistence and recovery](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 
@@ -44,7 +44,7 @@ The product uses bounded authority rather than treating every copy as equally au
 | Imported evidence and release assets | Track folder | Database references store role and root-relative path; file contents are not database blobs |
 | Generated documentation | Track folder | Regenerated only through explicit managed-document rules |
 | Final hashes, manifest, certificate, and archived revisions | Track folder | Treated as the authoritative finalized snapshot |
-| Registered reusable subscription evidence | `.suno-doc/global-evidence/` plus SQLite metadata | Selected evidence is copied into a track before finalization so the track remains self-contained |
+| Registered reusable subscription evidence | `.suno-doc/global-evidence/` plus SQLite materialized coverage metadata | Selected evidence and its exact coverage interval are copied into a track before finalization so the track remains self-contained |
 
 Deleting the database can lose unfinished form state or reusable global defaults. It must not make a complete finalized track folder impossible to inspect and verify.
 
@@ -68,6 +68,7 @@ After the user creates or opens a workspace, native code may create this reserve
 The database indexes at least these logical data sets:
 
 - workspace metadata and global profile values;
+- global-evidence records with their materialized per-invoice coverage dates;
 - known tracks and their lifecycle status;
 - workflow ID, workflow version, step states, applicability, and N/A reasons;
 - evidence roles, relative paths, media types, sizes, hashes, import metadata, provenance, and local derivation fields;
@@ -182,7 +183,13 @@ Files already moved into `.archive/removals/` by an explicit legacy-evidence rem
 
 ## Global evidence
 
-Reusable Suno subscription or payment evidence can be registered under `.suno-doc/global-evidence/`. Metadata identifies the evidence and its coverage period. A track selects the applicable record. Before finalization the selected file is copied into the track evidence structure, collision-checked, hashed, marked `global_copy`, linked to its workspace source record, and included in the portable manifest.
+Reusable Suno subscription or payment evidence can be registered under `.suno-doc/global-evidence/`. Each registration represents exactly one selected evidence file (PDF, PNG/JPEG, TXT, or Markdown) and one evidenced billing period; a folder or multi-file selection does not become one combined record. The source is copied without being moved or deleted.
+
+The user selects the cadence shown by that invoice (`monthly` or `annual`) and enters its factual coverage start date. The application derives one concrete inclusive coverage end for that record: the day before the next monthly payment date for `monthly`, or the day before the payment date twelve calendar months later for `annual`. It persists the resulting start and end dates rather than leaving the end as a calculation that may change later. The durable evidence fact is this materialized interval, not an instruction to repeat the cadence. The account-level subscription start date is a separate profile fact and is not substituted for the invoice coverage start.
+
+Cadence never creates recurring evidence or open-ended coverage. One monthly invoice evidences only its one materialized month, and one annual invoice evidences only its one materialized year. Additional periods require separately registered source invoices. A record must not be treated as covering cancellation, refund, partial-period, or later-renewal dates that the selected document does not actually support.
+
+A track selects a record only when its concrete interval covers the applicable production period. Before finalization the selected file is copied into the track evidence structure, collision-checked, hashed, marked `global_copy`, and linked to its workspace source record. Its exact `coverageStart` and `coverageEnd` values are included in the portable manifest with the track-relative file path. Recovery and review therefore use the materialized dates and do not extrapolate from cadence or require the workspace database to recalculate coverage.
 
 Private email addresses, telephone numbers, birthdays, account credentials, and unrelated account details are neither required global fields nor copied into generated license documentation.
 
@@ -250,6 +257,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Defined per-invoice cadence, single-file registration, materialized coverage dates, portability, and the no-extrapolation boundary. | Project team |
 | 2026-08-13 | Documented schema version 2, evidence provenance and disclosure lineage, recoverable legacy removal, and marker-based finalization recovery. | Project team |
 | 2026-08-13 | Aligned scan, revision archive, and interrupted-operation recovery behavior with version 0.1. | Project team |
 | 2026-08-13 | Defined SQLite ownership, portable-file authority, and recovery behavior. | Project team |

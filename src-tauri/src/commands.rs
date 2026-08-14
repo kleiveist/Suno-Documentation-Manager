@@ -2,8 +2,8 @@ use crate::application::WorkspaceApp;
 use crate::error::{AppError, Result};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceRole,
-    GlobalEvidenceItem, Profile, StepStatus, TrackDetail, TrackPatch, TrackSummary,
-    ValidationResult, WorkspaceScan, WorkspaceSummary,
+    GlobalEvidenceItem, Profile, StepStatus, SubscriptionBillingCycle, TrackDetail, TrackPatch,
+    TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
@@ -87,18 +87,24 @@ pub fn list_global_evidence(state: State<'_, AppState>) -> Result<Vec<GlobalEvid
 pub fn import_global_evidence(
     state: State<'_, AppState>,
     role: EvidenceRole,
-    coverage_start: Option<String>,
-    coverage_end: Option<String>,
+    coverage_start: String,
+    billing_cycle: SubscriptionBillingCycle,
 ) -> Result<Option<GlobalEvidenceItem>> {
     let Some(source) = rfd::FileDialog::new()
         .set_title("Globalen Nachweis registrieren")
+        .add_filter("Unterstützte Nachweise", role.allowed_extensions())
         .pick_file()
     else {
         return Ok(None);
     };
     with_workspace(&state, |app| {
-        app.register_global_evidence(role, &source, coverage_start, coverage_end)
-            .map(Some)
+        app.register_global_evidence_for_billing_cycle(
+            role,
+            &source,
+            &coverage_start,
+            billing_cycle,
+        )
+        .map(Some)
     })
 }
 

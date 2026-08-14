@@ -37,4 +37,16 @@ describe("runtime selection", () => {
     });
     expect(invokeMock).toHaveBeenCalledWith("re_evaluate_track", { trackId: "track-1" });
   });
+
+  it("passes the selected subscription billing cycle to the native importer", async () => {
+    invokeMock.mockResolvedValue(null);
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await expect(api.importGlobalEvidence("subscription_payment", "2026-08-01", "annual")).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenCalledWith("import_global_evidence", {
+      role: "subscription_payment",
+      coverageStart: "2026-08-01",
+      billingCycle: "annual"
+    });
+  });
 });

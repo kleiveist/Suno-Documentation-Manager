@@ -4,6 +4,7 @@ import {
   MAIN_NAVIGATION,
   missingProfileFields,
   resetWorkspaceScopedUiState,
+  shouldIgnoreModalBackdropClick,
   type WorkspaceScopedUiState,
   workflowUpgradePresentation
 } from "./app";
@@ -44,6 +45,7 @@ describe("navigation", () => {
       trackTab: "certificate",
       scanResult: { discovered: 1, indexed: 1, unchanged: 0, warnings: [] },
       showNewTrack: true,
+      showSubscriptionEvidence: true,
       query: "old workspace query",
       trackFilter: "finalized",
       draftDirty: true
@@ -58,6 +60,7 @@ describe("navigation", () => {
       trackTab: "overview",
       scanResult: null,
       showNewTrack: false,
+      showSubscriptionEvidence: false,
       query: "",
       trackFilter: "all",
       draftDirty: false
@@ -68,6 +71,12 @@ describe("navigation", () => {
     expect(previous.trackTab).toBe("certificate");
     expect(previous.scanResult).not.toBeNull();
     expect(previous.draftDirty).toBe(true);
+  });
+
+  it("ignores delegated backdrop actions for clicks inside a modal", () => {
+    expect(shouldIgnoreModalBackdropClick(true, false)).toBe(true);
+    expect(shouldIgnoreModalBackdropClick(true, true)).toBe(false);
+    expect(shouldIgnoreModalBackdropClick(false, false)).toBe(false);
   });
 
   it("presents an explicit action without rewriting a finalized older workflow", () => {

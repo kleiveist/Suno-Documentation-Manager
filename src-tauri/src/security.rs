@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use tempfile::{Builder, NamedTempFile, PathPersistError};
 use uuid::Uuid;
 
 pub fn canonical_workspace(path: &Path, create: bool) -> Result<PathBuf> {
@@ -129,29 +130,15 @@ pub fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .ok_or_else(|| AppError::Validation("A managed file needs a parent directory.".into()))?;
     fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    let temp = parent.join(format!(".create-{}.tmp", Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(|e| AppError::io(&temp, e))?;
-        file.write_all(bytes).map_err(|e| AppError::io(&temp, e))?;
-        file.sync_all().map_err(|e| AppError::io(&temp, e))?;
-        fs::hard_link(&temp, path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                AppError::Collision(path.display().to_string())
-            } else {
-                AppError::io(path, error)
-            }
-        })?;
-        fs::remove_file(&temp).map_err(|e| AppError::io(&temp, e))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    let mut temporary = temporary_file(parent, ".create-")?;
+    temporary
+        .write_all(bytes)
+        .map_err(|e| AppError::io(temporary.path(), e))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| AppError::io(temporary.path(), e))?;
+    publish_new(temporary, path)
 }
 
 pub fn copy_new(source: &Path, destination: &Path) -> Result<()> {
@@ -166,30 +153,42 @@ pub fn copy_new(source: &Path, destination: &Path) -> Result<()> {
         .parent()
         .ok_or_else(|| AppError::Validation("Evidence destination has no parent.".into()))?;
     fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    let temp = parent.join(format!(".import-{}.tmp", Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        fs::copy(source, &temp).map_err(|e| AppError::io(&temp, e))?;
-        let file = OpenOptions::new()
-            .read(true)
-            .open(&temp)
-            .map_err(|e| AppError::io(&temp, e))?;
-        file.sync_all().map_err(|e| AppError::io(&temp, e))?;
-        // Publishing by hard-link is a single no-clobber filesystem operation. Unlike
-        // rename, it cannot replace a destination created between validation and publish.
-        fs::hard_link(&temp, destination).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                AppError::Collision(destination.display().to_string())
-            } else {
-                AppError::io(destination, error)
+    let temporary = temporary_file(parent, ".import-")?;
+    fs::copy(source, temporary.path()).map_err(|e| AppError::io(temporary.path(), e))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| AppError::io(temporary.path(), e))?;
+    publish_new(temporary, destination)
+}
+
+fn temporary_file(parent: &Path, prefix: &str) -> Result<NamedTempFile> {
+    Builder::new()
+        .prefix(prefix)
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|error| AppError::io(parent, error))
+}
+
+fn publish_new(temporary: NamedTempFile, destination: &Path) -> Result<()> {
+    match temporary.into_temp_path().persist_noclobber(destination) {
+        Ok(()) => {
+            if let Some(parent) = destination.parent() {
+                if let Ok(parent_file) = fs::File::open(parent) {
+                    let _ = parent_file.sync_all();
+                }
             }
-        })?;
-        fs::remove_file(&temp).map_err(|e| AppError::io(&temp, e))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
+            Ok(())
+        }
+        Err(PathPersistError { error, path }) => {
+            drop(path);
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Err(AppError::Collision(destination.display().to_string()))
+            } else {
+                Err(AppError::io(destination, error))
+            }
+        }
     }
-    result
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
@@ -386,6 +385,104 @@ mod tests {
             fs::read(&target).expect("read preserved result"),
             b"second complete version"
         );
+
+        let create_only = directory.path().join("created-once.md");
+        atomic_write_new(&create_only, b"complete create-only file")
+            .expect("create-only atomic write");
+        assert_eq!(
+            fs::read(&create_only).expect("read create-only result"),
+            b"complete create-only file"
+        );
+        assert!(no_temporary_files(directory.path()));
+    }
+
+    #[test]
+    fn no_clobber_publish_preserves_a_destination_created_after_staging() {
+        let directory = tempdir().expect("temporary directory");
+        let destination = directory.path().join("concurrent-destination.bin");
+        let mut temporary =
+            temporary_file(directory.path(), ".publish-test-").expect("temporary file");
+        temporary
+            .write_all(b"staged bytes")
+            .expect("staged contents");
+        temporary.as_file().sync_all().expect("sync staged file");
+
+        fs::write(&destination, b"concurrent bytes").expect("concurrent destination");
+        let error = publish_new(temporary, &destination).expect_err("publish collision");
+
+        assert!(matches!(error, AppError::Collision(_)));
+        assert_eq!(
+            fs::read(&destination).expect("preserved concurrent destination"),
+            b"concurrent bytes"
+        );
+        assert!(no_temporary_files(directory.path()));
+    }
+
+    #[test]
+    fn copy_new_publishes_complete_bytes_and_preserves_the_source() {
+        let directory = tempdir().expect("temporary directory");
+        let source = directory.path().join("source.bin");
+        let destination = directory.path().join("destination.bin");
+        fs::write(&source, b"source bytes").expect("source fixture");
+
+        copy_new(&source, &destination).expect("copy into new destination");
+
+        assert_eq!(
+            fs::read(&source).expect("preserved source"),
+            b"source bytes"
+        );
+        assert_eq!(
+            fs::read(&destination).expect("published destination"),
+            b"source bytes"
+        );
+        assert!(no_temporary_files(directory.path()));
+    }
+
+    #[test]
+    #[ignore = "requires SUNO_DOC_REMOVABLE_FS_TEST_ROOT to name a disposable writable filesystem root"]
+    fn no_clobber_publish_works_on_configured_removable_filesystem() {
+        let configured_root = std::env::var_os("SUNO_DOC_REMOVABLE_FS_TEST_ROOT")
+            .map(PathBuf::from)
+            .expect("SUNO_DOC_REMOVABLE_FS_TEST_ROOT must be set explicitly");
+        assert!(
+            configured_root.is_dir(),
+            "configured test root must be a directory"
+        );
+        let fixture = Builder::new()
+            .prefix(".suno-doc-fs-compat-")
+            .tempdir_in(&configured_root)
+            .expect("create isolated removable-filesystem fixture");
+
+        let created = fixture.path().join("created-once.bin");
+        atomic_write_new(&created, b"complete create-only bytes")
+            .expect("create-only publish on removable filesystem");
+        assert_eq!(
+            fs::read(&created).expect("read create-only destination"),
+            b"complete create-only bytes"
+        );
+
+        let source = fixture.path().join("source.bin");
+        let destination = fixture.path().join("destination.bin");
+        fs::write(&source, b"first source bytes").expect("source fixture");
+        copy_new(&source, &destination).expect("copy publish on removable filesystem");
+        assert_eq!(
+            sha256_file(&source).expect("source digest"),
+            sha256_file(&destination).expect("destination digest")
+        );
+        fs::write(&source, b"changed source bytes").expect("changed source fixture");
+        assert!(matches!(
+            copy_new(&source, &destination),
+            Err(AppError::Collision(_))
+        ));
+        assert_eq!(
+            fs::read(&source).expect("preserved changed source"),
+            b"changed source bytes"
+        );
+        assert_eq!(
+            fs::read(&destination).expect("preserved first destination"),
+            b"first source bytes"
+        );
+        assert!(no_temporary_files(fixture.path()));
     }
 
     #[test]

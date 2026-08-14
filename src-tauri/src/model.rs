@@ -57,6 +57,13 @@ pub enum EvidenceRole {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionBillingCycle {
+    Monthly,
+    Annual,
+}
+
 impl EvidenceRole {
     pub fn as_str(&self) -> &'static str {
         match self {
