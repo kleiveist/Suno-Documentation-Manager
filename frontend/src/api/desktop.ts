@@ -36,6 +36,7 @@ export interface DesktopApi {
   createTrack(input: TrackCreateInput): Promise<TrackDetail>;
   loadTrack(trackId: string): Promise<TrackDetail>;
   updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail>;
+  renameAlbum(oldTitle: string, newTitle: string): Promise<TrackSummary[]>;
   updateTrack(trackId: string, patch: Partial<TrackDetail["fields"]>): Promise<TrackDetail>;
   adoptLegacyProfile(trackId: string): Promise<TrackDetail>;
   addDeviation(trackId: string, description: string, blocking: boolean): Promise<TrackDetail>;
@@ -163,6 +164,10 @@ class TauriDesktopApi implements DesktopApi {
 
   updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail> {
     return command("update_track_library", { trackId, input: library });
+  }
+
+  renameAlbum(oldTitle: string, newTitle: string): Promise<TrackSummary[]> {
+    return command("rename_album", { oldTitle, newTitle });
   }
 
   updateTrack(trackId: string, patch: Partial<TrackDetail["fields"]>): Promise<TrackDetail> {

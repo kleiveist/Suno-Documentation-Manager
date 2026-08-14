@@ -397,7 +397,7 @@ export class SunoDocumentationApp {
       <div class="modal-head"><div><p class="overline">Bibliothekszuordnung</p><h2 id="track-library-title">${escapeHtml(track.title)} einordnen</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
       <form id="track-library-form" class="form-stack">
         ${this.renderTrackLibraryFields(track.library, "track-library")}
-        <div class="library-safety-note">${icon("shield")}<p>Die Zuordnung ist eine virtuelle Bibliotheksgruppe. Track-Ordner, Dokumente, Prüfsummen und Zertifikat bleiben unverändert.</p></div>
+        <div class="library-safety-note">${icon("shield")}<p>Beim Speichern wird der vollständige Track-Ordner sicher in den gewählten Album- oder Singles-Ordner verschoben. Dateien, interne Prüfsummen und Zertifikat bleiben dabei unverändert.</p></div>
         <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("check")} Zuordnung speichern</button></div>
       </form>
     </section></div>`;
@@ -412,7 +412,7 @@ export class SunoDocumentationApp {
       <label><input type="radio" name="librarySection" value="single" aria-controls="${albumFieldId}" ${albumSelected ? "" : "checked"} required><span>${icon("tracks")}<strong>Single</strong><small>Unter Singles einordnen</small></span></label>
       <label><input type="radio" name="librarySection" value="album" aria-controls="${albumFieldId}" ${albumSelected ? "checked" : ""} required><span>${icon("workspace")}<strong>Album-Track</strong><small>Einem Album zuordnen</small></span></label>
     </div></fieldset>
-    <label class="field library-album-field" id="${albumFieldId}" data-library-album-field ${albumSelected ? "" : "hidden"}><span class="field-label">Albumtitel *</span><input type="text" name="albumTitle" list="${albumListId}" placeholder="Bestehendes oder neues Album" value="${escapeHtml(library.albumTitle ?? "")}" autocomplete="off" ${albumSelected ? "required" : "disabled"}><small>Maximal 200 Zeichen ohne äußere Leerzeichen; gleiche Titel werden unabhängig von Groß- und Kleinschreibung zusammengefasst.</small></label>
+    <label class="field library-album-field" id="${albumFieldId}" data-library-album-field ${albumSelected ? "" : "hidden"}><span class="field-label">Albumtitel *</span><input type="text" name="albumTitle" list="${albumListId}" placeholder="Bestehendes oder neues Album" value="${escapeHtml(library.albumTitle ?? "")}" autocomplete="off" ${albumSelected ? "required" : "disabled"}><small>Wird als echter Ordnername verwendet; maximal 200 Zeichen, keine Pfadtrenner oder reservierten Namen.</small></label>
     <datalist id="${albumListId}">${albumTitles.map((title) => `<option value="${escapeHtml(title)}"></option>`).join("")}</datalist>`;
   }
 
@@ -489,7 +489,7 @@ export class SunoDocumentationApp {
     });
     const albumTrackCount = library.albums.reduce((total, album) => total + album.tracks.length, 0);
     return `<div class="page-content tracks-page">
-      <div class="page-lead"><div><p class="overline">Bibliothek</p><h2>Alben & Singles</h2><p>Alle Tracks bleiben in ihren portablen Ordnern und werden hier übersichtlich als Album-Tracks oder Singles eingeordnet.</p></div><button class="button button--primary" data-action="new-track">${icon("plus")} Neuer Track</button></div>
+      <div class="page-lead"><div><p class="overline">Bibliothek</p><h2>Alben & Singles</h2><p>Die Ansicht entspricht der echten Ordnerstruktur im Workspace. Albumordner können direkt am Ordnerkopf umbenannt werden.</p></div><button class="button button--primary" data-action="new-track">${icon("plus")} Neuer Track</button></div>
       <section class="panel tracks-panel">
         <div class="tracks-toolbar">
           <label class="search-field"><span class="sr-only">Tracks und Alben durchsuchen</span>${icon("scan")}<input type="search" data-track-search placeholder="Tracks und Alben durchsuchen …" value="${escapeHtml(this.state.query)}"></label>
@@ -518,7 +518,7 @@ export class SunoDocumentationApp {
 
   private renderAlbumGroup(album: AlbumTrackGroup<TrackSummary>): string {
     return `<details class="album-group" open>
-      <summary class="album-group-head"><span class="album-cover" aria-hidden="true">${escapeHtml(titleInitials(album.title))}<i></i></span><span class="album-group-copy"><strong>${escapeHtml(album.title)}</strong><small>${album.tracks.length} ${album.tracks.length === 1 ? "Track" : "Tracks"}</small></span><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
+      <summary class="album-group-head"><span class="album-cover" aria-hidden="true">${escapeHtml(titleInitials(album.title))}<i></i></span><span class="album-group-copy"><strong>${escapeHtml(album.title)}</strong><small>${album.tracks.length} ${album.tracks.length === 1 ? "Track" : "Tracks"}</small></span><button type="button" class="album-rename-button" data-rename-album="${escapeHtml(album.title)}" aria-label="Album ${escapeHtml(album.title)} umbenennen" title="Albumordner umbenennen">Umbenennen</button><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
       <div class="album-group-content">${this.renderTrackTableHead()}<div class="track-list">${album.tracks.map((track) => this.renderTrackRow(track, true)).join("")}</div></div>
     </details>`;
   }
@@ -858,6 +858,31 @@ export class SunoDocumentationApp {
       target === button
     )) return;
 
+    const albumTitle = button.dataset.renameAlbum;
+    if (albumTitle) {
+      event.preventDefault();
+      event.stopPropagation();
+      const newTitle = window.prompt("Neuer Name des Albumordners:", albumTitle)?.trim();
+      if (!newTitle || newTitle === albumTitle) return;
+      const tracks = await this.withBusy(
+        "Albumordner wird umbenannt …",
+        () => this.api.renameAlbum(albumTitle, newTitle)
+      );
+      if (tracks) {
+        this.state.tracks = tracks;
+        const currentSummary = this.state.track
+          ? tracks.find((track) => track.id === this.state.track!.id)
+          : undefined;
+        if (this.state.track && currentSummary) {
+          this.state.track.library = structuredClone(currentSummary.library);
+          this.state.track.relativePath = currentSummary.relativePath;
+        }
+        this.showToast("success", "Albumordner umbenannt", `${albumTitle} wurde in ${newTitle} umbenannt.`);
+        this.render();
+      }
+      return;
+    }
+
     const view = button.dataset.view as MainView | undefined;
     if (view) {
       this.state.view = view;
@@ -1039,13 +1064,13 @@ export class SunoDocumentationApp {
       const library = this.readTrackLibraryAssignment(form);
       if (!library) return;
       const updated = await this.withBusy(
-        "Bibliothekszuordnung wird gespeichert …",
+        "Track-Ordner wird verschoben …",
         () => this.api.updateTrackLibrary(this.requireTrack().id, library)
       );
       if (updated) {
         this.applyTrack(updated);
         this.state.showTrackLibrary = false;
-        this.showToast("success", "Bibliothek aktualisiert", "Die virtuelle Zuordnung wurde geändert; Track-Dateien und Zertifikat blieben unverändert.");
+        this.showToast("success", "Ordnerstruktur aktualisiert", `Der Track liegt jetzt unter ${updated.relativePath}.`);
         this.render();
       }
       return;
@@ -1167,7 +1192,7 @@ export class SunoDocumentationApp {
       albumInput.disabled = false;
       albumInput.required = true;
       albumInput.setCustomValidity(albumInput.value.trim()
-        ? "Der Albumtitel darf nach Entfernen äußerer Leerzeichen höchstens 200 Zeichen enthalten und keine Steuerzeichen verwenden."
+        ? "Der Albumtitel darf höchstens 200 Zeichen und keine Pfadtrenner, Steuerzeichen oder reservierten Ordnernamen enthalten."
         : "Gib für einen Album-Track einen Albumtitel an.");
       albumInput.reportValidity();
       albumInput.focus();

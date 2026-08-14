@@ -159,6 +159,15 @@ pub fn update_track_library(
 }
 
 #[tauri::command]
+pub fn rename_album(
+    state: State<'_, AppState>,
+    old_title: String,
+    new_title: String,
+) -> Result<Vec<TrackSummary>> {
+    with_workspace(&state, |app| app.rename_album(&old_title, &new_title))
+}
+
+#[tauri::command]
 pub fn adopt_legacy_profile(state: State<'_, AppState>, track_id: String) -> Result<TrackDetail> {
     with_workspace(&state, |app| app.adopt_legacy_profile(&track_id))
 }

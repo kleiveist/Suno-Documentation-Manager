@@ -34,6 +34,15 @@ const now = (): string => new Date().toISOString();
 const clone = <T>(value: T): T => structuredClone(value);
 const wait = async (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 140));
 
+function trackFolderName(title: string): string {
+  return title.trim();
+}
+
+function trackRelativePath(library: TrackLibraryAssignment, title: string): string {
+  const parent = library.section === "album" ? library.albumTitle!.trim() : "Singles";
+  return `${parent}/${trackFolderName(title)}`;
+}
+
 function evidence(role: EvidenceRole, fileName: string): EvidenceItem {
   return {
     id: crypto.randomUUID(),
@@ -102,7 +111,7 @@ function makeTrack(
   const track: TrackDetail = {
     id,
     title,
-    relativePath: title,
+    relativePath: trackRelativePath(library, title),
     library: clone(library),
     status: complete ? "READY" : "ACTIVE",
     updatedAt: now(),
@@ -270,12 +279,30 @@ export function createDemoApi(): DesktopApi {
       const library = trackLibraryAssignment(input.section, input.albumTitle ?? "");
       if (!library) throw new Error("Für einen Album-Track ist ein Albumtitel erforderlich.");
       track.library = library;
+      track.relativePath = trackRelativePath(library, track.title);
       return clone(track);
+    },
+    async renameAlbum(oldTitle, newTitle) {
+      await wait();
+      const normalized = trackLibraryAssignment("album", newTitle);
+      if (!normalized) throw new Error("Der neue Albumtitel ist ungültig.");
+      const matching = [...tracks.values()].filter((track) =>
+        track.library.section === "album" && track.library.albumTitle === oldTitle
+      );
+      if (!matching.length) throw new Error(`Album nicht gefunden: ${oldTitle}`);
+      for (const track of matching) {
+        track.library = clone(normalized);
+        track.relativePath = trackRelativePath(normalized, track.title);
+      }
+      return [...tracks.values()].map(({ fields: _fields, steps: _steps, evidence: _evidence, documents: _documents, integrity: _integrity, certificate: _certificate, ...summary }) => clone(summary));
     },
     async updateTrack(trackId, patch) {
       await wait();
       const track = get(trackId);
       track.fields = { ...track.fields, ...clone(patch) };
+      if (patch.title !== undefined) {
+        track.relativePath = trackRelativePath(track.library, patch.title);
+      }
       track.documents.current = false;
       if (track.status === "FINALIZED") {
         track.certificate.valid = false;

@@ -32,6 +32,7 @@ fn main() {
             commands::load_track,
             commands::update_track,
             commands::update_track_library,
+            commands::rename_album,
             commands::adopt_legacy_profile,
             commands::add_deviation,
             commands::resolve_deviation,

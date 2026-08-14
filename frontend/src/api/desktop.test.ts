@@ -65,7 +65,7 @@ describe("runtime selection", () => {
     expect(invokeMock).toHaveBeenCalledWith("create_track", { input });
   });
 
-  it("maps virtual reclassification to the narrow native command", async () => {
+  it("maps physical reclassification to the narrow native command", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
 
@@ -74,6 +74,18 @@ describe("runtime selection", () => {
     expect(invokeMock).toHaveBeenCalledWith("update_track_library", {
       trackId: "track-1",
       input: { section: "single" }
+    });
+  });
+
+  it("maps an album-folder rename to the native command", async () => {
+    invokeMock.mockResolvedValue([]);
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.renameAlbum("Old Album", "New Album");
+
+    expect(invokeMock).toHaveBeenCalledWith("rename_album", {
+      oldTitle: "Old Album",
+      newTitle: "New Album"
     });
   });
 });

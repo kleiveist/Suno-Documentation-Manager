@@ -100,7 +100,7 @@ describe("track library assignment", () => {
     expect(trackLibraryAssignment("unknown", "Record")).toBeNull();
   });
 
-  it("matches the native album-title length and control-character boundary", () => {
+  it("matches the native album-folder validation boundary", () => {
     expect(trackLibraryAssignment("album", "a".repeat(200))).toEqual({
       section: "album",
       albumTitle: "a".repeat(200)
@@ -111,6 +111,8 @@ describe("track library assignment", () => {
       albumTitle: "a".repeat(200)
     });
     expect(trackLibraryAssignment("album", "Invalid\nAlbum")).toBeNull();
+    expect(trackLibraryAssignment("album", "unsafe/name")).toBeNull();
+    expect(trackLibraryAssignment("album", "Singles")).toBeNull();
     expect(trackLibraryAssignment("single", "Ignored\nAlbum")).toEqual({ section: "single" });
   });
 });

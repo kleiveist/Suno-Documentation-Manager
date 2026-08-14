@@ -12,12 +12,12 @@ use crate::model::{
 };
 use crate::persistence::Persistence;
 use crate::security::{
-    atomic_write_new, canonical_workspace, contained_path, copy_new, ensure_contained_directory,
-    portable_relative, sha256_file, slugify,
+    atomic_write, atomic_write_new, canonical_workspace, contained_path, copy_new,
+    ensure_contained_directory, portable_relative, sha256_file, slugify,
 };
 use crate::workflow;
 use chrono::{Months, NaiveDate, Utc};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -34,6 +34,9 @@ pub const TRACK_FOLDERS: [&str; 8] = [
     "06_CERTIFICATE",
     ".archive/revisions",
 ];
+
+const SINGLES_DIRECTORY: &str = "Singles";
+const TRACK_IDENTITY_FILE: &str = ".summary/track.json";
 
 #[derive(Debug)]
 pub struct WorkspaceApp {
@@ -55,6 +58,7 @@ impl WorkspaceApp {
             persistence.set_meta("workspace_id", &Uuid::new_v4().to_string())?;
         }
         let app = Self { root, persistence };
+        app.reconcile_physical_library()?;
         app.recover_interrupted_operations()?;
         Ok(app)
     }
@@ -62,6 +66,9 @@ impl WorkspaceApp {
     fn recover_interrupted_operations(&self) -> Result<()> {
         let mut recovered = false;
         for track in self.persistence.tracks()? {
+            if !self.root.join(&track.relative_path).is_dir() {
+                continue;
+            }
             let root = self.track_root(&track)?;
             let live = contained_path(&root, Path::new(certificate::CERTIFICATE_DIR), false)?;
 
@@ -245,8 +252,8 @@ impl WorkspaceApp {
         let profile = self.profile()?;
         validate_profile(&profile, true)?;
         validate_optional_date("Production start", &input.production_start_date)?;
-        let library = normalize_track_library(input.library)?;
-        let relative_path = slugify(&input.title)?;
+        let library = self.existing_album_spelling(normalize_track_library(input.library)?)?;
+        let relative_path = physical_track_relative(&library, &input.title)?;
         if self
             .persistence
             .track_by_relative_path(&relative_path)?
@@ -254,13 +261,31 @@ impl WorkspaceApp {
         {
             return Err(AppError::Collision(relative_path));
         }
-        let target = contained_path(&self.root, Path::new(&relative_path), false)?;
+        let target_relative = Path::new(&relative_path);
+        let parent_relative = target_relative
+            .parent()
+            .ok_or_else(|| AppError::Validation("A track folder needs a parent.".into()))?;
+        let parent_existed = self.root.join(parent_relative).is_dir();
+        let parent = ensure_contained_directory(&self.root, parent_relative)?;
+        if parent_relative != Path::new(SINGLES_DIRECTORY) && looks_like_track_root(&parent) {
+            return Err(AppError::Collision(portable_relative(parent_relative)));
+        }
+        let target = contained_path(&self.root, target_relative, false)?;
         if target.exists() {
             return Err(AppError::Collision(relative_path));
         }
-        fs::create_dir(&target).map_err(|error| AppError::io(&target, error))?;
-        for folder in TRACK_FOLDERS {
-            ensure_contained_directory(&target, Path::new(folder))?;
+        if let Err(error) = (|| -> Result<()> {
+            fs::create_dir(&target).map_err(|error| AppError::io(&target, error))?;
+            for folder in TRACK_FOLDERS {
+                ensure_contained_directory(&target, Path::new(folder))?;
+            }
+            Ok(())
+        })() {
+            let _ = fs::remove_dir_all(&target);
+            if !parent_existed {
+                let _ = fs::remove_dir(&parent);
+            }
+            return Err(error);
         }
         let now = now();
         let fields = crate::model::TrackFields {
@@ -292,12 +317,24 @@ impl WorkspaceApp {
         };
         if let Err(error) = self.persistence.save_track(&track) {
             let _ = fs::remove_dir_all(&target);
+            if !parent_existed {
+                let _ = fs::remove_dir(&parent);
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.write_track_identity(&track) {
+            let _ = self.persistence.delete_track(&track.id);
+            let _ = fs::remove_dir_all(&target);
+            if !parent_existed {
+                let _ = fs::remove_dir(&parent);
+            }
             return Err(error);
         }
         self.detail_from_record(track, false)
     }
 
     pub fn list_tracks(&self) -> Result<Vec<TrackSummary>> {
+        self.reconcile_physical_library()?;
         let mut result = Vec::new();
         for track in self.persistence.tracks()? {
             let detail = self.detail_from_record(track, true)?;
@@ -308,19 +345,38 @@ impl WorkspaceApp {
     }
 
     pub fn load_track(&self, id: &str) -> Result<TrackDetail> {
+        self.reconcile_physical_library()?;
         self.detail_from_record(self.persistence.track(id)?, true)
     }
 
     pub fn update_track(&self, id: &str, patch: TrackPatch) -> Result<TrackDetail> {
         let mut track = self.mutable_track(id)?;
+        let previous_path = track.relative_path.clone();
         let previous_fields = track.fields.clone();
         apply_patch(&mut track.fields, patch);
         validate_track_fields(&track.fields)?;
         if track.fields != previous_fields {
+            if track.fields.title != previous_fields.title {
+                let target = physical_track_relative(&track.library, &track.fields.title)?;
+                self.move_track_directory(&previous_path, &target)?;
+                track.relative_path = target;
+            }
             mark_content_changed(&mut track);
             track.status = TrackStatus::Active;
             track.updated_at = now();
-            self.persistence.save_track(&track)?;
+            if let Err(error) = self.persistence.save_track(&track) {
+                if track.relative_path != previous_path {
+                    if let Err(rollback) =
+                        self.rollback_track_move(&track.relative_path, &previous_path)
+                    {
+                        return Err(AppError::Data(format!(
+                            "Track update failed ({error}); folder rollback failed: {rollback}"
+                        )));
+                    }
+                }
+                return Err(error);
+            }
+            self.write_track_identity(&track)?;
         }
         self.detail_from_record(track, false)
     }
@@ -330,13 +386,114 @@ impl WorkspaceApp {
         id: &str,
         input: TrackLibraryPlacement,
     ) -> Result<TrackDetail> {
+        self.reconcile_physical_library()?;
         let mut track = self.persistence.track(id)?;
-        let library = normalize_track_library(input)?;
-        if track.library != library {
+        let library = self.existing_album_spelling(normalize_track_library(input)?)?;
+        let previous_path = track.relative_path.clone();
+        let target_path = physical_track_relative(&library, &track.fields.title)?;
+        if previous_path != target_path {
+            self.move_track_directory(&previous_path, &target_path)?;
+            track.relative_path = target_path;
+        }
+        if track.library != library || track.relative_path != previous_path {
             track.library = library;
-            self.persistence.save_track(&track)?;
+            if let Err(error) = self.persistence.save_track(&track) {
+                if track.relative_path != previous_path {
+                    if let Err(rollback) =
+                        self.rollback_track_move(&track.relative_path, &previous_path)
+                    {
+                        return Err(AppError::Data(format!(
+                            "Library update failed ({error}); folder rollback failed: {rollback}"
+                        )));
+                    }
+                }
+                return Err(error);
+            }
+            self.write_track_identity(&track)?;
         }
         self.detail_from_stored_record(track)
+    }
+
+    pub fn rename_album(&self, old_title: &str, new_title: &str) -> Result<Vec<TrackSummary>> {
+        self.reconcile_physical_library()?;
+        let old_library = normalize_track_library(TrackLibraryPlacement {
+            section: TrackLibrarySection::Album,
+            album_title: Some(old_title.to_owned()),
+        })?;
+        let new_library = normalize_track_library(TrackLibraryPlacement {
+            section: TrackLibrarySection::Album,
+            album_title: Some(new_title.to_owned()),
+        })?;
+        let old_title = old_library
+            .album_title
+            .as_deref()
+            .expect("normalized album");
+        let new_title = new_library
+            .album_title
+            .as_deref()
+            .expect("normalized album");
+        if old_title == new_title {
+            return self.list_tracks();
+        }
+
+        let mut tracks = self
+            .persistence
+            .tracks()?
+            .into_iter()
+            .filter(|track| {
+                track.library.section == TrackLibrarySection::Album
+                    && track.library.album_title.as_deref() == Some(old_title)
+            })
+            .collect::<Vec<_>>();
+        if tracks.is_empty() {
+            return Err(AppError::Validation(format!(
+                "Album not found: {old_title}"
+            )));
+        }
+
+        let source_relative = PathBuf::from(safe_album_directory(old_title)?);
+        let target_relative = PathBuf::from(safe_album_directory(new_title)?);
+        let source = contained_path(&self.root, &source_relative, true)?;
+        let target = contained_path(&self.root, &target_relative, false)?;
+        if target.exists()
+            && fs::canonicalize(&target).map_err(|error| AppError::io(&target, error))?
+                != fs::canonicalize(&source).map_err(|error| AppError::io(&source, error))?
+        {
+            return Err(AppError::Collision(portable_relative(&target_relative)));
+        }
+        for track in &tracks {
+            let relative = Path::new(&track.relative_path);
+            if !relative.starts_with(&source_relative) || relative.components().count() != 2 {
+                return Err(AppError::Validation(format!(
+                    "Track {} is not stored inside album folder {}.",
+                    track.fields.title, old_title
+                )));
+            }
+        }
+
+        fs::rename(&source, &target).map_err(|error| AppError::io(&target, error))?;
+        for track in &mut tracks {
+            let leaf = Path::new(&track.relative_path)
+                .file_name()
+                .ok_or_else(|| AppError::Data("Stored track path has no folder name.".into()))?;
+            track.relative_path = portable_relative(&target_relative.join(leaf));
+            track.library = new_library.clone();
+        }
+        if let Err(error) = self.persistence.save_tracks(&tracks) {
+            if let Err(rollback) = self.rollback_track_move(
+                &portable_relative(&target_relative),
+                &portable_relative(&source_relative),
+            ) {
+                return Err(AppError::Data(format!(
+                    "Album rename failed ({error}); folder rollback failed: {rollback}"
+                )));
+            }
+            return Err(error);
+        }
+        for track in &tracks {
+            self.write_track_identity(track)?;
+        }
+        self.list_tracks()
     }
 
     pub fn adopt_legacy_profile(&self, id: &str) -> Result<TrackDetail> {
@@ -1274,28 +1431,12 @@ impl WorkspaceApp {
     }
 
     pub fn scan_workspace(&self) -> Result<WorkspaceScan> {
+        self.reconcile_physical_library()?;
         let mut candidates = Vec::new();
         let mut warnings = Vec::new();
         let mut indexed = 0_u32;
         let mut unchanged = 0_u32;
-        let entries = fs::read_dir(&self.root).map_err(|error| AppError::io(&self.root, error))?;
-        for entry in entries {
-            let entry = entry.map_err(|error| AppError::io(&self.root, error))?;
-            let name = match entry.file_name().to_str() {
-                Some(value) if value != ".suno-doc" => value.to_owned(),
-                _ => continue,
-            };
-            let metadata = fs::symlink_metadata(entry.path())
-                .map_err(|error| AppError::io(entry.path(), error))?;
-            if metadata.file_type().is_symlink() {
-                warnings.push(format!("Skipped symbolic-link candidate: {name}"));
-                continue;
-            }
-            if !metadata.is_dir() {
-                continue;
-            }
-            let relative = PathBuf::from(&name);
-            crate::security::validate_relative(&relative)?;
+        for (name, relative, library) in discover_workspace_tracks(&self.root, &mut warnings)? {
             let track_root = contained_path(&self.root, &relative, true)?;
             let inspection = inspect_legacy(&track_root)?;
             let existing = self
@@ -1318,7 +1459,7 @@ impl WorkspaceApp {
                     workflow_id: config.id,
                     workflow_version: config.version,
                     profile_snapshot: Profile::default(),
-                    library: TrackLibraryPlacement::default(),
+                    library,
                     fields,
                     documents: DocumentState {
                         generated: false,
@@ -1372,6 +1513,7 @@ impl WorkspaceApp {
     }
 
     fn mutable_track(&self, id: &str) -> Result<TrackRecord> {
+        self.reconcile_physical_library()?;
         let track = self.persistence.track(id)?;
         if track.status == TrackStatus::Finalized {
             return Err(AppError::Finalized);
@@ -1445,6 +1587,189 @@ impl WorkspaceApp {
                 generated_disclosure_text: None,
             };
             self.persistence.save_evidence(&track.id, &item)?;
+        }
+        Ok(())
+    }
+
+    fn write_track_identity(&self, track: &TrackRecord) -> Result<()> {
+        let root = contained_path(&self.root, Path::new(&track.relative_path), true)?;
+        let identity_relative = Path::new(TRACK_IDENTITY_FILE);
+        let identity = contained_path(&root, identity_relative, false)?;
+        if identity.is_file() {
+            let bytes = fs::read(&identity).map_err(|error| AppError::io(&identity, error))?;
+            if serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|value| value.get("trackId")?.as_str().map(str::to_owned))
+                .as_deref()
+                == Some(track.id.as_str())
+            {
+                return Ok(());
+            }
+            return Err(AppError::Collision(identity.display().to_string()));
+        }
+        let mut bytes = serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "trackId": track.id,
+        }))?;
+        bytes.push(b'\n');
+        atomic_write(&identity, &bytes)
+    }
+
+    fn existing_album_spelling(
+        &self,
+        library: TrackLibraryPlacement,
+    ) -> Result<TrackLibraryPlacement> {
+        if library.section != TrackLibrarySection::Album {
+            return Ok(library);
+        }
+        let requested = library.album_title.as_deref().expect("normalized album");
+        let comparison = requested.to_lowercase();
+        for track in self.persistence.tracks()? {
+            let Some(existing) = track.library.album_title.as_deref() else {
+                continue;
+            };
+            if track.library.section == TrackLibrarySection::Album
+                && existing.to_lowercase() == comparison
+            {
+                return Ok(TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: Some(existing.to_owned()),
+                });
+            }
+        }
+        Ok(library)
+    }
+
+    fn move_track_directory(&self, source_relative: &str, target_relative: &str) -> Result<()> {
+        if source_relative == target_relative {
+            return Ok(());
+        }
+        let source_relative = Path::new(source_relative);
+        let target_relative = Path::new(target_relative);
+        let source = contained_path(&self.root, source_relative, true)?;
+        if !source.is_dir() {
+            return Err(AppError::Validation(format!(
+                "Managed track path is not a directory: {}",
+                source.display()
+            )));
+        }
+        let target = contained_path(&self.root, target_relative, false)?;
+        if target.exists()
+            && fs::canonicalize(&target).map_err(|error| AppError::io(&target, error))?
+                != fs::canonicalize(&source).map_err(|error| AppError::io(&source, error))?
+        {
+            return Err(AppError::Collision(portable_relative(target_relative)));
+        }
+        let target_parent_relative = target_relative
+            .parent()
+            .ok_or_else(|| AppError::Validation("A track folder needs a parent.".into()))?;
+        let target_parent = ensure_contained_directory(&self.root, target_parent_relative)?;
+        if target_parent_relative != Path::new(SINGLES_DIRECTORY)
+            && looks_like_track_root(&target_parent)
+        {
+            return Err(AppError::Collision(portable_relative(
+                target_parent_relative,
+            )));
+        }
+        fs::rename(&source, &target).map_err(|error| AppError::io(&target, error))?;
+        if let Some(source_parent) = source_relative.parent() {
+            let _ = self.remove_empty_library_directory(source_parent);
+        }
+        Ok(())
+    }
+
+    fn rollback_track_move(&self, source_relative: &str, target_relative: &str) -> Result<()> {
+        self.move_track_directory(source_relative, target_relative)
+    }
+
+    fn remove_empty_library_directory(&self, relative: &Path) -> Result<()> {
+        if relative.as_os_str().is_empty()
+            || relative == Path::new(SINGLES_DIRECTORY)
+            || relative.components().count() != 1
+        {
+            return Ok(());
+        }
+        let directory = contained_path(&self.root, relative, false)?;
+        if directory.is_dir() {
+            match fs::remove_dir(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+                Err(error) => return Err(AppError::io(&directory, error)),
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile_physical_library(&self) -> Result<()> {
+        let identities = discover_track_identities(&self.root)?;
+        let tracks = self.persistence.tracks()?;
+        let mut claimed = tracks
+            .iter()
+            .filter(|track| self.root.join(&track.relative_path).is_dir())
+            .map(|track| track.relative_path.clone())
+            .collect::<HashSet<_>>();
+
+        for mut track in tracks {
+            let original_path = track.relative_path.clone();
+            let stored_exists = self.root.join(&original_path).is_dir();
+            let mut moved_from = None;
+
+            if stored_exists && !track.legacy && Path::new(&original_path).components().count() == 1
+            {
+                let leaf = Path::new(&original_path).file_name().ok_or_else(|| {
+                    AppError::Data("Stored track path has no folder name.".into())
+                })?;
+                let parent = physical_library_parent(&track.library)?;
+                let target = portable_relative(&parent.join(leaf));
+                self.move_track_directory(&original_path, &target)?;
+                claimed.remove(&original_path);
+                claimed.insert(target.clone());
+                moved_from = Some(original_path.clone());
+                track.relative_path = target;
+            } else if !stored_exists {
+                let discovered = identities.get(&track.id).cloned().or_else(|| {
+                    find_unclaimed_track_in_library(&self.root, &track.library, &claimed)
+                        .ok()
+                        .flatten()
+                });
+                if let Some(relative_path) = discovered {
+                    claimed.insert(relative_path.clone());
+                    track.relative_path = relative_path;
+                    if track.legacy {
+                        if let Some(title) = Path::new(&track.relative_path)
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                        {
+                            track.fields.title = title.to_owned();
+                        }
+                    }
+                } else {
+                    continue;
+                }
+            }
+
+            if let Some(inferred) = physical_library_from_relative(&track.relative_path)? {
+                track.library = inferred;
+            }
+            if track.relative_path != original_path
+                || track.library != self.persistence.track(&track.id)?.library
+            {
+                if let Err(error) = self.persistence.save_track(&track) {
+                    if let Some(source) = moved_from {
+                        if let Err(rollback) =
+                            self.rollback_track_move(&track.relative_path, &source)
+                        {
+                            return Err(AppError::Data(format!(
+                                "Library migration failed ({error}); folder rollback failed: {rollback}"
+                            )));
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+            if !track.legacy {
+                self.write_track_identity(&track)?;
+            }
         }
         Ok(())
     }
@@ -1685,12 +2010,9 @@ fn inspect_legacy(root: &Path) -> Result<LegacyInspection> {
     let mut evidence_files = Vec::new();
     let mut has_collision = false;
     for entry in WalkDir::new(root).min_depth(1).follow_links(false) {
-        let entry = entry.map_err(|error| {
-            AppError::io(
-                error.path().unwrap_or(root),
-                std::io::Error::other(error.to_string()),
-            )
-        })?;
+        let Ok(entry) = entry else {
+            continue;
+        };
         if entry.file_type().is_symlink() {
             return Err(AppError::Symlink(entry.path().display().to_string()));
         }
@@ -1715,6 +2037,7 @@ fn inspect_legacy(root: &Path) -> Result<LegacyInspection> {
             }
         } else if portable != integrity::HASH_FILE
             && !portable.starts_with(".archive/")
+            && !portable.starts_with(".summary/")
             && !portable.starts_with("06_CERTIFICATE/")
         {
             evidence_files.push(portable);
@@ -2157,12 +2480,272 @@ fn normalize_track_library(input: TrackLibraryPlacement) -> Result<TrackLibraryP
             }
             let title = raw_title.trim();
             validate_short_text("Album title", title, 200, true)?;
+            safe_album_directory(title)?;
             Ok(TrackLibraryPlacement {
                 section: TrackLibrarySection::Album,
                 album_title: Some(title.to_owned()),
             })
         }
     }
+}
+
+fn safe_album_directory(title: &str) -> Result<String> {
+    let title = title.trim();
+    if title.is_empty()
+        || matches!(title, "." | "..")
+        || title.eq_ignore_ascii_case(SINGLES_DIRECTORY)
+        || title.eq_ignore_ascii_case(".suno-doc")
+        || title.contains(['/', '\\'])
+        || title.chars().any(char::is_control)
+    {
+        return Err(AppError::Validation(
+            "Album title does not form a safe folder name.".into(),
+        ));
+    }
+    Ok(title.to_owned())
+}
+
+fn physical_library_parent(library: &TrackLibraryPlacement) -> Result<PathBuf> {
+    match library.section {
+        TrackLibrarySection::Single => Ok(PathBuf::from(SINGLES_DIRECTORY)),
+        TrackLibrarySection::Album => Ok(PathBuf::from(safe_album_directory(
+            library.album_title.as_deref().unwrap_or_default(),
+        )?)),
+    }
+}
+
+fn physical_track_relative(library: &TrackLibraryPlacement, title: &str) -> Result<String> {
+    Ok(portable_relative(
+        &physical_library_parent(library)?.join(safe_track_directory(title)?),
+    ))
+}
+
+fn safe_track_directory(title: &str) -> Result<String> {
+    let title = title.trim();
+    slugify(title)?;
+    if title.contains(['/', '\\']) || title.chars().any(char::is_control) {
+        return Err(AppError::Validation(
+            "Track title does not form a safe folder name.".into(),
+        ));
+    }
+    Ok(title.to_owned())
+}
+
+fn physical_library_from_relative(relative: &str) -> Result<Option<TrackLibraryPlacement>> {
+    let relative = Path::new(relative);
+    crate::security::validate_relative(relative)?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.len() != 2 {
+        return Ok(None);
+    }
+    let parent = components[0]
+        .as_os_str()
+        .to_str()
+        .ok_or_else(|| AppError::Validation("Track library folder name must use UTF-8.".into()))?;
+    if parent == SINGLES_DIRECTORY {
+        return Ok(Some(TrackLibraryPlacement::default()));
+    }
+    Ok(Some(normalize_track_library(TrackLibraryPlacement {
+        section: TrackLibrarySection::Album,
+        album_title: Some(parent.to_owned()),
+    })?))
+}
+
+fn discover_track_identities(root: &Path) -> Result<HashMap<String, String>> {
+    let mut identities = HashMap::new();
+    for entry in WalkDir::new(root)
+        .min_depth(3)
+        .max_depth(4)
+        .follow_links(false)
+        .into_iter()
+    {
+        let entry = entry.map_err(|error| {
+            AppError::io(
+                error.path().unwrap_or(root),
+                std::io::Error::other(error.to_string()),
+            )
+        })?;
+        if entry.file_type().is_symlink() {
+            continue;
+        }
+        if !entry.file_type().is_file()
+            || entry.file_name() != std::ffi::OsStr::new("track.json")
+            || entry.path().parent().and_then(Path::file_name)
+                != Some(std::ffi::OsStr::new(".summary"))
+        {
+            continue;
+        }
+        let Some(track_root) = entry.path().parent().and_then(Path::parent) else {
+            continue;
+        };
+        if track_root.starts_with(root.join(".suno-doc")) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(id) = value.get("trackId").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let relative = portable_relative(
+            track_root
+                .strip_prefix(root)
+                .map_err(|_| AppError::PathEscape)?,
+        );
+        match identities.entry(id.to_owned()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(relative);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.insert(String::new());
+            }
+        }
+    }
+    identities.retain(|_, relative| !relative.is_empty());
+    Ok(identities)
+}
+
+fn find_unclaimed_track_in_library(
+    root: &Path,
+    library: &TrackLibraryPlacement,
+    claimed: &HashSet<String>,
+) -> Result<Option<String>> {
+    let parent_relative = physical_library_parent(library)?;
+    let parent = contained_path(root, &parent_relative, false)?;
+    if !parent.is_dir() {
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(&parent).map_err(|error| AppError::io(&parent, error))? {
+        let entry = entry.map_err(|error| AppError::io(&parent, error))?;
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| AppError::io(entry.path(), error))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let relative = portable_relative(
+            &entry
+                .path()
+                .strip_prefix(root)
+                .map_err(|_| AppError::PathEscape)?,
+        );
+        if !claimed.contains(&relative) {
+            candidates.push(relative);
+        }
+    }
+    Ok((candidates.len() == 1).then(|| candidates.remove(0)))
+}
+
+fn discover_workspace_tracks(
+    root: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<(String, PathBuf, TrackLibraryPlacement)>> {
+    let mut result = Vec::new();
+    let entries = fs::read_dir(root).map_err(|error| AppError::io(root, error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| AppError::io(root, error))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if name == ".suno-doc" {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| AppError::io(entry.path(), error))?;
+        if metadata.file_type().is_symlink() {
+            warnings.push(format!("Skipped symbolic-link candidate: {name}"));
+            continue;
+        }
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        if name == SINGLES_DIRECTORY {
+            collect_library_children(
+                root,
+                &entry.path(),
+                TrackLibraryPlacement::default(),
+                warnings,
+                &mut result,
+            )?;
+        } else if looks_like_track_root(&entry.path()) {
+            result.push((
+                name.clone(),
+                PathBuf::from(name),
+                TrackLibraryPlacement::default(),
+            ));
+        } else {
+            let library = match normalize_track_library(TrackLibraryPlacement {
+                section: TrackLibrarySection::Album,
+                album_title: Some(name.clone()),
+            }) {
+                Ok(library) => library,
+                Err(error) => {
+                    warnings.push(format!("Skipped invalid album folder {name}: {error}"));
+                    continue;
+                }
+            };
+            collect_library_children(root, &entry.path(), library, warnings, &mut result)?;
+        }
+    }
+    result.sort_by(|left, right| {
+        portable_relative(&left.1)
+            .to_lowercase()
+            .cmp(&portable_relative(&right.1).to_lowercase())
+    });
+    Ok(result)
+}
+
+fn collect_library_children(
+    root: &Path,
+    parent: &Path,
+    library: TrackLibraryPlacement,
+    warnings: &mut Vec<String>,
+    result: &mut Vec<(String, PathBuf, TrackLibraryPlacement)>,
+) -> Result<()> {
+    for entry in fs::read_dir(parent).map_err(|error| AppError::io(parent, error))? {
+        let entry = entry.map_err(|error| AppError::io(parent, error))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| AppError::io(entry.path(), error))?;
+        if metadata.file_type().is_symlink() {
+            warnings.push(format!(
+                "Skipped symbolic-link track candidate: {}",
+                entry.path().display()
+            ));
+            continue;
+        }
+        if !metadata.is_dir() || name.starts_with('.') {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| AppError::PathEscape)?
+            .to_owned();
+        crate::security::validate_relative(&relative)?;
+        result.push((name, relative, library.clone()));
+    }
+    Ok(())
+}
+
+fn looks_like_track_root(path: &Path) -> bool {
+    path.join(TRACK_IDENTITY_FILE).is_file()
+        || [
+            "01_RELEASE",
+            "02_SUNO",
+            "03_DOCUMENTATION",
+            "04_LICENSES",
+            "05_ARTWORK",
+            "06_CERTIFICATE",
+        ]
+        .iter()
+        .any(|folder| path.join(folder).is_dir())
 }
 
 fn validate_track_title(title: &str) -> Result<()> {
@@ -2753,12 +3336,11 @@ mod tests {
             .collect()
     }
 
-    fn track_record_without_library(track: &TrackRecord) -> serde_json::Value {
+    fn track_record_without_library_path(track: &TrackRecord) -> serde_json::Value {
         let mut value = serde_json::to_value(track).expect("serializable track record");
-        value
-            .as_object_mut()
-            .expect("track record object")
-            .remove("library");
+        let object = value.as_object_mut().expect("track record object");
+        object.remove("library");
+        object.remove("relativePath");
         value
     }
 
@@ -2817,7 +3399,8 @@ mod tests {
             .expect("album track");
         assert_eq!(created.library.section, TrackLibrarySection::Album);
         assert_eq!(created.library.album_title.as_deref(), Some("Night Drive"));
-        assert_eq!(created.relative_path, "Album-Track");
+        assert_eq!(created.relative_path, "Night Drive/Album Track");
+        assert!(workspace.join("Night Drive/Album Track").is_dir());
         assert_eq!(crate::persistence::SCHEMA_VERSION, 2);
         drop(app);
 
@@ -3027,7 +3610,7 @@ mod tests {
         app.persistence
             .save_track(&record)
             .expect("finalized fixture");
-        let protected_before = track_record_without_library(&record);
+        let protected_before = track_record_without_library_path(&record);
         let tree_before = track_tree_snapshot(&track_root);
 
         let album = app
@@ -3048,10 +3631,12 @@ mod tests {
         );
         let album_record = app.persistence.track(&created.id).expect("stored album");
         assert_eq!(
-            track_record_without_library(&album_record),
+            track_record_without_library_path(&album_record),
             protected_before
         );
-        assert_eq!(track_tree_snapshot(&track_root), tree_before);
+        let album_root = app.root().join(&album.relative_path);
+        assert_eq!(track_tree_snapshot(&album_root), tree_before);
+        assert!(!track_root.exists());
 
         let single = app
             .update_track_library(
@@ -3065,10 +3650,230 @@ mod tests {
         assert_eq!(single.library, TrackLibraryPlacement::default());
         let single_record = app.persistence.track(&created.id).expect("stored single");
         assert_eq!(
-            track_record_without_library(&single_record),
+            track_record_without_library_path(&single_record),
             protected_before
         );
-        assert_eq!(track_tree_snapshot(&track_root), tree_before);
+        let single_root = app.root().join(&single.relative_path);
+        assert_eq!(track_tree_snapshot(&single_root), tree_before);
+        assert!(!album_root.exists());
+    }
+
+    #[test]
+    fn album_rename_moves_the_folder_and_updates_every_member_path() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let library = TrackLibraryPlacement {
+            section: TrackLibrarySection::Album,
+            album_title: Some("Gravity Drift".into()),
+        };
+        let first = app
+            .create_track(CreateTrackInput {
+                title: "Gravaty".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library,
+            })
+            .expect("first album track");
+        let second = app
+            .create_track(CreateTrackInput {
+                title: "Orbit".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: Some("gravity drift".into()),
+                },
+            })
+            .expect("second album track");
+        assert_eq!(second.relative_path, "Gravity Drift/Orbit");
+        fs::write(
+            app.root()
+                .join(&first.relative_path)
+                .join("01_RELEASE/master.wav"),
+            b"album rename sentinel",
+        )
+        .expect("sentinel");
+
+        let renamed = app
+            .rename_album("Gravity Drift", "Gravity Drive")
+            .expect("rename album");
+
+        assert!(!app.root().join("Gravity Drift").exists());
+        assert!(app.root().join("Gravity Drive/Gravaty").is_dir());
+        assert!(app.root().join("Gravity Drive/Orbit").is_dir());
+        assert_eq!(
+            fs::read(
+                app.root()
+                    .join("Gravity Drive/Gravaty/01_RELEASE/master.wav")
+            )
+            .expect("preserved sentinel"),
+            b"album rename sentinel"
+        );
+        for id in [&first.id, &second.id] {
+            let summary = renamed
+                .iter()
+                .find(|track| &track.id == id)
+                .expect("renamed member");
+            assert!(summary.relative_path.starts_with("Gravity Drive/"));
+            assert_eq!(
+                summary.library.album_title.as_deref(),
+                Some("Gravity Drive")
+            );
+        }
+    }
+
+    #[test]
+    fn changing_a_track_title_renames_its_managed_folder() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Old Track".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let old_root = app.root().join(&created.relative_path);
+        fs::write(old_root.join("02_SUNO/source.wav"), b"rename sentinel").expect("sentinel");
+
+        let renamed = app
+            .update_track(
+                &created.id,
+                TrackPatch {
+                    title: Some("New Track".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("rename track");
+
+        assert_eq!(renamed.relative_path, "Singles/New Track");
+        assert!(!old_root.exists());
+        assert_eq!(
+            fs::read(app.root().join("Singles/New Track/02_SUNO/source.wav"))
+                .expect("preserved sentinel"),
+            b"rename sentinel"
+        );
+    }
+
+    #[test]
+    fn library_move_rolls_back_when_the_database_rejects_the_new_path() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let moving = app
+            .create_track(CreateTrackInput {
+                title: "First".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("moving track");
+        let collision = app
+            .create_track(CreateTrackInput {
+                title: "Second".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("collision track");
+        let collision_root = app.root().join(&collision.relative_path);
+        fs::remove_file(collision_root.join(TRACK_IDENTITY_FILE)).expect("remove test identity");
+        let mut collision_record = app
+            .persistence
+            .track(&collision.id)
+            .expect("collision record");
+        collision_record.relative_path = "Rollback Album/First".into();
+        collision_record.library = TrackLibraryPlacement {
+            section: TrackLibrarySection::Album,
+            album_title: Some("Rollback Album".into()),
+        };
+        app.persistence
+            .save_track(&collision_record)
+            .expect("stale collision record");
+
+        let error = app
+            .update_track_library(
+                &moving.id,
+                TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: Some("Rollback Album".into()),
+                },
+            )
+            .expect_err("database uniqueness must reject target path");
+
+        assert!(matches!(error, AppError::Database(_)));
+        assert!(app.root().join("Singles/First").is_dir());
+        assert!(!app.root().join("Rollback Album/First").exists());
+        assert!(!app.root().join("Rollback Album").exists());
+        let unchanged = app.persistence.track(&moving.id).expect("unchanged record");
+        assert_eq!(unchanged.relative_path, moving.relative_path);
+        assert_eq!(unchanged.library, TrackLibraryPlacement::default());
+    }
+
+    #[test]
+    fn reopen_recovers_an_externally_renamed_album_folder_from_track_identity() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Orbit".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: Some("Old Album".into()),
+                },
+            })
+            .expect("track");
+        drop(app);
+        fs::rename(workspace.join("Old Album"), workspace.join("Renamed Album"))
+            .expect("external album rename");
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("reopen renamed workspace");
+        let recovered = reopened.load_track(&created.id).expect("recovered track");
+        assert_eq!(recovered.relative_path, "Renamed Album/Orbit");
+        assert_eq!(
+            recovered.library.album_title.as_deref(),
+            Some("Renamed Album")
+        );
+    }
+
+    #[test]
+    fn reopen_repairs_the_reported_legacy_missing_path_from_its_album_folder() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        let old_root = workspace.join("Neuer Ordner");
+        fs::create_dir_all(old_root.join("01_RELEASE")).expect("legacy track");
+        app.scan_workspace().expect("index legacy track");
+        let mut record = app
+            .persistence
+            .track_by_relative_path("Neuer Ordner")
+            .expect("lookup")
+            .expect("legacy record");
+        record.library = TrackLibraryPlacement {
+            section: TrackLibrarySection::Album,
+            album_title: Some("Gravity Drift".into()),
+        };
+        app.persistence
+            .save_track(&record)
+            .expect("album assignment");
+        drop(app);
+        fs::create_dir(workspace.join("Gravity Drift")).expect("album folder");
+        fs::rename(&old_root, workspace.join("Gravity Drift/Gravaty"))
+            .expect("external track move");
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("repaired workspace");
+        let recovered = reopened
+            .load_track(&record.id)
+            .expect("recovered legacy track");
+        assert_eq!(recovered.relative_path, "Gravity Drift/Gravaty");
+        assert_eq!(recovered.title, "Gravaty");
     }
 
     #[test]

@@ -113,11 +113,16 @@ export function trackLibraryAssignment(
   albumTitle: string
 ): TrackLibraryAssignment | null {
   if (section === "single") return { section: "single" };
-  if ([...albumTitle].some((character) => /\p{Cc}/u.test(character))) {
+  if ([...albumTitle].some((character) => /\p{Cc}/u.test(character)) || /[\\/]/.test(albumTitle)) {
     return null;
   }
   const normalizedTitle = albumTitle.trim();
-  if (section === "album" && normalizedTitle && [...normalizedTitle].length <= 200) {
+  if (section === "album"
+    && normalizedTitle
+    && normalizedTitle !== "."
+    && normalizedTitle !== ".."
+    && !["singles", ".suno-doc"].includes(normalizedTitle.toLocaleLowerCase("de-DE"))
+    && [...normalizedTitle].length <= 200) {
     return { section: "album", albumTitle: normalizedTitle };
   }
   return null;
