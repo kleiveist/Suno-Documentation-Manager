@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-14 |
 | Audience | Product developers and documentation reviewers |
 | Related ATP | [Track and document acceptance plans](../atp/active/active.md) |
 
@@ -133,7 +133,7 @@ Folder generation creates directories and managed text documents only when appro
 | Suno final export | `02_SUNO/` | Evidence of the selected Suno output when required by the workflow |
 | Suno project ZIP | `02_SUNO/` | Optional project evidence |
 | Suno screenshot | `02_SUNO/` | Optional factual evidence |
-| Subscription or payment PDF | `04_LICENSES/` | Selected when it covers the track production period |
+| Subscription or payment evidence (PDF, PNG/JPEG, TXT, or Markdown) | `04_LICENSES/` | Selected when its materialized coverage interval covers the track production period |
 | Release WAV, MP3, or MP4 | `01_RELEASE/` | Release output; the configured final release role is mandatory |
 | Release artwork | `01_RELEASE/` | Final release package artwork when applicable |
 | AI artwork original | `05_ARTWORK/` | Required when an AI base image is declared |
@@ -227,6 +227,7 @@ The certificate ends with this meaning: it confirms completion of the configured
 | --- | --- | --- |
 | `REQ-TRK-001` | Creating a track produces the required directory structure without fake evidence. | [ATP-0002](../atp/active/ATP-0002-track-creation.md) |
 | `REQ-TRK-002` | Conditional facts and evidence are required only when their controlling answers apply. | [ATP-0002](../atp/active/ATP-0002-track-creation.md) |
+| `REQ-TRK-003` | Interactions inside the new-track dialog retain the entered title, production-start date, and commercial-use choice; only a direct backdrop action or an explicit close/cancel control dismisses the dialog. | [ATP-0002](../atp/active/ATP-0002-track-creation.md) |
 | `REQ-DOC-001` | Versioned templates generate all required factual documents deterministically. | [ATP-0004](../atp/active/ATP-0004-document-generation.md) |
 | `REQ-EVD-001` | Evidence import preserves the source, records metadata, provenance, and a hash, and never silently overwrites. | [ATP-0005](../atp/active/ATP-0005-artwork-evidence.md) |
 | `REQ-ART-001` | Artwork stages follow the declared process and preserve the AI original. | [ATP-0005](../atp/active/ATP-0005-artwork-evidence.md) |
@@ -265,5 +266,6 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Defined new-track dialog retention/dismissal behavior and clarified supported subscription-evidence formats. | Project team |
 | 2026-08-13 | Added evidence provenance, portable disclosure lineage, and recoverable indexed-legacy removal. | Project team |
 | 2026-08-13 | Defined the portable track documentation and certificate model. | Project team |

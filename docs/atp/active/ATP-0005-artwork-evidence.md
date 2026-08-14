@@ -84,12 +84,12 @@ Accept artwork evidence when real files are copied into contained roles, origina
 
 ```sh
 cd src-tauri
-cargo test evidence_import_validates_type_and_rejects_collision
+cargo test evidence_import_validates_type_preserves_source_and_rejects_collision
 cd ../frontend
 npm test -- --run src/domain/workflow.test.ts
 ```
 
-Expected Rust evidence is `tests::evidence_import_validates_type_and_rejects_collision`. Expected Vitest evidence includes `conditional fields > shows AI/artwork follow-ups conditionally`.
+Expected Rust evidence is `evidence_import_validates_type_preserves_source_and_rejects_collision`. Expected Vitest evidence includes `conditional fields > shows AI/artwork follow-ups conditionally`.
 
 ## Verification
 

@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-14 |
 | Audience | Product developers and architects |
 | Related ATP | [Active product acceptance](../atp/active/active.md) |
 
@@ -87,6 +87,7 @@ The command surface is deliberately explicit. The exact Rust input and output st
 | Workspace | `create_workspace`, `open_workspace`, `scan_workspace` |
 | Track | `create_track`, `load_track`, `update_track` |
 | Evidence | `import_evidence`, `remove_evidence`, `verify_evidence` |
+| Global evidence | `list_global_evidence`, `import_global_evidence`, `remove_global_evidence`, `attach_global_evidence` |
 | Documents | `generate_documents` |
 | Artwork | `generate_artwork_disclosure` |
 | Integrity | `calculate_hashes`, `verify_hashes` |
@@ -130,6 +131,8 @@ Every workspace is selected by the user and canonicalized before use. Product-ma
 
 Tauri capabilities remain minimal. The application does not add a global filesystem allowlist such as `/**`.
 
+Create-only files and evidence copies are first completed in a temporary sibling and then published with a no-clobber filesystem operation. The concrete operating-system mechanism can differ by platform and filesystem; the product does not claim that publication is universally hard-link-free or compatible with every removable medium. Support claims require an identified filesystem execution that proves complete bytes, source preservation, occupied-destination preservation, and temporary-file cleanup. The current removable-media regression evidence covers the identified Linux/exFAT fixture in ATP-0012 only.
+
 ### Version 0.1 threat-model boundary
 
 The containment boundary protects the native command surface from webview-supplied absolute paths, traversal components, and symbolic-link components that exist when a path is checked. Product-managed paths do not intentionally support symbolic links, even when a link target would currently resolve inside the workspace.
@@ -164,6 +167,7 @@ Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclo
 | `REQ-ARC-003` | Native writes are contained, collision-aware, and atomic where content is generated. | [ATP-0012](../atp/active/ATP-0012-filesystem-containment.md) |
 | `REQ-ARC-004` | Workspace index loss does not make a complete track folder unintelligible. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 | `REQ-ARC-005` | Expected I/O, validation, and migration failures return controlled errors without a Rust panic. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
+| `REQ-ARC-006` | On every local filesystem explicitly claimed as supported, create-only and evidence-copy publication succeeds without replacing an occupied destination, deleting the source, or leaving a temporary file. | [ATP-0012](../atp/active/ATP-0012-filesystem-containment.md) |
 
 ## Verification
 
@@ -185,6 +189,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 - Path checks are not descriptor-relative across the complete operation; a hostile same-user concurrent writer can attempt a symbolic-link swap after validation. Such shared writable workspaces are outside the version 0.1 threat model and remain an open ATP item.
 - A portable folder can be edited outside the application. Integrity verification detects changes but cannot prevent them.
 - Development dependency installation can require internet access even though normal product runtime use does not.
+- The current removable-media compatibility result is limited to the identified Linux/exFAT fixture; other operating systems and filesystems retain their own acceptance obligation.
 - The certificate is a workflow artifact, not a legal or identity credential.
 
 ## Related documents
@@ -200,5 +205,6 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Defined filesystem-scoped no-clobber publication acceptance and documented the global-evidence command boundary. | Project team |
 | 2026-08-13 | Added evidence-lineage ownership and the explicit same-user symbolic-link race boundary. | Project team |
 | 2026-08-13 | Defined the local-only product architecture and trust boundaries. | Project team |

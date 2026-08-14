@@ -11,7 +11,7 @@
 | Last review | 2026-08-14 |
 | Executed | 2026-08-13/14 — partial automated execution |
 | Requirement | [`REQ-CER-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-PER-005`, `REQ-PER-006`](../../def/persistence.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Tested commit/build | Product `0.1.0`; regression automation rerun at implementation commit `b7e9797b277f0bcac58d4503049002e354cb93fb`; previously retained package digests still identify the older stabilization build in the central report |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; native ready-track, artifact cross-check, and failure-injection fixtures |
 
 ## Purpose
@@ -28,7 +28,7 @@ Accept certificate generation when a ready track produces a complete self-contai
 
 - `DOCUMENTATION_CERTIFICATE.md` required fields and disclaimer;
 - `EVIDENCE_MANIFEST.json` schema and relative references;
-- selected global subscription evidence copied into the track;
+- selected global subscription evidence copied into the track with exact materialized coverage dates;
 - `CERTIFICATE_SHA256.txt` contents and verification; and
 - atomic all-or-nothing finalized presentation.
 
@@ -72,9 +72,9 @@ Accept certificate generation when a ready track produces a complete self-contai
 | 2 | `REQ-CER-001` | Inspect `06_CERTIFICATE/`. | It contains exactly the managed certificate Markdown, JSON manifest, and certificate hash list for this revision. | The staged set contained exactly the three managed files and was atomically published; the end-to-end test asserted all three destinations. | PASS | Rust end-to-end and strict certificate-set parser tests; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 3 | `REQ-CER-001` | Review certificate fields. | Certificate ID, track, artist, workflow ID/version, app version, timestamp, mandatory result, TD-02 reasons, evidence count, selected hashes, blocking deviations, and `DOCUMENTATION COMPLETE` are present. | Not run | NOT RUN | — |
 | 4 | `REQ-CER-001` | Review the certificate ending and scan for prohibited claims. | The mandatory disclaimer meaning is present and no governmental, legal-advice, authorship, or compliance determination is asserted. | Static review confirmed the mandatory limitation wording and found no affirmative prohibited claim. | PASS | [Central execution report](../../dev/acceptance-report.md); `src-tauri/src/certificate.rs` |
-| 5 | `REQ-CER-001` | Parse `EVIDENCE_MANIFEST.json`. | Valid JSON contains `schema_version: 1` and track, artist, workflow, finalization, steps, evidence, hashes, and certificate objects. | Not run | NOT RUN | — |
+| 5 | `REQ-CER-001` | Parse `EVIDENCE_MANIFEST.json`. | Valid JSON contains `schema_version: 1` and track, artist, workflow, finalization, steps, evidence, hashes, and certificate objects; global evidence exposes its source record ID plus concrete `coverageStart` and `coverageEnd`. | Not run | NOT RUN | — |
 | 6 | `REQ-PER-006` | Inspect all manifest path values. | Every file path is normalized and relative to the track root; no drive, home, workspace absolute path, or traversal exists. | The integrated manifest contained portable evidence paths, did not contain the workspace root, and passed strict relative-path checks. | PASS | Rust `end_to_end_documentation_workflow_creates_portable_certificate` and hash-parser tests |
-| 7 | `REQ-CER-001` | Compare manifest evidence count and hashes to files. | Counts, sizes, roles, relative paths, and SHA-256 values match current portable files. | Not run | NOT RUN | — |
+| 7 | `REQ-PER-005` | Compare manifest evidence records to the selected global record and current portable files. | Counts, sizes, roles, relative paths, SHA-256 values, source global-evidence ID, and exact materialized start/end dates match; no cadence extrapolation is required. | Not run | NOT RUN | — |
 | 8 | `REQ-CER-001` | Inspect `CERTIFICATE_SHA256.txt`. | It hashes the main hash list, manifest, and certificate Markdown; it has no self-entry. | The exact-set parser accepted only the three required inputs and rejected incomplete, duplicate, extra, and self-entry sets. | PASS | Rust `certificate_hash_parser_requires_exact_complete_unique_set` |
 | 9 | `REQ-CER-001` | Verify certificate hashes natively and, where available, with `sha256sum`. | Every entry passes and the finalized state is committed only after success. | Not run | NOT RUN | — |
 | 10 | `REQ-CER-001` | Repeat with TD-04. | No partial artifact set is presented as finalized and a controlled error leaves a recoverable working state. | Six deterministic publication failpoints covered staging creation, each artifact write, publish rename, and post-publish verification; each returned a controlled error, preserved any prior set, removed staging, and exposed no partial finalized set. A separate DB-commit failure rolled publication back and reopened cleanly. | PASS | Rust certificate publication failure tests; `finalization_database_commit_failure_rolls_back_publication_and_reopens_cleanly` |
@@ -88,7 +88,7 @@ cargo test publication_failure
 cargo test finalization_database_commit_failure_rolls_back_publication_and_reopens_cleanly
 ```
 
-Expected Rust evidence is `tests::certificate_manifest_paths_are_relative` and `tests::global_evidence_is_copied_portably`.
+Expected Rust evidence is `end_to_end_documentation_workflow_creates_portable_certificate`, `global_subscription_evidence_requires_pdf_signature_and_covering_dates`, and `finalized_certificate_fields_cross_check_sqlite_track_evidence_hashes_and_manifest`.
 
 Optional independent verification from the track root:
 

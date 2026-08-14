@@ -10,13 +10,13 @@
 | Created | 2026-08-13 |
 | Last review | 2026-08-14 |
 | Executed | 2026-08-13/14 — partial automated execution |
-| Requirement | [`REQ-PER-002` through `REQ-PER-004`](../../def/persistence.md#requirements-and-atp-mapping), [`REQ-ARC-004`, `REQ-ARC-005`](../../def/product-architecture.md#product-requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
-| Environment | Linux `7.1.4-arch1-1` `x86_64`; SQLite migration/recovery fixtures and static command/schema review |
+| Requirement | [`REQ-PER-002` through `REQ-PER-005`, `REQ-PER-008`](../../def/persistence.md#requirements-and-atp-mapping), [`REQ-ARC-004`, `REQ-ARC-005`](../../def/product-architecture.md#product-requirements-and-atp-mapping) |
+| Tested commit/build | Product `0.1.0`; regression implementation commit `b7e9797b277f0bcac58d4503049002e354cb93fb` (`🐛 Fix modal interaction and subscription evidence imports`); package rebuild remains open in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; SQLite migration/recovery fixtures, billing-cycle fixtures, and static command/schema review |
 
 ## Purpose
 
-This plan verifies SQLite ownership, transactional migrations, restart persistence, global-evidence handling, and honest recovery from portable track folders after index loss.
+This plan verifies SQLite ownership, transactional migrations, restart persistence, exact per-invoice global-evidence coverage, and honest recovery from portable track folders after index loss.
 
 ## Objective
 
@@ -30,7 +30,8 @@ Accept local persistence when Rust alone owns SQLite, supported migrations are t
 - absence of arbitrary frontend SQL;
 - supported and failing migration behavior;
 - file/index partial-failure recovery;
-- index-loss scan and finalized-track recovery; and
+- index-loss scan and finalized-track recovery;
+- monthly/annual subscription coverage materialized as exact dates; and
 - globally registered subscription evidence copied into a track.
 
 ### Excluded
@@ -47,6 +48,7 @@ Accept local persistence when Rust alone owns SQLite, supported migrations are t
 | Database becomes sole track evidence | Track unusable after index loss | Delete disposable index and scan portable folder |
 | Binary evidence stored as SQLite blob | Large opaque database and poor portability | Inspect logical schema and track files |
 | File succeeds but metadata commit fails | Orphaned file or false state | Inject commit failure and run recovery scan |
+| Billing cadence is treated as recurring or open-ended proof | A single invoice falsely covers later production periods | Derive and persist exactly one inclusive interval per selected source file; verify month/year boundaries |
 
 ## Preconditions
 
@@ -65,7 +67,7 @@ Accept local persistence when Rust alone owns SQLite, supported migrations are t
 | TD-03 | Migration failure | TD-02 copy with a controlled failure injected mid-migration |
 | TD-04 | Unsupported newer schema | Version greater than the application's supported schema |
 | TD-05 | Portable recovery set | One valid finalized track and one incomplete legacy track |
-| TD-06 | Global evidence | Synthetic subscription PDF with a coverage period |
+| TD-06 | Global evidence | Separate synthetic monthly and annual subscription PDFs with factual starts, plus an invalid-date case |
 
 ## Acceptance steps
 
@@ -80,7 +82,8 @@ Accept local persistence when Rust alone owns SQLite, supported migrations are t
 | 7 | `REQ-PER-004` | Remove only the disposable SQLite index for TD-05 and start recovery. | Scan proposes both tracks from portable content and never modifies their files. | Not run | NOT RUN | — |
 | 8 | `REQ-ARC-004` | Confirm reindex of TD-05. | Valid finalized snapshot is recovered after full verification; incomplete track retains exact missing/`NOT VERIFIED` facts. | Not run | NOT RUN | — |
 | 9 | `REQ-PER-004` | Inspect unrecoverable mutable values. | UI/global facts that were never exported remain unset; no default is presented as historical truth. | Not run | NOT RUN | — |
-| 10 | `REQ-PER-002` | Register TD-06 globally and select it for a track. | The global source remains registered; finalization preparation copies a contained track instance with role, relative path, size, and hash. | A signature-valid covering PDF remained globally registered while a contained track copy retained role, provenance ID, dates, bytes, size/path metadata, and SHA-256; the commercial end-to-end track finalized with it. | PASS | Rust global-subscription and end-to-end tests |
+| 10 | `REQ-PER-005` | Register TD-06 globally and select it for a track. | The global source remains registered; finalization preparation copies a contained track instance with role, relative path, size, and hash. | A signature-valid covering PDF remained globally registered while a contained track copy retained role, provenance ID, dates, bytes, size/path metadata, and SHA-256; the commercial end-to-end track finalized with it. | PASS | Rust global-subscription and end-to-end tests |
+| 11 | `REQ-PER-008` | Register the TD-06 monthly and annual cases with only billing cycle and factual coverage start; close the native application object and reopen the stored records. | Native code derives one inclusive month/year, persists concrete `coverageStart`/`coverageEnd`, preserves both sources, and rejects an invalid start. The cadence itself does not create future evidence. | Monthly `2026-08-01` materialized as `2026-08-01`–`2026-08-31`; annual `2026-08-01` materialized as `2026-08-01`–`2027-07-31`. Both source byte sequences remained unchanged, a newly opened application object loaded both exact intervals from SQLite, and month-end, leap-year, invalid-date, serialization, command-mapping, and preview cases passed. | PASS | Rust `monthly_subscription_coverage_uses_one_calendar_month`, `annual_subscription_coverage_uses_twelve_calendar_months`, `monthly_subscription_coverage_clamps_month_end_before_subtracting_a_day`, `subscription_coverage_handles_leap_years`, `subscription_coverage_rejects_invalid_start_dates`, `billing_cycle_registration_derives_and_persists_exact_coverage_dates`; Vitest native-import mapping and coverage suites |
 
 ## Automated checks
 
@@ -90,15 +93,19 @@ cargo test sqlite_migrations_are_idempotent
 cargo test sqlite_v1_migration_backfills_legacy_provenance_conservatively
 cargo test sqlite_failed_migration_rolls_back_columns_data_and_user_version
 cargo test workspace_creation_initializes_local_database
-cargo test global_evidence_is_copied_portably
-cargo test legacy_scan_is_read_only_and_not_verified
+cargo test global_subscription_evidence_requires_pdf_signature_and_covering_dates
+cargo test subscription_coverage
+cargo test billing_cycle_registration_derives_and_persists_exact_coverage_dates
+cargo test legacy_scan_is_read_only_and_indexes_evidence_as_historically_unverified
+cd ../frontend
+npm test -- --run src/domain/subscription.test.ts src/api/desktop.test.ts
 ```
 
-Expected Rust evidence is `tests::sqlite_migrations_are_idempotent`, `tests::workspace_creation_initializes_local_database`, `tests::global_evidence_is_copied_portably`, and `tests::legacy_scan_is_read_only_and_not_verified`. Attach migration, rollback, partial-failure, recovery-tree, and round-trip outputs when executed.
+Expected Rust evidence is `tests::sqlite_migrations_are_idempotent`, `tests::workspace_creation_initializes_local_database`, `tests::global_subscription_evidence_requires_pdf_signature_and_covering_dates`, `tests::billing_cycle_registration_derives_and_persists_exact_coverage_dates`, and `tests::legacy_scan_is_read_only_and_indexes_evidence_as_historically_unverified`. Expected frontend evidence covers both date preview arithmetic and the typed `coverageStart`/`billingCycle` command mapping. Attach migration, rollback, partial-failure, recovery-tree, and round-trip outputs when executed.
 
 ## Verification
 
-The reviewer checks schema versions before/after, transaction rollback, controlled errors without panic, portable recovery results, honest unknowns, and global-evidence copy semantics.
+The reviewer checks schema versions before/after, transaction rollback, controlled errors without panic, portable recovery results, honest unknowns, exact materialized coverage dates, and global-evidence copy semantics. A monthly or annual choice must never be read as proof beyond the selected invoice's single stored interval.
 
 ## Deviations
 
@@ -109,7 +116,7 @@ The reviewer checks schema versions before/after, transaction rollback, controll
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 2–5 and 10 passed; five mandatory steps remain `NOT RUN`.
+- Summary: Steps 2–5, 10, and 11 passed; five mandatory steps remain `NOT RUN`.
 - Residual risks: Crash reconciliation and index-independent recovery are not accepted yet; facts absent from portable files remain unrecoverable by design.
 
 ## Sign-off

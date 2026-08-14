@@ -10,17 +10,17 @@
 | Created | 2026-08-13 |
 | Last review | 2026-08-14 |
 | Executed | 2026-08-13/14 — partial automated execution |
-| Requirement | [`REQ-ARC-002`, `REQ-ARC-003`](../../def/product-architecture.md#product-requirements-and-atp-mapping), [`REQ-LEG-004`](../../dev/legacy-track-import.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
-| Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary workspaces with Unix symbolic-link support |
+| Requirement | [`REQ-ARC-002`, `REQ-ARC-003`, `REQ-ARC-006`](../../def/product-architecture.md#product-requirements-and-atp-mapping), [`REQ-LEG-004`](../../dev/legacy-track-import.md#requirements-and-atp-mapping) |
+| Tested commit/build | Product `0.1.0`; regression implementation commit `b7e9797b277f0bcac58d4503049002e354cb93fb` (`🐛 Fix modal interaction and subscription evidence imports`); package rebuild remains open in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary Unix/symbolic-link workspaces plus an identified writable Samsung USB `/dev/sde1` mount with `FSTYPE=exfat` |
 
 ## Purpose
 
-This plan verifies canonical root containment, traversal and absolute-path rejection, symbolic-link escape handling, collision protection, atomic writes, narrow commands, and controlled filesystem errors.
+This plan verifies canonical root containment, traversal and absolute-path rejection, symbolic-link escape handling, collision protection, atomic writes, narrow commands, controlled filesystem errors, and filesystem-scoped no-clobber publication.
 
 ## Objective
 
-Accept the native filesystem boundary when every read/write target is derived from a named operation and contained root, hostile paths cannot escape, existing files are not silently replaced, and expected failures leave no partial managed claim.
+Accept the native filesystem boundary when every read/write target is derived from a named operation and contained root, hostile paths cannot escape, existing files are not silently replaced, expected failures leave no partial managed claim, and publication works on each explicitly accepted local filesystem.
 
 ## Scope
 
@@ -31,13 +31,15 @@ Accept the native filesystem boundary when every read/write target is derived fr
 - escaping symbolic links;
 - contained symlinks according to the product policy;
 - collision and source-preservation rules;
-- atomic generated-document writes; and
+- atomic generated-document writes;
+- create-only/evidence-copy publication on an identified Linux/exFAT fixture; and
 - least-privilege Tauri command/capability review.
 
 ### Excluded
 
 - operating-system compromise;
-- malicious or concurrent modification by another process running as the same operating-system user with direct workspace write access; and
+- malicious or concurrent modification by another process running as the same operating-system user with direct workspace write access;
+- removable filesystems and operating systems other than the explicitly identified fixture; and
 - remote path or network-share guarantees not explicitly supported.
 
 ## Version 0.1 threat-model note
@@ -54,6 +56,7 @@ No symbolic-link path is intentionally supported for product-managed operations,
 | Symlink escapes root | Access outside authorized workspace | Test existing link and swapped-link scenarios where feasible |
 | Same-user link swap races path validation | Outside read or write despite an earlier contained result | Accepted version 0.1 residual risk: do not use a workspace shared with an untrusted same-user writer; retain descriptor-relative hardening as a post-0.1 improvement |
 | Failed rename leaves partial content | Corrupt managed document | Inject write/rename failure and inspect old/temp files |
+| Publication depends on an unsupported filesystem primitive | A removable-drive import fails with `Operation not permitted` | Execute create, copy, digest, collision, source-preservation, and cleanup assertions directly on every filesystem claimed as supported |
 | Generic native command broadens authority | Webview compromise gains filesystem control | Inspect registered commands and Tauri capabilities |
 
 ## Preconditions
@@ -62,7 +65,7 @@ No symbolic-link path is intentionally supported for product-managed operations,
 - [ ] The test environment, operating system, filesystem, and build are identified.
 - [ ] Disposable workspace and outside-sentinel directories are prepared.
 - [ ] Symbolic-link capability is available or a justified platform N/A is approved.
-- [ ] No production or private files are in or near the fixture.
+- [ ] Every test write is confined to a newly created disposable child; no existing production or private file is selected as test data.
 
 ## Test data
 
@@ -73,6 +76,7 @@ No symbolic-link path is intentionally supported for product-managed operations,
 | TD-03 | Escaping symbolic link | Link inside workspace targeting TD-02's outside directory |
 | TD-04 | Contained target and collision | Valid nested track destination with an existing sentinel file |
 | TD-05 | Atomic-write fixture | Existing managed document plus injected temporary-write and rename failures |
+| TD-06 | Linux/exFAT publication fixture | Isolated disposable directory created by the opt-in, ignored-by-default Rust test inside the identified writable Samsung USB `/dev/sde1` exFAT mount; no production file is selected or modified |
 
 ## Acceptance steps
 
@@ -89,16 +93,27 @@ No symbolic-link path is intentionally supported for product-managed operations,
 | 9 | `REQ-ARC-002` | Inspect registered Tauri commands and frontend calls. | Only narrow named product operations exist; no arbitrary SQL, path/action, shell, or unrestricted filesystem command is exposed. | Static review found only named product commands; searches found no generic SQL/file/shell command surface. | PASS | [Central execution report](../../dev/acceptance-report.md); `src-tauri/src/main.rs` |
 | 10 | `REQ-ARC-002` | Inspect Tauri capability configuration. | No global filesystem allowlist such as `/**` exists; permissions are the minimum required for named native operations. | The only declared window permission is `core:default`; no filesystem glob/allowlist is present. | PASS | `src-tauri/capabilities/default.json`; Tauri structure check |
 | 11 | `REQ-ARC-003` | Trigger expected permission, missing-file, malformed-path, and read errors. | Each returns a stable user-readable error without Rust panic or application termination. | Not run | NOT RUN | — |
+| 12 | `REQ-ARC-006` | Confirm TD-06 with `findmnt`, then run the opt-in no-clobber fixture with `SUNO_DOC_REMOVABLE_FS_TEST_ROOT` naming its disposable parent. | Create-only and copy publication complete without `EPERM`; source and destination digests match after the first copy; changing the source and retrying reports collision without changing the occupied destination; the source remains present and no temporary fixture remains. | `findmnt` identified `/dev/sde1` as writable `exfat`. The opt-in Rust test passed all create/copy/digest/source/collision/destination/cleanup assertions in an isolated child directory, and automatic cleanup left no `.suno-doc-fs-compat-*` directory. | PASS | Rust `no_clobber_publish_works_on_configured_removable_filesystem`; exact command and environment in the central execution report |
 
 ## Automated checks
 
 ```sh
 cd src-tauri
-cargo test safe_path_rejects_traversal
+cargo test safe_path_rejects_traversal_and_absolute_paths
 cargo test safe_path_rejects_symlink_escape
 cargo test atomic_writes_publish_complete_bytes_and_never_clobber_new_files
+cargo test no_clobber_publish_preserves_a_destination_created_after_staging
+cargo test copy_new_publishes_complete_bytes_and_preserves_the_source
 cargo test atomic_and_copy_failures_preserve_existing_state_and_clean_temporaries
 cargo test evidence_import_validates_type_preserves_source_and_rejects_collision
+```
+
+Opt-in filesystem execution (the configured root must be disposable and writable):
+
+```sh
+findmnt -T /path/to/disposable/exfat-root -o TARGET,SOURCE,FSTYPE,OPTIONS
+SUNO_DOC_REMOVABLE_FS_TEST_ROOT=/path/to/disposable/exfat-root \
+  cargo test --locked no_clobber_publish_works_on_configured_removable_filesystem -- --ignored --nocapture
 ```
 
 Static review commands from the repository root:
@@ -107,7 +122,7 @@ Static review commands from the repository root:
 rg -n "execute_sql|execute_file_operation|allow.*\/\*\*|Command::new" frontend src-tauri
 ```
 
-Expected Rust evidence is `tests::safe_path_rejects_traversal`, Unix-only `tests::safe_path_rejects_symlink_escape`, `tests::atomic_write_replaces_complete_file`, and `tests::evidence_import_validates_type_and_rejects_collision`. Expected frontend error-boundary evidence is `toUserMessage > presents structured/string/unknown errors` and `isTauriRuntime > distinguishes browser demo` in `frontend/src/api/desktop.test.ts`.
+Expected Rust evidence is `safe_path_rejects_traversal_and_absolute_paths`, Unix-only `safe_path_rejects_symlink_escape`, `atomic_writes_publish_complete_bytes_and_never_clobber_new_files`, `no_clobber_publish_preserves_a_destination_created_after_staging`, `copy_new_publishes_complete_bytes_and_preserves_the_source`, `atomic_and_copy_failures_preserve_existing_state_and_clean_temporaries`, `evidence_import_validates_type_preserves_source_and_rejects_collision`, and the opt-in `no_clobber_publish_works_on_configured_removable_filesystem`. Expected frontend error-boundary evidence is `toUserMessage > presents structured/string/unknown errors` and `isTauriRuntime > distinguishes browser demo` in `frontend/src/api/desktop.test.ts`.
 
 ## Verification
 
@@ -122,8 +137,8 @@ Attach platform details, before/after sentinel hashes, path-case matrix, symboli
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 3–6, 9, and 10 passed; four mandatory steps remain `NOT RUN`.
-- Residual risks: Same-user symbolic-link swap races are explicitly accepted outside the version 0.1 threat model; atomic-write failure behavior still requires target-specific execution.
+- Summary: Steps 1, 3–6, 9, 10, and 12 passed; four mandatory steps remain `NOT RUN`.
+- Residual risks: Same-user symbolic-link swap races are explicitly accepted outside the version 0.1 threat model; document-specific write/rename failure behavior and filesystems beyond the identified Linux/exFAT fixture still require their own execution.
 
 ## Sign-off
 

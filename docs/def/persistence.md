@@ -220,9 +220,10 @@ User-managed workspace backup is a copy of the entire workspace, including `.sun
 | `REQ-PER-002` | Rust owns typed SQLite access; no frontend raw-SQL capability exists. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 | `REQ-PER-003` | Ordered migrations are transactional and a failed migration does not advance the schema version. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 | `REQ-PER-004` | Deleting an index allows a track scan to recover only evidenced facts and preserve unknowns. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
-| `REQ-PER-005` | Global evidence selected for finalization is copied into and hashed with the portable track. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
+| `REQ-PER-005` | Global evidence selected for finalization is copied into and hashed with the portable track, and its exact materialized coverage dates are retained in the portable manifest. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
 | `REQ-PER-006` | All durable portable references are track-root-relative and contain no local absolute path. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
 | `REQ-PER-007` | Evidence provenance and local disclosure lineage survive SQLite persistence and portable-manifest generation without being inferred from a role alone. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
+| `REQ-PER-008` | Each global subscription registration selects exactly one source file and materializes one inclusive coverage interval from its factual start and monthly/annual cadence; cadence is not recurring evidence. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 
 ## Verification
 

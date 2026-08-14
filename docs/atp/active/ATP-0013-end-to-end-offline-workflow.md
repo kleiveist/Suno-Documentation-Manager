@@ -11,7 +11,7 @@
 | Last review | 2026-08-14 |
 | Executed | 2026-08-13/14 — partial automation plus packaged offline launch/dialog observations; complete GUI workflow not finished |
 | Requirement | [`REQ-ARC-001`](../../def/product-architecture.md#product-requirements-and-atp-mapping) and the integrated requirements referenced by ATP-0001 through ATP-0012 |
-| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; exact DEB/RPM digests in the central report |
+| Tested commit/build | Product `0.1.0`; retained DEB/RPM artifacts identify stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; modal/subscription regression implementation `b7e9797b277f0bcac58d4503049002e354cb93fb` is not yet rebuilt as a package |
 | Environment | Linux `7.1.4-arch1-1` host; disposable Debian 13.2 KDE/Wayland VM with NIC down; installed DEB plus native core/frontend tests |
 
 ## Purpose
@@ -61,7 +61,7 @@ Accept the version 0.1 integrated product when a user can create a workspace and
 | --- | --- | --- |
 | TD-01 | Global profile | Synthetic artist/Suno values, plan and subscription dates, default AI policy |
 | TD-02 | Track facts | `Offline Acceptance Track`, fixed production/export dates, explicit conditional answers and human work |
-| TD-03 | Evidence set | Small valid synthetic release WAV, Suno evidence, subscription PDF, AI original, and required final files |
+| TD-03 | Evidence set | Small valid synthetic release WAV, Suno evidence, one monthly or annual subscription document with factual coverage start, AI original, and required final files |
 | TD-04 | AI disclosure | Default `AI-assisted` text and placement on synthetic artwork |
 
 ## Acceptance steps
@@ -71,7 +71,7 @@ Accept the version 0.1 integrated product when a user can create a workspace and
 | 1 | `REQ-ARC-001` | Disable network, launch the identified packaged app, and observe connections. | App starts with no backend, local HTTP sidecar, telemetry, remote API, or required connection. | Not run | NOT RUN | — |
 | 2 | ATP-0001 | Create a new workspace and save TD-01. | Local management area initializes and settings persist. | The native integration fixture created the workspace, initialized SQLite, and saved a complete synthetic profile. | PASS | Rust `end_to_end_documentation_workflow_creates_portable_certificate`; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 3 | ATP-0002 | Create TD-02 and complete conditional questions truthfully. | Standard tree exists, only relevant questions appear, and concrete missing items update. | Native creation produced the standard tree; frontend fixtures verified relevant conditional fields and concrete missing-item updates. | PASS | Rust end-to-end plus frontend `conditional fields`/`missing requirements` suites |
-| 4 | ATP-0005 | Import TD-03 through native pickers. | Sources remain unchanged; contained copies, roles, sizes, hashes, and workflow reevaluation succeed. | Not run | NOT RUN | — |
+| 4 | ATP-0005/0011 | Import TD-03 through native pickers. For the subscription document, choose its monthly/annual cadence, enter the factual start, review the materialized end, and select exactly one supported file. | Every source remains unchanged; contained copies, roles, sizes, hashes, and workflow reevaluation succeed. The subscription record stores one exact interval and does not imply later recurring evidence. | Not run | NOT RUN | — |
 | 5 | ATP-0004 | Generate all required documents. | Versioned factual outputs exist, contain track snapshots, and have no legal guarantee. | The native path generated and freshness-checked the complete eight-file version `1.0` document set. | PASS | Rust end-to-end test; static document disclaimer review |
 | 6 | ATP-0006 | Generate TD-04 locally. | AI original remains unchanged, separate visible output exists, and process documents are current. | The expanded native integration imported an AI original, generated a distinct verified `AI_EDITED` disclosure copy, preserved the source, imported final artwork, and then freshness-checked all process documents. | PASS | Rust end-to-end and artwork-disclosure preservation tests |
 | 7 | ATP-0007 | Generate and verify the main SHA-256 list. | Included/excluded sets are correct, generated and verified counts match, and integrity is `PASS`. | The integrated native action generated, reread, and verified the current exact set before finalization. | PASS | Rust end-to-end and integrity exact-set tests |

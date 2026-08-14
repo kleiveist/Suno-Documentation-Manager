@@ -10,23 +10,24 @@
 | Created | 2026-08-13 |
 | Last review | 2026-08-14 |
 | Executed | 2026-08-13/14 — partial automated execution |
-| Requirement | [`REQ-TRK-001`, `REQ-TRK-002`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-WFL-002`](../../def/workflow-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
-| Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary Rust workspaces and Vitest workflow fixtures |
+| Requirement | [`REQ-TRK-001` through `REQ-TRK-003`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-WFL-002`](../../def/workflow-model.md#requirements-and-atp-mapping) |
+| Tested commit/build | Product `0.1.0`; regression implementation commit `b7e9797b277f0bcac58d4503049002e354cb93fb` (`🐛 Fix modal interaction and subscription evidence imports`); package rebuild remains open in the central report |
+| Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary Rust workspaces plus Vitest workflow, navigation, and delegated-dialog fixtures |
 
 ## Purpose
 
-This plan verifies safe track creation, the standard portable folder skeleton, global-value snapshots, and conditional question behavior.
+This plan verifies safe track creation, a usable new-track dialog, the standard portable folder skeleton, global-value snapshots, and conditional question behavior.
 
 ## Objective
 
-Accept track creation when a unique title produces exactly one contained `DRAFT` track without fake evidence and the workflow asks dependent questions only when their controlling answer makes them relevant.
+Accept track creation when the modal remains usable while its fields are edited, a unique title produces exactly one contained `DRAFT` track without fake evidence, and the workflow asks dependent questions only when their controlling answer makes them relevant.
 
 ## Scope
 
 ### Included
 
 - title validation and collision handling;
+- new-track modal click routing and field usability;
 - required directory creation;
 - absence of placeholder media;
 - initial lifecycle and ten-step state;
@@ -47,6 +48,7 @@ Accept track creation when a unique title produces exactly one contained `DRAFT`
 | Existing track is overwritten | Evidence loss | Pre-create a colliding target and compare hashes |
 | Hidden branch remains mandatory | User cannot complete a valid minimal track | Exercise both controlling values and missing-item output |
 | Generic editing claims are preselected | Inaccurate documentation | Inspect fresh-track values and branch changes |
+| Delegated backdrop click handles an inner field as dismissal | Title/date input is lost and no track can be created | Unit-check direct-versus-descendant routing, then execute the complete field/control flow in the identified GUI build |
 
 ## Preconditions
 
@@ -64,6 +66,7 @@ Accept track creation when a unique title produces exactly one contained `DRAFT`
 | TD-02 | Valid track | Title `Acceptance Track`, production dates `2026-08-01` through `2026-08-02` |
 | TD-03 | Collision | Existing child folder named for TD-02 containing a sentinel text file |
 | TD-04 | Unsafe titles | `../escape`, `/absolute`, a separator-only value, and an empty value |
+| TD-05 | New-track modal | Empty modal with title, production-start date, commercial-use toggle, close button, cancel action, and backdrop |
 
 ## Acceptance steps
 
@@ -79,6 +82,8 @@ Accept track creation when a unique title produces exactly one contained `DRAFT`
 | 8 | `REQ-WFL-002` | Declare AI-assisted artwork and then human-only artwork in separate runs. | AI evidence/disclosure requirements appear only for the AI-assisted run; the whole AI Transparency step can be stored as N/A for the human-only run only with a reason. | Not run | NOT RUN | — |
 | 9 | `REQ-TRK-001` | Create TD-03, then attempt TD-02 again. | Creation stops with a collision error and the sentinel remains byte-identical. | Not run | NOT RUN | — |
 | 10 | `REQ-TRK-001` | Attempt each TD-04 title. | Each invalid title returns a controlled error and no outside or malformed track is created. | Path-like, absolute-looking, traversal, separator-only, and empty titles are rejected before folder creation. | PASS | Rust `track_creation_rejects_path_like_titles_without_writing_folders`; native title validation review |
+| 11 | `REQ-TRK-003` | Exercise delegated click routing with a direct modal backdrop target, a descendant target routed through that backdrop, and a non-backdrop close control. | A descendant target is ignored as a backdrop dismissal; a direct backdrop target and explicit controls retain their close actions. | The routing predicate returned `ignore` only for the descendant-through-backdrop case; direct backdrop and non-backdrop action cases remained actionable. Static review confirmed that close and cancel buttons keep their explicit actions. | PASS | Vitest `navigation > ignores delegated backdrop actions for clicks inside a modal`; `frontend/src/app.ts` delegated-click guard |
+| 12 | `REQ-TRK-003` | In an identified GUI build, open TD-05, type a title, change the date, and toggle commercial use; repeat separately for direct backdrop, close button, and cancel dismissal. | Every inner click keeps the dialog open and retains all entered values. Each documented dismissal path closes it only when deliberately invoked. | Not run | NOT RUN | — |
 
 ## Automated checks
 
@@ -87,9 +92,10 @@ cd src-tauri
 cargo test track_creation_builds_exact_folders
 cd ../frontend
 npm test -- --run src/domain/workflow.test.ts
+npm test -- --run src/app.test.ts
 ```
 
-Expected Rust evidence is `tests::track_creation_builds_exact_folders`. Expected Vitest evidence includes `conditional fields > hides external-audio details until yes`, `shows own-audio and sample details only when applicable`, and `shows AI/artwork follow-ups conditionally`.
+Expected Rust evidence is `tests::track_creation_builds_exact_folders`. Expected Vitest evidence includes `conditional fields > hides external-audio details until yes`, `shows own-audio and sample details only when applicable`, `shows AI/artwork follow-ups conditionally`, and `navigation > ignores delegated backdrop actions for clicks inside a modal`.
 
 ## Verification
 
@@ -99,13 +105,13 @@ Record the relative tree, initial view model, branch-specific missing items, col
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | Steps 3, 4, and 7–9 remain unexecuted. | Medium | Product team | Run the remaining placeholder, snapshot, editing/N/A, and collision fixtures. | open |
+| DEV-01 | Steps 3, 4, 7–9, and 12 remain unexecuted. | Medium | Product team | Run the remaining placeholder, snapshot, editing/N/A, collision, and complete packaged-GUI dialog fixtures. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 2, 5, 6, and 10 passed; five mandatory steps remain `NOT RUN`.
-- Residual risks: Collision sentinels, immutable snapshot details, and editing/N/A branches are not accepted yet.
+- Summary: Steps 1, 2, 5, 6, 10, and 11 passed; six mandatory steps remain `NOT RUN`.
+- Residual risks: The event-routing regression is covered, but real GUI field retention/dismissal, collision sentinels, immutable snapshot details, and editing/N/A branches are not accepted yet.
 
 ## Sign-off
 
