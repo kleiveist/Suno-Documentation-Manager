@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-14 |
 | Audience | Users, contributors, and acceptance owners |
 | Related ATP | [Product acceptance plans](docs/atp/active/active.md) |
 
@@ -20,6 +20,7 @@ The certificate confirms completion of the configured documentation and integrit
 
 - a German-language desktop interface built with Vite, TypeScript, and Tauri 2;
 - local workspace selection and creation;
+- a track library organized under permanent album and single sections;
 - reusable global Suno and artwork settings with track-specific snapshots;
 - a ten-step track documentation workflow;
 - safe local evidence import without deleting or silently replacing source files;
@@ -93,13 +94,14 @@ The browser-only Vite preview cannot perform the native workspace, evidence, art
 
 1. Create or open a local workspace.
 2. Complete the minimal global artist, Suno, and artwork defaults.
-3. Create a track or scan an existing track folder.
-4. Follow the steps `01 Track` through `10 Finalize`.
-5. Import real evidence with the native picker and resolve the displayed missing items.
-6. Generate documents and, when applicable, the visible AI artwork disclosure.
-7. Generate and verify `03_DOCUMENTATION/SHA256SUMS.txt`.
-8. Finalize only after the application reports that every gate condition passes.
-9. Preserve the generated certificate and manifest with the track folder.
+3. Create a track as a single or assign it to a named album; scanned historical tracks default to singles.
+4. Reorganize library assignments when needed without moving the portable track folders.
+5. Follow the steps `01 Track` through `10 Finalize`.
+6. Import real evidence with the native picker and resolve the displayed missing items.
+7. Generate documents and, when applicable, the visible AI artwork disclosure.
+8. Generate and verify `03_DOCUMENTATION/SHA256SUMS.txt`.
+9. Finalize only after the application reports that every gate condition passes.
+10. Preserve the generated certificate and manifest with the track folder.
 
 Start with [Getting started](docs/usr/getting-started.md). Before finalization, read [Finalizing a track](docs/usr/finalizing-a-track.md).
 
@@ -109,10 +111,12 @@ The application deliberately uses two authorities:
 
 | Data set | Source of truth | Reason |
 | --- | --- | --- |
-| Workspace configuration, track index, workflow status, evidence metadata, and UI state | Local SQLite database in `.suno-doc/` | Transactional local indexing and recovery support |
+| Workspace configuration, track index, album/single placement, workflow status, evidence metadata, and UI state | Local SQLite database in `.suno-doc/` | Transactional local indexing and recovery support |
 | Imported evidence, generated track documentation, hashes, manifests, certificates, and archived revisions | The track folder | Portable, human-readable verification without the application |
 
 Global settings are copied into generated track documents as a dated snapshot. The documents never depend only on a mutable global setting. Stored paths are relative to their owning workspace or track root.
+
+Album/single placement is virtual workspace-index metadata. Reclassification does not move a track folder or alter its workflow, documents, hashes, or certificate. A track-only backup remains portable but does not retain album membership; an index-loss scan therefore defaults the recovered track to `single`. See the [track library organization model](docs/def/track-library-model.md).
 
 Every track evidence record has one explicit provenance value:
 
@@ -163,6 +167,7 @@ Acceptance execution and remaining manual checks are recorded in the files under
 
 - [Product architecture](docs/def/product-architecture.md)
 - [Track documentation model](docs/def/track-documentation-model.md)
+- [Track library organization model](docs/def/track-library-model.md)
 - [Persistence and recovery](docs/def/persistence.md)
 - [Workflow model](docs/def/workflow-model.md)
 - [Getting started](docs/usr/getting-started.md)
@@ -195,6 +200,7 @@ Acceptance execution and remaining manual checks are recorded in the files under
 - 📝 [Suno Documentation Manager product architecture](docs/def/product-architecture.md)
 - 📝 [Project profiles — inherited template reference](docs/def/project-profiles.md)
 - 📝 [Track documentation model](docs/def/track-documentation-model.md)
+- 📝 [Track library organization model](docs/def/track-library-model.md)
 - 📝 [Suno track workflow model](docs/def/workflow-model.md)
 
 ## 📁 DEV
@@ -227,5 +233,6 @@ Acceptance execution and remaining manual checks are recorded in the files under
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Added the album/single library scope, workflow, persistence boundary, and detailed model link. | Project team |
 | 2026-08-13 | Documented evidence provenance, disclosure lineage, recoverable legacy removal, marker-based recovery, the Rust MSRV, and the version 0.1 path-race limitation. | Project team |
 | 2026-08-13 | Replaced the master-template overview with the Suno Documentation Manager product contract. | Project team |

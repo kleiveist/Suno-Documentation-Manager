@@ -9,11 +9,11 @@
 | Owner | Project team |
 | Last review | 2026-08-14 |
 | Audience | Suno Documentation Manager users |
-| Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md) |
+| Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md) |
 
 ## Purpose
 
-This guide explains how to open the local desktop application, create or select a workspace, enter reusable settings, and start documenting a track without exposing private data or overwriting existing evidence.
+This guide explains how to open the local desktop application, create or select a workspace, organize its track library, enter reusable settings, and start documenting a track without exposing private data or overwriting existing evidence.
 
 ## Scope
 
@@ -21,7 +21,7 @@ This guide explains how to open the local desktop application, create or select 
 
 - first launch and workspace selection;
 - minimal global settings;
-- new-track creation and the ten-step navigation;
+- album and single library organization, new-track creation, and the ten-step navigation;
 - evidence import and missing-item feedback; and
 - reopening or scanning an existing workspace.
 
@@ -95,9 +95,29 @@ When documenting a track, select only evidence whose materialized start and end 
 
 ## Create a track
 
-Open `Tracks`, choose the new-track action, and enter a title. Confirm the proposed contained folder name before creation. If a file or folder already occupies the destination, the application reports a collision and does not overwrite it.
+Open `Tracks` and choose the new-track action. Enter the track title and production start, then select one library placement:
+
+- `Single` places the track directly below the permanent `Singles` section.
+- `Album-Track` reveals a required album-title field. Select an existing suggestion or enter a new album title to place the track below `Alben` and that named album group.
+
+Album titles are trimmed, limited to 200 characters, and cannot contain control characters. Titles that differ only by case are presented as the same album group. Confirm the proposed contained track-folder name before creation. If a file or folder already occupies the destination, the application reports a collision and does not overwrite it.
 
 A new track begins as `DRAFT`. The application creates the standard directories but no empty WAV, MP3, MP4, image, PDF, or ZIP placeholders. Only imported real evidence fills evidence roles.
+
+## Organize existing tracks
+
+The `Tracks` page always shows `Alben` and `Singles`. Look below an album heading to find its assigned tracks, or use the library search to match a track title, track path, or album title. The status buttons filter tracks inside both sections; they do not remove the two section headings.
+
+To change an existing assignment:
+
+1. Open the track.
+2. Select its `Single` or `Album · <album title>` library chip in the track header.
+3. Choose `Single` or `Album-Track` and, for an album, enter or select its title.
+4. Save the assignment.
+
+This action changes only the virtual library organization. It does not move or rename the track folder, update the track timestamp, change workflow or finalization status, regenerate documents, recalculate hashes, or invalidate a certificate. It is therefore also available for a finalized track.
+
+An album is a named group of indexed tracks, not an independent release object. Version 0.1 does not create empty albums or store album artwork, release metadata, track order, or a separate album certificate. Existing and scanned tracks without an assignment appear under `Singles`.
 
 ## Follow the documentation steps
 
@@ -163,10 +183,12 @@ For a manual smoke check, use a temporary workspace containing no private or pro
 2. Save the minimal global settings and close the application.
 3. Reopen the workspace and confirm the settings are restored.
 4. Create a track and confirm the standard directories exist with no fake evidence files.
-5. Import a disposable evidence file and confirm the source still exists.
-6. Attempt the same destination again and confirm that the application reports a collision.
+5. Create one album track and one single, then confirm they appear exactly once in the corresponding library hierarchy.
+6. Reassign the album track to `Singles` and confirm its folder path and documentation state do not change.
+7. Import a disposable evidence file and confirm the source still exists.
+8. Attempt the same destination again and confirm that the application reports a collision.
 
-Executed results and outstanding manual checks are recorded in [ATP-0001](../atp/active/ATP-0001-workspace-creation-and-loading.md), [ATP-0002](../atp/active/ATP-0002-track-creation.md), and the relevant evidence ATP.
+Executed results and outstanding manual checks are recorded in [ATP-0001](../atp/active/ATP-0001-workspace-creation-and-loading.md), [ATP-0002](../atp/active/ATP-0002-track-creation.md), [ATP-0014](../atp/active/ATP-0014-track-library-organization.md), and the relevant evidence ATP.
 
 ## Troubleshooting
 
@@ -182,6 +204,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 - [Finalizing a track](finalizing-a-track.md)
 - [Track documentation model](../def/track-documentation-model.md)
+- [Track library organization model](../def/track-library-model.md)
 - [Workflow model](../def/workflow-model.md)
 - [Persistence and recovery](../def/persistence.md)
 - [Legacy track import](../dev/legacy-track-import.md)
@@ -190,6 +213,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Explained album and single creation, search, reclassification, invariants, and version 0.1 album limits. | Project team |
 | 2026-08-14 | Documented per-invoice billing cadence, single-file registration, materialized coverage, and the no-extrapolation rule. | Project team |
 | 2026-08-13 | Explained evidence provenance and recoverable indexed-legacy removal. | Project team |
 | 2026-08-13 | Added the first-workspace and first-track guide. | Project team |

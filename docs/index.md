@@ -7,6 +7,7 @@
 
 - [Application architecture](def/architecture.md)
 - [Detailed product architecture](def/product-architecture.md)
+- [Track library organization model](def/track-library-model.md)
 - [Track documentation model](def/track-documentation-model.md)
 - [Local persistence and recovery](def/persistence.md)
 - [Suno track workflow model](def/workflow-model.md)
@@ -37,6 +38,7 @@ Generic template, backend, CI, database, container, and deployment pages retaine
 - 📝 [Suno Documentation Manager product architecture](def/product-architecture.md)
 - 📝 [Project profiles — inherited template reference](def/project-profiles.md)
 - 📝 [Track documentation model](def/track-documentation-model.md)
+- 📝 [Track library organization model](def/track-library-model.md)
 - 📝 [Suno track workflow model](def/workflow-model.md)
 
 ## 📁 DEV

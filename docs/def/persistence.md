@@ -9,7 +9,7 @@
 | Owner | Project team |
 | Last review | 2026-08-14 |
 | Audience | Product developers and recovery reviewers |
-| Related ATP | [ATP-0011: Local persistence and recovery](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
+| Related ATP | [ATP-0011: Local persistence and recovery](../atp/active/ATP-0011-local-persistence-and-recovery.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md) |
 
 ## Purpose
 
@@ -41,6 +41,7 @@ The product uses bounded authority rather than treating every copy as equally au
 | --- | --- | --- |
 | Workspace profile and current defaults | `.suno-doc/workspace.sqlite` | A finalized track keeps its own snapshot and is not changed by later defaults |
 | Track index, mutable workflow state, evidence metadata including provenance and derivation, and UI work state | `.suno-doc/workspace.sqlite` | Rebuilt as far as possible by scanning portable track files; unknown facts remain unknown |
+| Album or single library placement | `.suno-doc/workspace.sqlite` track JSON | Missing or unrecoverable placement defaults to `single`; the portable track folder does not encode album membership |
 | Imported evidence and release assets | Track folder | Database references store role and root-relative path; file contents are not database blobs |
 | Generated documentation | Track folder | Regenerated only through explicit managed-document rules |
 | Final hashes, manifest, certificate, and archived revisions | Track folder | Treated as the authoritative finalized snapshot |
@@ -70,6 +71,7 @@ The database indexes at least these logical data sets:
 - workspace metadata and global profile values;
 - global-evidence records with their materialized per-invoice coverage dates;
 - known tracks and their lifecycle status;
+- each track's `single` or named-album library placement;
 - workflow ID, workflow version, step states, applicability, and N/A reasons;
 - evidence roles, relative paths, media types, sizes, hashes, import metadata, provenance, and local derivation fields;
 - generated-document template versions and freshness markers; and
@@ -89,6 +91,8 @@ The current SQLite schema version is `2`, stored in `PRAGMA user_version`. Schem
 | `generated_disclosure_text` | Exact normalized text rendered into a generated disclosure artifact |
 
 The version 1 to version 2 migration backfills evidence belonging to a track already marked `legacy` as `indexed_legacy`; all other old rows are conservatively `managed_copy`. It leaves derivation, generator, and generated-text fields empty because version 1 did not retain enough data to prove them. In particular, migration never upgrades an old row to `generated_disclosure` merely from its role, filename, or bytes.
+
+Track records are serialized in the existing `tracks.data_json` column. The album-or-single placement is an additive typed JSON field with a Serde default of `single`. It adds no table, column, index, or relation, so introducing it does not advance `PRAGMA user_version` beyond `2`. Reading older JSON without the field is backward-compatible; a later record save materializes the default. This rule applies only to compatible additive fields with an explicit safe default. Relational layout changes still require an ordered schema migration.
 
 Opening a supported older database performs ordered native migrations inside a transaction. A migration must satisfy these rules:
 
@@ -175,7 +179,8 @@ Moving a complete track folder inside a workspace does not require its internal 
 3. records known managed-document paths, a historical hash-list presence flag, and contained evidence candidates;
 4. adds evidence candidates with inferred roles but preserves their historical provenance as `NOT VERIFIED`;
 5. reconciles newly discovered evidence on a later scan without duplicating existing index entries; and
-6. leaves profile and track facts unknown until the user supplies them or explicitly confirms adoption of the current workspace profile as the track snapshot.
+6. assigns the library default `single`, because track files and folder names do not prove album membership; and
+7. leaves profile and track facts unknown until the user supplies them or explicitly confirms adoption of the current workspace profile as the track snapshot.
 
 Scanning and reindexing never overwrite an existing track file. Explicit evidence verification confirms present bytes, but it does not manufacture historical provenance. Adopting an existing document requires a preview, explicit user confirmation, a backup below `.archive/`, and only then a managed write. See [Legacy track import](../dev/legacy-track-import.md).
 
@@ -212,6 +217,8 @@ The archived revision remains outside normal managed writes. Revision creation m
 
 User-managed workspace backup is a copy of the entire workspace, including `.suno-doc/`. A track-only backup remains portable but may omit unfinished UI state and reusable global defaults. The application does not provide remote backup in version 0.1.
 
+Album membership is another workspace-index-only value. A track-only copy retains every portable evidence and certificate artifact but not its library placement. Reopening a complete workspace preserves the placement; scanning a track after index loss conservatively places it under `Singles`.
+
 ## Requirements and ATP mapping
 
 | Requirement | Acceptance criterion | Acceptance plan |
@@ -242,6 +249,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 - Index recovery cannot reconstruct facts that were never exported to portable files; those facts remain `NOT VERIFIED`.
 - Filesystem and SQLite operations require explicit compensation and scan logic because they are not one atomic transaction.
 - A track-only backup is not a complete backup of unfinished workspace settings.
+- A track-only backup or index-loss scan cannot recover album membership and defaults the recovered track to `single`.
 - Copying global evidence into multiple tracks deliberately duplicates files to preserve track portability.
 - The version 1 migration cannot reconstruct derivation that was not stored; non-legacy version 1 evidence is therefore backfilled conservatively as `managed_copy`.
 - Path containment is not descriptor-relative across the complete operation and does not protect a workspace from a hostile same-user concurrent writer.
@@ -250,6 +258,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 
 - [Product architecture](product-architecture.md)
 - [Track documentation model](track-documentation-model.md)
+- [Track library organization model](track-library-model.md)
 - [Workflow model](workflow-model.md)
 - [Legacy track import](../dev/legacy-track-import.md)
 - [Provider-neutral template persistence guidance](persistence-architecture.md)
@@ -258,6 +267,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Defined workspace-index ownership, additive JSON compatibility, and index-loss behavior for track library placement. | Project team |
 | 2026-08-14 | Defined per-invoice cadence, single-file registration, materialized coverage dates, portability, and the no-extrapolation boundary. | Project team |
 | 2026-08-13 | Documented schema version 2, evidence provenance and disclosure lineage, recoverable legacy removal, and marker-based finalization recovery. | Project team |
 | 2026-08-13 | Aligned scan, revision archive, and interrupted-operation recovery behavior with version 0.1. | Project team |

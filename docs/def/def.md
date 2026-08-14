@@ -7,6 +7,7 @@
 
 - [Application architecture](architecture.md)
 - [Detailed product architecture](product-architecture.md)
+- [Track library organization model](track-library-model.md)
 - [Track documentation model](track-documentation-model.md)
 - [Local persistence and recovery](persistence.md)
 - [Suno track workflow model](workflow-model.md)
@@ -25,6 +26,7 @@ Generic inherited feature pages describe template background only. The product d
 - 📝 [Suno Documentation Manager product architecture](product-architecture.md)
 - 📝 [Project profiles — inherited template reference](project-profiles.md)
 - 📝 [Track documentation model](track-documentation-model.md)
+- 📝 [Track library organization model](track-library-model.md)
 - 📝 [Suno track workflow model](workflow-model.md)
 
 <!-- AUTO-GENERATED:docs-index END -->

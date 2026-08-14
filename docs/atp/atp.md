@@ -23,6 +23,7 @@
 - 📝 [ATP-0011: Local persistence and recovery](active/ATP-0011-local-persistence-and-recovery.md)
 - 📝 [ATP-0012: Filesystem containment and safe writes](active/ATP-0012-filesystem-containment.md)
 - 📝 [ATP-0013: End-to-end offline track workflow](active/ATP-0013-end-to-end-offline-workflow.md)
+- 📝 [ATP-0014: Track library album and single organization](active/ATP-0014-track-library-organization.md)
 
 ## 📁 Completed
 - 🗂️ [Overview](completed/completed.md)

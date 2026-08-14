@@ -66,10 +66,10 @@ There is no backend service, remote database, telemetry endpoint, cloud dependen
 
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
-| Vite and TypeScript UI | Render navigation, conditional questions, progress, missing items, controlled errors, and typed command results | Execute SQL, calculate authoritative hashes, manipulate arbitrary paths, or make legal determinations |
+| Vite and TypeScript UI | Render navigation, the album/single library hierarchy, conditional questions, progress, missing items, controlled errors, and typed command results | Execute SQL, calculate authoritative hashes, manipulate arbitrary paths, or make legal determinations |
 | Tauri command layer | Deserialize typed input, select one use case, return typed success or controlled error data | Expose arbitrary SQL, arbitrary shell commands, or a generic filesystem operation |
 | `WorkspaceService` | Create, open, validate, and scan a workspace; manage its local index | Select a workspace without explicit user action |
-| `TrackService` | Create, load, update, and safely structure a track | Silently replace an existing track or evidence file |
+| `TrackService` | Create, load, update, organize, and safely structure a track | Silently replace an existing track or evidence file |
 | `WorkflowService` | Evaluate declared steps, conditions, missing requirements, progress, and finalization readiness | Infer facts not confirmed by the user or generalize into an unrelated workflow engine |
 | `EvidenceService` | Validate roles and file types, choose contained destinations, copy files, detect collisions, record explicit provenance and lineage, archive indexed-legacy removals, and trigger reevaluation | Delete the import source, silently overwrite a destination, or infer generated provenance from a role or filename |
 | `DocumentService` | Render versioned factual Markdown and text templates deterministically and write atomically | Invent legal conclusions or write managed content over an unmanaged file without consent and backup |
@@ -85,7 +85,7 @@ The command surface is deliberately explicit. The exact Rust input and output st
 | Use case | Named commands |
 | --- | --- |
 | Workspace | `create_workspace`, `open_workspace`, `scan_workspace` |
-| Track | `create_track`, `load_track`, `update_track` |
+| Track | `create_track`, `load_track`, `update_track`, `update_track_library` |
 | Evidence | `import_evidence`, `remove_evidence`, `verify_evidence` |
 | Global evidence | `list_global_evidence`, `import_global_evidence`, `remove_global_evidence`, `attach_global_evidence` |
 | Documents | `generate_documents` |
@@ -158,6 +158,8 @@ SQLite makes local interaction transactional and efficient. It is intentionally 
 
 Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclosure`, and `indexed_legacy`. Generated disclosure records link to the verified AI-original evidence ID and retain the generator version and exact disclosure text. Those portable manifest fields allow a reviewer and the native gate to distinguish local derivation from a manually imported look-alike.
 
+Track library placement is a separate workspace-index concern. `create_track` accepts the initial typed placement, and `update_track_library` changes only that placement. The narrow update command deliberately bypasses content-edit lifecycle restrictions so a finalized track can be reorganized without changing its update timestamp, workflow, documents, integrity state, certificate, path, or portable bytes. The general `update_track` command retains its existing content-change and invalidation behavior.
+
 ## Product requirements and ATP mapping
 
 | Requirement | Architectural acceptance criterion | Acceptance plan |
@@ -195,6 +197,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 ## Related documents
 
 - [Track documentation model](track-documentation-model.md)
+- [Track library organization model](track-library-model.md)
 - [Persistence and recovery](persistence.md)
 - [Workflow model](workflow-model.md)
 - [Legacy track import](../dev/legacy-track-import.md)
@@ -205,6 +208,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Added the typed library-assignment boundary and separated virtual reclassification from portable track mutation. | Project team |
 | 2026-08-14 | Defined filesystem-scoped no-clobber publication acceptance and documented the global-evidence command boundary. | Project team |
 | 2026-08-13 | Added evidence-lineage ownership and the explicit same-user symbolic-link race boundary. | Project team |
 | 2026-08-13 | Defined the local-only product architecture and trust boundaries. | Project team |
