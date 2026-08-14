@@ -499,29 +499,28 @@ export class SunoDocumentationApp {
           <button class="button button--secondary" data-action="scan-workspace">${icon("scan")} Workspace scannen</button>
         </div>
         <div class="track-library-content">
-          <section class="library-section" aria-labelledby="albums-library-title">
-            <header class="library-section-head"><span class="library-section-icon">${icon("workspace")}</span><div><h3 id="albums-library-title">Alben</h3><p>${library.albums.length} ${library.albums.length === 1 ? "Album" : "Alben"} · ${albumTrackCount} ${albumTrackCount === 1 ? "Track" : "Tracks"}</p></div></header>
-            ${library.albums.length
+          <details class="library-section" aria-labelledby="albums-library-title" open>
+            <summary class="library-section-head"><span class="library-section-icon">${icon("workspace")}</span><span class="library-section-copy"><strong class="library-section-title" id="albums-library-title" role="heading" aria-level="3">Alben</strong><small>${library.albums.length} ${library.albums.length === 1 ? "Album" : "Alben"} · ${albumTrackCount} ${albumTrackCount === 1 ? "Track" : "Tracks"}</small></span><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
+            <div class="library-section-content">${library.albums.length
               ? `<div class="album-group-list">${library.albums.map((album) => this.renderAlbumGroup(album)).join("")}</div>`
-              : this.renderLibraryEmpty("Keine passenden Album-Tracks", "Lege einen Album-Track an oder passe Suche und Statusfilter an.")}
-          </section>
-          <section class="library-section" aria-labelledby="singles-library-title">
-            <header class="library-section-head"><span class="library-section-icon library-section-icon--single">${icon("tracks")}</span><div><h3 id="singles-library-title">Singles</h3><p>${library.singles.length} ${library.singles.length === 1 ? "Track" : "Tracks"}</p></div></header>
-            ${library.singles.length
+              : this.renderLibraryEmpty("Keine passenden Album-Tracks", "Lege einen Album-Track an oder passe Suche und Statusfilter an.")}</div>
+          </details>
+          <details class="library-section" aria-labelledby="singles-library-title" open>
+            <summary class="library-section-head"><span class="library-section-icon library-section-icon--single">${icon("tracks")}</span><span class="library-section-copy"><strong class="library-section-title" id="singles-library-title" role="heading" aria-level="3">Singles</strong><small>${library.singles.length} ${library.singles.length === 1 ? "Track" : "Tracks"}</small></span><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
+            <div class="library-section-content">${library.singles.length
               ? `${this.renderTrackTableHead()}<div class="track-list">${library.singles.map((track) => this.renderTrackRow(track, true)).join("")}</div>`
-              : this.renderLibraryEmpty("Keine passenden Singles", "Lege eine Single an oder passe Suche und Statusfilter an.")}
-          </section>
+              : this.renderLibraryEmpty("Keine passenden Singles", "Lege eine Single an oder passe Suche und Statusfilter an.")}</div>
+          </details>
         </div>
       </section>
     </div>`;
   }
 
   private renderAlbumGroup(album: AlbumTrackGroup<TrackSummary>): string {
-    return `<section class="album-group" aria-label="Album ${escapeHtml(album.title)}">
-      <header class="album-group-head"><span class="album-cover">${escapeHtml(titleInitials(album.title))}<i></i></span><div><h4>${escapeHtml(album.title)}</h4><p>${album.tracks.length} ${album.tracks.length === 1 ? "Track" : "Tracks"}</p></div></header>
-      ${this.renderTrackTableHead()}
-      <div class="track-list">${album.tracks.map((track) => this.renderTrackRow(track, true)).join("")}</div>
-    </section>`;
+    return `<details class="album-group" open>
+      <summary class="album-group-head"><span class="album-cover" aria-hidden="true">${escapeHtml(titleInitials(album.title))}<i></i></span><span class="album-group-copy"><strong>${escapeHtml(album.title)}</strong><small>${album.tracks.length} ${album.tracks.length === 1 ? "Track" : "Tracks"}</small></span><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
+      <div class="album-group-content">${this.renderTrackTableHead()}<div class="track-list">${album.tracks.map((track) => this.renderTrackRow(track, true)).join("")}</div></div>
+    </details>`;
   }
 
   private renderTrackTableHead(): string {
