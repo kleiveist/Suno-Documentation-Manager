@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-14 |
+| Last review | 2026-08-15 |
 | Audience | Suno Documentation Manager users |
 | Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md) |
 
@@ -19,7 +19,7 @@ This guide explains how to open the local desktop application, create or select 
 
 ### Included
 
-- first launch and workspace selection;
+- first launch, appearance choice, and workspace selection;
 - minimal global settings;
 - album and single library organization, new-track creation, and the ten-step navigation;
 - evidence import and missing-item feedback; and
@@ -47,6 +47,12 @@ python tools/control.py tauri run --foreground
 ```
 
 Use the Tauri window for workspace and evidence operations. A standalone browser preview cannot perform the native file, SQLite, hashing, artwork, or certificate operations.
+
+## Choose the appearance
+
+The application follows the operating-system light or dark preference on first launch. Use the sun or moon button in the top bar to switch between light and dark mode at any time. The same control is available on the workspace-selection screen.
+
+An explicit choice is stored locally on this device and restored before the interface is drawn on later launches. It affects only the application appearance: workspace files, evidence, generated documents, and certificates are unchanged and the setting is never synchronized to a service.
 
 ## Create or open a workspace
 

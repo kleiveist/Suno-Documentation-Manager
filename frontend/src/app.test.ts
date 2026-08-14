@@ -11,6 +11,25 @@ import {
 } from "./app";
 import { WORKFLOW_STEPS } from "./domain/workflow";
 import { emptyProfile } from "./domain/types";
+import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
+
+describe("theme", () => {
+  it("uses a valid saved choice before the operating-system preference", () => {
+    expect(resolveTheme("light", true)).toBe("light");
+    expect(resolveTheme("dark", false)).toBe("dark");
+  });
+
+  it("falls back to the operating-system preference for missing or invalid storage", () => {
+    expect(resolveTheme(null, true)).toBe("dark");
+    expect(resolveTheme("unsupported", false)).toBe("light");
+    expect(storedTheme("unsupported")).toBeNull();
+  });
+
+  it("toggles between both supported themes", () => {
+    expect(toggledTheme("light")).toBe("dark");
+    expect(toggledTheme("dark")).toBe("light");
+  });
+});
 
 describe("navigation", () => {
   it("exposes every required German main view", () => {

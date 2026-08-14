@@ -34,6 +34,12 @@ import {
 } from "./domain/track-library";
 import { escapeHtml, formatBytes, formatDate, titleInitials } from "./ui/format";
 import { icon } from "./ui/icons";
+import {
+  resolveTheme,
+  THEME_STORAGE_KEY,
+  toggledTheme,
+  type ColorTheme
+} from "./ui/theme";
 
 type MainView = "dashboard" | "tracks" | "current" | "workspace" | "settings";
 type TrackTab = "overview" | "suno" | "artwork" | "release" | "evidence" | "certificate";
@@ -65,6 +71,7 @@ interface AppState {
   showNewTrack: boolean;
   showTrackLibrary: boolean;
   showSubscriptionEvidence: boolean;
+  theme: ColorTheme;
   toast: ToastState | null;
 }
 
@@ -184,11 +191,14 @@ export class SunoDocumentationApp {
     showNewTrack: false,
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
+    theme: "light",
     toast: null
   };
 
   private toastTimer: number | undefined;
   private draftDirty = false;
+  private followsSystemTheme = true;
+  private systemThemeQuery: MediaQueryList | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -196,11 +206,59 @@ export class SunoDocumentationApp {
   ) {}
 
   start(): void {
+    this.initializeTheme();
     this.root.addEventListener("click", (event) => void this.handleClick(event));
     this.root.addEventListener("submit", (event) => void this.handleSubmit(event));
     this.root.addEventListener("change", (event) => this.handleChange(event));
     this.root.addEventListener("input", (event) => this.handleInput(event));
     this.render();
+  }
+
+  private initializeTheme(): void {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    } catch {
+      // The selected theme still works for this session if storage is unavailable.
+    }
+    this.followsSystemTheme = stored !== "light" && stored !== "dark";
+    this.systemThemeQuery = typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : null;
+    this.state.theme = resolveTheme(stored, this.systemThemeQuery?.matches ?? false);
+    this.applyTheme();
+    this.systemThemeQuery?.addEventListener("change", (event) => {
+      if (!this.followsSystemTheme) return;
+      this.state.theme = event.matches ? "dark" : "light";
+      this.applyTheme();
+    });
+  }
+
+  private applyTheme(): void {
+    document.documentElement.dataset.theme = this.state.theme;
+    document.documentElement.style.colorScheme = this.state.theme;
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute("content", this.state.theme === "dark" ? "#111310" : "#f4f2ed");
+    const dark = this.state.theme === "dark";
+    const label = dark ? "Hellen Modus aktivieren" : "Dunklen Modus aktivieren";
+    const title = dark ? "Heller Modus" : "Dunkler Modus";
+    this.root.querySelectorAll<HTMLElement>('[data-action="toggle-theme"]').forEach((control) => {
+      control.setAttribute("aria-label", label);
+      control.setAttribute("aria-pressed", String(dark));
+      control.setAttribute("title", title);
+      control.innerHTML = icon(dark ? "sun" : "moon");
+    });
+  }
+
+  private toggleTheme(): void {
+    this.state.theme = toggledTheme(this.state.theme);
+    this.followsSystemTheme = false;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, this.state.theme);
+    } catch {
+      // Keep the active session usable even if persistence is blocked.
+    }
+    this.applyTheme();
   }
 
   private async withBusy<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
@@ -323,7 +381,7 @@ export class SunoDocumentationApp {
         </div>
         <div class="local-promise">${icon("shield")} <span><strong>Vollständig lokal.</strong> Keine Cloud, kein Login, keine Telemetrie.</span></div>
       </section>
-      <footer class="welcome-footer"><span>Version 0.1</span><span>•</span><span>Offline by design</span>${this.api.mode === "demo" ? '<span class="demo-badge">Browser-Demo</span>' : ""}</footer>
+      <footer class="welcome-footer"><span>Version 0.1</span><span>•</span><span>Offline by design</span>${this.api.mode === "demo" ? '<span class="demo-badge">Browser-Demo</span>' : ""}<button class="welcome-theme-toggle" data-action="toggle-theme" aria-label="${this.state.theme === "dark" ? "Hellen Modus aktivieren" : "Dunklen Modus aktivieren"}" aria-pressed="${this.state.theme === "dark"}" title="${this.state.theme === "dark" ? "Heller Modus" : "Dunkler Modus"}">${icon(this.state.theme === "dark" ? "sun" : "moon")}</button></footer>
       ${this.renderToast()}
       ${this.state.busy ? `<div class="busy-layer" role="status"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>` : ""}
     </main>`;
@@ -355,6 +413,7 @@ export class SunoDocumentationApp {
       <button class="icon-button mobile-menu" data-action="open-sidebar" aria-label="Navigation öffnen">${icon("menu")}</button>
       <div class="topbar-title"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p></div>
       <div class="topbar-actions">
+        <button class="theme-toggle icon-button" data-action="toggle-theme" aria-label="${this.state.theme === "dark" ? "Hellen Modus aktivieren" : "Dunklen Modus aktivieren"}" aria-pressed="${this.state.theme === "dark"}" title="${this.state.theme === "dark" ? "Heller Modus" : "Dunkler Modus"}">${icon(this.state.theme === "dark" ? "sun" : "moon")}</button>
         ${this.api.mode === "demo" ? '<span class="demo-badge">Browser-Demo</span>' : '<span class="offline-pill"><i></i> Offline</span>'}
         <button class="button button--primary" data-action="new-track">${icon("plus")} Neuer Track</button>
       </div>
@@ -975,6 +1034,7 @@ export class SunoDocumentationApp {
     }
 
     switch (button.dataset.action) {
+      case "toggle-theme": this.toggleTheme(); break;
       case "open-workspace": await this.chooseWorkspace("open"); break;
       case "create-workspace": await this.chooseWorkspace("create"); break;
       case "new-track": {
