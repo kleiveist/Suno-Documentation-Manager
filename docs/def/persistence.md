@@ -168,21 +168,23 @@ The workspace record can remember the user-selected root for the local applicati
 
 These checks are path-based. They do not make the full check-and-use sequence race-free against another process running as the same operating-system user and able to modify the workspace. Such shared writable workspaces are outside the version 0.1 threat model; descriptor-relative hardening remains open in [ATP-0012](../atp/active/ATP-0012-filesystem-containment.md).
 
-Moving a complete track folder inside a workspace does not require its internal manifest paths to change. Moving an entire workspace can be recovered by opening the new root and scanning it.
+Moving a complete track folder inside a workspace does not require its internal manifest paths to change. Managed tracks store their stable ID in `.summary/track.json`; this excluded marker lets reopen or scan reconcile a renamed track or album path with SQLite. Moving an entire workspace can be recovered by opening the new root and scanning it.
 
 ## Recovery and reindexing
 
 `scan_workspace` treats the filesystem as untrusted input. The scan never changes candidate track files, but it does add or reconcile local SQLite index records so discovered tracks become visible immediately. It:
 
 1. ignores `.suno-doc/` as a track;
-2. recognizes candidate child directories and known track subdirectories;
+2. recognizes historical direct-child tracks, `Singles/<track>/`, and `<album>/<track>/`;
 3. records known managed-document paths, a historical hash-list presence flag, and contained evidence candidates;
 4. adds evidence candidates with inferred roles but preserves their historical provenance as `NOT VERIFIED`;
 5. reconciles newly discovered evidence on a later scan without duplicating existing index entries; and
-6. assigns the library default `single`, because track files and folder names do not prove album membership; and
+6. derives `single` from the reserved `Singles/` parent and an album placement from a named album parent while defaulting historical direct-child tracks to `single`; and
 7. leaves profile and track facts unknown until the user supplies them or explicitly confirms adoption of the current workspace profile as the track snapshot.
 
 Scanning and reindexing never overwrite an existing track file. Explicit evidence verification confirms present bytes, but it does not manufacture historical provenance. Adopting an existing document requires a preview, explicit user confirmation, a backup below `.archive/`, and only then a managed write. See [Legacy track import](../dev/legacy-track-import.md).
+
+Creating, reclassifying, or renaming managed library folders is a separate explicit mutation path. It collision-checks every destination, moves the complete directory, persists all affected relative paths transactionally, and performs a compensating move if persistence fails. These operations do not rewrite anything below the moved track roots.
 
 Files already moved into `.archive/removals/` by an explicit legacy-evidence removal are excluded from discovery. Their `removal.json` records retain the original relative path and evidence metadata so they remain recoverable without making the next scan undo the user's choice.
 

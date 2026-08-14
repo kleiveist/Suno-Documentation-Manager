@@ -47,7 +47,13 @@ Legacy scanning is read-only with respect to every candidate track directory. It
 
 ## Candidate detection
 
-`scan_workspace` ignores the reserved `.suno-doc/` area and considers direct workspace child directories as track candidates. A directory gains confidence when it contains one or more known structures:
+`scan_workspace` ignores the reserved `.suno-doc/` area and recognizes three layouts:
+
+- historical track roots directly below the workspace;
+- single tracks below `Singles/`; and
+- album tracks below `<album title>/`.
+
+A historical direct-child directory gains confidence when it contains one or more known structures:
 
 ```text
 01_RELEASE/
@@ -58,7 +64,9 @@ Legacy scanning is read-only with respect to every candidate track directory. It
 06_CERTIFICATE/
 ```
 
-A candidate name becomes its initial display title while the track remains marked as a legacy import. The scan records the exact relative folder path. Users must review the title and every missing fact before the current workflow can pass.
+A candidate track-folder name becomes its initial display title while the track remains marked as a legacy import. The scan records the exact relative folder path and derives an album or single placement only from a supported parent layout. Users must review the title and every missing fact before the current workflow can pass.
+
+Scanning does not write the managed `.summary/track.json` identity marker into a historical candidate. If a stale legacy SQLite path is missing, reopening repairs it only when the assigned album or `Singles` parent contains exactly one unclaimed candidate. Ambiguous matches are not guessed.
 
 Unknown sibling files and directories remain in place. They can be shown as unclassified evidence candidates but are not silently copied into a known role.
 

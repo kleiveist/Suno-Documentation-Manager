@@ -97,10 +97,20 @@ When documenting a track, select only evidence whose materialized start and end 
 
 Open `Tracks` and choose the new-track action. Enter the track title and production start, then select one library placement:
 
-- `Single` places the track directly below the permanent `Singles` section.
-- `Album-Track` reveals a required album-title field. Select an existing suggestion or enter a new album title to place the track below `Alben` and that named album group.
+- `Single` creates the track below the permanent physical `Singles/` folder.
+- `Album-Track` reveals a required album-title field. Select an existing suggestion or enter a new album title to create the track below that physical album folder.
 
-Album titles are trimmed, limited to 200 characters, and cannot contain control characters. Titles that differ only by case are presented as the same album group. Confirm the proposed contained track-folder name before creation. If a file or folder already occupies the destination, the application reports a collision and does not overwrite it.
+Album titles are trimmed, limited to 200 characters, and cannot contain control characters, path separators, traversal names, or reserved workspace names. Titles that differ only by case are presented as the same album group. The visible trimmed track title is also used as its folder name. If a file or folder already occupies the destination, the application reports a collision and does not overwrite it.
+
+The resulting structure is visible without the application:
+
+```text
+SunoDocs/
+├── Gravity Drift/
+│   └── Gravaty/
+└── Singles/
+    └── Single 1/
+```
 
 A new track begins as `DRAFT`. The application creates the standard directories but no empty WAV, MP3, MP4, image, PDF, or ZIP placeholders. Only imported real evidence fills evidence roles.
 
@@ -115,9 +125,11 @@ To change an existing assignment:
 3. Choose `Single` or `Album-Track` and, for an album, enter or select its title.
 4. Save the assignment.
 
-This action changes only the virtual library organization. It does not move or rename the track folder, update the track timestamp, change workflow or finalization status, regenerate documents, recalculate hashes, or invalidate a certificate. It is therefore also available for a finalized track.
+Saving the assignment moves the complete track folder to the selected physical parent. It does not change files inside the track folder, update the track timestamp, change workflow or finalization status, regenerate documents, recalculate hashes, or invalidate a certificate. It is therefore also available for a finalized track. A destination collision stops the operation without overwriting data; a database failure moves the folder back.
 
-An album is a named group of indexed tracks, not an independent release object. Version 0.1 does not create empty albums or store album artwork, release metadata, track order, or a separate album certificate. Existing and scanned tracks without an assignment appear under `Singles`.
+To rename an album folder, select `Umbenennen` in its album header and enter the new folder name. The application moves the album once and updates all contained track paths together. Changing an editable track title also renames that track's folder. A finalized track title still requires the normal revision workflow because the title is certificate content.
+
+An album is a named physical group of indexed tracks, not an independent release object. Version 0.1 does not create empty albums or store album artwork, release metadata, track order, or a separate album certificate. Existing direct-child historical track folders remain supported. A scan also recognizes tracks below `Singles/` and named album folders.
 
 ## Follow the documentation steps
 

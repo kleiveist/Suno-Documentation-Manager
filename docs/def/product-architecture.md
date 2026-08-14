@@ -85,7 +85,7 @@ The command surface is deliberately explicit. The exact Rust input and output st
 | Use case | Named commands |
 | --- | --- |
 | Workspace | `create_workspace`, `open_workspace`, `scan_workspace` |
-| Track | `create_track`, `load_track`, `update_track`, `update_track_library` |
+| Track | `create_track`, `load_track`, `update_track`, `update_track_library`, `rename_album` |
 | Evidence | `import_evidence`, `remove_evidence`, `verify_evidence` |
 | Global evidence | `list_global_evidence`, `import_global_evidence`, `remove_global_evidence`, `attach_global_evidence` |
 | Documents | `generate_documents` |
@@ -158,7 +158,7 @@ SQLite makes local interaction transactional and efficient. It is intentionally 
 
 Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclosure`, and `indexed_legacy`. Generated disclosure records link to the verified AI-original evidence ID and retain the generator version and exact disclosure text. Those portable manifest fields allow a reviewer and the native gate to distinguish local derivation from a manually imported look-alike.
 
-Track library placement is a separate workspace-index concern. `create_track` accepts the initial typed placement, and `update_track_library` changes only that placement. The narrow update command deliberately bypasses content-edit lifecycle restrictions so a finalized track can be reorganized without changing its update timestamp, workflow, documents, integrity state, certificate, path, or portable bytes. The general `update_track` command retains its existing content-change and invalidation behavior.
+Track library placement is synchronized between the workspace index and physical folder hierarchy. `create_track` creates `Singles/<track>/` or `<album>/<track>/`; `update_track_library` moves the complete track root and then persists its new relative path. `rename_album` moves one album directory and updates all member paths in a single SQLite transaction. These organizational commands deliberately bypass content-edit lifecycle restrictions so a finalized track can be reorganized without changing its update timestamp, workflow, documents, integrity state, certificate, or bytes below the track root. Destination collisions never overwrite, and a failed database write triggers a compensating folder move. The general `update_track` command retains its existing content-change and invalidation behavior; when the editable title changes, it also renames the track leaf folder.
 
 ## Product requirements and ATP mapping
 
@@ -208,6 +208,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Replaced virtual-only library placement with synchronized physical album/single paths and atomic album-folder rename. | Project team |
 | 2026-08-14 | Added the typed library-assignment boundary and separated virtual reclassification from portable track mutation. | Project team |
 | 2026-08-14 | Defined filesystem-scoped no-clobber publication acceptance and documented the global-evidence command boundary. | Project team |
 | 2026-08-13 | Added evidence-lineage ownership and the explicit same-user symbolic-link race boundary. | Project team |

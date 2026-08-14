@@ -104,6 +104,8 @@ A negative answer ends the branch. A positive content-check answer can require a
 │   ├── removals/
 │   ├── recovery/
 │   └── revisions/
+├── .summary/
+│   └── track.json
 ├── 01_RELEASE/
 ├── 02_SUNO/
 │   └── suno_project.txt

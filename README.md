@@ -95,7 +95,7 @@ The browser-only Vite preview cannot perform the native workspace, evidence, art
 1. Create or open a local workspace.
 2. Complete the minimal global artist, Suno, and artwork defaults.
 3. Create a track as a single or assign it to a named album; scanned historical tracks default to singles.
-4. Browse the collapsible album/single folder tree and reorganize assignments when needed without moving the portable track folders.
+4. Browse the collapsible album/single tree; reassign tracks or rename albums while the native layer moves the physical folders safely.
 5. Follow the steps `01 Track` through `10 Finalize`.
 6. Import real evidence with the native picker and resolve the displayed missing items.
 7. Generate documents and, when applicable, the visible AI artwork disclosure.
@@ -116,7 +116,7 @@ The application deliberately uses two authorities:
 
 Global settings are copied into generated track documents as a dated snapshot. The documents never depend only on a mutable global setting. Stored paths are relative to their owning workspace or track root.
 
-Album/single placement is virtual workspace-index metadata. Reclassification does not move a track folder or alter its workflow, documents, hashes, or certificate. A track-only backup remains portable but does not retain album membership; an index-loss scan therefore defaults the recovered track to `single`. See the [track library organization model](docs/def/track-library-model.md).
+Album/single placement has two synchronized representations: typed SQLite metadata and the physical relative path. Singles live below `Singles/<track title>/`; album tracks live below `<album title>/<track title>/`. Reclassification and album renaming move the complete track root without changing any internal path or byte, so documents, hashes, and certificates remain valid. Managed tracks carry an excluded `.summary/track.json` identity marker so a renamed folder can be reconnected safely. See the [track library organization model](docs/def/track-library-model.md).
 
 Every track evidence record has one explicit provenance value:
 
