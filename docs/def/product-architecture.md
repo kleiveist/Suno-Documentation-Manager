@@ -86,7 +86,7 @@ The command surface is deliberately explicit. The exact Rust input and output st
 | --- | --- |
 | Workspace | `create_workspace`, `open_workspace`, `scan_workspace` |
 | Track | `create_track`, `load_track`, `update_track`, `update_track_library`, `rename_album` |
-| Evidence | `import_evidence`, `remove_evidence`, `verify_evidence` |
+| Evidence | `import_evidence`, `preview_evidence`, `remove_evidence`, `verify_evidence` |
 | Global evidence | `list_global_evidence`, `import_global_evidence`, `remove_global_evidence`, `attach_global_evidence` |
 | Documents | `generate_documents` |
 | Artwork | `generate_artwork_disclosure` |
@@ -157,6 +157,8 @@ Portable finalized track state
 SQLite makes local interaction transactional and efficient. It is intentionally rebuildable from track folders where the folder contains enough information. A final track remains understandable and verifiable if `.suno-doc/` or the application is unavailable. See [Persistence and recovery](persistence.md).
 
 Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclosure`, and `indexed_legacy`. Generated disclosure records link to the verified AI-original evidence ID and retain the generator version and exact disclosure text. Those portable manifest fields allow a reviewer and the native gate to distinguish local derivation from a manually imported look-alike.
+
+Evidence import is dispatched as blocking native work rather than running on the webview event loop. Copy and SHA-256 calculation share one bounded-buffer stream. Routine track loading performs metadata checks instead of repeatedly hashing evidence above 64 MiB; explicit verification and integrity/finalization remain full checks. Preview commands embed only bounded images or text, and treat project ZIPs as metadata-only. An explicit replacement preserves the evidence ID, archives the previous bytes, and coordinates the filesystem change with the SQLite update so an occupied `(track_id, relative_path)` never becomes a raw user-facing uniqueness error.
 
 Track library placement is synchronized between the workspace index and physical folder hierarchy. `create_track` creates `Singles/<track>/` or `<album>/<track>/`; `update_track_library` moves the complete track root and then persists its new relative path. `rename_album` moves one album directory and updates all member paths in a single SQLite transaction. These organizational commands deliberately bypass content-edit lifecycle restrictions so a finalized track can be reorganized without changing its update timestamp, workflow, documents, integrity state, certificate, or bytes below the track root. Destination collisions never overwrite, and a failed database write triggers a compensating folder move. The general `update_track` command retains its existing content-change and invalidation behavior; when the editable title changes, it also renames the track leaf folder.
 

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { createDemoApi } from "./demo";
 import type {
   ActionResult,
+  EvidencePreview,
   EvidenceRole,
   DocumentPreview,
   GlobalProfile,
@@ -43,8 +44,9 @@ export interface DesktopApi {
   resolveDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   removeDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   setStepStatus(trackId: string, stepId: StepId, status: StepStatus, naReason?: string): Promise<TrackDetail>;
-  importEvidence(trackId: string, role: EvidenceRole): Promise<TrackDetail | null>;
+  importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string): Promise<TrackDetail | null>;
   removeEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
+  previewEvidence(trackId: string, evidenceId: string): Promise<EvidencePreview>;
   verifyEvidence(trackId: string, evidenceId?: string): Promise<TrackDetail>;
   previewDocumentGeneration(trackId: string): Promise<DocumentPreview>;
   generateDocuments(trackId: string, adoptExisting?: boolean): Promise<ActionResult>;
@@ -182,9 +184,9 @@ class TauriDesktopApi implements DesktopApi {
     return command("set_step_status", { trackId, stepId, status, naReason });
   }
 
-  async importEvidence(trackId: string, role: EvidenceRole): Promise<TrackDetail | null> {
+  async importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string): Promise<TrackDetail | null> {
     try {
-      return await command<TrackDetail | null>("import_evidence", { trackId, role });
+      return await command<TrackDetail | null>("import_evidence", { trackId, role, replaceEvidenceId });
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
@@ -193,6 +195,10 @@ class TauriDesktopApi implements DesktopApi {
 
   removeEvidence(trackId: string, evidenceId: string): Promise<TrackDetail> {
     return command("remove_evidence", { trackId, evidenceId });
+  }
+
+  previewEvidence(trackId: string, evidenceId: string): Promise<EvidencePreview> {
+    return command("preview_evidence", { trackId, evidenceId });
   }
 
   verifyEvidence(trackId: string, evidenceId?: string): Promise<TrackDetail> {

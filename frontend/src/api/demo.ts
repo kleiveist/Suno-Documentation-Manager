@@ -352,14 +352,26 @@ export function createDemoApi(): DesktopApi {
       refresh(track);
       return clone(track);
     },
-    async importEvidence(trackId, role) {
+    async importEvidence(trackId, role, replaceEvidenceId) {
       await wait();
       const track = get(trackId);
-      if (["release_wav", "final_artwork"].includes(role) && track.evidence.some((item) => item.role === role)) {
-        throw new Error(`Die Rolle ${role} ist bereits belegt. Entferne zuerst die aktuelle Datei.`);
+      if (!replaceEvidenceId && ["release_wav", "final_artwork"].includes(role) && track.evidence.some((item) => item.role === role)) {
+        throw new Error(`Die Rolle ${role} ist bereits belegt. Verwende den Upload-Button an der vorhandenen Evidence zum Ersetzen.`);
       }
-      const extension = role.includes("artwork") ? "png" : role === "release_wav" ? "wav" : role.includes("subscription") ? "pdf" : "zip";
-      track.evidence.push(evidence(role, `${role}.${extension}`));
+      const extension = role.includes("artwork") || role === "suno_screenshot" || role === "final_artwork"
+        ? "png"
+        : role === "release_wav" || role === "suno_final_export"
+          ? "wav"
+          : role.includes("subscription")
+            ? "pdf"
+            : "zip";
+      const next = evidence(role, `${role}.${extension}`);
+      const replaceIndex = replaceEvidenceId
+        ? track.evidence.findIndex((item) => item.id === replaceEvidenceId && item.role === role)
+        : -1;
+      if (replaceEvidenceId && replaceIndex < 0) throw new Error("Die zu ersetzende Evidence wurde nicht gefunden.");
+      if (replaceIndex >= 0) track.evidence[replaceIndex] = { ...next, id: replaceEvidenceId! };
+      else track.evidence.push(next);
       track.documents.current = false;
       refresh(track);
       return clone(track);
@@ -371,6 +383,24 @@ export function createDemoApi(): DesktopApi {
       track.documents.current = false;
       refresh(track);
       return clone(track);
+    },
+    async previewEvidence(trackId, evidenceId) {
+      await wait();
+      const item = get(trackId).evidence.find((entry) => entry.id === evidenceId);
+      if (!item) throw new Error("Die Evidence wurde nicht gefunden.");
+      const isImage = /\.(png|jpe?g|webp)$/i.test(item.fileName);
+      return {
+        evidenceId: item.id,
+        role: item.role,
+        fileName: item.fileName,
+        relativePath: item.relativePath,
+        sizeBytes: item.sizeBytes,
+        mimeType: isImage ? "image/png" : undefined,
+        dataUrl: isImage
+          ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+          : undefined,
+        message: isImage ? undefined : "Für diesen Dateityp ist in der Browser-Demo keine Vorschau verfügbar."
+      };
     },
     async verifyEvidence(trackId, evidenceId) {
       await wait();

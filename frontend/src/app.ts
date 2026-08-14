@@ -3,6 +3,7 @@ import { toUserMessage } from "./api/desktop";
 import {
   calculateMissingRequirements,
   evaluateRequirements,
+  evidenceRoleFileTypes,
   evidenceRoleLabel,
   finalizationGate,
   statusLabel,
@@ -12,6 +13,7 @@ import {
 } from "./domain/workflow";
 import {
   emptyProfile,
+  type EvidencePreview,
   type GlobalEvidenceItem,
   type EvidenceRole,
   type GlobalProfile,
@@ -71,6 +73,7 @@ interface AppState {
   showNewTrack: boolean;
   showTrackLibrary: boolean;
   showSubscriptionEvidence: boolean;
+  evidencePreview: EvidencePreview | null;
   theme: ColorTheme;
   toast: ToastState | null;
 }
@@ -78,7 +81,7 @@ interface AppState {
 export type WorkspaceScopedUiState = Pick<
   AppState,
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" |
-  "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "query" | "trackFilter"
+  "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -92,6 +95,7 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     showNewTrack: false,
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
+    evidencePreview: null,
     query: "",
     trackFilter: "all",
     draftDirty: false
@@ -191,6 +195,7 @@ export class SunoDocumentationApp {
     showNewTrack: false,
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
+    evidencePreview: null,
     theme: "light",
     toast: null
   };
@@ -279,6 +284,10 @@ export class SunoDocumentationApp {
 
   private showToast(kind: ToastKind, title: string, message: string): void {
     this.state.toast = { kind, title, message };
+    // Most mutations finish after `withBusy` has already rendered its final
+    // frame. Render the result immediately so workflow ticks and messages are
+    // never delayed until the next interaction.
+    this.render();
     window.clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => {
       this.state.toast = null;
@@ -300,6 +309,7 @@ export class SunoDocumentationApp {
       showNewTrack: this.state.showNewTrack,
       showTrackLibrary: this.state.showTrackLibrary,
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
+      evidencePreview: this.state.evidencePreview,
       query: this.state.query,
       trackFilter: this.state.trackFilter,
       draftDirty: this.draftDirty
@@ -361,7 +371,9 @@ export class SunoDocumentationApp {
             ? this.renderTrackLibraryDialog()
             : this.state.showSubscriptionEvidence
               ? this.renderSubscriptionEvidenceDialog()
-              : ""}
+              : this.state.evidencePreview
+                ? this.renderEvidencePreviewDialog()
+                : ""}
         ${this.renderToast()}
         ${this.state.busy ? `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>` : ""}
       </div>`;
@@ -501,6 +513,22 @@ export class SunoDocumentationApp {
         <div class="evidence-guidance">${icon("info")}<p>Übernimm den tatsächlichen Beginn vom Beleg. Das Enddatum wird bis zum Tag vor der nächsten Zahlung berechnet; der Inhalt der Datei wird nicht automatisch ausgelesen. Pro Registrierung wird genau eine Rechnung oder ein Beleg ausgewählt.</p></div>
         <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("upload")} Datei auswählen und registrieren</button></div>
       </form>
+    </section></div>`;
+  }
+
+  private renderEvidencePreviewDialog(): string {
+    const preview = this.state.evidencePreview;
+    if (!preview) return "";
+    const content = preview.dataUrl
+      ? `<div class="evidence-preview-stage"><img src="${escapeHtml(preview.dataUrl)}" alt="Vorschau von ${escapeHtml(preview.fileName)}"></div>`
+      : preview.textContent !== undefined && preview.textContent !== null
+        ? `<pre class="evidence-preview-text">${escapeHtml(preview.textContent)}</pre>`
+        : `<div class="evidence-preview-unavailable">${icon("file")}<p>${escapeHtml(preview.message ?? "Für diese Datei ist keine Vorschau verfügbar.")}</p></div>`;
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal evidence-preview-modal" role="dialog" aria-modal="true" aria-labelledby="evidence-preview-title" data-modal-panel>
+      <div class="modal-head"><div><p class="overline">Evidence-Vorschau</p><h2 id="evidence-preview-title">${escapeHtml(preview.fileName)}</h2></div><button class="icon-button" data-action="close-modal" aria-label="Vorschau schließen">${icon("close")}</button></div>
+      ${content}
+      <dl class="evidence-preview-meta"><div><dt>Rolle</dt><dd>${escapeHtml(evidenceRoleLabel(preview.role))}</dd></div><div><dt>Größe</dt><dd>${escapeHtml(formatBytes(preview.sizeBytes))}</dd></div><div><dt>Pfad</dt><dd>${escapeHtml(preview.relativePath)}</dd></div></dl>
+      <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Schließen</button></div>
     </section></div>`;
   }
 
@@ -777,7 +805,7 @@ export class SunoDocumentationApp {
     const missing = calculateMissingRequirements(track, track.profileSnapshot).filter((item) => item.evidenceRole);
     return `<div class="${embedded ? "embedded-content" : "evidence-page"}">
       <div class="section-intro"><div><p class="overline">Lokale Nachweise</p><h3>Evidence & Lizenzen</h3><p>Originale bleiben am Quellort. Importierte Kopien werden gehasht und niemals still überschrieben.</p></div><button class="button button--primary" data-action="import-evidence">${icon("upload")} Evidence importieren</button></div>
-      ${missing.length ? `<div class="evidence-needed"><strong>${missing.length} erforderliche Nachweise fehlen</strong><div>${missing.map((item) => item.evidenceRole === "subscription_payment" ? `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – unten aus globaler Evidence zuordnen</span>` : `<button data-import-role="${item.evidenceRole}">${icon("plus")} ${escapeHtml(item.label)}</button>`).join("")}</div></div>` : ""}
+      ${missing.length ? `<div class="evidence-needed"><strong>${missing.length} erforderliche Nachweise fehlen</strong><div>${missing.map((item) => item.evidenceRole === "subscription_payment" ? `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – unten aus globaler Evidence zuordnen</span>` : `<button data-import-role="${item.evidenceRole}">${icon("plus")}<span><strong>${escapeHtml(item.label)}</strong><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`).join("")}</div></div>` : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track) : ""}
       <div class="panel evidence-table-panel"><div class="evidence-table-head"><span>Datei</span><span>Rolle</span><span>Integrität</span><span>Größe</span><span></span></div>
         ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><span class="evidence-name"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small></span><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${item.id}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${item.id}" aria-label="Evidence entfernen">${icon("trash")}</button></span></div>`).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
@@ -871,8 +899,12 @@ export class SunoDocumentationApp {
 
   private inlineEvidenceActions(track: TrackDetail, actions: Array<[EvidenceRole, string]>): string {
     return `<div class="inline-evidence">${actions.map(([role, label]) => {
-      const present = track.evidence.some((item) => item.role === role && item.verified);
-      return `<button type="button" class="evidence-button ${present ? "is-present" : ""}" data-import-role="${role}">${present ? icon("check") : icon("upload")}<span><strong>${escapeHtml(label)}</strong><small>${present ? "Vorhanden und verifiziert" : evidenceRoleLabel(role)}</small></span></button>`;
+      const present = [...track.evidence].reverse().find((item) => item.role === role && item.verified);
+      const types = evidenceRoleFileTypes(role);
+      return `<div class="evidence-control ${present ? "is-present" : ""}">
+        <button type="button" class="evidence-button ${present ? "is-present" : ""}" ${present ? `data-preview-evidence="${escapeHtml(present.id)}"` : `data-import-role="${role}"`}>${present ? icon("check") : icon("upload")}<span><strong>${escapeHtml(label)}</strong><small>${present ? "Vorhanden – klicken für Vorschau" : evidenceRoleLabel(role)}</small><small class="evidence-types">Gefordert: ${escapeHtml(types)}</small></span></button>
+        ${present ? `<button type="button" class="evidence-reupload" data-import-role="${role}" data-replace-evidence="${escapeHtml(present.id)}" aria-label="${escapeHtml(label)} ersetzen" title="Datei ersetzen">${icon("upload")}</button>` : ""}
+      </div>`;
     }).join("")}</div>`;
   }
 
@@ -984,7 +1016,12 @@ export class SunoDocumentationApp {
     }
     const importRole = button.dataset.importRole as EvidenceRole | undefined;
     if (importRole) {
-      await this.importEvidence(importRole);
+      await this.importEvidence(importRole, button.dataset.replaceEvidence);
+      return;
+    }
+    const previewEvidenceId = button.dataset.previewEvidence;
+    if (previewEvidenceId) {
+      await this.previewEvidence(previewEvidenceId);
       return;
     }
     if (button.dataset.verifyEvidence) {
@@ -1047,6 +1084,7 @@ export class SunoDocumentationApp {
         } else {
           this.state.showTrackLibrary = false;
           this.state.showSubscriptionEvidence = false;
+          this.state.evidencePreview = null;
           this.state.showNewTrack = true;
           this.render();
         }
@@ -1056,10 +1094,11 @@ export class SunoDocumentationApp {
         if (!(await this.flushDraft())) break;
         this.state.showNewTrack = false;
         this.state.showSubscriptionEvidence = false;
+        this.state.evidencePreview = null;
         this.state.showTrackLibrary = true;
         this.render();
         break;
-      case "close-modal": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.render(); break;
+      case "close-modal": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.render(); break;
       case "open-sidebar": this.state.sidebarOpen = true; this.render(); break;
       case "close-sidebar": this.state.sidebarOpen = false; this.render(); break;
       case "dismiss-toast": this.state.toast = null; this.render(); break;
@@ -1070,7 +1109,7 @@ export class SunoDocumentationApp {
         if (window.confirm("Treffen die aktuellen Workspace-Stammdaten auf diesen historischen Track zu? Sie werden als Track-Snapshot übernommen.")) await this.trackMutation("Stammdaten werden als Legacy-Snapshot übernommen …", () => this.api.adoptLegacyProfile(this.requireTrack().id), "Legacy-Snapshot übernommen");
         break;
       case "import-evidence": await this.chooseEvidenceRole(); break;
-      case "import-global-evidence": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = true; this.render(); break;
+      case "import-global-evidence": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.evidencePreview = null; this.state.showSubscriptionEvidence = true; this.render(); break;
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
@@ -1290,14 +1329,33 @@ export class SunoDocumentationApp {
     this.showToast("success", "Scan abgeschlossen", `${scan.discovered} Track-Ordner erkannt. Es wurden keine bestehenden Dateien überschrieben.`);
   }
 
-  private async importEvidence(role: EvidenceRole): Promise<void> {
+  private async importEvidence(role: EvidenceRole, replaceEvidenceId?: string): Promise<void> {
     if (!(await this.flushDraft())) return;
+    if (replaceEvidenceId && !window.confirm("Vorhandene Evidence durch die neu ausgewählte Datei ersetzen? Die bisherige verwaltete Kopie wird lokal archiviert.")) return;
     const track = this.requireTrack();
-    const imported = await this.withBusy("Nativer Dateidialog wird geöffnet …", () => this.api.importEvidence(track.id, role));
+    const imported = await this.withBusy(
+      "Datei auswählen; große Dateien werden im Hintergrund kopiert und gehasht …",
+      () => this.api.importEvidence(track.id, role, replaceEvidenceId)
+    );
     if (imported) {
       this.applyTrack(imported);
-      this.showToast("success", "Evidence importiert", `${evidenceRoleLabel(role)} wurde kopiert, gehasht und dem Track zugeordnet.`);
+      this.showToast(
+        "success",
+        replaceEvidenceId ? "Evidence ersetzt" : "Evidence importiert",
+        `${evidenceRoleLabel(role)} wurde kopiert, gehasht und dem Track zugeordnet.${replaceEvidenceId ? " Die vorherige Kopie wurde archiviert." : ""}`
+      );
     }
+  }
+
+  private async previewEvidence(evidenceId: string): Promise<void> {
+    const track = this.requireTrack();
+    const preview = await this.withBusy("Evidence-Vorschau wird vorbereitet …", () => this.api.previewEvidence(track.id, evidenceId));
+    if (!preview) return;
+    this.state.showNewTrack = false;
+    this.state.showTrackLibrary = false;
+    this.state.showSubscriptionEvidence = false;
+    this.state.evidencePreview = preview;
+    this.render();
   }
 
   private async chooseEvidenceRole(): Promise<void> {

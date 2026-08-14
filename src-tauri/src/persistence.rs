@@ -207,10 +207,12 @@ impl Persistence {
     }
 
     pub fn save_evidence(&self, track_id: &str, evidence: &EvidenceItem) -> Result<()> {
-        self.open()?.execute(
+        let result = self.open()?.execute(
             "INSERT INTO evidence(id,track_id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
-             ON CONFLICT(id) DO UPDATE SET sha256=excluded.sha256,size_bytes=excluded.size_bytes,
+             ON CONFLICT(id) DO UPDATE SET role=excluded.role,file_name=excluded.file_name,
+             relative_path=excluded.relative_path,sha256=excluded.sha256,size_bytes=excluded.size_bytes,
+             imported_at=excluded.imported_at,
              verified=excluded.verified,verification_error=excluded.verification_error,
              source_global_evidence_id=excluded.source_global_evidence_id,coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,
              provenance=excluded.provenance,derived_from_evidence_id=excluded.derived_from_evidence_id,
@@ -234,8 +236,37 @@ impl Persistence {
                 evidence.generator_version,
                 evidence.generated_disclosure_text
             ],
-        )?;
+        );
+        if let Err(error) = result {
+            if matches!(
+                error,
+                rusqlite::Error::SqliteFailure(ref code, _)
+                    if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            ) {
+                return Err(AppError::Validation(
+                    "Die Evidence konnte wegen einer bereits belegten Zuordnung nicht gespeichert werden. Verwende zum Austausch den Upload-Button an der vorhandenen Evidence."
+                        .into(),
+                ));
+            }
+            return Err(AppError::Database(error));
+        }
         Ok(())
+    }
+
+    pub fn evidence_by_relative_path(
+        &self,
+        track_id: &str,
+        relative_path: &str,
+    ) -> Result<Option<EvidenceItem>> {
+        self.open()?
+            .query_row(
+                "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text
+                 FROM evidence WHERE track_id=?1 AND relative_path=?2",
+                params![track_id, relative_path],
+                evidence_from_row,
+            )
+            .optional()
+            .map_err(AppError::from)
     }
 
     pub fn evidence(&self, track_id: &str) -> Result<Vec<EvidenceItem>> {
@@ -712,6 +743,17 @@ mod tests {
         assert_eq!(updated[0].derived_from_evidence_id, None);
         assert_eq!(updated[0].generator_version, None);
         assert_eq!(updated[0].generated_disclosure_text, None);
+
+        let duplicate = EvidenceItem {
+            id: "duplicate-id".into(),
+            ..evidence
+        };
+        let error = persistence
+            .save_evidence("track-1", &duplicate)
+            .expect_err("duplicate relative path must be controlled");
+        assert!(
+            matches!(error, AppError::Validation(message) if message.contains("Upload-Button"))
+        );
     }
 
     #[test]

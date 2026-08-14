@@ -129,13 +129,17 @@ SQLite transactions and filesystem writes do not share one atomic transaction. E
 1. Validate the selected source and evidence role.
 2. Resolve and validate the contained destination.
 3. Detect a collision before writing.
-4. Copy to a temporary destination without removing the source.
-5. Calculate and verify the copied file hash and size.
+4. Stream once from the source into a temporary destination while calculating SHA-256 and size, without removing the source.
+5. Flush the complete copied file.
 6. Rename into place.
 7. Commit the evidence metadata in SQLite.
 8. Reevaluate workflow state.
 
 If metadata commit fails after the file is placed, a later scan can discover the unindexed file. The product reports the recoverable mismatch rather than deleting user evidence automatically.
+
+Routine list and load operations bound their work for evidence larger than 64 MiB: they check containment, file kind, existence, and stored size but do not recalculate the full digest. Explicit evidence verification, integrity generation/verification, and finalization still read and cryptographically verify the full file set.
+
+An explicit replacement resolves one existing evidence ID. The new source is streamed and hashed into a staged managed file, the previous bytes move to `.archive/evidence-replacements/<transaction-id>/`, and SQLite updates the existing row including its relative path. Persistence failure removes the staged replacement and restores the archived file. A normal import that resolves to an already indexed `(track_id, relative_path)` is rejected before copying with a controlled instruction to use replacement, preventing the database uniqueness failure from leaking into the UI.
 
 ### Indexed legacy evidence removal
 

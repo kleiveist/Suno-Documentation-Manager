@@ -5,10 +5,11 @@ use crate::evidence;
 use crate::integrity;
 use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
-    DocumentPreview, DocumentState, EvidenceItem, EvidenceProvenance, EvidenceRole,
-    GlobalEvidenceItem, IntegrityState, LegacyCandidate, Profile, StepState, StepStatus,
-    SubscriptionBillingCycle, TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch,
-    TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
+    DocumentPreview, DocumentState, EvidenceItem, EvidencePreview, EvidenceProvenance,
+    EvidenceRole, GlobalEvidenceItem, IntegrityState, LegacyCandidate, Profile, StepState,
+    StepStatus, SubscriptionBillingCycle, TrackDetail, TrackLibraryPlacement, TrackLibrarySection,
+    TrackPatch, TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan,
+    WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -16,6 +17,7 @@ use crate::security::{
     ensure_contained_directory, portable_relative, sha256_file, slugify,
 };
 use crate::workflow;
+use base64::Engine;
 use chrono::{Months, NaiveDate, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -38,7 +40,7 @@ pub const TRACK_FOLDERS: [&str; 8] = [
 const SINGLES_DIRECTORY: &str = "Singles";
 const TRACK_IDENTITY_FILE: &str = ".summary/track.json";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkspaceApp {
     root: PathBuf,
     persistence: Persistence,
@@ -775,11 +777,22 @@ impl WorkspaceApp {
                 .any(|item| item.role == role)
         {
             return Err(AppError::Validation(format!(
-                "Evidence role '{}' is singular. Remove the current file before importing its replacement.",
+                "Die Evidence-Rolle '{}' ist bereits belegt. Verwende den Upload-Button an der vorhandenen Evidence zum sicheren Ersetzen.",
                 role.as_str()
             )));
         }
         let track_root = self.track_root(&track)?;
+        let planned_relative = evidence::managed_relative_path(&track.fields.title, &role, source)?;
+        let planned_portable = portable_relative(&planned_relative);
+        if self
+            .persistence
+            .evidence_by_relative_path(id, &planned_portable)?
+            .is_some()
+        {
+            return Err(AppError::Validation(format!(
+                "Unter {planned_portable} ist bereits Evidence registriert. Verwende den Upload-Button an der vorhandenen Evidence zum sicheren Ersetzen."
+            )));
+        }
         let item = evidence::import(&track_root, &track.fields.title, role, source)?;
         if let Err(error) = self.persistence.save_evidence(id, &item) {
             if let Ok(path) = contained_path(&track_root, Path::new(&item.relative_path), true) {
@@ -787,6 +800,52 @@ impl WorkspaceApp {
             }
             return Err(error);
         }
+        mark_content_changed(&mut track);
+        track.status = TrackStatus::Active;
+        track.updated_at = now();
+        self.persistence.save_track(&track)?;
+        self.detail_from_record(track, false)
+    }
+
+    pub fn replace_evidence_from(
+        &self,
+        id: &str,
+        evidence_id: &str,
+        role: EvidenceRole,
+        source: &Path,
+    ) -> Result<TrackDetail> {
+        if role == EvidenceRole::SubscriptionPayment {
+            return Err(AppError::Validation(
+                "Replace subscription evidence in the global evidence register.".into(),
+            ));
+        }
+        let mut track = self.mutable_track(id)?;
+        let previous = self.persistence.evidence_item(id, evidence_id)?;
+        if previous.role != role {
+            return Err(AppError::Validation(
+                "The selected replacement role does not match the existing evidence.".into(),
+            ));
+        }
+        let planned_relative = evidence::managed_relative_path(&track.fields.title, &role, source)?;
+        let planned_portable = portable_relative(&planned_relative);
+        if self
+            .persistence
+            .evidence_by_relative_path(id, &planned_portable)?
+            .is_some_and(|item| item.id != previous.id)
+        {
+            return Err(AppError::Validation(format!(
+                "Another evidence record already uses {planned_portable}. Remove that record before replacing this file."
+            )));
+        }
+        let track_root = self.track_root(&track)?;
+        evidence::replace(
+            &track_root,
+            &track.fields.title,
+            role,
+            source,
+            &previous,
+            |item| self.persistence.save_evidence(id, item),
+        )?;
         mark_content_changed(&mut track);
         track.status = TrackStatus::Active;
         track.updated_at = now();
@@ -926,6 +985,90 @@ impl WorkspaceApp {
         self.detail_from_record(track, false)
     }
 
+    pub fn preview_evidence(&self, id: &str, evidence_id: &str) -> Result<EvidencePreview> {
+        const IMAGE_PREVIEW_LIMIT: u64 = 16 * 1024 * 1024;
+        const TEXT_PREVIEW_LIMIT: u64 = 512 * 1024;
+
+        let track = self.persistence.track(id)?;
+        let item = self.persistence.evidence_item(id, evidence_id)?;
+        let track_root = self.track_root(&track)?;
+        let path = contained_path(&track_root, Path::new(&item.relative_path), true)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| AppError::io(&path, error))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(AppError::Validation(
+                "Evidence preview requires a regular managed file.".into(),
+            ));
+        }
+        evidence::validate_type(&item.role, &path)?;
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let image_mime = match extension.as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "webp" => Some("image/webp"),
+            _ => None,
+        };
+        let text_mime = match extension.as_str() {
+            "txt" => Some("text/plain"),
+            "md" => Some("text/markdown"),
+            "json" => Some("application/json"),
+            _ => None,
+        };
+        let (mime_type, data_url, text_content, message) = if let Some(mime) = image_mime {
+            if metadata.len() <= IMAGE_PREVIEW_LIMIT {
+                let bytes = fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                (
+                    Some(mime.into()),
+                    Some(format!("data:{mime};base64,{encoded}")),
+                    None,
+                    None,
+                )
+            } else {
+                (
+                    Some(mime.into()),
+                    None,
+                    None,
+                    Some("Das Bild ist größer als 16 MB und wird deshalb nicht in den Arbeitsspeicher geladen.".into()),
+                )
+            }
+        } else if let Some(mime) = text_mime {
+            if metadata.len() <= TEXT_PREVIEW_LIMIT {
+                let bytes = fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                (Some(mime.into()), None, Some(text), None)
+            } else {
+                (
+                    Some(mime.into()),
+                    None,
+                    None,
+                    Some("Die Textdatei ist größer als 512 KB und wird deshalb nicht vollständig geladen.".into()),
+                )
+            }
+        } else {
+            let message = if extension == "zip" {
+                "ZIP-Dateien werden für die Vorschau nicht entpackt oder in den Arbeitsspeicher geladen."
+            } else {
+                "Für diesen Dateityp ist keine sichere Vorschau innerhalb der App verfügbar."
+            };
+            (None, None, None, Some(message.into()))
+        };
+        Ok(EvidencePreview {
+            evidence_id: item.id,
+            role: item.role,
+            file_name: item.file_name,
+            relative_path: item.relative_path,
+            size_bytes: metadata.len(),
+            mime_type,
+            data_url,
+            text_content,
+            message,
+        })
+    }
+
     pub fn verify_evidence(&self, id: &str, evidence_id: Option<&str>) -> Result<TrackDetail> {
         let mut track = self.persistence.track(id)?;
         let track_root = self.track_root(&track)?;
@@ -1036,6 +1179,31 @@ impl WorkspaceApp {
             .unwrap_or(&track.fields.disclosure_text)
             .trim()
             .to_owned();
+        if evidence_items.iter().any(|item| {
+            item.role == EvidenceRole::AiArtworkEdited
+                && item.provenance == EvidenceProvenance::GeneratedDisclosure
+                && item.verified
+                && item.verification_error.is_none()
+                && item.derived_from_evidence_id.as_deref() == Some(source.id.as_str())
+                && item.imported_at.as_str() >= source.imported_at.as_str()
+                && item.generator_version.as_deref()
+                    == Some(crate::artwork::DISCLOSURE_GENERATOR_VERSION)
+                && item.generated_disclosure_text.as_deref() == Some(text.as_str())
+        }) {
+            if track.fields.disclosure_applied != Some(true) || track.fields.disclosure_text != text
+            {
+                track.fields.disclosure_applied = Some(true);
+                track.fields.disclosure_text = text;
+                mark_content_changed(&mut track);
+                track.updated_at = now();
+                self.persistence.save_track(&track)?;
+            }
+            return Ok(ActionResult {
+                message: "Der aktuelle sichtbare KI-Hinweis ist bereits vorhanden; es wurde keine doppelte Datei erzeugt."
+                    .into(),
+                track: Some(self.detail_from_record(track, false)?),
+            });
+        }
         let track_root = self.track_root(&track)?;
         let generated =
             crate::artwork::generate_disclosure(&track_root, &track.fields.title, source, &text)?;
@@ -1879,7 +2047,10 @@ impl WorkspaceApp {
             &evidence,
             &first.steps,
         )?;
-        if root.join(integrity::HASH_FILE).is_file() {
+        let contains_large_evidence = evidence
+            .iter()
+            .any(|item| item.size_bytes > evidence::AUTOMATIC_HASH_LIMIT_BYTES);
+        if root.join(integrity::HASH_FILE).is_file() && !contains_large_evidence {
             track.integrity = integrity::verify(&root).unwrap_or_else(|_| IntegrityState {
                 generated: true,
                 verified: false,
@@ -1891,12 +2062,15 @@ impl WorkspaceApp {
                     "03_DOCUMENTATION/SHA256SUMS.txt (invalid or unreadable)".into()
                 ],
             });
-        } else {
+        } else if !root.join(integrity::HASH_FILE).is_file() {
             track.integrity = IntegrityState::default();
         }
         if inspect_finalized && track.status == TrackStatus::Finalized {
             let certificate_valid = certificate::verify(&root).is_ok();
-            if !track.integrity.verified || !certificate_valid {
+            let evidence_valid = evidence.iter().all(|item| {
+                item.verified && item.sha256.is_some() && item.verification_error.is_none()
+            });
+            if !track.integrity.verified || !certificate_valid || !evidence_valid {
                 invalidate_state(&mut track, "Documentation changed after finalization");
             }
         }
@@ -3917,6 +4091,33 @@ mod tests {
             app.import_evidence_from(&track.id, EvidenceRole::ReleaseWav, &second_wav),
             Err(AppError::Validation(_))
         ));
+        let current_release = app
+            .load_track(&track.id)
+            .expect("current release")
+            .evidence
+            .into_iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release evidence");
+        let replaced_release = app
+            .replace_evidence_from(
+                &track.id,
+                &current_release.id,
+                EvidenceRole::ReleaseWav,
+                &second_wav,
+            )
+            .expect("explicit release replacement");
+        let active_release = replaced_release
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("active replacement");
+        assert_eq!(active_release.id, current_release.id);
+        assert_eq!(active_release.file_name, "second.wav");
+        assert!(app
+            .root()
+            .join(&replaced_release.relative_path)
+            .join(".archive/evidence-replacements")
+            .is_dir());
 
         let first_art = fixtures.join("first.png");
         let second_art = fixtures.join("second.jpeg");
@@ -3949,6 +4150,84 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn evidence_preview_embeds_images_but_does_not_load_zip_archives() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let track = app
+            .create_track(CreateTrackInput {
+                title: "Evidence Preview".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let fixtures = directory.path().join("fixtures");
+        fs::create_dir(&fixtures).expect("fixtures");
+        let screenshot = fixtures.join("screenshot.png");
+        image::RgbaImage::from_pixel(32, 32, image::Rgba([12, 24, 48, 255]))
+            .save(&screenshot)
+            .expect("screenshot fixture");
+        let project = fixtures.join("project.zip");
+        fs::write(&project, b"PK\x03\x04project fixture").expect("ZIP fixture");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoScreenshot, &screenshot)
+            .expect("screenshot import");
+        let screenshot_item = imported
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::SunoScreenshot)
+            .expect("screenshot evidence");
+        let image_preview = app
+            .preview_evidence(&track.id, &screenshot_item.id)
+            .expect("image preview");
+        assert!(image_preview
+            .data_url
+            .as_deref()
+            .is_some_and(|value| value.starts_with("data:image/png;base64,")));
+
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoProjectZip, &project)
+            .expect("ZIP import");
+        let project_item = imported
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::SunoProjectZip)
+            .expect("ZIP evidence");
+        let zip_preview = app
+            .preview_evidence(&track.id, &project_item.id)
+            .expect("ZIP preview metadata");
+        assert!(zip_preview.data_url.is_none());
+        assert!(zip_preview.text_content.is_none());
+        assert!(zip_preview
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("nicht entpackt")));
+
+        let replacement_root = directory.path().join("replacement");
+        fs::create_dir(&replacement_root).expect("replacement root");
+        let replacement_project = replacement_root.join("project.zip");
+        fs::write(&replacement_project, b"PK\x03\x04replacement project")
+            .expect("replacement ZIP fixture");
+        let replaced = app
+            .replace_evidence_from(
+                &track.id,
+                &project_item.id,
+                EvidenceRole::SunoProjectZip,
+                &replacement_project,
+            )
+            .expect("same-path database replacement");
+        let projects = replaced
+            .evidence
+            .iter()
+            .filter(|item| item.role == EvidenceRole::SunoProjectZip)
+            .collect::<Vec<_>>();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, project_item.id);
+        assert_eq!(projects[0].relative_path, project_item.relative_path);
     }
 
     #[test]
@@ -4179,6 +4458,20 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.role == EvidenceRole::AiArtworkEdited && item.verified));
+        let repeated = app
+            .generate_artwork_disclosure(&updated.id, Some("AI-assisted".into()))
+            .expect("idempotent disclosure request");
+        assert!(repeated.message.contains("bereits vorhanden"));
+        assert_eq!(
+            repeated
+                .track
+                .expect("repeated disclosure track")
+                .evidence
+                .iter()
+                .filter(|item| item.role == EvidenceRole::AiArtworkEdited)
+                .count(),
+            1
+        );
         let disclosed_artwork = disclosed
             .evidence
             .iter()

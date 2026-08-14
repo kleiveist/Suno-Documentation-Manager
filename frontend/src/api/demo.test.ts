@@ -54,3 +54,20 @@ describe("demo track library", () => {
     await rejected;
   });
 });
+
+describe("demo evidence controls", () => {
+  it("replaces one selected record and previews present image evidence", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const before = await settle(api.loadTrack("gravity"));
+    const original = before.evidence.find((item) => item.role === "ai_artwork_original")!;
+
+    const updated = await settle(api.importEvidence("gravity", "ai_artwork_original", original.id));
+    const replacement = updated!.evidence.find((item) => item.id === original.id)!;
+    const preview = await settle(api.previewEvidence("gravity", replacement.id));
+
+    expect(updated!.evidence.filter((item) => item.id === original.id)).toHaveLength(1);
+    expect(preview.dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+});

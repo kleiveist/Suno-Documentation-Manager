@@ -84,6 +84,18 @@ export interface EvidenceItem {
   generatedDisclosureText?: string;
 }
 
+export interface EvidencePreview {
+  evidenceId: string;
+  role: EvidenceRole;
+  fileName: string;
+  relativePath: string;
+  sizeBytes: number;
+  mimeType?: string;
+  dataUrl?: string;
+  textContent?: string;
+  message?: string;
+}
+
 export interface GlobalEvidenceItem extends EvidenceItem {
   notes?: string;
 }

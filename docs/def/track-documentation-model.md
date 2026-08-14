@@ -144,9 +144,11 @@ Folder generation creates directories and managed text documents only when appro
 | Final artwork | `05_ARTWORK/` or release destination | Required when artwork is part of the release |
 | Other evidence | Role-selected contained destination | Optional; must have a factual description |
 
-`release_wav` and `final_artwork` are singular authoritative roles in version 0.1. To replace either asset, remove the current evidence through the managed action and then import the replacement; the app never chooses silently between competing final assets.
+`release_wav` and `final_artwork` are singular authoritative roles in version 0.1. To replace either asset, use the explicit upload control attached to the current evidence. The app reuses that evidence record, archives the previous managed bytes, and never chooses silently between competing final assets.
 
-An import validates the type and role, calculates a safe destination, detects a collision, copies without deleting the source, calculates SHA-256, records size and metadata, and reevaluates the workflow. Manifest paths are relative to the track root.
+An import validates the type and role, calculates a safe destination, detects a collision, copies without deleting the source, calculates SHA-256 during the same streaming copy, records size and metadata, and reevaluates the workflow. It runs outside the webview thread. Routine loading avoids a repeated full SHA-256 read for evidence larger than 64 MiB; explicit evidence verification and integrity/finalization operations remain full cryptographic checks. Manifest paths are relative to the track root.
+
+The evidence UI exposes accepted file types for every role. Existing images and bounded text files can be previewed inside the app. Archive preview is metadata-only and never expands or reads an entire project ZIP into memory. The adjacent replacement action is distinct from preview so viewing evidence cannot accidentally open a file picker.
 
 ## Evidence provenance
 

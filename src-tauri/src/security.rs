@@ -162,6 +162,46 @@ pub fn copy_new(source: &Path, destination: &Path) -> Result<()> {
     publish_new(temporary, destination)
 }
 
+/// Copies a file once while calculating the digest from the same byte stream.
+/// This avoids reading large evidence a second time from removable storage.
+pub fn copy_new_hashed(source: &Path, destination: &Path) -> Result<(String, u64)> {
+    if destination.exists() {
+        return Err(AppError::Collision(destination.display().to_string()));
+    }
+    let metadata = fs::symlink_metadata(source).map_err(|e| AppError::io(source, e))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::Symlink(source.display().to_string()));
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| AppError::Validation("Evidence destination has no parent.".into()))?;
+    fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+    let mut input = fs::File::open(source).map_err(|e| AppError::io(source, e))?;
+    let mut temporary = temporary_file(parent, ".import-")?;
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = input
+            .read(&mut buffer)
+            .map_err(|e| AppError::io(source, e))?;
+        if count == 0 {
+            break;
+        }
+        temporary
+            .write_all(&buffer[..count])
+            .map_err(|e| AppError::io(temporary.path(), e))?;
+        hasher.update(&buffer[..count]);
+        size += count as u64;
+    }
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| AppError::io(temporary.path(), e))?;
+    publish_new(temporary, destination)?;
+    Ok((format!("{:x}", hasher.finalize()), size))
+}
+
 fn temporary_file(parent: &Path, prefix: &str) -> Result<NamedTempFile> {
     Builder::new()
         .prefix(prefix)
@@ -436,6 +476,24 @@ mod tests {
             b"source bytes"
         );
         assert!(no_temporary_files(directory.path()));
+    }
+
+    #[test]
+    fn copy_new_hashed_returns_the_digest_from_the_copy_stream() {
+        let directory = tempdir().expect("temporary directory");
+        let source = directory.path().join("large.zip");
+        let destination = directory.path().join("managed/large.zip");
+        let bytes = (0..(3 * 1024 * 1024 + 17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&source, &bytes).expect("source fixture");
+
+        let (digest, size) = copy_new_hashed(&source, &destination).expect("copy and hash");
+
+        assert_eq!(size, bytes.len() as u64);
+        assert_eq!(digest, sha256_bytes(&bytes));
+        assert_eq!(fs::read(destination).expect("managed bytes"), bytes);
+        assert!(source.is_file());
     }
 
     #[test]

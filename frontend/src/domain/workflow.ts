@@ -352,6 +352,30 @@ export function evidenceRoleLabel(role: EvidenceRole): string {
   return labels[role];
 }
 
+export function evidenceRoleFileTypes(role: EvidenceRole): string {
+  const types: Record<EvidenceRole, string> = {
+    suno_final_export: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
+    suno_project_zip: "ZIP",
+    suno_screenshot: "PNG, JPG, WebP oder PDF",
+    subscription_payment: "PDF, PNG, JPG, TXT oder Markdown",
+    release_wav: "WAV",
+    release_mp3: "MP3",
+    release_mp4: "MP4 oder M4V",
+    release_artwork: "PNG oder JPG",
+    ai_artwork_original: "PNG oder JPG",
+    ai_artwork_edited: "PNG oder JPG",
+    human_edited_artwork: "PNG oder JPG",
+    final_artwork: "PNG oder JPG",
+    external_audio_license: "PDF, PNG, JPG, TXT oder Markdown",
+    external_audio_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
+    own_audio_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
+    third_party_sample_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
+    third_party_sample_license: "PDF, PNG, JPG, TXT oder Markdown",
+    other: "PDF, Bild, Text, ZIP, WAV, MP3 oder MP4"
+  };
+  return types[role];
+}
+
 export function stepStatuses(track: TrackDetail, profile: GlobalProfile): WorkflowStepState[] {
   const requirements = evaluateRequirements(track, profile);
   const missing = requirements.filter((item) => !item.completed);

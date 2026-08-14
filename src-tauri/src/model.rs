@@ -416,6 +416,20 @@ pub struct EvidenceItem {
     pub generated_disclosure_text: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidencePreview {
+    pub evidence_id: String,
+    pub role: EvidenceRole,
+    pub file_name: String,
+    pub relative_path: String,
+    pub size_bytes: u64,
+    pub mime_type: Option<String>,
+    pub data_url: Option<String>,
+    pub text_content: Option<String>,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceProvenance {

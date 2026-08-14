@@ -1,11 +1,16 @@
 use crate::error::{AppError, Result};
 use crate::model::{EvidenceItem, EvidenceProvenance, EvidenceRole, GlobalEvidenceItem};
-use crate::security::{contained_path, copy_new, portable_relative, sha256_file};
+use crate::security::{
+    contained_path, copy_new, copy_new_hashed, ensure_contained_directory, portable_relative,
+    sha256_file,
+};
 use chrono::Utc;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+pub const AUTOMATIC_HASH_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 pub fn validate_type(role: &EvidenceRole, source: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source).map_err(|error| AppError::io(source, error))?;
@@ -91,16 +96,115 @@ pub fn import(
     source: &Path,
 ) -> Result<EvidenceItem> {
     validate_type(&role, source)?;
+    let relative = managed_relative_path(track_title, &role, source)?;
+    let destination = contained_path(track_root, &relative, false)?;
+    let (sha256, size_bytes) = copy_new_hashed(source, &destination)?;
+    Ok(build_item_from_copy(
+        role,
+        relative,
+        &destination,
+        sha256,
+        size_bytes,
+    ))
+}
+
+pub fn managed_relative_path(
+    track_title: &str,
+    role: &EvidenceRole,
+    source: &Path,
+) -> Result<PathBuf> {
     let original_name = source
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| AppError::Validation("Evidence file name is invalid.".into()))?;
     reject_unsafe_file_name(original_name)?;
-    let name = managed_file_name(track_title, &role, original_name)?;
-    let relative = PathBuf::from(role.destination()).join(name);
+    Ok(
+        PathBuf::from(role.destination()).join(managed_file_name(
+            track_title,
+            role,
+            original_name,
+        )?),
+    )
+}
+
+/// Replaces one explicitly selected evidence record without overwriting or
+/// deleting its previous bytes. The old file is moved into the excluded local
+/// archive, and filesystem changes are rolled back if persistence fails.
+pub fn replace<F>(
+    track_root: &Path,
+    track_title: &str,
+    role: EvidenceRole,
+    source: &Path,
+    previous: &EvidenceItem,
+    persist: F,
+) -> Result<EvidenceItem>
+where
+    F: FnOnce(&EvidenceItem) -> Result<()>,
+{
+    if previous.role != role {
+        return Err(AppError::Validation(
+            "The selected evidence replacement does not match the existing role.".into(),
+        ));
+    }
+    validate_type(&role, source)?;
+    let relative = managed_relative_path(track_title, &role, source)?;
     let destination = contained_path(track_root, &relative, false)?;
-    copy_new(source, &destination)?;
-    build_item(role, relative, &destination)
+    let previous_path = contained_path(track_root, Path::new(&previous.relative_path), false)?;
+    let previous_name = previous_path.file_name().ok_or_else(|| {
+        AppError::Validation("The existing evidence path has no file name.".into())
+    })?;
+    let transaction_id = Uuid::new_v4().to_string();
+    let archive_relative = PathBuf::from(".archive/evidence-replacements").join(&transaction_id);
+    let archived_path = contained_path(track_root, &archive_relative.join(previous_name), false)?;
+    let mut archived_previous: Option<PathBuf> = None;
+
+    let (sha256, size_bytes) = if destination == previous_path {
+        if previous_path.is_file() {
+            let stage_relative =
+                relative.with_file_name(format!(".replacement-{transaction_id}.tmp"));
+            let stage_path = contained_path(track_root, &stage_relative, false)?;
+            let copied = copy_new_hashed(source, &stage_path)?;
+            ensure_contained_directory(track_root, &archive_relative)?;
+            if let Err(error) = fs::rename(&previous_path, &archived_path) {
+                let _ = fs::remove_file(&stage_path);
+                return Err(AppError::io(&previous_path, error));
+            }
+            archived_previous = Some(archived_path.clone());
+            if let Err(error) = fs::rename(&stage_path, &destination) {
+                let _ = fs::rename(&archived_path, &previous_path);
+                let _ = fs::remove_file(&stage_path);
+                let _ = fs::remove_dir_all(track_root.join(&archive_relative));
+                return Err(AppError::io(&destination, error));
+            }
+            copied
+        } else {
+            copy_new_hashed(source, &destination)?
+        }
+    } else {
+        let copied = copy_new_hashed(source, &destination)?;
+        if previous_path.is_file() {
+            ensure_contained_directory(track_root, &archive_relative)?;
+            if let Err(error) = fs::rename(&previous_path, &archived_path) {
+                let _ = fs::remove_file(&destination);
+                let _ = fs::remove_dir_all(track_root.join(&archive_relative));
+                return Err(AppError::io(&previous_path, error));
+            }
+            archived_previous = Some(archived_path);
+        }
+        copied
+    };
+
+    let mut item = build_item_from_copy(role, relative, &destination, sha256, size_bytes);
+    item.id = previous.id.clone();
+    if let Err(error) = persist(&item) {
+        let _ = fs::remove_file(&destination);
+        if let Some(archived) = &archived_previous {
+            let _ = fs::rename(archived, &previous_path);
+        }
+        let _ = fs::remove_dir_all(track_root.join(&archive_relative));
+        return Err(error);
+    }
+    Ok(item)
 }
 
 pub fn register_global(
@@ -167,6 +271,43 @@ pub fn portable_global_copy(
 }
 
 pub fn inspect(track_root: &Path, item: EvidenceItem) -> Result<EvidenceItem> {
+    inspect_internal(track_root, item)
+}
+
+/// Normal track loading performs only a bounded check for large evidence.
+/// Full SHA-256 verification remains available through `verify` and the
+/// finalization integrity gate.
+fn inspect_internal(track_root: &Path, mut item: EvidenceItem) -> Result<EvidenceItem> {
+    let path = contained_path(track_root, Path::new(&item.relative_path), false)?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            item.verified = false;
+            item.size_bytes = 0;
+            item.verification_error = Some("Evidence file is missing.".into());
+            return Ok(item);
+        }
+        Err(error) => return Err(AppError::io(&path, error)),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::Symlink(path.display().to_string()));
+    }
+    if !metadata.is_file() {
+        item.verified = false;
+        item.size_bytes = 0;
+        item.verification_error = Some("Evidence path is not a regular file.".into());
+        return Ok(item);
+    }
+    if metadata.len() != item.size_bytes {
+        item.verified = false;
+        item.size_bytes = metadata.len();
+        item.verification_error =
+            Some("Evidence file size changed; run verification again.".into());
+        return Ok(item);
+    }
+    if metadata.len() > AUTOMATIC_HASH_LIMIT_BYTES {
+        return Ok(item);
+    }
     verify_internal(track_root, item, false)
 }
 
@@ -230,7 +371,27 @@ fn verify_internal(
 }
 
 fn build_item(role: EvidenceRole, relative: PathBuf, destination: &Path) -> Result<EvidenceItem> {
-    Ok(EvidenceItem {
+    let sha256 = sha256_file(destination)?;
+    let size_bytes = fs::metadata(destination)
+        .map_err(|e| AppError::io(destination, e))?
+        .len();
+    Ok(build_item_from_copy(
+        role,
+        relative,
+        destination,
+        sha256,
+        size_bytes,
+    ))
+}
+
+fn build_item_from_copy(
+    role: EvidenceRole,
+    relative: PathBuf,
+    destination: &Path,
+    sha256: String,
+    size_bytes: u64,
+) -> EvidenceItem {
+    EvidenceItem {
         id: Uuid::new_v4().to_string(),
         role,
         file_name: destination
@@ -239,10 +400,8 @@ fn build_item(role: EvidenceRole, relative: PathBuf, destination: &Path) -> Resu
             .unwrap_or("evidence")
             .to_owned(),
         relative_path: portable_relative(&relative),
-        sha256: Some(sha256_file(destination)?),
-        size_bytes: fs::metadata(destination)
-            .map_err(|e| AppError::io(destination, e))?
-            .len(),
+        sha256: Some(sha256),
+        size_bytes,
         imported_at: Utc::now().to_rfc3339(),
         verified: true,
         verification_error: None,
@@ -253,7 +412,7 @@ fn build_item(role: EvidenceRole, relative: PathBuf, destination: &Path) -> Resu
         derived_from_evidence_id: None,
         generator_version: None,
         generated_disclosure_text: None,
-    })
+    }
 }
 
 fn reject_unsafe_file_name(name: &str) -> Result<()> {
@@ -369,5 +528,100 @@ mod tests {
             ),
             Err(AppError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn large_evidence_load_is_bounded_but_explicit_verification_hashes_it() {
+        let directory = tempdir().expect("temporary directory");
+        let track_root = directory.path().join("track");
+        fs::create_dir(&track_root).expect("track root");
+        let source = directory.path().join("project.zip");
+        fs::write(&source, b"PK\x03\x04small fixture").expect("ZIP source");
+        let mut item = import(
+            &track_root,
+            "Large Project",
+            EvidenceRole::SunoProjectZip,
+            &source,
+        )
+        .expect("initial import");
+        let managed = track_root.join(&item.relative_path);
+        let large_size = AUTOMATIC_HASH_LIMIT_BYTES + 1;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&managed)
+            .expect("managed file")
+            .set_len(large_size)
+            .expect("sparse large fixture");
+        item.size_bytes = large_size;
+        item.sha256 = Some("0".repeat(64));
+        item.verified = true;
+
+        let inspected = inspect(&track_root, item.clone()).expect("bounded inspection");
+        assert!(
+            inspected.verified,
+            "normal loading must not re-hash a large file"
+        );
+
+        let verified = verify(&track_root, item).expect("explicit full verification");
+        assert!(!verified.verified);
+        assert_eq!(
+            verified.verification_error.as_deref(),
+            Some("SHA-256 mismatch.")
+        );
+    }
+
+    #[test]
+    fn explicit_replacement_archives_previous_bytes_and_reuses_database_identity() {
+        let directory = tempdir().expect("temporary directory");
+        let track_root = directory.path().join("track");
+        fs::create_dir(&track_root).expect("track root");
+        let old_source_root = directory.path().join("old");
+        let new_source_root = directory.path().join("new");
+        fs::create_dir_all(&old_source_root).expect("old source root");
+        fs::create_dir_all(&new_source_root).expect("new source root");
+        let old_source = old_source_root.join("project.zip");
+        let new_source = new_source_root.join("project.zip");
+        fs::write(&old_source, b"PK\x03\x04old project").expect("old ZIP");
+        fs::write(&new_source, b"PK\x03\x04new project").expect("new ZIP");
+        let previous = import(
+            &track_root,
+            "Replace Project",
+            EvidenceRole::SunoProjectZip,
+            &old_source,
+        )
+        .expect("initial import");
+        let previous_id = previous.id.clone();
+
+        let replacement = replace(
+            &track_root,
+            "Replace Project",
+            EvidenceRole::SunoProjectZip,
+            &new_source,
+            &previous,
+            |_| Ok(()),
+        )
+        .expect("safe replacement");
+
+        assert_eq!(replacement.id, previous_id);
+        assert_eq!(replacement.relative_path, previous.relative_path);
+        assert_eq!(
+            fs::read(track_root.join(&replacement.relative_path)).expect("replacement bytes"),
+            b"PK\x03\x04new project"
+        );
+        assert_eq!(
+            fs::read(&new_source).expect("replacement source remains"),
+            b"PK\x03\x04new project"
+        );
+        let archived = fs::read_dir(track_root.join(".archive/evidence-replacements"))
+            .expect("replacement archive")
+            .next()
+            .expect("archive transaction")
+            .expect("archive entry")
+            .path()
+            .join(&previous.file_name);
+        assert_eq!(
+            fs::read(archived).expect("archived bytes"),
+            b"PK\x03\x04old project"
+        );
     }
 }

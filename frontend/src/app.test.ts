@@ -67,6 +67,13 @@ describe("navigation", () => {
       showNewTrack: true,
       showTrackLibrary: true,
       showSubscriptionEvidence: true,
+      evidencePreview: {
+        evidenceId: "preview",
+        role: "suno_screenshot",
+        fileName: "preview.png",
+        relativePath: "02_SUNO/preview.png",
+        sizeBytes: 42
+      },
       query: "old workspace query",
       trackFilter: "finalized",
       draftDirty: true
@@ -83,6 +90,7 @@ describe("navigation", () => {
       showNewTrack: false,
       showTrackLibrary: false,
       showSubscriptionEvidence: false,
+      evidencePreview: null,
       query: "",
       trackFilter: "all",
       draftDirty: false

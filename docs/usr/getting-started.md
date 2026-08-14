@@ -166,7 +166,13 @@ Use the native evidence picker from the relevant step:
 4. Confirm the copy.
 5. Check that the application reports the copied file, size, SHA-256 digest, and updated workflow state.
 
-The application copies evidence; it does not move or delete the source. A normal track import receives `managed_copy` provenance. It never silently replaces an existing destination. If a same-name file already exists, resolve the conflict explicitly instead of assuming that the files are identical.
+Every evidence control states the accepted file types. After a file is present, select the large checked area to open its in-app preview. PNG, JPEG, and WebP images are shown as images; small TXT, Markdown, and JSON files are shown as text. Large images, large text files, archives, audio, video, and PDF files show safe metadata and an explanation instead of being loaded wholesale. In particular, ZIP files are never unpacked for preview.
+
+The separate upload button on the right replaces the selected evidence record explicitly. The replacement keeps the record identity, writes and hashes the new managed copy, and moves the previous managed bytes below `.archive/evidence-replacements/`. If the evidence-record update fails, the filesystem change is rolled back. A normal import to an already registered relative path produces a controlled message directing the user to this replacement action; it does not surface a raw SQLite `UNIQUE` error.
+
+The application copies evidence; it does not move or delete the source. A normal track import receives `managed_copy` provenance. It never silently replaces an existing destination. If a same-name file already exists without a matching indexed record, resolve the conflict explicitly instead of assuming that the files are identical.
+
+Large evidence such as a project ZIP is copied and SHA-256-hashed in one streamed background operation, so the webview remains responsive and the source is read only once. Normal track and library loading checks the path, regular-file status, and stored size without repeatedly hashing evidence larger than 64 MiB. The explicit evidence verification, hash calculation, hash verification, and finalization paths still perform the required full cryptographic reads.
 
 The provenance label in the evidence list distinguishes a managed import from a copied global record, a locally generated disclosure, or a file discovered in a historical folder. A role describes the file's purpose; it is not proof of how the file was created.
 
@@ -182,6 +188,8 @@ The track dashboard emphasizes progress and concrete missing items. Step labels 
 | `BLOCKED` | A prerequisite or deviation prevents completion. |
 | `N/A` | The item does not apply and a reason is stored. |
 | `NOT VERIFIED` | Imported historical information exists but has not been verified. |
+
+Saving a workflow form reevaluates the requirements and refreshes the rail immediately. Explicit `No` answers count as completed answers; for example, three `No` answers in the artwork content check close all three note branches and allow the artwork requirement to pass once its other applicable fields and evidence are complete.
 
 `FAIL`, `BLOCKED`, and `NOT VERIFIED` block finalization. A percentage is a navigation aid; it is not a certificate.
 

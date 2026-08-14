@@ -88,4 +88,22 @@ describe("runtime selection", () => {
       newTitle: "New Album"
     });
   });
+
+  it("maps explicit evidence replacement and preview to narrow native commands", async () => {
+    invokeMock.mockResolvedValueOnce({ id: "track-1" }).mockResolvedValueOnce({ evidenceId: "evidence-1" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.importEvidence("track-1", "suno_project_zip", "evidence-1");
+    await api.previewEvidence("track-1", "evidence-1");
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "import_evidence", {
+      trackId: "track-1",
+      role: "suno_project_zip",
+      replaceEvidenceId: "evidence-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "preview_evidence", {
+      trackId: "track-1",
+      evidenceId: "evidence-1"
+    });
+  });
 });

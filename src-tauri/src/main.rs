@@ -40,6 +40,7 @@ fn main() {
             commands::set_step_status,
             commands::import_evidence,
             commands::remove_evidence,
+            commands::preview_evidence,
             commands::verify_evidence,
             commands::preview_documents,
             commands::generate_documents,

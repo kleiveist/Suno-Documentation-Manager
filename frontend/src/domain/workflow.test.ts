@@ -7,7 +7,9 @@ import {
   evaluateRequirements,
   finalizationGate,
   statusLabel,
-  visibleConditionalFields
+  stepStatuses,
+  visibleConditionalFields,
+  evidenceRoleFileTypes
 } from "./workflow";
 import {
   emptyProfile,
@@ -213,6 +215,27 @@ describe("progress", () => {
 });
 
 describe("statuses and finalization", () => {
+  it("lists the accepted file types directly for every evidence role", () => {
+    expect(evidenceRoleFileTypes("suno_project_zip")).toBe("ZIP");
+    expect(evidenceRoleFileTypes("suno_screenshot")).toContain("PNG");
+    expect(evidenceRoleFileTypes("release_wav")).toBe("WAV");
+  });
+
+  it("treats three explicit No answers as a completed artwork content check", () => {
+    const track = completeTrack();
+    track.fields.artworkOrigin = "human";
+    track.fields.depictsRealPerson = false;
+    track.fields.depictsRealEvent = false;
+    track.fields.containsTrademark = false;
+    track.evidence.push(evidence("final_artwork"));
+
+    const artwork = stepStatuses(track, profile).find((step) => step.id === "artwork");
+    expect(artwork?.status).toBe("PASS");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toEqual(
+      expect.arrayContaining(["real-person-answer", "real-event-answer", "trademark-answer"])
+    );
+  });
+
   it("renders and derives supported statuses", () => {
     expect(statusLabel("NOT_RUN")).toBe("Offen");
     expect(statusLabel("PASS")).toBe("Erfüllt");

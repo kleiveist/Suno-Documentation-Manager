@@ -1,7 +1,7 @@
 use crate::application::WorkspaceApp;
 use crate::error::{AppError, Result};
 use crate::model::{
-    ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceRole,
+    ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidencePreview, EvidenceRole,
     GlobalEvidenceItem, Profile, StepStatus, SubscriptionBillingCycle, TrackDetail,
     TrackLibraryPlacement, TrackPatch, TrackSummary, ValidationResult, WorkspaceScan,
     WorkspaceSummary,
@@ -215,10 +215,11 @@ pub fn set_step_status(
 }
 
 #[tauri::command]
-pub fn import_evidence(
+pub async fn import_evidence(
     state: State<'_, AppState>,
     track_id: String,
     role: EvidenceRole,
+    replace_evidence_id: Option<String>,
 ) -> Result<Option<TrackDetail>> {
     let Some(source) = rfd::FileDialog::new()
         .set_title("Evidence importieren")
@@ -226,9 +227,21 @@ pub fn import_evidence(
     else {
         return Ok(None);
     };
-    with_workspace(&state, |app| {
-        app.import_evidence_from(&track_id, role, &source).map(Some)
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || match replace_evidence_id {
+        Some(evidence_id) => workspace
+            .replace_evidence_from(&track_id, &evidence_id, role, &source)
+            .map(Some),
+        None => workspace
+            .import_evidence_from(&track_id, role, &source)
+            .map(Some),
     })
+    .await
+    .map_err(|error| AppError::Data(format!("Evidence import task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -238,6 +251,24 @@ pub fn remove_evidence(
     evidence_id: String,
 ) -> Result<TrackDetail> {
     with_workspace(&state, |app| app.remove_evidence(&track_id, &evidence_id))
+}
+
+#[tauri::command]
+pub async fn preview_evidence(
+    state: State<'_, AppState>,
+    track_id: String,
+    evidence_id: String,
+) -> Result<EvidencePreview> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace.preview_evidence(&track_id, &evidence_id)
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("Evidence preview task failed: {error}")))?
 }
 
 #[tauri::command]
