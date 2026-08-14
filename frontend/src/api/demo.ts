@@ -8,6 +8,7 @@ import {
   WORKFLOW_VERSION
 } from "../domain/workflow";
 import { subscriptionCoverageEnd } from "../domain/subscription";
+import { trackLibraryAssignment } from "../domain/track-library";
 import {
   emptyProfile,
   emptyTrackFields,
@@ -21,6 +22,7 @@ import {
   type StepStatus,
   type TrackCreateInput,
   type TrackDetail,
+  type TrackLibraryAssignment,
   type TrackSummary,
   type ValidationResult,
   type WorkflowDefinitionDto,
@@ -46,7 +48,13 @@ function evidence(role: EvidenceRole, fileName: string): EvidenceItem {
   };
 }
 
-function makeTrack(id: string, title: string, profile: GlobalProfile, complete = false): TrackDetail {
+function makeTrack(
+  id: string,
+  title: string,
+  profile: GlobalProfile,
+  complete = false,
+  library: TrackLibraryAssignment = { section: "single" }
+): TrackDetail {
   const fields = {
     ...emptyTrackFields(profile),
     title,
@@ -95,6 +103,7 @@ function makeTrack(id: string, title: string, profile: GlobalProfile, complete =
     id,
     title,
     relativePath: title,
+    library: clone(library),
     status: complete ? "READY" : "ACTIVE",
     updatedAt: now(),
     progress: 0,
@@ -185,7 +194,7 @@ export function createDemoApi(): DesktopApi {
       await wait();
       workspace = { id: "demo-workspace", name: "Music Projects", path: "Beispiel/Workspace", trackCount: 2, lastScannedAt: now() };
       if (tracks.size === 0) {
-        tracks.set("gravity", makeTrack("gravity", "Gravity", profile, true));
+        tracks.set("gravity", makeTrack("gravity", "Gravity", profile, true, { section: "album", albumTitle: "Event Horizon" }));
         tracks.set("cosmic-pulse", makeTrack("cosmic-pulse", "Cosmic Pulse", profile));
       }
       return clone(workspace);
@@ -241,7 +250,9 @@ export function createDemoApi(): DesktopApi {
     async createTrack(input: TrackCreateInput) {
       await wait();
       const id = crypto.randomUUID();
-      const track = makeTrack(id, input.title.trim(), profile);
+      const library = trackLibraryAssignment(input.library.section, input.library.albumTitle ?? "");
+      if (!library) throw new Error("Für einen Album-Track ist ein Albumtitel erforderlich.");
+      const track = makeTrack(id, input.title.trim(), profile, false, library);
       track.fields.productionStartDate = input.productionStartDate;
       track.fields.commercialUseIntended = input.commercialUseIntended;
       refresh(track);
@@ -252,6 +263,14 @@ export function createDemoApi(): DesktopApi {
     async loadTrack(trackId: string) {
       await wait();
       return clone(get(trackId));
+    },
+    async updateTrackLibrary(trackId, input) {
+      await wait();
+      const track = get(trackId);
+      const library = trackLibraryAssignment(input.section, input.albumTitle ?? "");
+      if (!library) throw new Error("Für einen Album-Track ist ein Albumtitel erforderlich.");
+      track.library = library;
+      return clone(track);
     },
     async updateTrack(trackId, patch) {
       await wait();

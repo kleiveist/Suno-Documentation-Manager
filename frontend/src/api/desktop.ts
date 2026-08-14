@@ -13,6 +13,7 @@ import type {
   SubscriptionBillingCycle,
   TrackCreateInput,
   TrackDetail,
+  TrackLibraryAssignment,
   TrackSummary,
   ValidationResult,
   WorkflowDefinitionDto,
@@ -34,6 +35,7 @@ export interface DesktopApi {
   listTracks(): Promise<TrackSummary[]>;
   createTrack(input: TrackCreateInput): Promise<TrackDetail>;
   loadTrack(trackId: string): Promise<TrackDetail>;
+  updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail>;
   updateTrack(trackId: string, patch: Partial<TrackDetail["fields"]>): Promise<TrackDetail>;
   adoptLegacyProfile(trackId: string): Promise<TrackDetail>;
   addDeviation(trackId: string, description: string, blocking: boolean): Promise<TrackDetail>;
@@ -157,6 +159,10 @@ class TauriDesktopApi implements DesktopApi {
 
   loadTrack(trackId: string): Promise<TrackDetail> {
     return command("load_track", { trackId });
+  }
+
+  updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail> {
+    return command("update_track_library", { trackId, input: library });
   }
 
   updateTrack(trackId: string, patch: Partial<TrackDetail["fields"]>): Promise<TrackDetail> {

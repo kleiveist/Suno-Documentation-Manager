@@ -20,11 +20,18 @@ import {
   type SubscriptionBillingCycle,
   type TrackDetail,
   type TrackFields,
+  type TrackLibraryAssignment,
   type TrackSummary,
   type WorkflowDefinitionDto,
   type WorkspaceSummary
 } from "./domain/types";
 import { subscriptionCoverageEnd } from "./domain/subscription";
+import {
+  groupTrackLibrary,
+  trackLibraryAssignment,
+  type AlbumTrackGroup,
+  type TrackLibraryStatusFilter
+} from "./domain/track-library";
 import { escapeHtml, formatBytes, formatDate, titleInitials } from "./ui/format";
 import { icon } from "./ui/icons";
 
@@ -51,11 +58,12 @@ interface AppState {
   trackDraft: TrackFields | null;
   scanResult: ScanResult | null;
   query: string;
-  trackFilter: "all" | "open" | "ready" | "finalized";
+  trackFilter: TrackLibraryStatusFilter;
   busy: boolean;
   busyLabel: string;
   sidebarOpen: boolean;
   showNewTrack: boolean;
+  showTrackLibrary: boolean;
   showSubscriptionEvidence: boolean;
   toast: ToastState | null;
 }
@@ -63,7 +71,7 @@ interface AppState {
 export type WorkspaceScopedUiState = Pick<
   AppState,
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" |
-  "showNewTrack" | "showSubscriptionEvidence" | "query" | "trackFilter"
+  "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "query" | "trackFilter"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -75,6 +83,7 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     trackTab: "overview",
     scanResult: null,
     showNewTrack: false,
+    showTrackLibrary: false,
     showSubscriptionEvidence: false,
     query: "",
     trackFilter: "all",
@@ -84,6 +93,21 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
 
 export function shouldIgnoreModalBackdropClick(isBackdrop: boolean, isDirectClick: boolean): boolean {
   return isBackdrop && !isDirectClick;
+}
+
+export function trackSummaryFromDetail(track: TrackDetail): TrackSummary {
+  return {
+    id: track.id,
+    title: track.title,
+    relativePath: track.relativePath,
+    library: structuredClone(track.library),
+    status: track.status,
+    updatedAt: track.updatedAt,
+    progress: track.progress,
+    missingCount: track.missingCount,
+    certificateValid: track.certificate.valid,
+    legacy: track.legacy
+  };
 }
 
 export const MAIN_NAVIGATION: ReadonlyArray<{ id: MainView; label: string; iconName: "dashboard" | "tracks" | "current" | "workspace" | "settings" }> = [
@@ -158,6 +182,7 @@ export class SunoDocumentationApp {
     busyLabel: "",
     sidebarOpen: false,
     showNewTrack: false,
+    showTrackLibrary: false,
     showSubscriptionEvidence: false,
     toast: null
   };
@@ -215,6 +240,7 @@ export class SunoDocumentationApp {
       trackTab: this.state.trackTab,
       scanResult: this.state.scanResult,
       showNewTrack: this.state.showNewTrack,
+      showTrackLibrary: this.state.showTrackLibrary,
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
       query: this.state.query,
       trackFilter: this.state.trackFilter,
@@ -252,17 +278,7 @@ export class SunoDocumentationApp {
     this.state.trackDraft = structuredClone(track.fields);
     this.draftDirty = false;
     const summaryIndex = this.state.tracks.findIndex((item) => item.id === track.id);
-    const summary: TrackSummary = {
-      id: track.id,
-      title: track.title,
-      relativePath: track.relativePath,
-      status: track.status,
-      updatedAt: track.updatedAt,
-      progress: track.progress,
-      missingCount: track.missingCount,
-      certificateValid: track.certificate.valid,
-      legacy: track.legacy
-    };
+    const summary = trackSummaryFromDetail(track);
     if (summaryIndex >= 0) this.state.tracks[summaryIndex] = summary;
     else this.state.tracks.unshift(summary);
   }
@@ -281,7 +297,13 @@ export class SunoDocumentationApp {
           ${this.renderTopbar()}
           <div class="view-shell">${view}</div>
         </main>
-        ${this.state.showNewTrack ? this.renderNewTrackDialog() : this.state.showSubscriptionEvidence ? this.renderSubscriptionEvidenceDialog() : ""}
+        ${this.state.showNewTrack
+          ? this.renderNewTrackDialog()
+          : this.state.showTrackLibrary
+            ? this.renderTrackLibraryDialog()
+            : this.state.showSubscriptionEvidence
+              ? this.renderSubscriptionEvidenceDialog()
+              : ""}
         ${this.renderToast()}
         ${this.state.busy ? `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>` : ""}
       </div>`;
@@ -356,15 +378,51 @@ export class SunoDocumentationApp {
   }
 
   private renderNewTrackDialog(): string {
-    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="new-track-title" data-modal-panel>
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal track-library-modal" role="dialog" aria-modal="true" aria-labelledby="new-track-title" data-modal-panel>
       <div class="modal-head"><div><p class="overline">Neues Projekt</p><h2 id="new-track-title">Track anlegen</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
       <form id="new-track-form" class="form-stack">
         ${this.textField("title", "Track-Titel", "z. B. Cosmic Pulse", "", true)}
         ${this.dateField("productionStartDate", "Produktionsstart", new Date().toISOString().slice(0, 10), true)}
+        ${this.renderTrackLibraryFields({ section: "single" }, "new-track")}
         <label class="toggle-row"><span><strong>Kommerzielle Nutzung vorgesehen</strong><small>Wird als Track-Snapshot gespeichert.</small></span><input type="checkbox" name="commercialUseIntended" ${this.state.profile.defaultCommercialUse ? "checked" : ""}><i></i></label>
         <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("plus")} Track anlegen</button></div>
       </form>
     </section></div>`;
+  }
+
+  private renderTrackLibraryDialog(): string {
+    const track = this.state.track;
+    if (!track) return "";
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal track-library-modal" role="dialog" aria-modal="true" aria-labelledby="track-library-title" data-modal-panel>
+      <div class="modal-head"><div><p class="overline">Bibliothekszuordnung</p><h2 id="track-library-title">${escapeHtml(track.title)} einordnen</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
+      <form id="track-library-form" class="form-stack">
+        ${this.renderTrackLibraryFields(track.library, "track-library")}
+        <div class="library-safety-note">${icon("shield")}<p>Die Zuordnung ist eine virtuelle Bibliotheksgruppe. Track-Ordner, Dokumente, Prüfsummen und Zertifikat bleiben unverändert.</p></div>
+        <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("check")} Zuordnung speichern</button></div>
+      </form>
+    </section></div>`;
+  }
+
+  private renderTrackLibraryFields(library: TrackLibraryAssignment, idPrefix: string): string {
+    const albumSelected = library.section === "album";
+    const albumFieldId = `${idPrefix}-album-field`;
+    const albumListId = `${idPrefix}-album-titles`;
+    const albumTitles = this.albumTitles();
+    return `<fieldset class="track-library-field"><legend>Bereich der Track-Bibliothek *</legend><div class="track-library-choices">
+      <label><input type="radio" name="librarySection" value="single" aria-controls="${albumFieldId}" ${albumSelected ? "" : "checked"} required><span>${icon("tracks")}<strong>Single</strong><small>Unter Singles einordnen</small></span></label>
+      <label><input type="radio" name="librarySection" value="album" aria-controls="${albumFieldId}" ${albumSelected ? "checked" : ""} required><span>${icon("workspace")}<strong>Album-Track</strong><small>Einem Album zuordnen</small></span></label>
+    </div></fieldset>
+    <label class="field library-album-field" id="${albumFieldId}" data-library-album-field ${albumSelected ? "" : "hidden"}><span class="field-label">Albumtitel *</span><input type="text" name="albumTitle" list="${albumListId}" placeholder="Bestehendes oder neues Album" value="${escapeHtml(library.albumTitle ?? "")}" autocomplete="off" ${albumSelected ? "required" : "disabled"}><small>Maximal 200 Zeichen ohne äußere Leerzeichen; gleiche Titel werden unabhängig von Groß- und Kleinschreibung zusammengefasst.</small></label>
+    <datalist id="${albumListId}">${albumTitles.map((title) => `<option value="${escapeHtml(title)}"></option>`).join("")}</datalist>`;
+  }
+
+  private albumTitles(): string[] {
+    const titles = new Map<string, string>();
+    for (const track of this.state.tracks) {
+      const title = track.library?.section === "album" ? track.library.albumTitle?.trim() : "";
+      if (title) titles.set(title.normalize("NFKC").toLocaleLowerCase("de-DE"), title);
+    }
+    return [...titles.values()].sort((left, right) => left.localeCompare(right, "de", { sensitivity: "base", numeric: true }));
   }
 
   private renderSubscriptionEvidenceDialog(): string {
@@ -425,28 +483,53 @@ export class SunoDocumentationApp {
   }
 
   private renderTracks(): string {
-    const query = this.state.query.trim().toLocaleLowerCase("de");
-    const filtered = this.state.tracks.filter((track) => {
-      const matchesQuery = !query || track.title.toLocaleLowerCase("de").includes(query) || track.relativePath.toLocaleLowerCase("de").includes(query);
-      const matchesFilter = this.state.trackFilter === "all"
-        || (this.state.trackFilter === "open" && ["DRAFT", "ACTIVE"].includes(track.status))
-        || (this.state.trackFilter === "ready" && track.status === "READY")
-        || (this.state.trackFilter === "finalized" && track.status === "FINALIZED");
-      return matchesQuery && matchesFilter;
+    const library = groupTrackLibrary(this.state.tracks, {
+      query: this.state.query,
+      status: this.state.trackFilter
     });
+    const albumTrackCount = library.albums.reduce((total, album) => total + album.tracks.length, 0);
     return `<div class="page-content tracks-page">
-      <div class="page-lead"><div><p class="overline">Bibliothek</p><h2>Alle Tracks</h2><p>Öffne einen Track und sieh sofort, was dokumentiert ist und was noch fehlt.</p></div><button class="button button--primary" data-action="new-track">${icon("plus")} Neuer Track</button></div>
+      <div class="page-lead"><div><p class="overline">Bibliothek</p><h2>Alben & Singles</h2><p>Alle Tracks bleiben in ihren portablen Ordnern und werden hier übersichtlich als Album-Tracks oder Singles eingeordnet.</p></div><button class="button button--primary" data-action="new-track">${icon("plus")} Neuer Track</button></div>
       <section class="panel tracks-panel">
         <div class="tracks-toolbar">
-          <label class="search-field"><span class="sr-only">Tracks durchsuchen</span>${icon("scan")}<input type="search" data-track-search placeholder="Tracks durchsuchen …" value="${escapeHtml(this.state.query)}"></label>
+          <label class="search-field"><span class="sr-only">Tracks und Alben durchsuchen</span>${icon("scan")}<input type="search" data-track-search placeholder="Tracks und Alben durchsuchen …" value="${escapeHtml(this.state.query)}"></label>
           <div class="filter-tabs" role="group" aria-label="Statusfilter">
             ${([['all','Alle'],['open','Offen'],['ready','Bereit'],['finalized','Finalisiert']] as const).map(([id, label]) => `<button class="${this.state.trackFilter === id ? "is-active" : ""}" data-track-filter="${id}">${label}</button>`).join("")}
           </div>
           <button class="button button--secondary" data-action="scan-workspace">${icon("scan")} Workspace scannen</button>
         </div>
-        ${filtered.length ? `<div class="track-table-head"><span>Track</span><span>Status</span><span>Fortschritt</span><span>Aktualisiert</span><span></span></div><div class="track-list">${filtered.map((track) => this.renderTrackRow(track, true)).join("")}</div>` : this.emptyState("tracks", "Keine passenden Tracks", "Passe Suche oder Statusfilter an.")}
+        <div class="track-library-content">
+          <section class="library-section" aria-labelledby="albums-library-title">
+            <header class="library-section-head"><span class="library-section-icon">${icon("workspace")}</span><div><h3 id="albums-library-title">Alben</h3><p>${library.albums.length} ${library.albums.length === 1 ? "Album" : "Alben"} · ${albumTrackCount} ${albumTrackCount === 1 ? "Track" : "Tracks"}</p></div></header>
+            ${library.albums.length
+              ? `<div class="album-group-list">${library.albums.map((album) => this.renderAlbumGroup(album)).join("")}</div>`
+              : this.renderLibraryEmpty("Keine passenden Album-Tracks", "Lege einen Album-Track an oder passe Suche und Statusfilter an.")}
+          </section>
+          <section class="library-section" aria-labelledby="singles-library-title">
+            <header class="library-section-head"><span class="library-section-icon library-section-icon--single">${icon("tracks")}</span><div><h3 id="singles-library-title">Singles</h3><p>${library.singles.length} ${library.singles.length === 1 ? "Track" : "Tracks"}</p></div></header>
+            ${library.singles.length
+              ? `${this.renderTrackTableHead()}<div class="track-list">${library.singles.map((track) => this.renderTrackRow(track, true)).join("")}</div>`
+              : this.renderLibraryEmpty("Keine passenden Singles", "Lege eine Single an oder passe Suche und Statusfilter an.")}
+          </section>
+        </div>
       </section>
     </div>`;
+  }
+
+  private renderAlbumGroup(album: AlbumTrackGroup<TrackSummary>): string {
+    return `<section class="album-group" aria-label="Album ${escapeHtml(album.title)}">
+      <header class="album-group-head"><span class="album-cover">${escapeHtml(titleInitials(album.title))}<i></i></span><div><h4>${escapeHtml(album.title)}</h4><p>${album.tracks.length} ${album.tracks.length === 1 ? "Track" : "Tracks"}</p></div></header>
+      ${this.renderTrackTableHead()}
+      <div class="track-list">${album.tracks.map((track) => this.renderTrackRow(track, true)).join("")}</div>
+    </section>`;
+  }
+
+  private renderTrackTableHead(): string {
+    return `<div class="track-table-head"><span>Track</span><span>Status</span><span>Fortschritt</span><span>Aktualisiert</span><span></span></div>`;
+  }
+
+  private renderLibraryEmpty(title: string, copy: string): string {
+    return `<div class="library-empty">${icon("tracks")}<div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(copy)}</span></div></div>`;
   }
 
   private renderTrackRow(track: TrackSummary, detailed = false): string {
@@ -465,10 +548,13 @@ export class SunoDocumentationApp {
     if (!track) return this.emptyState("current", "Kein Track ausgewählt", "Wähle einen Track aus deiner Bibliothek.", "go-tracks", "Tracks öffnen");
     const tabs: Array<[TrackTab, string]> = [["overview", "Übersicht"], ["suno", "Suno"], ["artwork", "Artwork"], ["release", "Release"], ["evidence", "Evidence"], ["certificate", "Zertifikat"]];
     const workflowUpgrade = workflowUpgradePresentation(track, this.state.workflow);
+    const libraryLabel = track.library.section === "album" && track.library.albumTitle
+      ? `Album · ${track.library.albumTitle}`
+      : "Single";
     return `<div class="track-page">
       <section class="track-hero">
         <div class="track-cover track-cover--hero">${escapeHtml(titleInitials(track.title))}<i></i></div>
-        <div class="track-hero-copy"><div><span class="status-chip status-chip--${track.status.toLowerCase()}">${statusLabel(track.status)}</span><span class="workflow-version">Workflow ${escapeHtml(track.workflowVersion)}</span></div><h2>${escapeHtml(track.title)}</h2><p>${escapeHtml(track.relativePath)}</p></div>
+        <div class="track-hero-copy"><div><span class="status-chip status-chip--${track.status.toLowerCase()}">${statusLabel(track.status)}</span><span class="workflow-version">Workflow ${escapeHtml(track.workflowVersion)}</span><button class="library-chip" data-action="edit-track-library" title="Bibliothekszuordnung ändern">${icon(track.library.section === "album" ? "workspace" : "tracks")} ${escapeHtml(libraryLabel)}</button></div><h2>${escapeHtml(track.title)}</h2><p>${escapeHtml(track.relativePath)}</p></div>
         <div class="hero-progress"><strong>${track.progress}%</strong><span>dokumentiert</span><progress class="progress-track" max="100" value="${track.progress}" aria-label="Dokumentationsfortschritt ${track.progress} Prozent"></progress></div>
       </section>
       <nav class="track-tabs" aria-label="Track-Ansichten">${tabs.map(([id, label]) => `<button class="${this.state.trackTab === id ? "is-active" : ""}" data-track-tab="${id}">${label}</button>`).join("")}</nav>
@@ -875,13 +961,21 @@ export class SunoDocumentationApp {
           this.showToast("info", "Zuerst Stammdaten vervollständigen", `Für einen unveränderlichen Track-Snapshot fehlen: ${missing.join(", ")}.`);
           this.render();
         } else {
+          this.state.showTrackLibrary = false;
           this.state.showSubscriptionEvidence = false;
           this.state.showNewTrack = true;
           this.render();
         }
         break;
       }
-      case "close-modal": this.state.showNewTrack = false; this.state.showSubscriptionEvidence = false; this.render(); break;
+      case "edit-track-library":
+        if (!(await this.flushDraft())) break;
+        this.state.showNewTrack = false;
+        this.state.showSubscriptionEvidence = false;
+        this.state.showTrackLibrary = true;
+        this.render();
+        break;
+      case "close-modal": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.render(); break;
       case "open-sidebar": this.state.sidebarOpen = true; this.render(); break;
       case "close-sidebar": this.state.sidebarOpen = false; this.render(); break;
       case "dismiss-toast": this.state.toast = null; this.render(); break;
@@ -892,7 +986,7 @@ export class SunoDocumentationApp {
         if (window.confirm("Treffen die aktuellen Workspace-Stammdaten auf diesen historischen Track zu? Sie werden als Track-Snapshot übernommen.")) await this.trackMutation("Stammdaten werden als Legacy-Snapshot übernommen …", () => this.api.adoptLegacyProfile(this.requireTrack().id), "Legacy-Snapshot übernommen");
         break;
       case "import-evidence": await this.chooseEvidenceRole(); break;
-      case "import-global-evidence": this.state.showNewTrack = false; this.state.showSubscriptionEvidence = true; this.render(); break;
+      case "import-global-evidence": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = true; this.render(); break;
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
@@ -924,10 +1018,13 @@ export class SunoDocumentationApp {
         return;
       }
       const data = new FormData(form);
+      const library = this.readTrackLibraryAssignment(form);
+      if (!library) return;
       const track = await this.withBusy("Track-Struktur wird angelegt …", () => this.api.createTrack({
         title: String(data.get("title") ?? ""),
         productionStartDate: String(data.get("productionStartDate") ?? ""),
-        commercialUseIntended: data.get("commercialUseIntended") === "on"
+        commercialUseIntended: data.get("commercialUseIntended") === "on",
+        library
       }));
       if (track) {
         this.applyTrack(track);
@@ -935,6 +1032,22 @@ export class SunoDocumentationApp {
         this.state.view = "current";
         this.state.activeStep = "track";
         this.showToast("success", "Track angelegt", "Die portable Track-Struktur wurde lokal erstellt.");
+        this.render();
+      }
+      return;
+    }
+    if (form.id === "track-library-form") {
+      const library = this.readTrackLibraryAssignment(form);
+      if (!library) return;
+      const updated = await this.withBusy(
+        "Bibliothekszuordnung wird gespeichert …",
+        () => this.api.updateTrackLibrary(this.requireTrack().id, library)
+      );
+      if (updated) {
+        this.applyTrack(updated);
+        this.state.showTrackLibrary = false;
+        this.showToast("success", "Bibliothek aktualisiert", "Die virtuelle Zuordnung wurde geändert; Track-Dateien und Zertifikat blieben unverändert.");
+        this.render();
       }
       return;
     }
@@ -987,6 +1100,11 @@ export class SunoDocumentationApp {
 
   private handleChange(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+    const libraryForm = input.closest<HTMLFormElement>("#new-track-form, #track-library-form");
+    if (libraryForm && input.name === "librarySection") {
+      this.syncTrackLibraryFields(libraryForm);
+      return;
+    }
     const subscriptionForm = input.closest<HTMLFormElement>("#subscription-evidence-form");
     if (subscriptionForm) {
       this.updateSubscriptionEvidencePreview(subscriptionForm);
@@ -1004,6 +1122,10 @@ export class SunoDocumentationApp {
 
   private handleInput(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLTextAreaElement;
+    if (input.name === "albumTitle" && input.closest("#new-track-form, #track-library-form")) {
+      input.setCustomValidity("");
+      return;
+    }
     const subscriptionForm = input.closest<HTMLFormElement>("#subscription-evidence-form");
     if (subscriptionForm) {
       this.updateSubscriptionEvidencePreview(subscriptionForm);
@@ -1021,6 +1143,37 @@ export class SunoDocumentationApp {
       (this.state.trackDraft as unknown as Record<string, unknown>)[input.name] = input.value;
       this.draftDirty = true;
     }
+  }
+
+  private syncTrackLibraryFields(form: HTMLFormElement): void {
+    const albumSelected = form.querySelector<HTMLInputElement>('input[name="librarySection"]:checked')?.value === "album";
+    const field = form.querySelector<HTMLElement>("[data-library-album-field]");
+    const input = form.elements.namedItem("albumTitle") as HTMLInputElement | null;
+    if (!field || !input) return;
+    field.hidden = !albumSelected;
+    input.disabled = !albumSelected;
+    input.required = albumSelected;
+    input.setCustomValidity("");
+    if (albumSelected) input.focus();
+  }
+
+  private readTrackLibraryAssignment(form: HTMLFormElement): TrackLibraryAssignment | null {
+    const section = form.querySelector<HTMLInputElement>('input[name="librarySection"]:checked')?.value ?? "";
+    const albumInput = form.elements.namedItem("albumTitle") as HTMLInputElement | null;
+    const library = trackLibraryAssignment(section, albumInput?.value ?? "");
+    if (library) return library;
+    if (albumInput) {
+      const field = form.querySelector<HTMLElement>("[data-library-album-field]");
+      field?.removeAttribute("hidden");
+      albumInput.disabled = false;
+      albumInput.required = true;
+      albumInput.setCustomValidity(albumInput.value.trim()
+        ? "Der Albumtitel darf nach Entfernen äußerer Leerzeichen höchstens 200 Zeichen enthalten und keine Steuerzeichen verwenden."
+        : "Gib für einen Album-Track einen Albumtitel an.");
+      albumInput.reportValidity();
+      albumInput.focus();
+    }
+    return null;
   }
 
   private updateSubscriptionEvidencePreview(form: HTMLFormElement): void {

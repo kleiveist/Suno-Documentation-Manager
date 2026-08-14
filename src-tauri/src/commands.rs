@@ -2,8 +2,9 @@ use crate::application::WorkspaceApp;
 use crate::error::{AppError, Result};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceRole,
-    GlobalEvidenceItem, Profile, StepStatus, SubscriptionBillingCycle, TrackDetail, TrackPatch,
-    TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
+    GlobalEvidenceItem, Profile, StepStatus, SubscriptionBillingCycle, TrackDetail,
+    TrackLibraryPlacement, TrackPatch, TrackSummary, ValidationResult, WorkspaceScan,
+    WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
@@ -146,6 +147,15 @@ pub fn update_track(
     input: TrackPatch,
 ) -> Result<TrackDetail> {
     with_workspace(&state, |app| app.update_track(&track_id, input))
+}
+
+#[tauri::command]
+pub fn update_track_library(
+    state: State<'_, AppState>,
+    track_id: String,
+    input: TrackLibraryPlacement,
+) -> Result<TrackDetail> {
+    with_workspace(&state, |app| app.update_track_library(&track_id, input))
 }
 
 #[tauri::command]

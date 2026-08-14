@@ -10,6 +10,22 @@ pub enum TrackStatus {
     Superseded,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackLibrarySection {
+    #[default]
+    Single,
+    Album,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TrackLibraryPlacement {
+    pub section: TrackLibrarySection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_title: Option<String>,
+}
+
 impl TrackStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -324,6 +340,8 @@ pub struct CreateTrackInput {
     pub production_start_date: String,
     #[serde(default = "default_true")]
     pub commercial_use_intended: bool,
+    #[serde(default)]
+    pub library: TrackLibraryPlacement,
 }
 
 fn default_true() -> bool {
@@ -513,6 +531,8 @@ pub struct TrackRecord {
     pub workflow_version: String,
     #[serde(default)]
     pub profile_snapshot: Profile,
+    #[serde(default)]
+    pub library: TrackLibraryPlacement,
     pub fields: TrackFields,
     pub documents: DocumentState,
     pub integrity: IntegrityState,
@@ -534,6 +554,8 @@ pub struct TrackSummary {
     pub missing_count: u32,
     pub certificate_valid: Option<bool>,
     pub legacy: Option<bool>,
+    #[serde(default)]
+    pub library: TrackLibraryPlacement,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -548,6 +570,8 @@ pub struct TrackDetail {
     pub missing_count: u32,
     pub certificate_valid: Option<bool>,
     pub legacy: Option<bool>,
+    #[serde(default)]
+    pub library: TrackLibraryPlacement,
     pub workflow_id: String,
     pub workflow_version: String,
     pub profile_snapshot: Profile,

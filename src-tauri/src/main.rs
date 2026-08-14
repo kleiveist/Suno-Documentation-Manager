@@ -31,6 +31,7 @@ fn main() {
             commands::create_track,
             commands::load_track,
             commands::update_track,
+            commands::update_track_library,
             commands::adopt_legacy_profile,
             commands::add_deviation,
             commands::resolve_deviation,

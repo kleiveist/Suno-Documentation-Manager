@@ -635,6 +635,7 @@ mod tests {
             workflow_id: "suno-track".into(),
             workflow_version: "1.0".into(),
             profile_snapshot: Profile::default(),
+            library: Default::default(),
             fields: crate::model::TrackFields {
                 artwork_origin: origin.into(),
                 disclosure_applied: applied,

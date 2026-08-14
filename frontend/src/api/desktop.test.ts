@@ -49,4 +49,31 @@ describe("runtime selection", () => {
       billingCycle: "annual"
     });
   });
+
+  it("passes a library assignment when creating a track", async () => {
+    invokeMock.mockResolvedValue({ id: "track-1" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+    const input = {
+      title: "Album Track",
+      productionStartDate: "2026-08-14",
+      commercialUseIntended: true,
+      library: { section: "album" as const, albumTitle: "Northern Lights" }
+    };
+
+    await api.createTrack(input);
+
+    expect(invokeMock).toHaveBeenCalledWith("create_track", { input });
+  });
+
+  it("maps virtual reclassification to the narrow native command", async () => {
+    invokeMock.mockResolvedValue({ id: "track-1" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.updateTrackLibrary("track-1", { section: "single" });
+
+    expect(invokeMock).toHaveBeenCalledWith("update_track_library", {
+      trackId: "track-1",
+      input: { section: "single" }
+    });
+  });
 });

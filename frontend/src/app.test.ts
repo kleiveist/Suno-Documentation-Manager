@@ -5,6 +5,7 @@ import {
   missingProfileFields,
   resetWorkspaceScopedUiState,
   shouldIgnoreModalBackdropClick,
+  trackSummaryFromDetail,
   type WorkspaceScopedUiState,
   workflowUpgradePresentation
 } from "./app";
@@ -45,6 +46,7 @@ describe("navigation", () => {
       trackTab: "certificate",
       scanResult: { discovered: 1, indexed: 1, unchanged: 0, warnings: [] },
       showNewTrack: true,
+      showTrackLibrary: true,
       showSubscriptionEvidence: true,
       query: "old workspace query",
       trackFilter: "finalized",
@@ -60,6 +62,7 @@ describe("navigation", () => {
       trackTab: "overview",
       scanResult: null,
       showNewTrack: false,
+      showTrackLibrary: false,
       showSubscriptionEvidence: false,
       query: "",
       trackFilter: "all",
@@ -77,6 +80,23 @@ describe("navigation", () => {
     expect(shouldIgnoreModalBackdropClick(true, false)).toBe(true);
     expect(shouldIgnoreModalBackdropClick(true, true)).toBe(false);
     expect(shouldIgnoreModalBackdropClick(false, false)).toBe(false);
+  });
+
+  it("keeps a changed library assignment when applying a track detail", () => {
+    const summary = trackSummaryFromDetail({
+      id: "track-1",
+      title: "Album Track",
+      relativePath: "album-track",
+      library: { section: "album", albumTitle: "Northern Lights" },
+      status: "FINALIZED",
+      updatedAt: "2026-08-14T10:00:00Z",
+      progress: 100,
+      missingCount: 0,
+      certificate: { valid: true }
+    } as Parameters<typeof trackSummaryFromDetail>[0]);
+
+    expect(summary.library).toEqual({ section: "album", albumTitle: "Northern Lights" });
+    expect(summary.certificateValid).toBe(true);
   });
 
   it("presents an explicit action without rewriting a finalized older workflow", () => {

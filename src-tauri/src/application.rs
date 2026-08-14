@@ -7,8 +7,8 @@ use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
     DocumentPreview, DocumentState, EvidenceItem, EvidenceProvenance, EvidenceRole,
     GlobalEvidenceItem, IntegrityState, LegacyCandidate, Profile, StepState, StepStatus,
-    SubscriptionBillingCycle, TrackDetail, TrackPatch, TrackRecord, TrackStatus, TrackSummary,
-    ValidationResult, WorkspaceScan, WorkspaceSummary,
+    SubscriptionBillingCycle, TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch,
+    TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -245,6 +245,7 @@ impl WorkspaceApp {
         let profile = self.profile()?;
         validate_profile(&profile, true)?;
         validate_optional_date("Production start", &input.production_start_date)?;
+        let library = normalize_track_library(input.library)?;
         let relative_path = slugify(&input.title)?;
         if self
             .persistence
@@ -280,6 +281,7 @@ impl WorkspaceApp {
             workflow_id: config.id,
             workflow_version: config.version,
             profile_snapshot: profile,
+            library,
             fields,
             documents: DocumentState::default(),
             integrity: IntegrityState::default(),
@@ -321,6 +323,20 @@ impl WorkspaceApp {
             self.persistence.save_track(&track)?;
         }
         self.detail_from_record(track, false)
+    }
+
+    pub fn update_track_library(
+        &self,
+        id: &str,
+        input: TrackLibraryPlacement,
+    ) -> Result<TrackDetail> {
+        let mut track = self.persistence.track(id)?;
+        let library = normalize_track_library(input)?;
+        if track.library != library {
+            track.library = library;
+            self.persistence.save_track(&track)?;
+        }
+        self.detail_from_stored_record(track)
     }
 
     pub fn adopt_legacy_profile(&self, id: &str) -> Result<TrackDetail> {
@@ -1302,6 +1318,7 @@ impl WorkspaceApp {
                     workflow_id: config.id,
                     workflow_version: config.version,
                     profile_snapshot: Profile::default(),
+                    library: TrackLibraryPlacement::default(),
                     fields,
                     documents: DocumentState {
                         generated: false,
@@ -1591,6 +1608,44 @@ impl WorkspaceApp {
             missing_count: evaluation.missing.len() as u32,
             certificate_valid: Some(track.certificate.valid),
             legacy: Some(track.legacy),
+            library: track.library.clone(),
+            workflow_id: track.workflow_id.clone(),
+            workflow_version: track.workflow_version.clone(),
+            profile_snapshot: track.profile_snapshot.clone(),
+            fields: track.fields.clone(),
+            steps: evaluation.steps,
+            evidence,
+            documents: track.documents.clone(),
+            integrity: track.integrity.clone(),
+            certificate: track.certificate.clone(),
+            blocking_deviations: deviations,
+            missing_items: evaluation.missing,
+        })
+    }
+
+    fn detail_from_stored_record(&self, track: TrackRecord) -> Result<TrackDetail> {
+        let evidence = self.persistence.evidence(&track.id)?;
+        let deviations = self.persistence.deviations(&track.id)?;
+        let stored = self.persistence.stored_steps(&track.id)?;
+        let evaluation = workflow::evaluate(
+            &track,
+            &track.profile_snapshot,
+            &evidence,
+            &deviations,
+            &stored,
+        )?;
+        let progress = workflow::progress(&track, &track.profile_snapshot, &evidence, &deviations)?;
+        Ok(TrackDetail {
+            id: track.id.clone(),
+            title: track.fields.title.clone(),
+            relative_path: track.relative_path.clone(),
+            status: track.status.clone(),
+            updated_at: track.updated_at.clone(),
+            progress,
+            missing_count: evaluation.missing.len() as u32,
+            certificate_valid: Some(track.certificate.valid),
+            legacy: Some(track.legacy),
+            library: track.library.clone(),
             workflow_id: track.workflow_id.clone(),
             workflow_version: track.workflow_version.clone(),
             profile_snapshot: track.profile_snapshot.clone(),
@@ -1719,6 +1774,7 @@ fn summary_from_detail(detail: &TrackDetail) -> TrackSummary {
         missing_count: detail.missing_count,
         certificate_valid: detail.certificate_valid,
         legacy: detail.legacy,
+        library: detail.library.clone(),
     }
 }
 
@@ -2089,6 +2145,26 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
     Ok(())
 }
 
+fn normalize_track_library(input: TrackLibraryPlacement) -> Result<TrackLibraryPlacement> {
+    match input.section {
+        TrackLibrarySection::Single => Ok(TrackLibraryPlacement::default()),
+        TrackLibrarySection::Album => {
+            let raw_title = input.album_title.as_deref().unwrap_or_default();
+            if raw_title.chars().any(char::is_control) {
+                return Err(AppError::Validation(
+                    "Album title is invalid or too long.".into(),
+                ));
+            }
+            let title = raw_title.trim();
+            validate_short_text("Album title", title, 200, true)?;
+            Ok(TrackLibraryPlacement {
+                section: TrackLibrarySection::Album,
+                album_title: Some(title.to_owned()),
+            })
+        }
+    }
+}
+
 fn validate_track_title(title: &str) -> Result<()> {
     validate_short_text("Track title", title, 200, true)?;
     if title.contains(['/', '\\']) || title.split_whitespace().any(|part| part == "..") {
@@ -2256,6 +2332,7 @@ mod tests {
                 title: title.into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("track creation");
         let updated = app
@@ -2676,6 +2753,15 @@ mod tests {
             .collect()
     }
 
+    fn track_record_without_library(track: &TrackRecord) -> serde_json::Value {
+        let mut value = serde_json::to_value(track).expect("serializable track record");
+        value
+            .as_object_mut()
+            .expect("track record object")
+            .remove("library");
+        value
+    }
+
     fn manifest_string<'a>(manifest: &'a serde_json::Value, pointer: &str) -> &'a str {
         manifest
             .pointer(pointer)
@@ -2702,12 +2788,287 @@ mod tests {
                 title: "Acceptance Track".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("track");
         let root = app.root().join(&track.relative_path);
         for folder in TRACK_FOLDERS {
             assert!(root.join(folder).is_dir(), "{folder}");
         }
+    }
+
+    #[test]
+    fn track_creation_persists_album_library_placement_after_reopen() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Album Track".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: Some("  Night Drive  ".into()),
+                },
+            })
+            .expect("album track");
+        assert_eq!(created.library.section, TrackLibrarySection::Album);
+        assert_eq!(created.library.album_title.as_deref(), Some("Night Drive"));
+        assert_eq!(created.relative_path, "Album-Track");
+        assert_eq!(crate::persistence::SCHEMA_VERSION, 2);
+        drop(app);
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");
+        let detail = reopened.load_track(&created.id).expect("reopened track");
+        assert_eq!(detail.library, created.library);
+        let summary = reopened
+            .list_tracks()
+            .expect("track summaries")
+            .into_iter()
+            .find(|track| track.id == created.id)
+            .expect("album summary");
+        assert_eq!(summary.library, created.library);
+    }
+
+    #[test]
+    fn older_track_json_defaults_to_single_library_section() {
+        let legacy_input: CreateTrackInput = serde_json::from_value(serde_json::json!({
+            "title": "Legacy API Input",
+            "productionStartDate": "2026-08-01",
+            "commercialUseIntended": false
+        }))
+        .expect("legacy create input");
+        assert_eq!(legacy_input.library, TrackLibraryPlacement::default());
+
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Pre Library Track".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+
+        let record = app.persistence.track(&created.id).expect("stored track");
+        let mut legacy_json = serde_json::to_value(record).expect("track JSON");
+        legacy_json
+            .as_object_mut()
+            .expect("track object")
+            .remove("library");
+        app.persistence
+            .open()
+            .expect("database")
+            .execute(
+                "UPDATE tracks SET data_json=?1 WHERE id=?2",
+                rusqlite::params![
+                    serde_json::to_string(&legacy_json).expect("legacy JSON"),
+                    created.id
+                ],
+            )
+            .expect("remove library field from stored fixture");
+
+        let defaulted = app.persistence.track(&created.id).expect("defaulted track");
+        assert_eq!(defaulted.library, TrackLibraryPlacement::default());
+        let loaded = app.load_track(&created.id).expect("load defaulted track");
+        assert_eq!(loaded.library, TrackLibraryPlacement::default());
+        let materialized_json: String = app
+            .persistence
+            .open()
+            .expect("database")
+            .query_row(
+                "SELECT data_json FROM tracks WHERE id=?1",
+                [&created.id],
+                |row| row.get(0),
+            )
+            .expect("materialized track JSON");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&materialized_json)
+                .expect("materialized JSON")
+                .pointer("/library/section")
+                .and_then(serde_json::Value::as_str),
+            Some("single")
+        );
+    }
+
+    #[test]
+    fn legacy_scan_defaults_library_placement_without_modifying_track_files() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        let legacy_root = workspace.join("Historical Track");
+        fs::create_dir_all(legacy_root.join("01_RELEASE")).expect("legacy directory");
+        fs::write(
+            legacy_root.join("01_RELEASE/history.wav"),
+            b"RIFF\x08\0\0\0WAVEhistorical track",
+        )
+        .expect("legacy file");
+        let before = track_tree_snapshot(&legacy_root);
+
+        app.scan_workspace().expect("legacy scan");
+        let indexed = app
+            .persistence
+            .track_by_relative_path("Historical Track")
+            .expect("legacy lookup")
+            .expect("indexed legacy track");
+        assert!(indexed.legacy);
+        assert_eq!(indexed.library, TrackLibraryPlacement::default());
+        assert_eq!(track_tree_snapshot(&legacy_root), before);
+    }
+
+    #[test]
+    fn track_library_validation_rejects_invalid_albums_and_normalizes_singles() {
+        for album_title in [
+            None,
+            Some(String::new()),
+            Some("   ".into()),
+            Some("invalid\ncontrol".into()),
+            Some("x".repeat(201)),
+        ] {
+            assert!(matches!(
+                normalize_track_library(TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title,
+                }),
+                Err(AppError::Validation(_))
+            ));
+        }
+        assert!(
+            serde_json::from_value::<TrackLibraryPlacement>(serde_json::json!({
+                "section": "ep"
+            }))
+            .is_err()
+        );
+        assert_eq!(
+            normalize_track_library(TrackLibraryPlacement {
+                section: TrackLibrarySection::Single,
+                album_title: Some("Ignored album".into()),
+            })
+            .expect("single normalization"),
+            TrackLibraryPlacement::default()
+        );
+        assert_eq!(
+            serde_json::to_value(TrackLibraryPlacement::default()).expect("single serialization"),
+            serde_json::json!({ "section": "single" })
+        );
+
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let error = app
+            .create_track(CreateTrackInput {
+                title: "Invalid Album".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: None,
+                },
+            })
+            .expect_err("album without a title must fail");
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(!app.root().join("Invalid-Album").exists());
+        assert!(app.list_tracks().expect("empty track list").is_empty());
+    }
+
+    #[test]
+    fn library_reclassification_preserves_finalized_track_state_and_files() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Immutable Library Track".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let track_root = app.root().join(&created.relative_path);
+        fs::write(
+            track_root.join("03_DOCUMENTATION/library-sentinel.bin"),
+            b"library placement must not touch track files",
+        )
+        .expect("track sentinel");
+
+        let mut record = app.persistence.track(&created.id).expect("stored track");
+        record.status = TrackStatus::Finalized;
+        record.documents = DocumentState {
+            generated: true,
+            current: true,
+            generated_at: Some("2026-08-01T12:00:00Z".into()),
+            template_version: "preserved-template".into(),
+            files: vec!["03_DOCUMENTATION/library-sentinel.bin".into()],
+            input_fingerprint: "preserved-fingerprint".into(),
+        };
+        record.integrity = IntegrityState {
+            generated: true,
+            verified: true,
+            file_count: 7,
+            verified_count: 7,
+            generated_at: Some("2026-08-01T12:01:00Z".into()),
+            verified_at: Some("2026-08-01T12:02:00Z".into()),
+            mismatch_files: Vec::new(),
+        };
+        record.certificate = CertificateState {
+            valid: true,
+            certificate_id: Some("SDM-library-preservation".into()),
+            finalized_at: Some("2026-08-01T12:03:00Z".into()),
+            workflow_version: Some(record.workflow_version.clone()),
+            invalidated_at: None,
+            invalidation_reason: None,
+        };
+        record.updated_at = "2026-08-01T12:04:00Z".into();
+        app.persistence
+            .save_track(&record)
+            .expect("finalized fixture");
+        let protected_before = track_record_without_library(&record);
+        let tree_before = track_tree_snapshot(&track_root);
+
+        let album = app
+            .update_track_library(
+                &created.id,
+                TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: Some("  Preserved Album  ".into()),
+                },
+            )
+            .expect("finalized album reassignment");
+        assert_eq!(album.status, TrackStatus::Finalized);
+        assert_eq!(album.updated_at, "2026-08-01T12:04:00Z");
+        assert_eq!(album.library.section, TrackLibrarySection::Album);
+        assert_eq!(
+            album.library.album_title.as_deref(),
+            Some("Preserved Album")
+        );
+        let album_record = app.persistence.track(&created.id).expect("stored album");
+        assert_eq!(
+            track_record_without_library(&album_record),
+            protected_before
+        );
+        assert_eq!(track_tree_snapshot(&track_root), tree_before);
+
+        let single = app
+            .update_track_library(
+                &created.id,
+                TrackLibraryPlacement {
+                    section: TrackLibrarySection::Single,
+                    album_title: Some("must be cleared".into()),
+                },
+            )
+            .expect("finalized single reassignment");
+        assert_eq!(single.library, TrackLibraryPlacement::default());
+        let single_record = app.persistence.track(&created.id).expect("stored single");
+        assert_eq!(
+            track_record_without_library(&single_record),
+            protected_before
+        );
+        assert_eq!(track_tree_snapshot(&track_root), tree_before);
     }
 
     #[test]
@@ -2736,6 +3097,7 @@ mod tests {
                 title: "Singular Assets".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("track");
         let fixtures = directory.path().join("fixtures");
@@ -2796,6 +3158,7 @@ mod tests {
                     title: title.into(),
                     production_start_date: "2026-08-01".into(),
                     commercial_use_intended: false,
+                    library: TrackLibraryPlacement::default(),
                 })
                 .is_err());
         }
@@ -2813,6 +3176,7 @@ mod tests {
                 title: "Stable Track Title".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("track creation");
         for title in ["../x", r"a\b", "...", "🚀"] {
@@ -2842,6 +3206,7 @@ mod tests {
                 title: "Finalized Track".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("track");
         let track_root = app.root().join(&detail.relative_path);
@@ -2949,6 +3314,7 @@ mod tests {
                 title: "End To End".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: true,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("track creation");
         let updated = app
@@ -3091,6 +3457,7 @@ mod tests {
                 title: "Certificate Field Cross Check".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("track creation");
         let updated = app
@@ -3427,6 +3794,7 @@ mod tests {
                 title: "Commercial Coverage".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: true,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("commercial track");
         app.update_track(
@@ -3764,6 +4132,7 @@ mod tests {
                 title: "Managed Crash Recovery".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("managed track");
         assert!(!track.legacy.unwrap_or(true));
@@ -4220,6 +4589,7 @@ mod tests {
                 title: "Interrupted Finalization".into(),
                 production_start_date: "2026-08-01".into(),
                 commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
             })
             .expect("active track");
         let active_root = workspace.join(&active.relative_path);

@@ -65,6 +65,7 @@ function completeTrack(): TrackDetail {
     id: "complete",
     title: fields.title,
     relativePath: "Complete Track",
+    library: { section: "single" },
     status: "READY",
     updatedAt: "2026-08-01T10:00:00Z",
     progress: 100,

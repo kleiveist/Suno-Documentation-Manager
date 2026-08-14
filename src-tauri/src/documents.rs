@@ -508,6 +508,7 @@ mod tests {
             workflow_id: "suno-track-documentation".into(),
             workflow_version: "1.0".into(),
             profile_snapshot: Profile::default(),
+            library: Default::default(),
             fields,
             documents: crate::model::DocumentState::default(),
             integrity: crate::model::IntegrityState::default(),

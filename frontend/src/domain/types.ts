@@ -38,6 +38,12 @@ export type ArtworkOrigin = "none" | "human" | "ai_generated" | "ai_assisted";
 export type LyricsSource = "instrumental" | "human" | "suno" | "mixed";
 export type DisclosurePolicy = "always" | "per_artwork" | "none";
 export type SubscriptionBillingCycle = "monthly" | "annual";
+export type TrackLibrarySection = "single" | "album";
+
+export interface TrackLibraryAssignment {
+  section: TrackLibrarySection;
+  albumTitle?: string;
+}
 
 export interface WorkspaceSummary {
   id: string;
@@ -158,6 +164,7 @@ export interface TrackSummary {
   id: string;
   title: string;
   relativePath: string;
+  library: TrackLibraryAssignment;
   status: TrackStatus;
   updatedAt: string;
   progress: number;
@@ -184,6 +191,7 @@ export interface TrackCreateInput {
   title: string;
   productionStartDate: string;
   commercialUseIntended: boolean;
+  library: TrackLibraryAssignment;
 }
 
 export interface ValidationResult {
