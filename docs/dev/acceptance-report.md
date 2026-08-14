@@ -8,7 +8,7 @@
 | Product | Suno Documentation Manager |
 | Product version | `0.1.0` |
 | Execution | 2026-08-13 through 2026-08-14 |
-| Source identification | Track-library implementation commit `65a43673b14411463b360ff91e92365cd5347a9a` (`✨ Organize the track library into albums and singles`), including regression ancestor `b7e9797b277f0bcac58d4503049002e354cb93fb`; retained DEB/RPM packages still identify stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571` |
+| Source identification | Collapsible-library implementation commit `87b9338b24ecfda31f5abec97d42747aeef91d23` (`🌲 Make track library folders collapsible`), based on track-library commit `65a43673b14411463b360ff91e92365cd5347a9a` and regression ancestor `b7e9797b277f0bcac58d4503049002e354cb93fb`; retained DEB/RPM packages still identify stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571` |
 | Automation host | Linux `7.1.4-arch1-1`, `x86_64`; Python 3.14.6; Node 26.4.0/npm 12.0.1; rustc/cargo 1.97.1; Tauri CLI 2.11.4; WebKitGTK 4.1/2.52.5 |
 | Packaged-GUI environment | Disposable Debian 13.2 VM, KDE Plasma/Wayland, 2 vCPU, 4 GiB RAM; virtual NIC down during offline launch |
 | Overall ATP result | **PARTIAL — 74 of 144 steps PASS; 70 steps NOT RUN; 0 FAIL** |
@@ -16,7 +16,7 @@
 
 ## Outcome
 
-The expanded automated core is green at implementation commit `65a43673…`.
+The expanded automated core is green at implementation commit `87b9338b…`.
 Native tests cover the complete synthetic documentation path, all eight managed
 golden documents, deterministic output,
 adoption/collision preservation, artwork disclosure, exact SHA-256 sets,
@@ -29,6 +29,9 @@ contracts, upgrade presentation, workspace-scoped UI reset, delegated modal
 click routing, billing-cycle previews, album/single grouping, exact-once legacy
 fallback, library search/status filtering, library validation, demo invariants,
 and native command mapping.
+Static presentation review also confirms nested, initially expanded native
+disclosures for `Alben`, every named album, and `Singles`; packaged interaction
+remains separate acceptance work.
 
 The default host run passed 88 Rust tests with one removable-filesystem test
 intentionally ignored unless an explicit disposable root is supplied. That
@@ -93,15 +96,15 @@ python3 tools/control.py build desktop --target linux --bundles deb,rpm
 
 | Check | Actual result | Evidence |
 | --- | --- | --- |
-| Full template suite at `65a43673…` | `OK`; tools 177 passed/21 skipped; schema, frontend, and Tauri passed; intentionally disabled suites skipped | [Full-suite report](../../.report/test-report-20260814-132055-suite-all-ok.md), SHA-256 `6c41a397fb4c00c9d97d7d9d2d1352d843631bca293ea751cf1a95dc8048f530` |
-| Frontend at `65a43673…` | 6 files, 39 tests passed; TypeScript/Vite build passed | Current full-suite report and direct host build |
-| Rust/Tauri at `65a43673…` | 88 passed, 0 failed, 1 opt-in filesystem test ignored by default | Direct `cargo test --locked` host run |
+| Full template suite at `87b9338b…` | `OK`; tools 177 passed/21 skipped; schema, frontend, and Tauri passed; intentionally disabled suites skipped | [Full-suite report](../../.report/test-report-20260814-134811-suite-all-ok.md), SHA-256 `d7779bce7ccf72b336b960c781ab0ca8fd0852543f4fb9ca2ff5fdcb3122ec08` |
+| Frontend at `87b9338b…` | 6 files, 39 tests passed; TypeScript/Vite build passed | Current full-suite report and direct host build |
+| Rust/Tauri at `87b9338b…` | 88 passed, 0 failed, 1 opt-in filesystem test ignored by default | Current full-suite report plus direct implementation run |
 | Linux/exFAT opt-in at `b7e9797b…` | 1 passed, 0 failed on `/dev/sde1` (`exfat`, `rw`); isolated fixture removed | Rust `no_clobber_publish_works_on_configured_removable_filesystem`; direct host output |
 | Production dependency audit | 0 vulnerabilities in the retained stabilization run | Direct `npm audit --omit=dev` output from stabilization execution |
 | General doctor | Overall `OK`; backend intentionally disabled | Doctor output |
 | Tauri doctor | Required desktop dependencies present; optional Corepack warning only | Tauri doctor output |
 | Web package | Retained build passed before regression commit | [Web ZIP](../../.dist/web/suno-documentation-manager-web.zip) |
-| Linux desktop packages | Retained DEB/RPM build passed inside Debian 13.2 at stabilization commit `af7d4846…`; not rebuilt from `65a43673…` | [Retained package directory](../../.report/packages/) |
+| Linux desktop packages | Retained DEB/RPM build passed inside Debian 13.2 at stabilization commit `af7d4846…`; not rebuilt from `87b9338b…` | [Retained package directory](../../.report/packages/) |
 | Release check | **Did not pass**: correctly rejected the dirty worktree; also warned that packages are unsigned | Release-check output; this is an open release/provenance deviation, not a product-test PASS |
 | Packaged offline launch | Installed DEB launched with guest NIC down; app showed local/offline state | [Offline welcome](../../.report/acceptance-app-welcome-offline.png), [offline desktop](../../.report/acceptance-offline-desktop.png) |
 | Native dialogs/restart | Native workspace/evidence pickers and cancellation observed; installed app restarted offline | [Workspace picker](../../.report/acceptance-native-workspace-picker.png), [cancel](../../.report/acceptance-picker-cancelled.png), [restart picker](../../.report/acceptance-restart-native-workspace-picker.png) |
@@ -116,7 +119,7 @@ ebb83d3237ecfa3b6fbadf91c33cb13048087f960149ba661152dad2f1d0b41c  .report/packag
 ```
 
 The current implementation and automated fixtures are identified by commit
-`65a43673b14411463b360ff91e92365cd5347a9a`. The ATP/report synchronization is
+`87b9338b24ecfda31f5abec97d42747aeef91d23`. The ATP/report synchronization is
 the following documentation-only change. Rebuilding packages from a clean
 checkout of that implementation (or its documentation-only descendant), then
 repeating the package checks and GUI steps, remains the required provenance
@@ -144,18 +147,18 @@ when only part of a compound expectation was covered.
 | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) | 2, 3, 4, 5, 10, 11 | 1, 6, 7, 8, 9 | PARTIAL — exact one-invoice cadence persistence passes; full general-state round-trip, metadata failure, index-loss reconstruction, and honest unknown-value review remain |
 | [ATP-0012](../atp/active/ATP-0012-filesystem-containment.md) | 1, 3, 4, 5, 6, 9, 10, 12 | 2, 7, 8, 11 | PARTIAL — identified Linux/exFAT publication passes; all-command path matrix, document-specific write/rename injection, full user-readable error matrix, and other filesystem claims remain |
 | [ATP-0013](../atp/active/ATP-0013-end-to-end-offline-workflow.md) | 2, 3, 5, 6, 7, 8, 9 | 1, 4, 10, 11, 12 | PARTIAL — packaged offline launch is only partial evidence; complete native-picker workflow, restart, portable-copy, and runtime-observation steps remain |
-| [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) | 1–6 | 7, 8 | PARTIAL — source-level validation, persistence, reclassification invariants, grouping, filtering, and command contracts pass; packaged GUI interaction, restart, responsive, and accessibility checks remain |
+| [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) | 1–6 | 7, 8 | PARTIAL — source-level validation, persistence, reclassification invariants, grouping, filtering, command contracts, and native disclosure structure pass; packaged folder/dialog interaction, restart, responsive, and accessibility checks remain |
 
 ## Known acceptance deviations
 
 | ID | Scope | Observation | Follow-up required before full acceptance |
 | --- | --- | --- | --- |
-| DEV-ATP-001 | Release provenance | Commit `65a43673…` identifies the current implementation and green source suites, but the retained packages identify older commit `af7d4846…`; the recorded release check also rejected its then-dirty worktree and packages are unsigned. | Commit this ATP/report synchronization, rebuild packages from a clean checkout, rerun suites/release check, and record the resulting package hashes. |
+| DEV-ATP-001 | Release provenance | Commit `87b9338b…` identifies the current implementation and green source suites, but the retained packages identify older commit `af7d4846…`; the recorded release check also rejected its then-dirty worktree and packages are unsigned. | Commit this ATP/report synchronization, rebuild packages from a clean checkout, rerun suites/release check, and record the resulting package hashes. |
 | DEV-ATP-002 | ATP-0001/0002/0005/0011/0013 | The older installed DEB launched offline and native dialogs were observed, but it does not contain the modal/cadence regression fix and the complete clean GUI workflow did not reach FINALIZED. | Build the current implementation and retain one uninterrupted native path including modal field retention, cadence-guided single-file registration, all ten steps, hash verification, finalization, restart, and portable copy. |
 | DEV-ATP-003 | ATP-0003/0011 | Legacy ambiguity has fixtures, but full index-loss reconstruction of incomplete and valid finalized portable folders is not accepted. | Execute before/after tree digests and honest-unknown review for both fixture classes. |
 | DEV-ATP-004 | ATP-0007/0009 | Native hash/parser/cross-check coverage is strong, but independent `sha256sum` verification of the final and copied portable folder was not completed. | Run both hash lists from the original and moved roots and retain command output. |
 | DEV-ATP-005 | ATP-0012 | Static symlink rejection and the identified Linux/exFAT no-clobber fixture pass. Same-user concurrent path swaps remain outside the V0.1 threat model, and no result is generalized to other removable filesystems. | Keep the boundary operationally explicit; complete the remaining all-command/write/rename failure matrices and execute equivalent fixtures before claiming another filesystem. |
-| DEV-ATP-006 | ATP-0014 | Source tests cover the library data contract and pure presentation logic, but no current package has completed album/single creation, finalized-track reclassification, restart, responsive rendering, modal focus/`Escape`, focus containment/restoration, or screen-reader review. | Build the current commit and execute ATP-0014 steps 7–8 with retained screenshots and keyboard/screen-reader notes. |
+| DEV-ATP-006 | ATP-0014 | Source tests cover the library data contract and pure presentation logic, and static review confirms native nested disclosures, but no current package has completed disclosure interaction, album/single creation, finalized-track reclassification, restart, responsive rendering, modal focus/`Escape`, focus containment/restoration, or screen-reader review. | Build the current commit and execute ATP-0014 steps 7–8 with retained screenshots and keyboard/screen-reader notes. |
 
 ## Sign-off
 

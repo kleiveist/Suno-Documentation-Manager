@@ -48,6 +48,10 @@ Library
 
 An album is a name-based library group in version 0.1. It is not a separate release record or filesystem object. Every visible indexed track belongs to exactly one section. An album track belongs to exactly one album group; a single belongs directly to `Singles`.
 
+The hierarchy is presented as a collapsible folder tree. `Albums` and `Singles` are top-level disclosure nodes, and every named album is a nested disclosure node below `Albums`. All nodes start expanded so tracks remain immediately visible. Activating a node header with a pointer, `Enter`, or `Space` collapses or expands only its visible descendants. The implementation uses native HTML `details` and `summary` semantics, retains a visible focus outline, and rotates the disclosure indicator to match the open state.
+
+Collapsing a node is presentation state only. It does not filter, reclassify, persist, move, or otherwise change a track. Search and status changes rebuild the result tree in its expanded state so matching tracks are not hidden by an earlier collapsed view.
+
 ## Assignment data
 
 The typed track record contains one top-level library placement:
@@ -119,7 +123,7 @@ Physical `Albums/` and `Singles/` directories are not created. Workspace scannin
 
 | Requirement | Acceptance criterion | Acceptance plan |
 | --- | --- | --- |
-| `REQ-LIB-001` | The library always renders `Albums` and `Singles`, groups valid album assignments by normalized title, places each filtered track exactly once, and searches track and album text within the hierarchy. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
+| `REQ-LIB-001` | The library always renders `Albums`, each named album, and `Singles` as nested collapsible nodes, places each filtered track exactly once below its parent, groups valid album assignments by normalized title, and searches track and album text within the hierarchy. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
 | `REQ-LIB-002` | Create and reclassification validate and persist the assignment, old and scanned records default to `single`, and reclassifying any lifecycle status changes no portable track content or protected track state. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
 
 ## Verification
@@ -152,4 +156,5 @@ The focused native tests cover validation, create and reopen, older JSON, legacy
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Defined the nested, collapsible folder presentation and its non-persistent disclosure state. | Product team |
 | 2026-08-14 | Defined the album and single library hierarchy, invariants, persistence boundary, and acceptance requirements. | Product team |

@@ -95,7 +95,7 @@ The browser-only Vite preview cannot perform the native workspace, evidence, art
 1. Create or open a local workspace.
 2. Complete the minimal global artist, Suno, and artwork defaults.
 3. Create a track as a single or assign it to a named album; scanned historical tracks default to singles.
-4. Reorganize library assignments when needed without moving the portable track folders.
+4. Browse the collapsible album/single folder tree and reorganize assignments when needed without moving the portable track folders.
 5. Follow the steps `01 Track` through `10 Finalize`.
 6. Import real evidence with the native picker and resolve the displayed missing items.
 7. Generate documents and, when applicable, the visible AI artwork disclosure.
@@ -233,6 +233,7 @@ Acceptance execution and remaining manual checks are recorded in the files under
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Clarified the collapsible album/single folder tree in the user workflow. | Project team |
 | 2026-08-14 | Added the album/single library scope, workflow, persistence boundary, and detailed model link. | Project team |
 | 2026-08-13 | Documented evidence provenance, disclosure lineage, recoverable legacy removal, marker-based recovery, the Rust MSRV, and the version 0.1 path-race limitation. | Project team |
 | 2026-08-13 | Replaced the master-template overview with the Suno Documentation Manager product contract. | Project team |

@@ -106,7 +106,7 @@ A new track begins as `DRAFT`. The application creates the standard directories 
 
 ## Organize existing tracks
 
-The `Tracks` page always shows `Alben` and `Singles`. Look below an album heading to find its assigned tracks, or use the library search to match a track title, track path, or album title. The status buttons filter tracks inside both sections; they do not remove the two section headings.
+The `Tracks` page always shows `Alben` and `Singles` as folder-like rows. Select either row to collapse or expand the whole section. Each named album below `Alben` is another collapsible row; its assigned tracks remain nested underneath it. The rows start expanded and support pointer clicks, `Enter`, and `Space`. The library search matches a track title, track path, or album title. Status buttons filter tracks inside both sections; they do not remove the two top-level rows.
 
 To change an existing assignment:
 
@@ -213,6 +213,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-14 | Explained the collapsible top-level and album folder rows and their keyboard operation. | Project team |
 | 2026-08-14 | Explained album and single creation, search, reclassification, invariants, and version 0.1 album limits. | Project team |
 | 2026-08-14 | Documented per-invoice billing cadence, single-file registration, materialized coverage, and the no-extrapolation rule. | Project team |
 | 2026-08-13 | Explained evidence provenance and recoverable indexed-legacy removal. | Project team |
