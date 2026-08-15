@@ -126,6 +126,8 @@ A new track begins as `DRAFT`. The application creates the standard directories 
 
 The `Tracks` page always shows `Alben` and `Singles` as folder-like rows. Select either row to collapse or expand the whole section. Each named album below `Alben` is another collapsible row; its assigned tracks remain nested underneath it. The rows start expanded and support pointer clicks, `Enter`, and `Space`. The library search matches a track title, track path, or album title. Status buttons filter tracks inside both sections; they do not remove the two top-level rows.
 
+After a verified final JPG or PNG has been imported for a track, its centered square artwork preview replaces the initials tile in dashboard lists, the attention card, the album/single library rows, and the current-track header. Until then, or if the managed image cannot be decoded safely, the initials remain visible. The preview is a small local derivative used only for display; the managed final-artwork file remains the authoritative evidence and is not changed.
+
 To change an existing assignment:
 
 1. Open the track.
@@ -249,6 +251,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Documented centered final-artwork covers and the initials fallback throughout track presentation. | Project team |
 | 2026-08-15 | Explained guided Source and post-export choices, conditional source-code evidence, supported formats, and English document values. | Project team |
 | 2026-08-14 | Explained the collapsible top-level and album folder rows and their keyboard operation. | Project team |
 | 2026-08-14 | Explained album and single creation, search, reclassification, invariants, and version 0.1 album limits. | Project team |

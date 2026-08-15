@@ -217,11 +217,13 @@ describe("navigation", () => {
       updatedAt: "2026-08-14T10:00:00Z",
       progress: 100,
       missingCount: 0,
+      coverEvidenceId: "artwork-1",
       certificate: { valid: true }
     } as Parameters<typeof trackSummaryFromDetail>[0]);
 
     expect(summary.library).toEqual({ section: "album", albumTitle: "Northern Lights" });
     expect(summary.certificateValid).toBe(true);
+    expect(summary.coverEvidenceId).toBe("artwork-1");
   });
 
   it("presents an explicit action without rewriting a finalized older workflow", () => {

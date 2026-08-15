@@ -3,8 +3,8 @@ use crate::error::{AppError, Result};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidencePreview, EvidenceRole,
     GlobalEvidenceItem, OperationProgress, Profile, StepStatus, SubscriptionBillingCycle,
-    TrackDetail, TrackLibraryPlacement, TrackPatch, TrackSummary, ValidationResult, WorkspaceScan,
-    WorkspaceSummary,
+    TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackPatch, TrackSummary,
+    ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
@@ -148,6 +148,21 @@ pub fn create_track(state: State<'_, AppState>, input: CreateTrackInput) -> Resu
 #[tauri::command]
 pub fn load_track(state: State<'_, AppState>, track_id: String) -> Result<TrackDetail> {
     with_workspace(&state, |app| app.load_track(&track_id))
+}
+
+#[tauri::command]
+pub async fn load_track_cover(
+    state: State<'_, AppState>,
+    track_id: String,
+) -> Result<Option<TrackCoverPreview>> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || workspace.track_cover(&track_id))
+        .await
+        .map_err(|error| AppError::Data(format!("Track cover task failed: {error}")))?
 }
 
 #[tauri::command]

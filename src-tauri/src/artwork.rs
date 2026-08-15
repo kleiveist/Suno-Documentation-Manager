@@ -3,6 +3,7 @@ use crate::model::{EvidenceItem, EvidenceProvenance, EvidenceRole};
 use crate::security::{atomic_write_new, contained_path, portable_relative, sha256_file, slugify};
 use chrono::Utc;
 use font8x8::UnicodeFonts;
+use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use std::fs;
 use std::io::Cursor;
@@ -10,6 +11,41 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const DISCLOSURE_GENERATOR_VERSION: &str = "local-disclosure-v1";
+pub const COVER_PREVIEW_SIZE: u32 = 192;
+const COVER_PREVIEW_SOURCE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+const COVER_PREVIEW_PIXEL_LIMIT: u64 = 100_000_000;
+
+pub fn centered_cover_thumbnail(path: &Path) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| AppError::io(path, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::Validation(
+            "Track cover preview requires a regular managed image.".into(),
+        ));
+    }
+    if metadata.len() > COVER_PREVIEW_SOURCE_LIMIT_BYTES {
+        return Err(AppError::Validation(
+            "The final artwork is too large for the track cover preview.".into(),
+        ));
+    }
+    let (width, height) =
+        image::image_dimensions(path).map_err(|error| AppError::Image(error.to_string()))?;
+    if width == 0
+        || height == 0
+        || u64::from(width).saturating_mul(u64::from(height)) > COVER_PREVIEW_PIXEL_LIMIT
+    {
+        return Err(AppError::Validation(
+            "The final artwork dimensions are not safe for the track cover preview.".into(),
+        ));
+    }
+    let image = image::open(path).map_err(|error| AppError::Image(error.to_string()))?;
+    let thumbnail =
+        image.resize_to_fill(COVER_PREVIEW_SIZE, COVER_PREVIEW_SIZE, FilterType::Lanczos3);
+    let mut encoded = Vec::new();
+    thumbnail
+        .write_to(&mut Cursor::new(&mut encoded), ImageFormat::Png)
+        .map_err(|error| AppError::Image(error.to_string()))?;
+    Ok(encoded)
+}
 
 pub fn generate_disclosure(
     track_root: &Path,
@@ -133,6 +169,24 @@ fn blend(target: &mut Rgba<u8>, source: Rgba<u8>) {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn cover_thumbnail_is_square_and_center_cropped() {
+        let directory = tempdir().expect("temporary directory");
+        let source = directory.path().join("wide.png");
+        let mut image = RgbaImage::from_pixel(600, 200, Rgba([20, 40, 80, 255]));
+        for pixel in image.pixels_mut().skip(200 * 200).take(200 * 200) {
+            *pixel = Rgba([180, 40, 60, 255]);
+        }
+        image.save(&source).expect("wide cover fixture");
+
+        let encoded = centered_cover_thumbnail(&source).expect("cover thumbnail");
+        let decoded = image::load_from_memory_with_format(&encoded, ImageFormat::Png)
+            .expect("decode thumbnail");
+
+        assert_eq!(decoded.width(), COVER_PREVIEW_SIZE);
+        assert_eq!(decoded.height(), COVER_PREVIEW_SIZE);
+    }
 
     #[test]
     fn artwork_disclosure_preserves_original_and_creates_traceable_copy() {

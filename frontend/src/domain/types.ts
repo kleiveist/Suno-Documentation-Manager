@@ -97,6 +97,11 @@ export interface EvidencePreview {
   message?: string;
 }
 
+export interface TrackCoverPreview {
+  evidenceId: string;
+  dataUrl: string;
+}
+
 export interface GlobalEvidenceItem extends EvidenceItem {
   notes?: string;
 }
@@ -186,6 +191,7 @@ export interface TrackSummary {
   missingCount: number;
   certificateValid?: boolean;
   legacy?: boolean;
+  coverEvidenceId?: string;
 }
 
 export interface TrackDetail extends TrackSummary {

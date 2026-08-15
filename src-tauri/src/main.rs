@@ -32,6 +32,7 @@ fn main() {
             commands::create_album,
             commands::create_track,
             commands::load_track,
+            commands::load_track_cover,
             commands::update_track,
             commands::update_track_library,
             commands::rename_album,

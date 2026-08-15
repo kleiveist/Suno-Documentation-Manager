@@ -14,6 +14,7 @@ import type {
   StepStatus,
   SubscriptionBillingCycle,
   TrackCreateInput,
+  TrackCoverPreview,
   TrackDetail,
   TrackLibraryAssignment,
   TrackSummary,
@@ -41,6 +42,7 @@ export interface DesktopApi {
   createAlbum(title: string): Promise<string[]>;
   createTrack(input: TrackCreateInput): Promise<TrackDetail>;
   loadTrack(trackId: string): Promise<TrackDetail>;
+  loadTrackCover(trackId: string): Promise<TrackCoverPreview | null>;
   updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail>;
   renameAlbum(oldTitle: string, newTitle: string): Promise<TrackSummary[]>;
   updateTrack(trackId: string, patch: Partial<TrackDetail["fields"]>): Promise<TrackDetail>;
@@ -179,6 +181,10 @@ class TauriDesktopApi implements DesktopApi {
 
   loadTrack(trackId: string): Promise<TrackDetail> {
     return command("load_track", { trackId });
+  }
+
+  loadTrackCover(trackId: string): Promise<TrackCoverPreview | null> {
+    return command("load_track_cover", { trackId });
   }
 
   updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail> {

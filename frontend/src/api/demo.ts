@@ -158,6 +158,9 @@ function makeTrack(
 
 function refresh(track: TrackDetail): void {
   track.title = track.fields.title;
+  track.coverEvidenceId = track.evidence.find((item) =>
+    item.role === "final_artwork" && item.verified && Boolean(item.sha256) && !item.verificationError
+  )?.id;
   const profile = track.profileSnapshot;
   const missing = calculateMissingRequirements(track, profile);
   track.steps = stepStatuses(track, profile);
@@ -317,6 +320,18 @@ export function createDemoApi(): DesktopApi {
     async loadTrack(trackId: string) {
       await wait();
       return clone(get(trackId));
+    },
+    async loadTrackCover(trackId: string) {
+      await wait();
+      const track = get(trackId);
+      const item = track.evidence.find((entry) =>
+        entry.role === "final_artwork" && entry.verified && Boolean(entry.sha256) && !entry.verificationError
+      );
+      if (!item) return null;
+      return {
+        evidenceId: item.id,
+        dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAGUlEQVR42mNkYPj/n4GBgYGJAQoAHgQCAWNA+rMAAAAASUVORK5CYII="
+      };
     },
     async updateTrackLibrary(trackId, input) {
       await wait();

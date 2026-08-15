@@ -123,6 +123,17 @@ describe("runtime selection", () => {
     });
   });
 
+  it("loads the bounded final-artwork cover through its dedicated command", async () => {
+    invokeMock.mockResolvedValue({ evidenceId: "artwork-1", dataUrl: "data:image/png;base64,AA==" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await expect(api.loadTrackCover("track-1")).resolves.toEqual({
+      evidenceId: "artwork-1",
+      dataUrl: "data:image/png;base64,AA=="
+    });
+    expect(invokeMock).toHaveBeenCalledWith("load_track_cover", { trackId: "track-1" });
+  });
+
   it("streams native integrity progress through a scoped IPC channel", async () => {
     const progress = vi.fn();
     invokeMock.mockImplementationOnce(async (_command, args) => {

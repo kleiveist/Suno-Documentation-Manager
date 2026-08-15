@@ -22,6 +22,7 @@ import {
   type ScanResult,
   type StepId,
   type SubscriptionBillingCycle,
+  type TrackCoverPreview,
   type TrackDetail,
   type TrackFields,
   type TrackLibraryAssignment,
@@ -259,7 +260,8 @@ export function trackSummaryFromDetail(track: TrackDetail): TrackSummary {
     progress: track.progress,
     missingCount: track.missingCount,
     certificateValid: track.certificate.valid,
-    legacy: track.legacy
+    legacy: track.legacy,
+    coverEvidenceId: track.coverEvidenceId
   };
 }
 
@@ -451,6 +453,8 @@ export class SunoDocumentationApp {
   private draftDirty = false;
   private followsSystemTheme = true;
   private systemThemeQuery: MediaQueryList | null = null;
+  private readonly trackCoverCache = new Map<string, TrackCoverPreview>();
+  private trackCoverGeneration = 0;
 
   constructor(
     private readonly root: HTMLElement,
@@ -687,6 +691,8 @@ export class SunoDocumentationApp {
 
   private async enterWorkspace(workspace: WorkspaceSummary): Promise<void> {
     this.state.workspace = workspace;
+    this.trackCoverGeneration += 1;
+    this.trackCoverCache.clear();
     // The native command has already switched its authoritative workspace.
     // Clear every workspace-scoped selection before loading the new index so a
     // track from the previous workspace can never be rendered or mutated here.
@@ -724,6 +730,7 @@ export class SunoDocumentationApp {
     this.state.workflow = loaded.workflow;
     this.state.globalEvidence = loaded.globalEvidence;
     this.state.view = "dashboard";
+    void this.hydrateTrackCovers(loaded.tracks);
   }
 
   private async refreshTracks(): Promise<void> {
@@ -734,6 +741,7 @@ export class SunoDocumentationApp {
       this.state.track = await this.api.loadTrack(this.state.track.id);
       this.state.trackDraft = structuredClone(this.state.track.fields);
     }
+    void this.hydrateTrackCovers(tracks);
   }
 
   private applyTrack(track: TrackDetail): void {
@@ -749,8 +757,62 @@ export class SunoDocumentationApp {
     }
     const summaryIndex = this.state.tracks.findIndex((item) => item.id === track.id);
     const summary = trackSummaryFromDetail(track);
+    const cachedCover = this.trackCoverCache.get(track.id);
+    if (!summary.coverEvidenceId || cachedCover?.evidenceId !== summary.coverEvidenceId) {
+      this.trackCoverCache.delete(track.id);
+    }
     if (summaryIndex >= 0) this.state.tracks[summaryIndex] = summary;
     else this.state.tracks.unshift(summary);
+    void this.hydrateTrackCovers([summary]);
+  }
+
+  private async hydrateTrackCovers(tracks: TrackSummary[]): Promise<void> {
+    const generation = this.trackCoverGeneration;
+    const workspaceId = this.state.workspace?.id;
+    const queue = tracks.filter((track) => {
+      if (!track.coverEvidenceId) {
+        this.trackCoverCache.delete(track.id);
+        return false;
+      }
+      return this.trackCoverCache.get(track.id)?.evidenceId !== track.coverEvidenceId;
+    });
+    const worker = async (): Promise<void> => {
+      let track: TrackSummary | undefined;
+      while ((track = queue.shift())) {
+        const expectedEvidenceId = track.coverEvidenceId;
+        if (!expectedEvidenceId) continue;
+        try {
+          const cover = await this.api.loadTrackCover(track.id);
+          const current = this.state.tracks.find((item) => item.id === track!.id);
+          if (generation !== this.trackCoverGeneration
+            || workspaceId !== this.state.workspace?.id
+            || !cover
+            || cover.evidenceId !== expectedEvidenceId
+            || current?.coverEvidenceId !== expectedEvidenceId) {
+            continue;
+          }
+          this.trackCoverCache.set(track.id, cover);
+          this.revealTrackCover(track.id, cover.dataUrl);
+        } catch {
+          // A cover is supplemental presentation. Keep the stable initials fallback
+          // when its managed image cannot be decoded without interrupting workspace use.
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(queue.length, 3) }, () => worker()));
+  }
+
+  private revealTrackCover(trackId: string, dataUrl: string): void {
+    this.root.querySelectorAll<HTMLElement>("[data-track-cover]").forEach((cover) => {
+      if (cover.dataset.trackCover !== trackId) return;
+      const image = cover.querySelector<HTMLImageElement>(".track-cover__image");
+      const fallback = cover.querySelector<HTMLElement>(".track-cover__fallback");
+      if (!image || !fallback) return;
+      image.src = dataUrl;
+      image.hidden = false;
+      fallback.hidden = true;
+      cover.classList.add("has-artwork");
+    });
   }
 
   private render(): void {
@@ -966,6 +1028,22 @@ export class SunoDocumentationApp {
     </section></div>`;
   }
 
+  private renderTrackCover(
+    track: Pick<TrackSummary, "id" | "title" | "coverEvidenceId">,
+    modifier = "",
+    element: "span" | "div" = "span"
+  ): string {
+    const cached = this.trackCoverCache.get(track.id);
+    const dataUrl = track.coverEvidenceId && cached?.evidenceId === track.coverEvidenceId
+      ? cached.dataUrl
+      : undefined;
+    const classes = `track-cover${modifier ? ` ${modifier}` : ""}${dataUrl ? " has-artwork" : ""}`;
+    return `<${element} class="${classes}" data-track-cover="${escapeHtml(track.id)}">
+      <img class="track-cover__image" ${dataUrl ? `src="${escapeHtml(dataUrl)}"` : ""} alt="" ${dataUrl ? "" : "hidden"}>
+      <span class="track-cover__fallback" ${dataUrl ? "hidden" : ""}>${escapeHtml(titleInitials(track.title))}<i></i></span>
+    </${element}>`;
+  }
+
   private renderDashboard(): string {
     const active = this.state.tracks.filter((track) => track.status === "ACTIVE" || track.status === "DRAFT").length;
     const ready = this.state.tracks.filter((track) => track.status === "READY").length;
@@ -990,7 +1068,7 @@ export class SunoDocumentationApp {
         </section>
         <aside class="panel attention-panel">
           <div class="panel-heading"><div><p class="overline">Nächster Schritt</p><h3>Aufmerksamkeit</h3></div><span class="attention-count">${active}</span></div>
-          ${next ? `<div class="attention-track"><div class="track-cover track-cover--large">${escapeHtml(titleInitials(next.title))}<span></span></div><div><span class="status-chip status-chip--${next.status.toLowerCase()}">${statusLabel(next.status)}</span><h4>${escapeHtml(next.title)}</h4><p>${next.missingCount > 0 ? `${next.missingCount} erforderliche Angaben oder Nachweise fehlen noch.` : "Alle Pflichtpunkte sind erfüllt."}</p></div></div>
+          ${next ? `<div class="attention-track">${this.renderTrackCover(next, "track-cover--large", "div")}<div><span class="status-chip status-chip--${next.status.toLowerCase()}">${statusLabel(next.status)}</span><h4>${escapeHtml(next.title)}</h4><p>${next.missingCount > 0 ? `${next.missingCount} erforderliche Angaben oder Nachweise fehlen noch.` : "Alle Pflichtpunkte sind erfüllt."}</p></div></div>
           <div class="progress-block"><div><span>Dokumentationsfortschritt</span><strong>${next.progress}%</strong></div><progress class="progress-track" max="100" value="${next.progress}" aria-label="Dokumentationsfortschritt ${next.progress} Prozent"></progress></div>
           <button class="button button--dark button--wide" data-track-open="${escapeHtml(next.id)}">Dokumentation fortsetzen ${icon("arrow")}</button>` : `<p class="muted">Keine offenen Tracks.</p>`}
         </aside>
@@ -1056,7 +1134,7 @@ export class SunoDocumentationApp {
 
   private renderTrackRow(track: TrackSummary, detailed = false): string {
     return `<button class="track-row ${detailed ? "track-row--detailed" : ""}" data-track-open="${escapeHtml(track.id)}">
-      <span class="track-cover">${escapeHtml(titleInitials(track.title))}<i></i></span>
+      ${this.renderTrackCover(track)}
       <span class="track-identity"><strong>${escapeHtml(track.title)}</strong><small>${escapeHtml(track.relativePath)}${track.legacy ? " · Legacy-Import" : ""}</small></span>
       <span class="status-chip status-chip--${track.status.toLowerCase()}">${statusLabel(track.status)}</span>
       <span class="row-progress"><progress max="100" value="${track.progress}" aria-label="${track.progress} Prozent"></progress><b>${track.progress}%</b></span>
@@ -1075,7 +1153,7 @@ export class SunoDocumentationApp {
       : "Single";
     return `<div class="track-page">
       <section class="track-hero">
-        <div class="track-cover track-cover--hero">${escapeHtml(titleInitials(track.title))}<i></i></div>
+        ${this.renderTrackCover(track, "track-cover--hero", "div")}
         <div class="track-hero-copy"><div><span class="status-chip status-chip--${track.status.toLowerCase()}">${statusLabel(track.status)}</span><span class="workflow-version">Workflow ${escapeHtml(track.workflowVersion)}</span><button class="library-chip" data-action="edit-track-library" title="Bibliothekszuordnung ändern">${icon(track.library.section === "album" ? "workspace" : "tracks")} ${escapeHtml(libraryLabel)}</button></div><h2>${escapeHtml(track.title)}</h2><p>${escapeHtml(track.relativePath)}</p></div>
         <div class="hero-progress"><strong>${track.progress}%</strong><span>dokumentiert</span><progress class="progress-track" max="100" value="${track.progress}" aria-label="Dokumentationsfortschritt ${track.progress} Prozent"></progress></div>
       </section>
@@ -1894,6 +1972,7 @@ export class SunoDocumentationApp {
       () => this.api.importEvidence(track.id, role, replaceEvidenceId)
     );
     if (imported) {
+      if (role === "final_artwork") this.trackCoverCache.delete(track.id);
       this.applyTrack(imported);
       this.showToast(
         "success",

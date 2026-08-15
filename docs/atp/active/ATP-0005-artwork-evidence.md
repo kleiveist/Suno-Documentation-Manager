@@ -8,9 +8,9 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-15 |
-| Executed | 2026-08-13/15 — partial automated execution |
-| Requirement | [`REQ-EVD-001`, `REQ-ART-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping) |
+| Last review | 2026-08-16 |
+| Executed | 2026-08-13/16 — partial automated execution |
+| Requirement | [`REQ-EVD-001`, `REQ-ART-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping); [`REQ-LIB-001`](../../def/track-library-model.md#requirements-and-atp-mapping) |
 | Tested commit/build | Product `0.1.0`; current 2026-08-15 working tree not yet committed; retained packaged baseline and digests remain identified in the central report |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary native image/evidence fixtures |
 
@@ -31,6 +31,7 @@ Accept artwork evidence when real files are copied into contained roles, origina
 - single-pass streamed copy/hash behavior and bounded routine loading for large project ZIP evidence;
 - distinct preview and explicit replacement controls with visible accepted file types;
 - image/text preview bounds and metadata-only ZIP preview;
+- bounded centered track-cover derivation from verified final artwork;
 - naming convention and optional-stage behavior;
 - destination collision handling; and
 - three conditional content checks.
@@ -52,6 +53,7 @@ Accept artwork evidence when real files are copied into contained roles, origina
 | A large project ZIP blocks every later load | Unresponsive application and abandoned import | Verify background single-pass copy/hash and bounded normal inspection |
 | A duplicate indexed path reaches SQLite | Raw `UNIQUE(track_id, relative_path)` failure or copied orphan | Reject normal duplicate import before copy and use explicit record replacement |
 | Preview reads or expands a large archive | Excess memory and CPU usage | Treat ZIP and unsupported large formats as metadata-only |
+| Track covers load full originals into the webview or show stale replacements | Slow library rendering or incorrect visual identity | Decode a bounded native thumbnail off the UI thread, key it by evidence ID, and retain initials on failure/stale results |
 
 ## Preconditions
 
@@ -72,6 +74,7 @@ Accept artwork evidence when real files are copied into contained roles, origina
 | TD-05 | Content declarations | Separate `No` and `Yes` answers with neutral synthetic notes |
 | TD-06 | Large project archive | Synthetic valid ZIP, including a sparse file above the 64 MiB routine-inspection threshold; retain a 1.3 GB removable-drive fixture for packaged acceptance |
 | TD-07 | Preview and replacement | Small valid PNG/text preview fixtures plus two different same-name ZIP/WAV sources |
+| TD-08 | Track cover crop | Wide synthetic PNG with three distinct vertical color regions |
 
 ## Acceptance steps
 
@@ -93,6 +96,7 @@ Accept artwork evidence when real files are copied into contained roles, origina
 | 14 | `REQ-EVD-001` | Import and repeatedly load TD-06, then run explicit verification. | Copy and SHA-256 share one background stream; normal loading does not repeatedly hash the large file; explicit verification still reads and detects changed bytes. | Copy/hash returned one stream's digest and size. Bounded inspection kept stored verification for unchanged large-file metadata, while explicit SHA-256 verification detected the deliberately mismatched digest. Packaged responsiveness with the retained 1.3 GB fixture remains open. | PARTIAL | Rust `copy_new_hashed_returns_the_digest_from_the_copy_stream`; `large_evidence_load_is_bounded_but_explicit_verification_hashes_it`; native `spawn_blocking` command boundary |
 | 15 | `REQ-EVD-001` | Repeat a normal import whose managed relative path is already indexed. | A controlled instruction points to explicit replacement before any copy; no raw SQLite `UNIQUE` error is shown. | Native preflight queries the indexed relative path before copying, and the persistence regression converts a forced relative-path uniqueness conflict to controlled replacement guidance. Complete packaged message execution remains open. | PARTIAL | `WorkspaceApp::import_evidence_from`; Rust `evidence_provenance_fields_round_trip_and_update` |
 | 16 | `REQ-ART-001` | Inspect missing requirements with an existing but semantically unsuitable `final_artwork`. | The final artwork appears once under Artwork, states `PNG oder JPG`, and its action safely replaces the existing record instead of attempting a duplicate role import. | Requirement evaluation removed the duplicate Release entry. The missing-evidence renderer resolves the existing role ID and routes its button through explicit replacement. Packaged interaction remains open. | PARTIAL | Vitest `requires a verified generated disclosure artifact for AI artwork`; frontend `renderEvidence` |
+| 17 | `REQ-EVD-001`, `REQ-LIB-001` | Import TD-08 as final artwork, load its track summary and cover, and inspect all track-cover placements. | The summary identifies the current verified evidence. A bounded 192 × 192 native PNG uses the center region; dashboard, library, attention, and hero placements share it. No artwork retains initials, and decoding never blocks the UI thread. | Native integration returned the matching evidence ID, exact bounded dimensions, and center color. The typed background command, three-worker workspace cache, stale-evidence guard, shared renderer, centered CSS crop, and initials fallback were implemented. Packaged visual inspection remains open. | PARTIAL | Rust `track_cover_uses_a_bounded_centered_final_artwork_thumbnail`, `cover_thumbnail_is_square_and_center_cropped`; Vitest cover command/summary mappings |
 
 ## Automated checks
 
@@ -102,6 +106,7 @@ cargo test evidence_import_validates_type_preserves_source_and_rejects_collision
 cargo test explicit_replacement_archives_previous_bytes_and_reuses_database_identity
 cargo test large_evidence_load_is_bounded_but_explicit_verification_hashes_it
 cargo test evidence_preview_embeds_images_but_does_not_load_zip_archives
+cargo test track_cover_uses_a_bounded_centered_final_artwork_thumbnail
 cargo test three_negative_content_checks_disable_ai_transparency
 cd ../frontend
 npm test -- --run src/domain/workflow.test.ts

@@ -448,6 +448,13 @@ pub struct EvidencePreview {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackCoverPreview {
+    pub evidence_id: String,
+    pub data_url: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceProvenance {
@@ -586,6 +593,8 @@ pub struct TrackSummary {
     pub missing_count: u32,
     pub certificate_valid: Option<bool>,
     pub legacy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_evidence_id: Option<String>,
     #[serde(default)]
     pub library: TrackLibraryPlacement,
 }
@@ -602,6 +611,8 @@ pub struct TrackDetail {
     pub missing_count: u32,
     pub certificate_valid: Option<bool>,
     pub legacy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_evidence_id: Option<String>,
     #[serde(default)]
     pub library: TrackLibraryPlacement,
     pub workflow_id: String,

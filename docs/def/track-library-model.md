@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Product team |
-| Last review | 2026-08-15 |
+| Last review | 2026-08-16 |
 | Audience | Product developers and acceptance reviewers |
 | Related ATP | [ATP-0014: Track library album and single organization](../atp/active/ATP-0014-track-library-organization.md) |
 
@@ -24,6 +24,7 @@ This document defines how the track library classifies every indexed track as ei
 - direct creation and display of empty physical album folders;
 - creation, later reclassification, validation, sorting, search, and legacy defaults;
 - physical folder creation, movement, renaming, recovery, and rollback;
+- bounded, centered track-cover presentation from verified final artwork;
 - the persistence and portability boundary; and
 - requirements mapped to acceptance evidence.
 
@@ -121,6 +122,12 @@ Reclassification therefore does not invalidate a certificate or create a revisio
 
 Each album header exposes `Umbenennen`. Renaming an album moves the complete album directory once and updates every contained track path and album title in one SQLite transaction. A destination collision stops the operation without overwriting either album. Changing a non-finalized track title through its track fields also renames that track's leaf directory. Normal finalized-track editing rules still apply to a title change because the title is certificate content.
 
+## Track cover presentation
+
+A verified `final_artwork` evidence item identifies the visual cover for its track. Dashboard rows, the attention card, album/single library rows, and the current-track header use the same centered square preview. This is track-level presentation only; named album folders still have no separate album artwork.
+
+The native layer validates the contained managed PNG/JPG and creates a 192 × 192 PNG preview with a centered crop outside the UI thread. It bounds source bytes and decoded pixel count before processing. The frontend requests only tracks whose summary identifies a current verified final-artwork record, loads at most three previews concurrently, caches the result for the open workspace, and rejects a late result when the evidence ID or workspace changed. The preview is not persisted, hashed, or treated as new evidence. Missing, removed, unverified, changed, unsupported, or unsafe artwork retains the deterministic initials tile without blocking track navigation.
+
 ## Search and status filters
 
 Search operates within the hierarchy. It matches track title, track-relative path, and album title without case distinctions. An album-title match includes all tracks in that album that also pass the active status filter. A track-title or path match includes only the matching tracks while preserving their album group.
@@ -148,7 +155,7 @@ Workspace scanning recognizes all three supported layouts: managed singles below
 
 | Requirement | Acceptance criterion | Acceptance plan |
 | --- | --- | --- |
-| `REQ-LIB-001` | The library always renders `Albums`, every physical named album including empty folders, and `Singles` as nested collapsible nodes, places each filtered track exactly once below its parent, groups valid album assignments by normalized title, and searches track and album text within the hierarchy. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
+| `REQ-LIB-001` | The library always renders `Albums`, every physical named album including empty folders, and `Singles` as nested collapsible nodes, places each filtered track exactly once below its parent, groups valid album assignments by normalized title, searches track and album text within the hierarchy, and uses a bounded centered verified final-artwork preview with an initials fallback for each track. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md), [ATP-0005](../atp/active/ATP-0005-artwork-evidence.md) |
 | `REQ-LIB-002` | Workspace opening creates the permanent `Singles/` folder. Direct album creation, track creation, and reclassification validate and persist their physical paths; moves preserve every track-root byte and protected track state and roll back on database failure. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
 | `REQ-LIB-003` | Album and track folders can be renamed without overwriting collisions; every affected SQLite path is updated, and managed external renames are recovered by stable identity. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
 
@@ -182,6 +189,7 @@ The focused native tests cover physical creation, validation, create and reopen,
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Added centered, bounded final-artwork previews and stale-result/fallback behavior for track covers. | Product team |
 | 2026-08-14 | Made album/single placement physical, added safe folder renaming, stable managed identity recovery, and stale legacy-path repair. | Product team |
 | 2026-08-14 | Defined the nested, collapsible folder presentation and its non-persistent disclosure state. | Product team |
 | 2026-08-14 | Defined the album and single library hierarchy, invariants, persistence boundary, and acceptance requirements. | Product team |

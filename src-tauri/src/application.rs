@@ -7,9 +7,9 @@ use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
     DocumentPreview, DocumentState, EvidenceItem, EvidencePreview, EvidenceProvenance,
     EvidenceRole, GlobalEvidenceItem, IntegrityState, LegacyCandidate, OperationProgress, Profile,
-    StepState, StepStatus, SubscriptionBillingCycle, TrackDetail, TrackLibraryPlacement,
-    TrackLibrarySection, TrackPatch, TrackRecord, TrackStatus, TrackSummary, ValidationResult,
-    WorkspaceScan, WorkspaceSummary,
+    StepState, StepStatus, SubscriptionBillingCycle, TrackCoverPreview, TrackDetail,
+    TrackLibraryPlacement, TrackLibrarySection, TrackPatch, TrackRecord, TrackStatus, TrackSummary,
+    ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -1152,6 +1152,29 @@ impl WorkspaceApp {
             text_content,
             message,
         })
+    }
+
+    pub fn track_cover(&self, id: &str) -> Result<Option<TrackCoverPreview>> {
+        let track = self.persistence.track(id)?;
+        let Some(item) = self.persistence.evidence(id)?.into_iter().find(|item| {
+            item.role == EvidenceRole::FinalArtwork
+                && item.verified
+                && item.sha256.is_some()
+                && item.verification_error.is_none()
+        }) else {
+            return Ok(None);
+        };
+        let track_root = self.track_root(&track)?;
+        let path = contained_path(&track_root, Path::new(&item.relative_path), true)?;
+        evidence::validate_type(&item.role, &path)?;
+        let encoded = crate::artwork::centered_cover_thumbnail(&path)?;
+        Ok(Some(TrackCoverPreview {
+            evidence_id: item.id,
+            data_url: format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(encoded)
+            ),
+        }))
     }
 
     pub fn verify_evidence(&self, id: &str, evidence_id: Option<&str>) -> Result<TrackDetail> {
@@ -2332,6 +2355,7 @@ impl WorkspaceApp {
             };
         }
         self.persistence.save_track(&track)?;
+        let cover_evidence_id = final_artwork_evidence_id(&evidence);
         Ok(TrackDetail {
             id: track.id.clone(),
             title: track.fields.title.clone(),
@@ -2342,6 +2366,7 @@ impl WorkspaceApp {
             missing_count: evaluation.missing.len() as u32,
             certificate_valid: Some(track.certificate.valid),
             legacy: Some(track.legacy),
+            cover_evidence_id,
             library: track.library.clone(),
             workflow_id: track.workflow_id.clone(),
             workflow_version: track.workflow_version.clone(),
@@ -2369,6 +2394,7 @@ impl WorkspaceApp {
             &stored,
         )?;
         let progress = workflow::progress(&track, &track.profile_snapshot, &evidence, &deviations)?;
+        let cover_evidence_id = final_artwork_evidence_id(&evidence);
         Ok(TrackDetail {
             id: track.id.clone(),
             title: track.fields.title.clone(),
@@ -2379,6 +2405,7 @@ impl WorkspaceApp {
             missing_count: evaluation.missing.len() as u32,
             certificate_valid: Some(track.certificate.valid),
             legacy: Some(track.legacy),
+            cover_evidence_id,
             library: track.library.clone(),
             workflow_id: track.workflow_id.clone(),
             workflow_version: track.workflow_version.clone(),
@@ -2506,8 +2533,21 @@ fn summary_from_detail(detail: &TrackDetail) -> TrackSummary {
         missing_count: detail.missing_count,
         certificate_valid: detail.certificate_valid,
         legacy: detail.legacy,
+        cover_evidence_id: detail.cover_evidence_id.clone(),
         library: detail.library.clone(),
     }
+}
+
+fn final_artwork_evidence_id(evidence: &[EvidenceItem]) -> Option<String> {
+    evidence
+        .iter()
+        .find(|item| {
+            item.role == EvidenceRole::FinalArtwork
+                && item.verified
+                && item.sha256.is_some()
+                && item.verification_error.is_none()
+        })
+        .map(|item| item.id.clone())
 }
 
 fn now() -> String {
@@ -4712,6 +4752,74 @@ mod tests {
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].id, project_item.id);
         assert_eq!(projects[0].relative_path, project_item.relative_path);
+    }
+
+    #[test]
+    fn track_cover_uses_a_bounded_centered_final_artwork_thumbnail() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let track = app
+            .create_track(CreateTrackInput {
+                title: "Centered Cover".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        assert!(app.track_cover(&track.id).expect("empty cover").is_none());
+
+        let fixture = directory.path().join("wide-final.png");
+        image::RgbaImage::from_fn(600, 200, |x, _| {
+            if x < 200 {
+                image::Rgba([180, 30, 40, 255])
+            } else if x < 400 {
+                image::Rgba([30, 180, 70, 255])
+            } else {
+                image::Rgba([30, 60, 180, 255])
+            }
+        })
+        .save(&fixture)
+        .expect("wide final-artwork fixture");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::FinalArtwork, &fixture)
+            .expect("final artwork import");
+        let evidence_id = imported.cover_evidence_id.expect("cover evidence ID");
+        assert_eq!(
+            app.list_tracks()
+                .expect("track summaries")
+                .into_iter()
+                .find(|item| item.id == track.id)
+                .and_then(|item| item.cover_evidence_id),
+            Some(evidence_id.clone())
+        );
+
+        let preview = app
+            .track_cover(&track.id)
+            .expect("track cover")
+            .expect("present track cover");
+        assert_eq!(preview.evidence_id, evidence_id);
+        let encoded = preview
+            .data_url
+            .strip_prefix("data:image/png;base64,")
+            .expect("PNG data URL");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64 thumbnail");
+        let thumbnail = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .expect("decode thumbnail")
+            .to_rgba8();
+        assert_eq!(
+            thumbnail.dimensions(),
+            (
+                crate::artwork::COVER_PREVIEW_SIZE,
+                crate::artwork::COVER_PREVIEW_SIZE
+            )
+        );
+        assert_eq!(
+            *thumbnail.get_pixel(96, 96),
+            image::Rgba([30, 180, 70, 255])
+        );
     }
 
     #[test]
