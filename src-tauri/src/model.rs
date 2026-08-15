@@ -69,6 +69,7 @@ pub enum EvidenceRole {
     ExternalAudioFile,
     OwnAudioFile,
     SourceCodeFile,
+    CodeGeneratedAudioFile,
     ThirdPartySampleFile,
     ThirdPartySampleLicense,
     Other,
@@ -100,6 +101,7 @@ impl EvidenceRole {
             Self::ExternalAudioFile => "external_audio_file",
             Self::OwnAudioFile => "own_audio_file",
             Self::SourceCodeFile => "source_code_file",
+            Self::CodeGeneratedAudioFile => "code_generated_audio_file",
             Self::ThirdPartySampleFile => "third_party_sample_file",
             Self::ThirdPartySampleLicense => "third_party_sample_license",
             Self::Other => "other",
@@ -121,6 +123,7 @@ impl EvidenceRole {
             Self::ExternalAudioFile
             | Self::OwnAudioFile
             | Self::SourceCodeFile
+            | Self::CodeGeneratedAudioFile
             | Self::ThirdPartySampleFile => "02_SUNO",
             Self::Other => "03_DOCUMENTATION",
         }
@@ -145,6 +148,7 @@ impl EvidenceRole {
             | Self::ExternalAudioFile
             | Self::OwnAudioFile
             | Self::ThirdPartySampleFile => &["wav", "mp3", "flac", "m4a", "aiff", "aif", "ogg"],
+            Self::CodeGeneratedAudioFile => &["wav", "mp3"],
             Self::SourceCodeFile => &[
                 "rb", "py", "txt", "md", "js", "jsx", "ts", "tsx", "mjs", "cjs", "java", "kt",
                 "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "rs", "go", "php", "swift",

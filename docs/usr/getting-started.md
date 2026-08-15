@@ -158,11 +158,11 @@ Use the current-track view to work through:
 
 The application displays one task-oriented set of questions at a time. A negative controlling answer closes its branch. For example, answering `No` to external audio upload means source, ownership, license, and uploaded-file details for external audio are not requested. Answering `Yes` makes those details applicable.
 
-In `02 Source`, choose the applicable source category and rights basis from the guided lists instead of writing an unrestricted description. Answer `Code-based generation?` explicitly. A `No` answer ends that branch. A `Yes` answer opens a source-file evidence control for the code or text that was actually used; supported formats include Ruby, Python, plain text, Markdown, JavaScript, TypeScript, Rust, shell scripts, and other listed text-based source formats. The managed copy is stored below `02_SUNO/`.
+In `02 Source`, choose the applicable source category and rights basis from the guided clickable buttons instead of a dropdown or unrestricted description. Each question permits exactly one active choice. This applies to external audio, own audio, and third-party samples. Answer `Code-based generation?` explicitly. A `No` answer ends that branch. A `Yes` answer opens two evidence controls: one for the code or text that was actually used and one for the resulting WAV or MP3. Supported source formats include Ruby, Python, plain text, Markdown, JavaScript, TypeScript, Rust, shell scripts, and other listed text-based formats. Both managed copies are stored below `02_SUNO/` and their paths are included in the generated English project documentation.
 
 Record only work that occurred. Do not select arrangement, mixing, mastering, or another editing label unless it accurately describes confirmed work on this track.
 
-In `04 Human Work`, record the lyrics source, the exact lyrics text used for every non-instrumental source, and the complete Suno style prompt. Select all actually performed human-editing steps from the guided choices. If post-export editing is `Yes`, select at least one actual post-export operation; a free-text processing claim is neither shown nor accepted for a new selection. Document generation writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`; managed files at the former `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md` locations are removed during regeneration.
+In `04 Human Work`, choose exactly one lyrics source from the clickable single-choice buttons, record the exact lyrics text used for every non-instrumental source, and enter the complete Suno style prompt. Select all actually performed human-editing steps from the guided multi-choice buttons. If post-export editing is `Yes`, select at least one actual post-export operation; a free-text processing claim is neither shown nor accepted for a new selection. Document generation writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`; managed files at the former `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md` locations are removed during regeneration.
 
 The interface can display guided labels in German, but the corresponding stored values and generated choice statements are English. Exact user-authored facts such as lyrics and the Suno style prompt remain verbatim.
 
@@ -251,6 +251,8 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Replaced Source and lyrics-source dropdowns with accessible clickable single-choice buttons. | Project team |
+| 2026-08-16 | Documented the required generated WAV/MP3 evidence for code-based generation. | Project team |
 | 2026-08-16 | Documented centered final-artwork covers and the initials fallback throughout track presentation. | Project team |
 | 2026-08-15 | Explained guided Source and post-export choices, conditional source-code evidence, supported formats, and English document values. | Project team |
 | 2026-08-14 | Explained the collapsible top-level and album folder rows and their keyboard operation. | Project team |

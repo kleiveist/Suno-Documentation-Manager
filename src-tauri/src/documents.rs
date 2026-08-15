@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.2";
+pub const TEMPLATE_VERSION: &str = "1.3";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -471,6 +471,8 @@ fn render(
         .map(|item| item.relative_path.as_str())
         .unwrap_or("Not documented");
     let source_code_file = evidence_path(evidence, crate::model::EvidenceRole::SourceCodeFile);
+    let code_generated_audio_file =
+        evidence_path(evidence, crate::model::EvidenceRole::CodeGeneratedAudioFile);
     let mut source_declarations = format!(
         "\n## Source declarations\n\n- External audio uploaded: {}\n",
         yes_no(f.external_audio_uploaded)
@@ -499,6 +501,9 @@ fn render(
     ));
     if f.code_based_generation == Some(true) {
         source_declarations.push_str(&format!("- Source-code evidence: {source_code_file}\n"));
+        source_declarations.push_str(&format!(
+            "- Code-generated audio evidence: {code_generated_audio_file}\n"
+        ));
     }
     source_declarations.push_str(&format!(
         "- Third-party samples uploaded: {}\n",
@@ -715,7 +720,7 @@ fn render(
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
             value_or_missing(&f.suno_project_url),
             value_or_missing(&f.suno_model),
@@ -727,6 +732,7 @@ fn render(
             yes_no(f.own_audio_uploaded),
             yes_no(f.code_based_generation),
             if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
+            if f.code_based_generation == Some(true) { code_generated_audio_file } else { "Not applicable" },
             yes_no(f.third_party_samples_uploaded),
         ),
     );
@@ -749,11 +755,12 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/AI_USAGE.md".into(),
         format!(
-            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Lyrics source: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n\n## Artwork\n\n{}",
+            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Lyrics source: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
             marker(), value_or_missing(&f.suno_model), value_or_missing(&f.suno_project_url),
             value_or_missing(&f.lyrics_source), yes_no(f.external_audio_uploaded),
             yes_no(f.code_based_generation),
             if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
+            if f.code_based_generation == Some(true) { code_generated_audio_file } else { "Not applicable" },
             ai_artwork_usage
         ),
     );
@@ -1101,6 +1108,12 @@ mod tests {
             "02_SUNO/generator.py",
             '4',
         ));
+        evidence.push(fixture_evidence(
+            "code-generated-audio",
+            crate::model::EvidenceRole::CodeGeneratedAudioFile,
+            "02_SUNO/generated.wav",
+            '5',
+        ));
 
         let rendered = render(&track, &profile, &evidence, &[]);
         let combined = rendered.values().cloned().collect::<String>();
@@ -1109,6 +1122,7 @@ mod tests {
             "External audio source category: Audio from a licensed sample library",
             "External audio rights basis: Commercial-use license",
             "Source-code evidence: 02_SUNO/generator.py",
+            "Code-generated audio evidence: 02_SUNO/generated.wav",
             "Confirmed human work: Timing and cuts, Loudness adjustment",
             "Confirmed post-export work: Editing and cuts, Mastering",
             "Release notes: Original Suno version, Radio edit",

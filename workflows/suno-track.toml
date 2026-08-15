@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.0"
+version = "1.1"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -247,6 +247,15 @@ required = true
 when = "code_based_generation"
 missing_message = "Der Quellcode oder die Quelldatei der codebasierten Erzeugung fehlt."
 evidence_role = "source_code_file"
+
+[[requirements]]
+key = "source.code_generated_audio_file"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "code_based_generation"
+missing_message = "Die mit dem Quellcode erzeugte WAV- oder MP3-Datei fehlt."
+evidence_role = "code_generated_audio_file"
 
 [[requirements]]
 key = "source.third_party_samples_uploaded"

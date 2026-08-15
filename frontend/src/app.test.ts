@@ -13,6 +13,7 @@ import {
   resetWorkspaceScopedUiState,
   shouldDiscardLockedDraft,
   shouldIgnoreModalBackdropClick,
+  singleChoiceFieldMarkup,
   serializeMultiChoiceValue,
   trackSummaryFromDetail,
   type GuidedChoice,
@@ -57,6 +58,22 @@ describe("navigation", () => {
       "Timing and cuts | Loudness adjustment"
     );
     expect(canonicalGuidedChoiceValue("Historischer Freitext", choices)).toBe("Historischer Freitext");
+  });
+
+  it("renders required single choices as mutually exclusive buttons", () => {
+    const markup = singleChoiceFieldMarkup(
+      "lyricsSource",
+      "Lyrics-Quelle",
+      "human",
+      [["instrumental", "Instrumental"], ["human", "Menschlich geschrieben"]],
+      true
+    );
+
+    expect(markup).not.toContain("<select");
+    expect(markup.match(/type="radio"/g)).toHaveLength(2);
+    expect(markup.match(/name="lyricsSource"/g)).toHaveLength(2);
+    expect(markup).toContain('value="human" data-single-choice checked required');
+    expect(markup).toContain("Wähle genau eine passende Option aus.");
   });
 
   it("normalizes every guided track value before saving", () => {

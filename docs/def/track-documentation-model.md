@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-15 |
+| Last review | 2026-08-16 |
 | Audience | Product developers and documentation reviewers |
 | Related ATP | [Track and document acceptance plans](../atp/active/active.md) |
 
@@ -79,21 +79,21 @@ At minimum, the workflow can record the following confirmed facts:
 - the complete Suno style prompt;
 - whether external audio, own audio, code-based generation, or third-party samples were used;
 - the guided source category and rights basis for every applicable audio-source branch;
-- the source-code or source-text evidence file when code-based generation is confirmed;
+- the source-code or source-text evidence file and its generated WAV/MP3 output when code-based generation is confirmed;
 - whether human editing or post-export editing occurred;
 - the specific confirmed human editing operations; and
 - whether commercial use is intended.
 
 Confirmed human-work labels are selected from the guided choices for arrangement, lyrics, timing/cuts, sound design, EQ, mixing, mastering, and loudness adjustment. Post-export work uses its own guided set for editing/cuts, arrangement, timing correction, sound design, EQ, mixing, mastering, loudness adjustment, noise reduction, and dynamics processing. Release notes likewise use guided release-version choices. A label appears only when the user selects it; the generator does not add generic arrangement, mixing, mastering, or release claims by default.
 
-The localized UI label and the stored value are deliberately separate. New guided selections are persisted as stable English values even when the interface presents German labels. A recognized localized value from an older record is normalized on the next save. An unknown historical free-text value remains visible as a legacy choice for explicit reclassification and is not silently discarded.
+The localized UI label and the stored value are deliberately separate. Source, rights, and lyrics-source questions use clickable single-choice buttons, while activity lists use multi-choice buttons. New guided selections are persisted as stable English values even when the interface presents German labels. A recognized localized value from an older record is normalized on the next save. An unknown historical free-text value remains visible as a legacy choice for explicit reclassification and is not silently discarded.
 
 ## Conditional facts
 
 The model stores a controlling answer separately from its dependent details. If `External audio uploaded?` is `No`, source, ownership, license, and uploaded-file questions are not required. If it is `Yes`, the dependent facts and evidence become applicable. The same rule applies to:
 
 - own audio;
-- code-based generation, which requires a source-code or source-text evidence file only after an explicit positive answer;
+- code-based generation, which requires both a source-code/source-text evidence file and the generated WAV or MP3 only after an explicit positive answer;
 - third-party samples;
 - human lyrics and human editing;
 - post-export processing;
@@ -143,6 +143,7 @@ Folder generation creates directories and managed text documents only when appro
 | Suno project ZIP | `02_SUNO/` | Optional project evidence |
 | Suno screenshot | `02_SUNO/` | Optional factual evidence |
 | Source code or source text (`.rb`, `.py`, `.txt`, `.md`, and other supported text-based formats) | `02_SUNO/` | Required only when code-based generation is confirmed |
+| Code-generated audio (`.wav` or `.mp3`) | `02_SUNO/` | Required together with source-code evidence when code-based generation is confirmed |
 | Subscription or payment evidence (PDF, PNG/JPEG, TXT, or Markdown) | `04_LICENSES/` | Selected when its materialized coverage interval covers the track production period |
 | Release WAV, MP3, or MP4 | `01_RELEASE/` | Release output; the configured final release role is mandatory |
 | Release artwork | `01_RELEASE/` | Final release package artwork when applicable |
@@ -200,7 +201,7 @@ Generated headings, explanatory prose, and guided-choice values are always Engli
 
 | Output | Minimum purpose |
 | --- | --- |
-| `02_SUNO/suno_project.txt` | Suno project URL, confirmed production facts, code-generation answer, and applicable source-code evidence path |
+| `02_SUNO/suno_project.txt` | Suno project URL, confirmed production facts, code-generation answer, and applicable source-code plus generated-audio evidence paths |
 | `02_SUNO/Lyrics.md` | Lyrics source and the exact used lyrics text when applicable |
 | `02_SUNO/Style.md` | The complete style prompt entered in Suno |
 | `03_DOCUMENTATION/README.md` | Human-readable track documentation entry point |
@@ -286,6 +287,8 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Replaced Source/right and lyrics-source dropdowns with mutually exclusive guided buttons without changing stored canonical values. | Project team |
+| 2026-08-16 | Required the generated WAV/MP3 alongside source code for code-based generation and advanced generated documents to template version 1.3. | Project team |
 | 2026-08-15 | Defined the post-commit reusable certificate summary as a presentation of authoritative finalized track data. | Project team |
 | 2026-08-15 | Defined non-persistent live progress for deterministic document writes and native integrity reads. | Project team |
 | 2026-08-15 | Added guided Source classifications, conditional source-code evidence, English choice rendering, legacy reclassification, and template version 1.2. | Project team |

@@ -8,10 +8,10 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-15 |
-| Executed | 2026-08-13/15 — partial automated execution |
+| Last review | 2026-08-16 |
+| Executed | 2026-08-13/15/16 — partial automated execution |
 | Requirement | [`REQ-WFL-001`, `REQ-WFL-003`, `REQ-WFL-004`](../../def/workflow-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; current 2026-08-15 working tree not yet committed; package digests in the central report |
+| Tested commit/build | Product `0.1.0`; current 2026-08-16 working tree not yet committed; local `sunodm.AppImage` rebuilt |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; Vitest workflow fixtures and native end-to-end fixture |
 
 ## Purpose
@@ -68,7 +68,7 @@ Accept the finalization gate when it exposes every actionable blocker, permits o
 
 | Step | Requirement | Action | Expected result | Actual result | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `REQ-WFL-001` | Load the declarative workflow. | ID `suno-track`, version `1.0`, and exactly ten uniquely ordered required steps load; unsupported schema or duplicate step is rejected. | The embedded version 1.0 workflow loaded with ID `suno-track`, ten ordered steps, and schema 1; unsupported schema, empty/duplicate step IDs, unknown kinds, missing fields, and a missing mandatory step were rejected. | PASS | Rust workflow configuration tests |
+| 1 | `REQ-WFL-001` | Load the declarative workflow. | ID `suno-track`, version `1.1`, and exactly ten uniquely ordered required steps load; unsupported schema or duplicate step is rejected. | The embedded version 1.1 workflow loaded with ID `suno-track`, ten ordered steps, and schema 1; unsupported schema, empty/duplicate step IDs, unknown kinds, missing fields, and a missing mandatory step were rejected. | PASS | Rust workflow configuration tests |
 | 2 | `REQ-WFL-003` | Evaluate TD-01. | Concrete missing items identify requirement key, step, user-facing label/reason, and resolution action; progress reflects only completed applicable mandatory items. | Not run | NOT RUN | — |
 | 3 | `REQ-WFL-003` | Evaluate TD-02 with each negative conditional controller. | Dependent requirements are excluded from numerator and denominator; explicitly marking a wholly non-applicable step N/A requires a non-empty reason. | Not run | NOT RUN | — |
 | 4 | `REQ-WFL-004` | Attempt manual N/A with an empty or whitespace reason. | Validation rejects it and finalization remains blocked. | Not run | NOT RUN | — |

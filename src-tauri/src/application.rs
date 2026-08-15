@@ -6659,13 +6659,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_upgrade_archives_finalized_v1_and_requires_fresh_v11_outputs() {
+    fn workflow_upgrade_archives_finalized_v11_and_requires_fresh_v12_outputs() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
         let finalized =
             finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
-        assert_eq!(finalized.workflow_version, "1.0");
+        assert_eq!(finalized.workflow_version, "1.1");
         let track_root = app.root().join(&finalized.relative_path);
         let certificate_before = certificate_file_snapshot(&track_root);
         let hashes_before =
@@ -6682,17 +6682,17 @@ mod tests {
             )
             .expect("stored old-workflow override");
 
-        let workflow_v11 = workflow::config_with_version_for_test("1.1")
-            .expect("test-only workflow 1.1 configuration");
+        let workflow_v12 = workflow::config_with_version_for_test("1.2")
+            .expect("test-only workflow 1.2 configuration");
         let upgraded = app
-            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v11)
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v12)
             .expect("explicit workflow reevaluation")
             .track
             .expect("upgraded track detail");
 
         assert_eq!(upgraded.status, TrackStatus::Active);
         assert_eq!(upgraded.workflow_id, "suno-track");
-        assert_eq!(upgraded.workflow_version, "1.1");
+        assert_eq!(upgraded.workflow_version, "1.2");
         assert!(!upgraded.documents.current);
         assert!(!upgraded.integrity.generated);
         assert!(!upgraded.integrity.verified);
@@ -6727,7 +6727,7 @@ mod tests {
         }
 
         assert!(matches!(
-            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v11),
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v12),
             Err(AppError::Validation(_))
         ));
         assert_eq!(

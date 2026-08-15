@@ -8,8 +8,8 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-15 |
-| Executed | 2026-08-13/15 — partial automated execution |
+| Last review | 2026-08-16 |
+| Executed | 2026-08-13/15/16 — partial automated execution |
 | Requirement | [`REQ-CER-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-PER-005`, `REQ-PER-006`](../../def/persistence.md#requirements-and-atp-mapping) |
 | Tested commit/build | Product `0.1.0`; regression automation rerun at implementation commit `b7e9797b277f0bcac58d4503049002e354cb93fb`; previously retained package digests still identify the older stabilization build in the central report |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; native ready-track, artifact cross-check, and failure-injection fixtures |
@@ -60,7 +60,7 @@ Accept certificate generation when a ready track produces a complete self-contai
 
 | ID | Description | Source or setup |
 | --- | --- | --- |
-| TD-01 | Ready track | Artist `Acceptance Artist`, track `Acceptance Track`, workflow `suno-track` `1.0`, fixed evidence roles |
+| TD-01 | Ready track | Artist `Acceptance Artist`, track `Acceptance Track`, workflow `suno-track` `1.1`, fixed evidence roles |
 | TD-02 | N/A details | At least one legitimate conditional N/A with a non-empty reason |
 | TD-03 | Global subscription evidence | Synthetic PDF registered globally and selected for the production period |
 | TD-04 | Failure injection | Native test hook that fails one certificate artifact write before final state commit |

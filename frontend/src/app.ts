@@ -231,6 +231,7 @@ export function serializeMultiChoiceValue(values: string[]): string {
 }
 
 export type GuidedChoice = readonly [value: string, label: string, aliases?: readonly string[]];
+export type SingleChoiceOption = readonly [value: string, label: string];
 
 const normalizedChoiceText = (value: string): string => value.trim().normalize("NFKC").toLocaleLowerCase("de-DE");
 
@@ -247,6 +248,16 @@ export function canonicalGuidedChoiceList(value: string, choices: readonly Guide
   return serializeMultiChoiceValue(
     parseMultiChoiceValue(value).map((item) => canonicalGuidedChoiceValue(item, choices))
   );
+}
+
+export function singleChoiceFieldMarkup(
+  name: string,
+  label: string,
+  value: string,
+  options: readonly SingleChoiceOption[],
+  required = false
+): string {
+  return `<fieldset class="multi-choice-field single-choice-field field--wide" data-single-choice-group ${required ? `aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${options.map(([option, optionLabel]) => `<label><input type="radio" name="${escapeHtml(name)}" value="${escapeHtml(option)}" data-single-choice ${value === option ? "checked" : ""} ${required ? "required" : ""}><span>${escapeHtml(optionLabel)}</span></label>`).join("")}</div><p class="field-help">Wähle genau eine passende Option aus.</p></fieldset>`;
 }
 
 export function trackSummaryFromDetail(track: TrackDetail): TrackSummary {
@@ -307,7 +318,7 @@ const evidenceRoles: EvidenceRole[] = [
   "suno_final_export", "suno_project_zip", "suno_screenshot",
   "release_wav", "release_mp3", "release_mp4", "release_artwork", "ai_artwork_original",
   "ai_artwork_edited", "human_edited_artwork", "final_artwork", "external_audio_file",
-  "external_audio_license", "own_audio_file", "source_code_file", "third_party_sample_file",
+  "external_audio_license", "own_audio_file", "source_code_file", "code_generated_audio_file", "third_party_sample_file",
   "third_party_sample_license", "other"
 ];
 
@@ -1282,20 +1293,20 @@ export class SunoDocumentationApp {
         break;
       case "source":
         body = `${this.boolQuestion("externalAudioUploaded", "Externes Audio hochgeladen?", "Audio außerhalb der eigenen Produktion, das Suno als Quelle erhalten hat.", draft.externalAudioUploaded)}
-          ${conditional.has("externalAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSelectField("externalAudioSource", "Quelle", draft.externalAudioSource, externalAudioSourceChoices, true)}${this.guidedSelectField("externalAudioOwnership", "Rechtezuordnung", draft.externalAudioOwnership, externalAudioRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["external_audio_file", "Audiodatei importieren"], ["external_audio_license", "Lizenznachweis importieren"]])}</div>` : ""}
+          ${conditional.has("externalAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("externalAudioSource", "Quelle", draft.externalAudioSource, externalAudioSourceChoices, true)}${this.guidedSingleChoiceField("externalAudioOwnership", "Rechtezuordnung", draft.externalAudioOwnership, externalAudioRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["external_audio_file", "Audiodatei importieren"], ["external_audio_license", "Lizenznachweis importieren"]])}</div>` : ""}
           ${this.boolQuestion("ownAudioUploaded", "Eigene Audiodatei hochgeladen?", "Eine von dir erstellte Aufnahme oder Instrumentalspur.", draft.ownAudioUploaded)}
-          ${conditional.has("ownAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSelectField("ownAudioSource", "Quelle", draft.ownAudioSource, ownAudioSourceChoices, true)}${this.guidedSelectField("ownAudioOwnership", "Rechtezuordnung", draft.ownAudioOwnership, ownAudioRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["own_audio_file", "Eigene Audiodatei importieren"]])}</div>` : ""}
+          ${conditional.has("ownAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("ownAudioSource", "Quelle", draft.ownAudioSource, ownAudioSourceChoices, true)}${this.guidedSingleChoiceField("ownAudioOwnership", "Rechtezuordnung", draft.ownAudioOwnership, ownAudioRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["own_audio_file", "Eigene Audiodatei importieren"]])}</div>` : ""}
           ${this.boolQuestion("codeBasedGeneration", "Codebasierte Erzeugung?", "Wurde eine Audiodatei oder ein Ausgangsmaterial mithilfe von Quellcode erzeugt?", draft.codeBasedGeneration)}
-          ${conditional.has("sourceCodeFile") ? `<div class="conditional-panel"><div class="conditional-line"></div><p class="field-help">Wähle den tatsächlich verwendeten Quellcode oder die Quelldatei aus. Unterstützt werden unter anderem Ruby, Python, Text, Markdown, JavaScript, TypeScript und weitere textbasierte Formate.</p>${this.inlineEvidenceActions(track, [["source_code_file", "Quellcode oder Quelldatei importieren"]])}</div>` : ""}
+          ${conditional.has("sourceCodeFile") ? `<div class="conditional-panel"><div class="conditional-line"></div><p class="field-help">Importiere den tatsächlich verwendeten Quellcode und zusätzlich die damit erzeugte Audiodatei. Für das Audio werden WAV oder MP3 akzeptiert.</p>${this.inlineEvidenceActions(track, [["source_code_file", "Quellcode oder Quelldatei importieren"], ["code_generated_audio_file", "Erzeugte WAV- oder MP3-Datei importieren"]])}</div>` : ""}
           ${this.boolQuestion("thirdPartySamplesUploaded", "Fremde Samples hochgeladen?", "Samples oder Loops, die von Dritten stammen.", draft.thirdPartySamplesUploaded)}
-          ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSelectField("thirdPartySampleSource", "Sample-Quelle", draft.thirdPartySampleSource, sampleSourceChoices, true)}${this.guidedSelectField("thirdPartySampleOwnership", "Lizenz / Rechte", draft.thirdPartySampleOwnership, sampleRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
+          ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("thirdPartySampleSource", "Sample-Quelle", draft.thirdPartySampleSource, sampleSourceChoices, true)}${this.guidedSingleChoiceField("thirdPartySampleOwnership", "Lizenz / Rechte", draft.thirdPartySampleOwnership, sampleRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
         break;
       case "suno":
         body = `<div class="field-grid two-col">${this.textField("sunoModel", "Suno-Modell", "z. B. v4.5", draft.sunoModel, true)}${this.textField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier", draft.sunoPlanAtCreation, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}</div>
           <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
         break;
       case "human_work":
-        body = `<div class="field-grid two-col">${this.selectField("lyricsSource", "Lyrics-Quelle", draft.lyricsSource, [["", "Bitte auswählen"], ["instrumental", "Instrumental – keine Lyrics"], ["human", "Menschlich geschrieben"], ["suno", "Von Suno erzeugt"], ["mixed", "Gemischt"]], true)}</div>
+        body = `<div class="field-grid two-col">${singleChoiceFieldMarkup("lyricsSource", "Lyrics-Quelle", draft.lyricsSource, [["instrumental", "Instrumental – keine Lyrics"], ["human", "Menschlich geschrieben"], ["suno", "Von Suno erzeugt"], ["mixed", "Gemischt"]], true)}</div>
           ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Verwendeter Lyrics-Text", "Nur die tatsächlich in Suno verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
           ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat.", draft.humanEditingPerformed)}
@@ -1475,15 +1486,12 @@ export class SunoDocumentationApp {
     return `<label class="field"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><select name="${name}" ${required ? "required" : ""}>${options.map(([id, text]) => `<option value="${escapeHtml(id)}" ${value === id ? "selected" : ""}>${escapeHtml(text)}</option>`).join("")}</select></label>`;
   }
 
-  private guidedSelectField(name: string, label: string, value: string, choices: readonly GuidedChoice[], required = false): string {
+  private guidedSingleChoiceField(name: string, label: string, value: string, choices: readonly GuidedChoice[], required = false): string {
     const selected = canonicalGuidedChoiceValue(value, choices);
     const known = choices.some(([option]) => option === selected);
-    const options: Array<[string, string]> = [
-      ["", "Bitte auswählen"],
-      ...choices.map(([option, optionLabel]) => [option, optionLabel] as [string, string])
-    ];
-    if (selected && !known) options.splice(1, 0, [selected, `Bisheriger Wert: ${selected} (bitte prüfen)`]);
-    return this.selectField(name, label, selected, options, required);
+    const options: SingleChoiceOption[] = choices.map(([option, optionLabel]) => [option, optionLabel]);
+    if (selected && !known) options.unshift([selected, `Bisheriger Wert: ${selected} (bitte prüfen)`]);
+    return singleChoiceFieldMarkup(name, label, selected, options, required);
   }
 
   private boolQuestion(name: string, label: string, help: string, value: boolean | null): string {

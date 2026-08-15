@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-15 |
+| Last review | 2026-08-16 |
 | Audience | Product developers and acceptance owners |
 | Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md) |
 
@@ -41,7 +41,7 @@ The repository file [workflows/suno-track.toml](../../workflows/suno-track.toml)
 ```toml
 schema_version = 1
 id = "suno-track"
-version = "1.0"
+version = "1.1"
 name = "Suno Track Documentation"
 ```
 
@@ -116,7 +116,7 @@ The following branch rules are mandatory:
 | --- | --- | --- |
 | External audio uploaded | Hide dependent source/license requirements and exclude them from evaluation | Require source, ownership, license evidence, and uploaded file |
 | Own audio uploaded | Hide own-audio details | Require confirmed ownership/source details and file role |
-| Code-based generation | Hide the source-code evidence control and requirement | Require one supported source-code or source-text evidence file under `02_SUNO/` |
+| Code-based generation | Hide both code-generation evidence controls and requirements | Require one supported source-code/source-text file and its generated WAV or MP3 under `02_SUNO/` |
 | Third-party samples uploaded | Hide sample details | Require sample source, permission/license note, and applicable evidence |
 | Lyrics source | Instrumental hides lyrics text | Every non-instrumental source requires the exact text used; the Suno style prompt is always required |
 | Human or post-export editing | Do not add generic editing claims | Require at least one specific operation from the applicable guided multi-selection |
@@ -232,6 +232,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Advanced the workflow to 1.1 and required generated WAV/MP3 evidence together with source code for a positive code-based-generation answer. | Project team |
 | 2026-08-15 | Defined read-only finalized navigation, stale-draft disposal, and direct revision access. | Project team |
 | 2026-08-15 | Added the conditional code-based Source branch, guided Source classifications, and English canonical values for localized choice controls. | Project team |
 | 2026-08-15 | Added the Suno style prompt, guided work/release choices, three-negative AI Transparency deactivation, one final-artwork requirement, and prerequisite-aware Finalize status. | Project team |

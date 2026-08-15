@@ -140,7 +140,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.2",
+      templateVersion: "1.3",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -433,6 +433,8 @@ export function createDemoApi(): DesktopApi {
           ? "wav"
           : role === "source_code_file"
             ? "py"
+          : role === "code_generated_audio_file"
+            ? "wav"
           : role.includes("subscription")
             ? "pdf"
             : "zip";
@@ -500,7 +502,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.2",
+        templateVersion: "1.3",
         files: documentFiles
       };
       track.integrity.generated = false;

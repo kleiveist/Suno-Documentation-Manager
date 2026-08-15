@@ -31,6 +31,7 @@ export type EvidenceRole =
   | "external_audio_file"
   | "own_audio_file"
   | "source_code_file"
+  | "code_generated_audio_file"
   | "third_party_sample_file"
   | "third_party_sample_license"
   | "other";

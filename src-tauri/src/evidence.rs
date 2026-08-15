@@ -572,6 +572,49 @@ mod tests {
     }
 
     #[test]
+    fn code_generated_audio_import_accepts_only_wav_or_mp3() {
+        let directory = tempdir().expect("temporary directory");
+        let track_root = directory.path().join("track");
+        fs::create_dir(&track_root).expect("track root");
+
+        let wav = directory.path().join("generated.wav");
+        fs::write(&wav, b"RIFF\x08\0\0\0WAVEgenerated audio").expect("WAV fixture");
+        let imported_wav = import(
+            &track_root,
+            "Code Track",
+            EvidenceRole::CodeGeneratedAudioFile,
+            &wav,
+        )
+        .expect("generated WAV import");
+        assert_eq!(imported_wav.relative_path, "02_SUNO/generated.wav");
+
+        let mp3 = directory.path().join("generated.mp3");
+        fs::write(&mp3, b"ID3generated audio").expect("MP3 fixture");
+        let second_track_root = directory.path().join("second-track");
+        fs::create_dir(&second_track_root).expect("second track root");
+        let imported_mp3 = import(
+            &second_track_root,
+            "Code Track 2",
+            EvidenceRole::CodeGeneratedAudioFile,
+            &mp3,
+        )
+        .expect("generated MP3 import");
+        assert_eq!(imported_mp3.relative_path, "02_SUNO/generated.mp3");
+
+        let flac = directory.path().join("generated.flac");
+        fs::write(&flac, b"fLaCgenerated audio").expect("FLAC fixture");
+        assert!(matches!(
+            import(
+                &second_track_root,
+                "Code Track 2",
+                EvidenceRole::CodeGeneratedAudioFile,
+                &flac,
+            ),
+            Err(AppError::FileType { .. })
+        ));
+    }
+
+    #[test]
     fn large_evidence_load_is_bounded_but_explicit_verification_hashes_it() {
         let directory = tempdir().expect("temporary directory");
         let track_root = directory.path().join("track");

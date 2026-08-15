@@ -21,7 +21,7 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.0";
+export const WORKFLOW_VERSION = "1.1";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
@@ -112,7 +112,10 @@ export function visibleConditionalFields(fields: TrackFields, profile: GlobalPro
     visible.add("ownAudioOwnership");
     visible.add("ownAudioFile");
   }
-  if (fields.codeBasedGeneration === true) visible.add("sourceCodeFile");
+  if (fields.codeBasedGeneration === true) {
+    visible.add("sourceCodeFile");
+    visible.add("codeGeneratedAudioFile");
+  }
   if (fields.thirdPartySamplesUploaded === true) {
     visible.add("thirdPartySampleSource");
     visible.add("thirdPartySampleOwnership");
@@ -174,6 +177,7 @@ export function evaluateRequirements(
   }
   if (fields.codeBasedGeneration === true) {
     add("source-code-file", "evidence_licenses", "Quellcode oder Quelldatei der codebasierten Erzeugung", hasEvidence(evidence, "source_code_file"), "source_code_file");
+    add("code-generated-audio-file", "evidence_licenses", "Mit dem Quellcode erzeugte WAV- oder MP3-Datei", hasEvidence(evidence, "code_generated_audio_file"), "code_generated_audio_file");
   }
   if (fields.thirdPartySamplesUploaded === true) {
     add("sample-source", "source", "Quelle der fremden Samples", hasText(fields.thirdPartySampleSource));
@@ -360,6 +364,7 @@ export function evidenceRoleLabel(role: EvidenceRole): string {
     external_audio_file: "Externe Audiodatei",
     own_audio_file: "Eigene Audiodatei",
     source_code_file: "Quellcode / Quelldatei",
+    code_generated_audio_file: "Codebasiert erzeugte Audiodatei",
     third_party_sample_file: "Fremde Sample-Datei",
     third_party_sample_license: "Lizenz für fremde Samples",
     other: "Sonstiger Nachweis"
@@ -385,6 +390,7 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     external_audio_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     own_audio_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     source_code_file: "Ruby, Python, JavaScript, TypeScript, Text, Markdown und weitere Text-/Quellcodeformate",
+    code_generated_audio_file: "WAV oder MP3",
     third_party_sample_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     third_party_sample_license: "PDF, PNG, JPG, TXT oder Markdown",
     other: "PDF, Bild, Text, ZIP, WAV, MP3 oder MP4"

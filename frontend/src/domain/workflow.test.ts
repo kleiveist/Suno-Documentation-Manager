@@ -76,12 +76,12 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.0",
+    workflowVersion: "1.1",
     profileSnapshot: structuredClone(profile),
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.2", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.3", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     blockingDeviations: []
@@ -110,13 +110,16 @@ describe("conditional fields", () => {
     ]));
   });
 
-  it("shows the source-code upload only for code-based generation", () => {
+  it("shows source-code and generated-audio uploads only for code-based generation", () => {
     const fields = emptyTrackFields(profile);
     expect(visibleConditionalFields(fields, profile)).not.toContain("sourceCodeFile");
+    expect(visibleConditionalFields(fields, profile)).not.toContain("codeGeneratedAudioFile");
     fields.codeBasedGeneration = false;
     expect(visibleConditionalFields(fields, profile)).not.toContain("sourceCodeFile");
+    expect(visibleConditionalFields(fields, profile)).not.toContain("codeGeneratedAudioFile");
     fields.codeBasedGeneration = true;
     expect(visibleConditionalFields(fields, profile)).toContain("sourceCodeFile");
+    expect(visibleConditionalFields(fields, profile)).toContain("codeGeneratedAudioFile");
   });
 
   it("shows AI and content-check follow-ups conditionally", () => {
@@ -151,13 +154,19 @@ describe("missing requirements", () => {
     );
   });
 
-  it("requires source-code evidence only after an explicit Yes answer", () => {
+  it("requires source-code and generated WAV/MP3 evidence only after an explicit Yes answer", () => {
     const track = completeTrack();
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("source-code-file");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("code-generated-audio-file");
     track.fields.codeBasedGeneration = true;
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("source-code-file");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toEqual(
+      expect.arrayContaining(["source-code-file", "code-generated-audio-file"])
+    );
     track.evidence.push(evidence("source_code_file"));
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("source-code-file");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("code-generated-audio-file");
+    track.evidence.push(evidence("code_generated_audio_file"));
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("code-generated-audio-file");
   });
 
   it("requires reusable subscription evidence only for commercial tracks", () => {
@@ -256,6 +265,7 @@ describe("statuses and finalization", () => {
     expect(evidenceRoleFileTypes("suno_screenshot")).toContain("PNG");
     expect(evidenceRoleFileTypes("release_wav")).toBe("WAV");
     expect(evidenceRoleFileTypes("source_code_file")).toContain("Python");
+    expect(evidenceRoleFileTypes("code_generated_audio_file")).toBe("WAV oder MP3");
   });
 
   it("treats three explicit No answers as a completed artwork content check", () => {

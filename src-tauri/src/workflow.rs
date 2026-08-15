@@ -709,14 +709,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_0_configuration_is_accepted() {
+    fn valid_version_1_1_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.0");
+        validate_config(&config).expect("valid workflow 1.1");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.0");
+        assert_eq!(config.version, "1.1");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
@@ -874,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn code_based_generation_requires_an_answer_and_then_source_code_evidence() {
+    fn code_based_generation_requires_source_code_and_generated_audio_evidence() {
         let mut track = disclosure_track("none", None);
         let profile = Profile::default();
 
@@ -892,6 +892,10 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("Quellcode oder die Quelldatei")));
+        assert!(!negative
+            .missing
+            .iter()
+            .any(|item| item.contains("erzeugte WAV- oder MP3-Datei")));
 
         track.fields.code_based_generation = Some(true);
         let positive_without_file = evaluate(&track, &profile, &[], &[], &[])
@@ -900,14 +904,37 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("Quellcode oder die Quelldatei")));
+        assert!(positive_without_file
+            .missing
+            .iter()
+            .any(|item| item.contains("erzeugte WAV- oder MP3-Datei")));
 
-        let evidence = vec![verified_evidence(EvidenceRole::SourceCodeFile)];
-        let positive_with_file = evaluate(&track, &profile, &evidence, &[], &[])
-            .expect("evaluate positive code-generation branch with evidence");
-        assert!(!positive_with_file
+        let source_only = vec![verified_evidence(EvidenceRole::SourceCodeFile)];
+        let positive_with_source_only = evaluate(&track, &profile, &source_only, &[], &[])
+            .expect("evaluate code-generation branch with source only");
+        assert!(!positive_with_source_only
             .missing
             .iter()
             .any(|item| item.contains("Quellcode oder die Quelldatei")));
+        assert!(positive_with_source_only
+            .missing
+            .iter()
+            .any(|item| item.contains("erzeugte WAV- oder MP3-Datei")));
+
+        let complete_evidence = vec![
+            verified_evidence(EvidenceRole::SourceCodeFile),
+            verified_evidence(EvidenceRole::CodeGeneratedAudioFile),
+        ];
+        let complete = evaluate(&track, &profile, &complete_evidence, &[], &[])
+            .expect("evaluate complete code-generation branch");
+        assert!(!complete
+            .missing
+            .iter()
+            .any(|item| item.contains("Quellcode oder die Quelldatei")));
+        assert!(!complete
+            .missing
+            .iter()
+            .any(|item| item.contains("erzeugte WAV- oder MP3-Datei")));
     }
 
     #[test]
