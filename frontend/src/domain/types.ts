@@ -244,6 +244,15 @@ export interface ActionResult {
   track?: TrackDetail;
 }
 
+export interface OperationProgress {
+  stage: string;
+  processedBytes: number;
+  totalBytes: number;
+  processedFiles: number;
+  totalFiles: number;
+  currentFile?: string;
+}
+
 export interface DocumentPreview {
   files: string[];
   collisions: string[];

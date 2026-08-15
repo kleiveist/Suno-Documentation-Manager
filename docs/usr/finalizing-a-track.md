@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-15 |
 | Audience | Users finalizing a track documentation set |
 | Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md) |
 
@@ -86,6 +86,8 @@ The content check records your answers. It does not decide legality.
 
 Use the document-generation action after completing the relevant steps. Review the generated Markdown and text files for factual accuracy. The documents should state confirmed facts and applicable N/A reasons, not legal guarantees.
 
+While the native service prepares, renders, and atomically writes the managed documents, the progress view shows the current phase, elapsed time, current relative path, and completed document count. These are live operation values rather than a simulated upload. The animated scene is only a visual companion; the final native result remains authoritative. Generated headings and guided values remain English even when the interface and progress view are German.
+
 If an unmanaged document already exists at a managed destination, the application first shows the existing state. It writes managed content only after explicit confirmation and a backup below `.archive/`. Resolve any collision before continuing.
 
 After changing a source answer or evidence selection, regenerate affected documents so the application no longer reports them as stale.
@@ -95,6 +97,10 @@ After changing a source answer or evidence selection, regenerate affected docume
 Use the integrity step to generate `03_DOCUMENTATION/SHA256SUMS.txt`. The application hashes release files, Suno evidence, documentation, licenses, and artwork. It excludes `.archive/`, `.summary/`, the hash list itself, and `06_CERTIFICATE/`. Workspace `.suno-doc/` data sits outside the track root; a nested directory with that name inside a track is normal protected content.
 
 Generation is not enough. The native service immediately rereads each listed file. Continue only when the displayed generated and verified counts match and the result is `PASS`.
+
+The progress view reports the current relative file, processed file count, bytes read, elapsed time, and current phase. During generation the meter first follows the real bytes used to calculate the new hashes and then advances through the immediate second read used for verification. A separate verification action reports its own real reread progress. Large files can therefore remain on one phase for some time without the application being frozen. Keep a removable drive connected until the operation has completed.
+
+The orbit, scan, and data-stream animations provide visual activity while the native work continues. If the operating system requests reduced motion, the application disables those repeating animations while keeping all numeric progress and status information visible.
 
 For an independent check on a system with `sha256sum`, run this command from the track root:
 
@@ -179,6 +185,7 @@ Executed results and remaining manual checks are recorded in [ATP-0007](../atp/a
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Documented live document, SHA-256, and verification progress, including the immediate second hash pass and reduced-motion behavior. | Project team |
 | 2026-08-15 | Documented automatic revision-parent repair for older and imported tracks. | Project team |
 | 2026-08-15 | Clarified read-only finalized navigation and the directly available revision action. | Project team |
 | 2026-08-13 | Added portable disclosure-lineage review and marker-scoped finalization recovery. | Project team |

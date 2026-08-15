@@ -232,15 +232,22 @@ fn publish_new(temporary: NamedTempFile, destination: &Path) -> Result<()> {
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
+    sha256_file_with_progress(path, |_| {})
+}
+
+pub fn sha256_file_with_progress(path: &Path, mut on_progress: impl FnMut(u64)) -> Result<String> {
     let mut file = fs::File::open(path).map_err(|e| AppError::io(path, e))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
+    let mut processed = 0_u64;
     loop {
         let count = file.read(&mut buffer).map_err(|e| AppError::io(path, e))?;
         if count == 0 {
             break;
         }
         hasher.update(&buffer[..count]);
+        processed = processed.saturating_add(count as u64);
+        on_progress(processed);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

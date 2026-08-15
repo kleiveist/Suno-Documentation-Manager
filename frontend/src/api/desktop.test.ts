@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
+  Channel: class<T> {
+    constructor(readonly onmessage: (message: T) => void) {}
+  }
+}));
 
 import { createDesktopApi, DesktopCommandError, isTauriRuntime, toUserMessage } from "./desktop";
 
@@ -115,6 +120,23 @@ describe("runtime selection", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, "preview_evidence", {
       trackId: "track-1",
       evidenceId: "evidence-1"
+    });
+  });
+
+  it("streams native integrity progress through a scoped IPC channel", async () => {
+    const progress = vi.fn();
+    invokeMock.mockImplementationOnce(async (_command, args) => {
+      args.onProgress.onmessage({ stage: "hashing", processedBytes: 50, totalBytes: 100, processedFiles: 1, totalFiles: 2 });
+      return { message: "done" };
+    });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.calculateHashes("track-1", progress);
+
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ stage: "hashing", processedBytes: 50 }));
+    expect(invokeMock).toHaveBeenCalledWith("calculate_hashes", {
+      trackId: "track-1",
+      onProgress: expect.anything()
     });
   });
 });

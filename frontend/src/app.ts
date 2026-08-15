@@ -18,6 +18,7 @@ import {
   type GlobalEvidenceItem,
   type EvidenceRole,
   type GlobalProfile,
+  type OperationProgress,
   type ScanResult,
   type StepId,
   type SubscriptionBillingCycle,
@@ -47,11 +48,18 @@ import {
 type MainView = "dashboard" | "tracks" | "current" | "workspace" | "settings";
 type TrackTab = "overview" | "suno" | "artwork" | "release" | "evidence" | "certificate";
 type ToastKind = "success" | "error" | "info";
+export type LongOperationKind = "documents" | "hashes" | "verification";
 
 interface ToastState {
   kind: ToastKind;
   title: string;
   message: string;
+}
+
+interface ActiveOperationProgress {
+  kind: LongOperationKind;
+  progress: OperationProgress;
+  elapsedSeconds: number;
 }
 
 interface AppState {
@@ -71,6 +79,7 @@ interface AppState {
   trackFilter: TrackLibraryStatusFilter;
   busy: boolean;
   busyLabel: string;
+  operationProgress: ActiveOperationProgress | null;
   sidebarOpen: boolean;
   showNewTrack: boolean;
   showTrackLibrary: boolean;
@@ -137,6 +146,57 @@ export function finalizedTrackPresentation(
 
 export function shouldDiscardLockedDraft(status: TrackDetail["status"], draftDirty: boolean): boolean {
   return status === "FINALIZED" && draftDirty;
+}
+
+function progressRatio(progress: OperationProgress): number {
+  if (progress.totalBytes > 0) return Math.min(progress.processedBytes / progress.totalBytes, 1);
+  if (progress.totalFiles > 0) return Math.min(progress.processedFiles / progress.totalFiles, 1);
+  return 0;
+}
+
+export function operationProgressPercent(kind: LongOperationKind, progress: OperationProgress): number {
+  const ratio = progressRatio(progress);
+  if (progress.stage === "complete") return 100;
+  if (progress.stage === "saving_result") return 98;
+  if (kind === "documents") {
+    if (progress.stage === "preparing_documents") return 5;
+    if (progress.stage === "rendering_documents") return 18;
+    if (progress.stage === "writing_documents") return Math.round(22 + ratio * 68);
+    if (progress.stage === "finalizing_documents") return 94;
+    return 2;
+  }
+  if (kind === "hashes") {
+    if (progress.stage === "discovering_files") return 4;
+    if (progress.stage === "hashing") return Math.round(7 + ratio * 43);
+    if (progress.stage === "writing_hash_list") return 53;
+    if (progress.stage === "preparing_verification") return 57;
+    if (progress.stage === "reading_hash_list") return 60;
+    if (progress.stage === "verifying") return Math.round(62 + ratio * 31);
+    if (progress.stage === "comparing_hashes") return 96;
+    return 2;
+  }
+  if (progress.stage === "reading_hash_list") return 6;
+  if (progress.stage === "verifying") return Math.round(10 + ratio * 82);
+  if (progress.stage === "comparing_hashes") return 96;
+  return 2;
+}
+
+export function operationStageLabel(stage: string): string {
+  return ({
+    discovering_files: "Dateien werden erfasst",
+    hashing: "Digitale Fingerabdrücke entstehen",
+    writing_hash_list: "Hashliste wird geschrieben",
+    preparing_verification: "Gegenprüfung wird vorbereitet",
+    reading_hash_list: "Gespeicherte Hashliste wird gelesen",
+    verifying: "Dateien werden erneut geprüft",
+    comparing_hashes: "Ergebnisse werden verglichen",
+    preparing_documents: "Dokumentdaten werden gesammelt",
+    rendering_documents: "Dokumente werden zusammengesetzt",
+    writing_documents: "Dokumente werden sicher geschrieben",
+    finalizing_documents: "Dokumentsatz wird aufgeräumt",
+    saving_result: "Ergebnis wird lokal gespeichert",
+    complete: "Vorgang abgeschlossen"
+  } as Record<string, string>)[stage] ?? "Lokaler Vorgang läuft";
 }
 
 export function parseMultiChoiceValue(value: string): string[] {
@@ -353,6 +413,7 @@ export class SunoDocumentationApp {
     trackFilter: "all",
     busy: false,
     busyLabel: "",
+    operationProgress: null,
     sidebarOpen: false,
     showNewTrack: false,
     showTrackLibrary: false,
@@ -363,6 +424,7 @@ export class SunoDocumentationApp {
   };
 
   private toastTimer: number | undefined;
+  private operationTimer: number | undefined;
   private draftDirty = false;
   private followsSystemTheme = true;
   private systemThemeQuery: MediaQueryList | null = null;
@@ -431,6 +493,7 @@ export class SunoDocumentationApp {
   private async withBusy<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
     this.state.busy = true;
     this.state.busyLabel = label;
+    this.state.operationProgress = null;
     this.render();
     try {
       return await action();
@@ -440,8 +503,132 @@ export class SunoDocumentationApp {
     } finally {
       this.state.busy = false;
       this.state.busyLabel = "";
+      this.state.operationProgress = null;
       this.render();
     }
+  }
+
+  private async withOperationProgress<T>(
+    kind: LongOperationKind,
+    label: string,
+    action: (onProgress: (progress: OperationProgress) => void) => Promise<T>
+  ): Promise<T | undefined> {
+    const initialStage = kind === "documents" ? "preparing_documents" : kind === "hashes" ? "discovering_files" : "reading_hash_list";
+    this.state.busy = true;
+    this.state.busyLabel = label;
+    this.state.operationProgress = {
+      kind,
+      elapsedSeconds: 0,
+      progress: { stage: initialStage, processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles: 0 }
+    };
+    this.render();
+    let active = true;
+    const startedAt = Date.now();
+    window.clearInterval(this.operationTimer);
+    this.operationTimer = window.setInterval(() => {
+      if (!active || !this.state.operationProgress) return;
+      this.state.operationProgress.elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      this.syncBusyLayer();
+    }, 1000);
+    try {
+      return await action((progress) => {
+        if (!active || !this.state.operationProgress) return;
+        this.state.operationProgress.progress = progress;
+        this.state.operationProgress.elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        this.syncBusyLayer();
+      });
+    } catch (error) {
+      this.showToast("error", "Aktion nicht abgeschlossen", toUserMessage(error));
+      return undefined;
+    } finally {
+      active = false;
+      window.clearInterval(this.operationTimer);
+      this.operationTimer = undefined;
+      this.state.busy = false;
+      this.state.busyLabel = "";
+      this.state.operationProgress = null;
+      this.render();
+    }
+  }
+
+  private syncBusyLayer(): void {
+    const current = this.root.querySelector<HTMLElement>(".busy-layer");
+    if (!current) {
+      this.render();
+      return;
+    }
+    current.outerHTML = this.renderBusyLayer();
+  }
+
+  private renderBusyLayer(): string {
+    if (!this.state.busy) return "";
+    const operation = this.state.operationProgress;
+    if (!operation) {
+      return `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>`;
+    }
+    const progress = operation.progress;
+    const percent = operationProgressPercent(operation.kind, progress);
+    const configuration = ({
+      documents: {
+        eyebrow: "Dokument-Manufaktur",
+        title: "Dein Dokumentsatz entsteht",
+        iconName: "file" as const,
+        steps: ["Daten sammeln", "Inhalte rendern", "Dateien schreiben", "Sicher abschließen"],
+        thresholds: [0, 18, 22, 94],
+        tips: [
+          "Jede Datei wird zuerst vollständig aufgebaut und anschließend atomar veröffentlicht.",
+          "Lyrics und Style-Prompt werden im Suno-Ordner als portable Markdown-Dateien abgelegt.",
+          "Vorhandene verwaltete Dokumente werden nicht mit halbfertigen Inhalten überschrieben."
+        ]
+      },
+      hashes: {
+        eyebrow: "SHA-256-Werkstatt",
+        title: "Digitale Fingerabdrücke entstehen",
+        iconName: "hash" as const,
+        steps: ["Dateien finden", "Bytes hashen", "Hashliste schreiben", "Gegenprüfung"],
+        thresholds: [0, 7, 53, 57],
+        tips: [
+          "Große Dateien werden blockweise gelesen – sie müssen dafür nicht komplett in den Arbeitsspeicher.",
+          "Schon ein einziges geändertes Byte erzeugt einen anderen SHA-256-Fingerabdruck.",
+          "Nach dem Schreiben liest die App alle Dateien erneut und prüft die neue Hashliste."
+        ]
+      },
+      verification: {
+        eyebrow: "Integritätsradar",
+        title: "Prüfsummen werden verifiziert",
+        iconName: "shield" as const,
+        steps: ["Hashliste lesen", "Dateien prüfen", "Werte vergleichen", "Ergebnis sichern"],
+        thresholds: [0, 10, 96, 98],
+        tips: [
+          "Die Prüfung berechnet jeden Fingerabdruck erneut und vertraut keinem gespeicherten Dateistatus.",
+          "Zusätzliche, fehlende und veränderte Dateien werden getrennt als Abweichung erkannt.",
+          "Die Verifikation bleibt lokal; keine Datei und kein Hash verlässt den Workspace."
+        ]
+      }
+    } as const)[operation.kind];
+    const detail = progress.totalBytes > 0
+      ? `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
+      : progress.totalFiles > 0
+        ? `${progress.processedFiles} von ${progress.totalFiles} Dateien`
+        : "Dateisatz wird vorbereitet";
+    const minutes = Math.floor(operation.elapsedSeconds / 60);
+    const seconds = String(operation.elapsedSeconds % 60).padStart(2, "0");
+    const activeStep = configuration.thresholds.reduce<number>((result, threshold, index) => percent >= threshold ? index : result, 0);
+    const tip = configuration.tips[Math.floor(operation.elapsedSeconds / 5) % configuration.tips.length];
+    return `<div class="busy-layer busy-layer--operation" role="status" aria-live="polite" aria-busy="true">
+      <section class="operation-progress operation-progress--${operation.kind}" aria-label="${escapeHtml(configuration.title)}">
+        <header><div><p class="overline">${escapeHtml(configuration.eyebrow)}</p><h2>${escapeHtml(configuration.title)}</h2></div><time datetime="PT${operation.elapsedSeconds}S">${minutes}:${seconds}</time></header>
+        <div class="operation-stage">
+          <div class="operation-orbit" aria-hidden="true"><i></i><i></i><i></i><span>${icon(configuration.iconName)}</span><b>${percent}%</b></div>
+          <div class="operation-stream" aria-hidden="true"><i>01</i><i>a7</i><i>f3</i><i>9c</i><i>42</i><i>e8</i></div>
+        </div>
+        <div class="operation-status"><strong>${escapeHtml(operationStageLabel(progress.stage))}</strong><span>${escapeHtml(detail)}</span>${progress.currentFile ? `<code title="${escapeHtml(progress.currentFile)}">${escapeHtml(progress.currentFile)}</code>` : ""}</div>
+        <div class="operation-meter" role="progressbar" aria-label="Fortschritt" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><i style="width:${percent}%"></i></div>
+        <ol class="operation-steps">${configuration.steps.map((step, index) => `<li class="${index < activeStep ? "is-complete" : index === activeStep ? "is-active" : ""}"><span>${index < activeStep ? icon("check") : index + 1}</span><strong>${escapeHtml(step)}</strong></li>`).join("")}</ol>
+        <div class="operation-tip">${icon("info")}<p><strong>Währenddessen</strong><span>${escapeHtml(tip)}</span></p></div>
+        <p class="operation-footnote">${icon("lock")} Lokal und nachvollziehbar · Bitte Workspace und Datenträger verbunden lassen.</p>
+      </section>
+    </div>`;
   }
 
   private showToast(kind: ToastKind, title: string, message: string): void {
@@ -548,7 +735,7 @@ export class SunoDocumentationApp {
                 ? this.renderEvidencePreviewDialog()
                 : ""}
         ${this.renderToast()}
-        ${this.state.busy ? `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>` : ""}
+        ${this.renderBusyLayer()}
       </div>`;
   }
 
@@ -568,7 +755,7 @@ export class SunoDocumentationApp {
       </section>
       <footer class="welcome-footer"><span>Version 0.1</span><span>•</span><span>Offline by design</span>${this.api.mode === "demo" ? '<span class="demo-badge">Browser-Demo</span>' : ""}<button class="welcome-theme-toggle" data-action="toggle-theme" aria-label="${this.state.theme === "dark" ? "Hellen Modus aktivieren" : "Dunklen Modus aktivieren"}" aria-pressed="${this.state.theme === "dark"}" title="${this.state.theme === "dark" ? "Heller Modus" : "Dunkler Modus"}">${icon(this.state.theme === "dark" ? "sun" : "moon")}</button></footer>
       ${this.renderToast()}
-      ${this.state.busy ? `<div class="busy-layer" role="status"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>` : ""}
+      ${this.renderBusyLayer()}
     </main>`;
   }
 
@@ -1361,8 +1548,8 @@ export class SunoDocumentationApp {
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
-      case "calculate-hashes": await this.runAction("SHA-256 wird berechnet …", () => this.api.calculateHashes(this.requireTrack().id)); break;
-      case "verify-hashes": await this.runAction("Prüfsummen werden verifiziert …", () => this.api.verifyHashes(this.requireTrack().id)); break;
+      case "calculate-hashes": await this.runProgressAction("hashes", "SHA-256 wird berechnet …", (onProgress) => this.api.calculateHashes(this.requireTrack().id, onProgress)); break;
+      case "verify-hashes": await this.runProgressAction("verification", "Prüfsummen werden verifiziert …", (onProgress) => this.api.verifyHashes(this.requireTrack().id, onProgress)); break;
       case "finalize-track": await this.finalizeTrack(); break;
       case "invalidate-certificate":
         if (window.confirm("Zertifikat als ungültig markieren? Der finalisierte Snapshot wird nicht still überschrieben.")) await this.runAction("Zertifikat wird invalidiert …", () => this.api.invalidateCertificate(this.requireTrack().id));
@@ -1702,6 +1889,19 @@ export class SunoDocumentationApp {
     this.showToast("success", "Aktion abgeschlossen", result.message);
   }
 
+  private async runProgressAction(
+    kind: LongOperationKind,
+    label: string,
+    action: (onProgress: (progress: OperationProgress) => void) => Promise<{ message: string; track?: TrackDetail }>
+  ): Promise<void> {
+    if (!(await this.flushDraft())) return;
+    const result = await this.withOperationProgress(kind, label, action);
+    if (!result) return;
+    if (result.track) this.applyTrack(result.track);
+    else await this.refreshTracks();
+    this.showToast("success", "Aktion abgeschlossen", result.message);
+  }
+
   private async finalizeTrack(): Promise<void> {
     if (!(await this.flushDraft())) return;
     const track = this.requireTrack();
@@ -1730,6 +1930,10 @@ export class SunoDocumentationApp {
         return;
       }
     }
-    await this.runAction("Dokumente werden atomar erzeugt …", () => this.api.generateDocuments(track.id, adoptExisting));
+    await this.runProgressAction(
+      "documents",
+      "Dokumente werden atomar erzeugt …",
+      (onProgress) => this.api.generateDocuments(track.id, adoptExisting, onProgress)
+    );
   }
 }

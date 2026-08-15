@@ -2,13 +2,13 @@ use crate::application::WorkspaceApp;
 use crate::error::{AppError, Result};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidencePreview, EvidenceRole,
-    GlobalEvidenceItem, Profile, StepStatus, SubscriptionBillingCycle, TrackDetail,
-    TrackLibraryPlacement, TrackPatch, TrackSummary, ValidationResult, WorkspaceScan,
+    GlobalEvidenceItem, OperationProgress, Profile, StepStatus, SubscriptionBillingCycle,
+    TrackDetail, TrackLibraryPlacement, TrackPatch, TrackSummary, ValidationResult, WorkspaceScan,
     WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
-use tauri::State;
+use tauri::{ipc::Channel, State};
 
 #[derive(Default)]
 pub struct AppState {
@@ -298,14 +298,24 @@ pub fn preview_documents(state: State<'_, AppState>, track_id: String) -> Result
 }
 
 #[tauri::command]
-pub fn generate_documents(
+pub async fn generate_documents(
     state: State<'_, AppState>,
     track_id: String,
     adopt_existing: bool,
+    on_progress: Channel<OperationProgress>,
 ) -> Result<ActionResult> {
-    with_workspace(&state, |app| {
-        app.generate_documents(&track_id, adopt_existing)
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace.generate_documents_with_progress(&track_id, adopt_existing, &mut |progress| {
+            let _ = on_progress.send(progress);
+        })
     })
+    .await
+    .map_err(|error| AppError::Data(format!("Document generation task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -320,13 +330,43 @@ pub fn generate_artwork_disclosure(
 }
 
 #[tauri::command]
-pub fn calculate_hashes(state: State<'_, AppState>, track_id: String) -> Result<ActionResult> {
-    with_workspace(&state, |app| app.calculate_hashes(&track_id))
+pub async fn calculate_hashes(
+    state: State<'_, AppState>,
+    track_id: String,
+    on_progress: Channel<OperationProgress>,
+) -> Result<ActionResult> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace.calculate_hashes_with_progress(&track_id, &mut |progress| {
+            let _ = on_progress.send(progress);
+        })
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("SHA-256 calculation task failed: {error}")))?
 }
 
 #[tauri::command]
-pub fn verify_hashes(state: State<'_, AppState>, track_id: String) -> Result<ActionResult> {
-    with_workspace(&state, |app| app.verify_hashes(&track_id))
+pub async fn verify_hashes(
+    state: State<'_, AppState>,
+    track_id: String,
+    on_progress: Channel<OperationProgress>,
+) -> Result<ActionResult> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace.verify_hashes_with_progress(&track_id, &mut |progress| {
+            let _ = on_progress.send(progress);
+        })
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("SHA-256 verification task failed: {error}")))?
 }
 
 #[tauri::command]

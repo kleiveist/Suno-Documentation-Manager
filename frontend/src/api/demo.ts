@@ -17,6 +17,7 @@ import {
   type EvidenceRole,
   type GlobalProfile,
   type GlobalEvidenceItem,
+  type OperationProgress,
   type ScanResult,
   type StepId,
   type StepStatus,
@@ -33,6 +34,16 @@ import type { DesktopApi } from "./desktop";
 const now = (): string => new Date().toISOString();
 const clone = <T>(value: T): T => structuredClone(value);
 const wait = async (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 140));
+
+async function demoProgress(
+  onProgress: ((progress: OperationProgress) => void) | undefined,
+  values: OperationProgress[]
+): Promise<void> {
+  for (const value of values) {
+    onProgress?.(value);
+    await new Promise((resolve) => setTimeout(resolve, 55));
+  }
+}
 
 function trackFolderName(title: string): string {
   return title.trim();
@@ -461,15 +472,21 @@ export function createDemoApi(): DesktopApi {
       get(trackId);
       return { files: ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"], collisions: [], adoptionRequired: false };
     },
-    async generateDocuments(trackId) {
-      await wait();
+    async generateDocuments(trackId, _adoptExisting, onProgress) {
       const track = get(trackId);
+      const documentFiles = ["02_SUNO/suno_project.txt", "02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md", "04_LICENSES/suno_account_and_license.md", "04_LICENSES/openai_image_generation.md", "05_ARTWORK/artwork_process.md"];
+      await demoProgress(onProgress, [
+        { stage: "preparing_documents", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles: documentFiles.length },
+        { stage: "rendering_documents", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles: documentFiles.length },
+        ...documentFiles.map((currentFile, index) => ({ stage: "writing_documents", processedBytes: 0, totalBytes: 0, processedFiles: index + 1, totalFiles: documentFiles.length, currentFile })),
+        { stage: "complete", processedBytes: 0, totalBytes: 0, processedFiles: documentFiles.length, totalFiles: documentFiles.length }
+      ]);
       track.documents = {
         generated: true,
         current: true,
         generatedAt: now(),
         templateVersion: "1.2",
-        files: ["02_SUNO/suno_project.txt", "02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md", "04_LICENSES/suno_account_and_license.md", "04_LICENSES/openai_image_generation.md", "05_ARTWORK/artwork_process.md"]
+        files: documentFiles
       };
       track.integrity.generated = false;
       track.integrity.verified = false;
@@ -496,18 +513,35 @@ export function createDemoApi(): DesktopApi {
       refresh(track);
       return result(track, "Der sichtbare KI-Hinweis wurde lokal auf einer neuen Artwork-Version angewendet.");
     },
-    async calculateHashes(trackId) {
-      await wait();
+    async calculateHashes(trackId, onProgress) {
       const track = get(trackId);
       if (!track.documents.current) throw new Error("Erzeuge zuerst die aktuellen Dokumente.");
+      const totalFiles = track.evidence.length + track.documents.files.length;
+      const totalBytes = Math.max(totalFiles, 1) * 8_476_231;
+      await demoProgress(onProgress, [
+        { stage: "discovering_files", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles: 0 },
+        { stage: "hashing", processedBytes: Math.round(totalBytes * .25), totalBytes, processedFiles: Math.floor(totalFiles * .25), totalFiles, currentFile: "01_RELEASE/demo.wav" },
+        { stage: "hashing", processedBytes: Math.round(totalBytes * .7), totalBytes, processedFiles: Math.floor(totalFiles * .7), totalFiles, currentFile: "02_SUNO/demo.zip" },
+        { stage: "writing_hash_list", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles, currentFile: "03_DOCUMENTATION/SHA256SUMS.txt" },
+        { stage: "verifying", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles },
+        { stage: "complete", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles }
+      ]);
       track.integrity = { generated: true, verified: false, fileCount: track.evidence.length + track.documents.files.length, verifiedCount: 0, generatedAt: now(), mismatchFiles: [] };
       refresh(track);
       return result(track, `${track.integrity.fileCount} Dateien wurden gehasht.`);
     },
-    async verifyHashes(trackId) {
-      await wait();
+    async verifyHashes(trackId, onProgress) {
       const track = get(trackId);
       if (!track.integrity.generated) throw new Error("Erzeuge zuerst SHA-256-Prüfsummen.");
+      const totalFiles = track.integrity.fileCount;
+      const totalBytes = Math.max(totalFiles, 1) * 8_476_231;
+      await demoProgress(onProgress, [
+        { stage: "reading_hash_list", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles },
+        { stage: "verifying", processedBytes: Math.round(totalBytes * .35), totalBytes, processedFiles: Math.floor(totalFiles * .35), totalFiles, currentFile: "01_RELEASE/demo.wav" },
+        { stage: "verifying", processedBytes: Math.round(totalBytes * .8), totalBytes, processedFiles: Math.floor(totalFiles * .8), totalFiles, currentFile: "02_SUNO/demo.zip" },
+        { stage: "comparing_hashes", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles },
+        { stage: "complete", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles }
+      ]);
       track.integrity.verified = true;
       track.integrity.verifiedCount = track.integrity.fileCount;
       track.integrity.verifiedAt = now();

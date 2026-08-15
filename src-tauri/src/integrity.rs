@@ -1,16 +1,26 @@
 use crate::error::{AppError, Result};
-use crate::model::IntegrityState;
-use crate::security::{atomic_write, contained_path, sha256_file};
+use crate::model::{IntegrityState, OperationProgress};
+use crate::security::{atomic_write, contained_path, sha256_file_with_progress};
 use chrono::Utc;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub const HASH_FILE: &str = "03_DOCUMENTATION/SHA256SUMS.txt";
+const PROGRESS_REPORT_BYTES: u64 = 8 * 1024 * 1024;
 
+#[cfg(test)]
 pub fn calculate(track_root: &Path) -> Result<IntegrityState> {
-    let mut entries = hash_entries(track_root)?;
+    calculate_with_progress(track_root, &mut |_| {})
+}
+
+pub fn calculate_with_progress(
+    track_root: &Path,
+    on_progress: &mut impl FnMut(OperationProgress),
+) -> Result<IntegrityState> {
+    on_progress(progress("discovering_files", 0, 0, 0, 0, None));
+    let mut entries = hash_entries_with_progress(track_root, "hashing", on_progress)?;
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     if entries.is_empty() {
         return Err(AppError::Validation(
@@ -22,17 +32,59 @@ pub fn calculate(track_root: &Path) -> Result<IntegrityState> {
         .map(|(path, hash)| format!("{hash}  {path}\n"))
         .collect::<String>();
     let target = contained_path(track_root, Path::new(HASH_FILE), false)?;
+    on_progress(progress(
+        "writing_hash_list",
+        0,
+        0,
+        entries.len() as u32,
+        entries.len() as u32,
+        Some(HASH_FILE.to_owned()),
+    ));
     atomic_write(&target, content.as_bytes())?;
-    let mut state = verify(track_root)?;
+    on_progress(progress(
+        "preparing_verification",
+        0,
+        0,
+        entries.len() as u32,
+        entries.len() as u32,
+        None,
+    ));
+    let mut state = verify_with_progress(track_root, on_progress)?;
     state.generated = true;
     state.generated_at = Some(Utc::now().to_rfc3339());
     Ok(state)
 }
 
 pub fn verify(track_root: &Path) -> Result<IntegrityState> {
+    verify_with_progress(track_root, &mut |_| {})
+}
+
+pub fn verify_with_progress(
+    track_root: &Path,
+    on_progress: &mut impl FnMut(OperationProgress),
+) -> Result<IntegrityState> {
+    on_progress(progress(
+        "reading_hash_list",
+        0,
+        0,
+        0,
+        0,
+        Some(HASH_FILE.to_owned()),
+    ));
     let manifest = contained_path(track_root, Path::new(HASH_FILE), true)?;
     let content = fs::read_to_string(&manifest).map_err(|e| AppError::io(&manifest, e))?;
-    let current: BTreeMap<String, String> = hash_entries(track_root)?.into_iter().collect();
+    let current: BTreeMap<String, String> =
+        hash_entries_with_progress(track_root, "verifying", on_progress)?
+            .into_iter()
+            .collect();
+    on_progress(progress(
+        "comparing_hashes",
+        0,
+        0,
+        current.len() as u32,
+        current.len() as u32,
+        None,
+    ));
     let mut listed = BTreeMap::new();
     let mut seen = HashSet::new();
     let mut mismatch_files = Vec::new();
@@ -86,7 +138,63 @@ pub fn verify(track_root: &Path) -> Result<IntegrityState> {
     })
 }
 
+#[cfg(test)]
 pub fn hash_entries(track_root: &Path) -> Result<Vec<(String, String)>> {
+    hash_entries_with_progress(track_root, "hashing", &mut |_| {})
+}
+
+struct HashCandidate {
+    path: PathBuf,
+    portable: String,
+    size: u64,
+}
+
+fn hash_entries_with_progress(
+    track_root: &Path,
+    stage: &str,
+    on_progress: &mut impl FnMut(OperationProgress),
+) -> Result<Vec<(String, String)>> {
+    let candidates = hash_candidates(track_root)?;
+    let total_bytes = candidates.iter().fold(0_u64, |total, candidate| {
+        total.saturating_add(candidate.size)
+    });
+    let total_files = candidates.len() as u32;
+    let mut result = Vec::new();
+    let mut completed_bytes = 0_u64;
+    on_progress(progress(stage, 0, total_bytes, 0, total_files, None));
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let mut last_reported = 0_u64;
+        let current_file = candidate.portable.clone();
+        let hash = sha256_file_with_progress(&candidate.path, |file_bytes| {
+            if file_bytes.saturating_sub(last_reported) >= PROGRESS_REPORT_BYTES
+                || file_bytes == candidate.size
+            {
+                last_reported = file_bytes;
+                on_progress(progress(
+                    stage,
+                    completed_bytes.saturating_add(file_bytes),
+                    total_bytes,
+                    index as u32,
+                    total_files,
+                    Some(current_file.clone()),
+                ));
+            }
+        })?;
+        completed_bytes = completed_bytes.saturating_add(candidate.size);
+        result.push((candidate.portable, hash));
+        on_progress(progress(
+            stage,
+            completed_bytes,
+            total_bytes,
+            index as u32 + 1,
+            total_files,
+            None,
+        ));
+    }
+    Ok(result)
+}
+
+fn hash_candidates(track_root: &Path) -> Result<Vec<HashCandidate>> {
     let mut result = Vec::new();
     for entry in WalkDir::new(track_root).follow_links(false).into_iter() {
         let entry = entry.map_err(|error| {
@@ -118,9 +226,35 @@ pub fn hash_entries(track_root: &Path) -> Result<Vec<(String, String)>> {
                 "Track path contains characters unsupported by SHA256SUMS.".into(),
             ));
         }
-        result.push((portable, sha256_file(entry.path())?));
+        let size = entry
+            .metadata()
+            .map_err(|error| AppError::io(entry.path(), std::io::Error::other(error.to_string())))?
+            .len();
+        result.push(HashCandidate {
+            path: entry.path().to_owned(),
+            portable,
+            size,
+        });
     }
     Ok(result)
+}
+
+fn progress(
+    stage: &str,
+    processed_bytes: u64,
+    total_bytes: u64,
+    processed_files: u32,
+    total_files: u32,
+    current_file: Option<String>,
+) -> OperationProgress {
+    OperationProgress {
+        stage: stage.to_owned(),
+        processed_bytes,
+        total_bytes,
+        processed_files,
+        total_files,
+        current_file,
+    }
 }
 
 fn excluded(relative: &Path) -> bool {
@@ -205,6 +339,37 @@ mod tests {
         assert!(invalidate_on_mismatch(&track_root)
             .expect("mismatch status")
             .is_some());
+    }
+
+    #[test]
+    fn hashing_progress_reports_real_bytes_files_and_verification_stages() {
+        let (_directory, track_root) = fixture();
+        let large = vec![0x5a; (PROGRESS_REPORT_BYTES + 1024) as usize];
+        fs::write(track_root.join("01_RELEASE/large.wav"), large).expect("large hash fixture");
+        let mut events = Vec::new();
+
+        let state = calculate_with_progress(&track_root, &mut |progress| events.push(progress))
+            .expect("hash calculation with progress");
+
+        assert!(state.verified);
+        assert!(events
+            .first()
+            .is_some_and(|event| event.stage == "discovering_files"));
+        assert!(events.iter().any(|event| {
+            event.stage == "hashing"
+                && event.processed_bytes > 0
+                && event.processed_bytes < event.total_bytes
+                && event.current_file.as_deref() == Some("01_RELEASE/large.wav")
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.stage == "writing_hash_list"));
+        assert!(events.iter().any(|event| {
+            event.stage == "verifying"
+                && event.total_bytes > 0
+                && event.total_files == state.file_count
+        }));
+        assert!(events.iter().any(|event| event.stage == "comparing_hashes"));
     }
 
     #[test]

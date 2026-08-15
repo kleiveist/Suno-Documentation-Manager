@@ -6,10 +6,10 @@ use crate::integrity;
 use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
     DocumentPreview, DocumentState, EvidenceItem, EvidencePreview, EvidenceProvenance,
-    EvidenceRole, GlobalEvidenceItem, IntegrityState, LegacyCandidate, Profile, StepState,
-    StepStatus, SubscriptionBillingCycle, TrackDetail, TrackLibraryPlacement, TrackLibrarySection,
-    TrackPatch, TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan,
-    WorkspaceSummary,
+    EvidenceRole, GlobalEvidenceItem, IntegrityState, LegacyCandidate, OperationProgress, Profile,
+    StepState, StepStatus, SubscriptionBillingCycle, TrackDetail, TrackLibraryPlacement,
+    TrackLibrarySection, TrackPatch, TrackRecord, TrackStatus, TrackSummary, ValidationResult,
+    WorkspaceScan, WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -1186,7 +1186,21 @@ impl WorkspaceApp {
         documents::preview(&self.track_root(&track)?)
     }
 
+    #[cfg(test)]
     pub fn generate_documents(&self, id: &str, adopt_existing: bool) -> Result<ActionResult> {
+        self.generate_documents_with_progress(id, adopt_existing, &mut |_| {})
+    }
+
+    pub fn generate_documents_with_progress(
+        &self,
+        id: &str,
+        adopt_existing: bool,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
+        on_progress(OperationProgress {
+            stage: "preparing_documents".into(),
+            ..OperationProgress::default()
+        });
         let mut track = self.mutable_track(id)?;
         validate_track_fields(&track.fields)?;
         let evidence = self.verified_evidence(&track)?;
@@ -1200,14 +1214,16 @@ impl WorkspaceApp {
             &stored,
         )?;
         let track_root = self.track_root(&track)?;
-        let files = documents::generate(
+        let files = documents::generate_with_progress(
             &track_root,
             &track,
             &track.profile_snapshot,
             &evidence,
             &evaluation.steps,
             adopt_existing,
+            on_progress,
         )?;
+        let generated_file_count = files.len() as u32;
         track.documents = DocumentState {
             generated: true,
             current: true,
@@ -1230,8 +1246,20 @@ impl WorkspaceApp {
         track.integrity = IntegrityState::default();
         track.status = TrackStatus::Active;
         track.updated_at = now();
+        on_progress(OperationProgress {
+            stage: "saving_result".into(),
+            processed_files: generated_file_count,
+            total_files: generated_file_count,
+            ..OperationProgress::default()
+        });
         self.persistence.save_track(&track)?;
         let detail = self.detail_from_record(track, false)?;
+        on_progress(OperationProgress {
+            stage: "complete".into(),
+            processed_files: generated_file_count,
+            total_files: generated_file_count,
+            ..OperationProgress::default()
+        });
         Ok(ActionResult {
             message: format!("{} documents generated.", detail.documents.files.len()),
             track: Some(detail),
@@ -1320,7 +1348,16 @@ impl WorkspaceApp {
         })
     }
 
+    #[cfg(test)]
     pub fn calculate_hashes(&self, id: &str) -> Result<ActionResult> {
+        self.calculate_hashes_with_progress(id, &mut |_| {})
+    }
+
+    pub fn calculate_hashes_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
         let mut track = self.mutable_track(id)?;
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
@@ -1345,29 +1382,57 @@ impl WorkspaceApp {
                 "Generate the current managed documents before calculating hashes.".into(),
             ));
         }
-        track.integrity = integrity::calculate(&track_root)?;
+        track.integrity = integrity::calculate_with_progress(&track_root, on_progress)?;
         track.updated_at = now();
+        on_progress(OperationProgress {
+            stage: "saving_result".into(),
+            processed_files: track.integrity.file_count,
+            total_files: track.integrity.file_count,
+            ..OperationProgress::default()
+        });
         self.persistence.save_track(&track)?;
         let count = track.integrity.file_count;
+        on_progress(OperationProgress {
+            stage: "complete".into(),
+            processed_files: count,
+            total_files: count,
+            ..OperationProgress::default()
+        });
         Ok(ActionResult {
             message: format!("{count} files hashed and re-verified."),
             track: Some(self.detail_from_record(track, false)?),
         })
     }
 
-    pub fn verify_hashes(&self, id: &str) -> Result<ActionResult> {
+    pub fn verify_hashes_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
         let mut track = self.persistence.track(id)?;
         let track_root = self.track_root(&track)?;
-        track.integrity = integrity::verify(&track_root)?;
+        track.integrity = integrity::verify_with_progress(&track_root, on_progress)?;
         if !track.integrity.verified && track.status == TrackStatus::Finalized {
             invalidate_state(&mut track, "Track integrity changed after finalization");
         }
         track.updated_at = now();
+        on_progress(OperationProgress {
+            stage: "saving_result".into(),
+            processed_files: track.integrity.verified_count,
+            total_files: track.integrity.file_count,
+            ..OperationProgress::default()
+        });
         self.persistence.save_track(&track)?;
         let message = format!(
             "{} of {} files verified.",
             track.integrity.verified_count, track.integrity.file_count
         );
+        on_progress(OperationProgress {
+            stage: "complete".into(),
+            processed_files: track.integrity.verified_count,
+            total_files: track.integrity.file_count,
+            ..OperationProgress::default()
+        });
         Ok(ActionResult {
             message,
             track: Some(self.detail_from_record(track, false)?),

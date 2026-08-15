@@ -7,6 +7,8 @@ import {
   finalizedTrackPresentation,
   missingProfileFields,
   normalizeGuidedTrackFields,
+  operationProgressPercent,
+  operationStageLabel,
   parseMultiChoiceValue,
   resetWorkspaceScopedUiState,
   shouldDiscardLockedDraft,
@@ -175,6 +177,25 @@ describe("navigation", () => {
     expect(shouldDiscardLockedDraft("FINALIZED", true)).toBe(true);
     expect(shouldDiscardLockedDraft("FINALIZED", false)).toBe(false);
     expect(shouldDiscardLockedDraft("ACTIVE", true)).toBe(false);
+  });
+
+  it("maps real native work counters into honest operation progress", () => {
+    expect(operationProgressPercent("hashes", {
+      stage: "hashing", processedBytes: 500, totalBytes: 1_000, processedFiles: 1, totalFiles: 2
+    })).toBe(29);
+    expect(operationProgressPercent("hashes", {
+      stage: "verifying", processedBytes: 500, totalBytes: 1_000, processedFiles: 1, totalFiles: 2
+    })).toBe(78);
+    expect(operationProgressPercent("verification", {
+      stage: "verifying", processedBytes: 750, totalBytes: 1_000, processedFiles: 3, totalFiles: 4
+    })).toBe(72);
+    expect(operationProgressPercent("documents", {
+      stage: "writing_documents", processedBytes: 0, totalBytes: 0, processedFiles: 4, totalFiles: 8
+    })).toBe(56);
+    expect(operationProgressPercent("documents", {
+      stage: "complete", processedBytes: 0, totalBytes: 0, processedFiles: 8, totalFiles: 8
+    })).toBe(100);
+    expect(operationStageLabel("comparing_hashes")).toBe("Ergebnisse werden verglichen");
   });
 
   it("keeps a changed library assignment when applying a track detail", () => {

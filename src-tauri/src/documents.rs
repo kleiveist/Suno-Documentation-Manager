@@ -1,5 +1,7 @@
 use crate::error::{AppError, Result};
-use crate::model::{DocumentPreview, EvidenceItem, Profile, StepState, TrackRecord};
+use crate::model::{
+    DocumentPreview, EvidenceItem, OperationProgress, Profile, StepState, TrackRecord,
+};
 use crate::security::{atomic_write, contained_path, portable_relative, sha256_bytes};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -109,6 +111,7 @@ pub fn preview(track_root: &Path) -> Result<DocumentPreview> {
     })
 }
 
+#[cfg(test)]
 pub fn generate(
     track_root: &Path,
     track: &TrackRecord,
@@ -117,6 +120,33 @@ pub fn generate(
     steps: &[StepState],
     adopt_existing: bool,
 ) -> Result<Vec<String>> {
+    generate_with_progress(
+        track_root,
+        track,
+        profile,
+        evidence,
+        steps,
+        adopt_existing,
+        &mut |_| {},
+    )
+}
+
+pub fn generate_with_progress(
+    track_root: &Path,
+    track: &TrackRecord,
+    profile: &Profile,
+    evidence: &[EvidenceItem],
+    steps: &[StepState],
+    adopt_existing: bool,
+    on_progress: &mut impl FnMut(OperationProgress),
+) -> Result<Vec<String>> {
+    let total_files = DOCUMENT_PATHS.len() as u32;
+    on_progress(document_progress(
+        "preparing_documents",
+        0,
+        total_files,
+        None,
+    ));
     let preview = preview(track_root)?;
     if preview.adoption_required && !adopt_existing {
         return Err(AppError::AdoptionRequired(preview.collisions.join(", ")));
@@ -125,11 +155,35 @@ pub fn generate(
         archive_existing(track_root, &preview.collisions)?;
     }
 
+    on_progress(document_progress(
+        "rendering_documents",
+        0,
+        total_files,
+        None,
+    ));
     let generated = render(track, profile, evidence, steps);
-    for (relative, content) in &generated {
+    for (index, (relative, content)) in generated.iter().enumerate() {
+        on_progress(document_progress(
+            "writing_documents",
+            index as u32,
+            total_files,
+            Some(relative.clone()),
+        ));
         let target = contained_path(track_root, Path::new(relative), false)?;
         atomic_write(&target, content.as_bytes())?;
+        on_progress(document_progress(
+            "writing_documents",
+            index as u32 + 1,
+            total_files,
+            Some(relative.clone()),
+        ));
     }
+    on_progress(document_progress(
+        "finalizing_documents",
+        total_files,
+        total_files,
+        None,
+    ));
     for relative in LEGACY_MANAGED_DOCUMENT_PATHS {
         let legacy = contained_path(track_root, Path::new(relative), false)?;
         if legacy.is_file() && has_exact_managed_header(&legacy, relative)? {
@@ -137,6 +191,21 @@ pub fn generate(
         }
     }
     Ok(generated.keys().cloned().collect())
+}
+
+fn document_progress(
+    stage: &str,
+    processed_files: u32,
+    total_files: u32,
+    current_file: Option<String>,
+) -> OperationProgress {
+    OperationProgress {
+        stage: stage.to_owned(),
+        processed_files,
+        total_files,
+        current_file,
+        ..OperationProgress::default()
+    }
 }
 
 fn archive_existing(track_root: &Path, collisions: &[String]) -> Result<()> {
@@ -937,6 +1006,56 @@ mod tests {
                 "forbidden legal claim was rendered: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn document_generation_reports_each_managed_output() {
+        let workspace = tempfile::tempdir().expect("temporary track root");
+        let (track, profile, evidence) = fixture_input();
+        let mut progress_events = Vec::new();
+
+        let generated = generate_with_progress(
+            workspace.path(),
+            &track,
+            &profile,
+            &evidence,
+            &[],
+            false,
+            &mut |progress| progress_events.push(progress),
+        )
+        .expect("generate fixture documents with progress");
+
+        assert_eq!(generated.len(), DOCUMENT_PATHS.len());
+        for expected_stage in [
+            "preparing_documents",
+            "rendering_documents",
+            "writing_documents",
+            "finalizing_documents",
+        ] {
+            assert!(
+                progress_events
+                    .iter()
+                    .any(|progress| progress.stage == expected_stage),
+                "missing progress stage {expected_stage}"
+            );
+        }
+
+        for relative in DOCUMENT_PATHS {
+            assert!(
+                progress_events.iter().any(|progress| {
+                    progress.stage == "writing_documents"
+                        && progress.current_file.as_deref() == Some(relative)
+                }),
+                "missing progress event for {relative}"
+            );
+        }
+
+        let completed = progress_events
+            .iter()
+            .find(|progress| progress.stage == "finalizing_documents")
+            .expect("final document progress");
+        assert_eq!(completed.processed_files, DOCUMENT_PATHS.len() as u32);
+        assert_eq!(completed.total_files, DOCUMENT_PATHS.len() as u32);
     }
 
     #[test]

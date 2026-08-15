@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-14 |
+| Last review | 2026-08-15 |
 | Audience | Product developers and architects |
 | Related ATP | [Active product acceptance](../atp/active/active.md) |
 
@@ -95,6 +95,8 @@ The command surface is deliberately explicit. The exact Rust input and output st
 
 A command accepts domain identifiers and constrained values. It does not accept an operation name, arbitrary SQL, or an unconstrained write path. Path selection happens through a native dialog or a validated path already associated with the open workspace.
 
+Long-running `generate_documents`, `calculate_hashes`, and `verify_hashes` requests also receive one scoped Tauri IPC channel. Each command clones the path-based workspace service and dispatches its blocking filesystem work through Tauri's blocking runtime, outside the webview/main thread. The native service sends one-way `OperationProgress` values containing a named phase, byte and file counters, and an optional root-relative current file. Document progress advances as managed outputs are written. Integrity progress advances from bytes read through bounded native streams and covers both calculation and the mandatory immediate verification pass. Closing the receiving view does not turn a completed native operation into a failure, and the command's final typed result—not a progress message or UI percentage—remains authoritative.
+
 ## Service interaction
 
 ```mermaid
@@ -107,6 +109,7 @@ sequenceDiagram
 
     UI->>Cmd: invoke typed request
     Cmd->>Domain: execute one use case
+    Domain-->>UI: scoped progress channel (long operations)
     Domain->>Store: transaction or contained atomic write
     Domain->>Flow: reevaluate affected requirements
     Flow-->>Domain: step states and missing items
@@ -212,6 +215,8 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Moved progress-capable document and integrity work off the Tauri main thread so animation and IPC updates remain responsive. | Project team |
+| 2026-08-15 | Added the scoped native progress-channel contract for document generation and integrity operations. | Project team |
 | 2026-08-15 | Synchronized profile changes into open tracks, corrected prerequisite-aware step status, and moved lyrics/style outputs into `02_SUNO`. | Project team |
 | 2026-08-14 | Replaced virtual-only library placement with synchronized physical album/single paths and atomic album-folder rename. | Project team |
 | 2026-08-14 | Added the typed library-assignment boundary and separated virtual reclassification from portable track mutation. | Project team |

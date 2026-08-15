@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 import { createDemoApi } from "./demo";
 import type {
@@ -8,6 +8,7 @@ import type {
   DocumentPreview,
   GlobalProfile,
   GlobalEvidenceItem,
+  OperationProgress,
   ScanResult,
   StepId,
   StepStatus,
@@ -20,6 +21,8 @@ import type {
   WorkflowDefinitionDto,
   WorkspaceSummary
 } from "../domain/types";
+
+export type OperationProgressHandler = (progress: OperationProgress) => void;
 
 export interface DesktopApi {
   readonly mode: "tauri" | "demo";
@@ -51,10 +54,10 @@ export interface DesktopApi {
   previewEvidence(trackId: string, evidenceId: string): Promise<EvidencePreview>;
   verifyEvidence(trackId: string, evidenceId?: string): Promise<TrackDetail>;
   previewDocumentGeneration(trackId: string): Promise<DocumentPreview>;
-  generateDocuments(trackId: string, adoptExisting?: boolean): Promise<ActionResult>;
+  generateDocuments(trackId: string, adoptExisting?: boolean, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   generateArtworkDisclosure(trackId: string, disclosureText?: string): Promise<ActionResult>;
-  calculateHashes(trackId: string): Promise<ActionResult>;
-  verifyHashes(trackId: string): Promise<ActionResult>;
+  calculateHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
+  verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   validateTrack(trackId: string): Promise<ValidationResult>;
   finalizeTrack(trackId: string): Promise<ActionResult>;
   invalidateCertificate(trackId: string): Promise<ActionResult>;
@@ -74,6 +77,10 @@ function isCancel(error: unknown): boolean {
   if (error === null || error === undefined) return true;
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
   return /cancel|abgebrochen/i.test(message);
+}
+
+function progressChannel(onProgress?: OperationProgressHandler): Channel<OperationProgress> {
+  return new Channel<OperationProgress>(onProgress ?? (() => undefined));
 }
 
 async function command<T>(name: string, args?: Record<string, unknown>): Promise<T> {
@@ -219,20 +226,20 @@ class TauriDesktopApi implements DesktopApi {
     return command("preview_documents", { trackId });
   }
 
-  generateDocuments(trackId: string, adoptExisting = false): Promise<ActionResult> {
-    return command("generate_documents", { trackId, adoptExisting });
+  generateDocuments(trackId: string, adoptExisting = false, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+    return command("generate_documents", { trackId, adoptExisting, onProgress: progressChannel(onProgress) });
   }
 
   generateArtworkDisclosure(trackId: string, disclosureText?: string): Promise<ActionResult> {
     return command("generate_artwork_disclosure", { trackId, disclosureText });
   }
 
-  calculateHashes(trackId: string): Promise<ActionResult> {
-    return command("calculate_hashes", { trackId });
+  calculateHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+    return command("calculate_hashes", { trackId, onProgress: progressChannel(onProgress) });
   }
 
-  verifyHashes(trackId: string): Promise<ActionResult> {
-    return command("verify_hashes", { trackId });
+  verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+    return command("verify_hashes", { trackId, onProgress: progressChannel(onProgress) });
   }
 
   validateTrack(trackId: string): Promise<ValidationResult> {

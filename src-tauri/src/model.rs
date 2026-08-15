@@ -634,6 +634,18 @@ pub struct ActionResult {
     pub track: Option<TrackDetail>,
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationProgress {
+    pub stage: String,
+    pub processed_bytes: u64,
+    pub total_bytes: u64,
+    pub processed_files: u32,
+    pub total_files: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyCandidate {
