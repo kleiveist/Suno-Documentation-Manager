@@ -82,7 +82,7 @@ Open `Einstellungen` and enter the minimal defaults:
 
 The project default transparency policy is `Always add visible AI disclosure`. This is a project transparency choice, not a statement that a particular watermark is universally required by law. The default disclosure text is `AI-assisted` and can be configured.
 
-Saving global settings updates all open tracks and marks their generated documents stale, so artist name, Suno profile, handle, plan, and policy do not remain `Not documented`. Finalized and superseded tracks are not rewritten. Generated documents contain the profile snapshot actually assigned to that track.
+Saving global settings updates all open tracks and marks their generated documents stale, so artist name, Suno profile, handle, plan, and policy do not remain `Not documented`. Opening an older workspace also assigns its already saved global values to every non-finalized track. Fulfilled legacy steps then leave `Nicht verifiziert` automatically. Finalized and superseded tracks are not rewritten. Generated documents contain the profile snapshot actually assigned to that track.
 
 ## Register subscription evidence
 

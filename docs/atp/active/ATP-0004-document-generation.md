@@ -81,6 +81,7 @@ Accept document generation when identical normalized inputs produce identical by
 | 9 | `REQ-DOC-001` | Confirm adoption in a fresh fixture. | The sentinel is backed up below `.archive/` before an atomic managed write succeeds. | Confirmed adoption archived the exact sentinel bytes under `.archive/adoptions/` before the managed golden replacement appeared. | PASS | Rust `adopt_existing_true_archives_exact_bytes_before_managed_replacement` |
 | 10 | `REQ-DOC-001` | Scan generated prose for prohibited certification or legal-guarantee claims. | No invented legality, ownership, governmental certification, or guaranteed-noninfringement statement exists. | The combined eight-file golden output was scanned against the prohibited-claim list; no forbidden claim was present. | PASS | Rust `all_documents_match_golden_bytes_and_exclude_forbidden_content` |
 | 11 | `REQ-DOC-001` | Regenerate with TD-05 present. | Template `1.1` writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`, then removes only the old managed files. | Both new Suno documents were generated and both exact-marker legacy files were removed. | PASS | Rust `generation_moves_managed_lyrics_and_style_documents_into_suno_folder` |
+| 12 | `REQ-DOC-001` | Reopen an older non-finalized track whose embedded profile is empty while the workspace profile is complete. | Artist, Suno profile, handle, plan, and subscription date are assigned without re-entering the settings. | Workspace opening reconciled the saved profile into the legacy track; Track and Suno requirements no longer reported missing global values. | PASS | Rust `reopening_assigns_saved_global_profile_to_existing_legacy_track` |
 
 ## Automated checks
 
@@ -90,6 +91,7 @@ cargo test all_documents_match_golden_bytes_and_exclude_forbidden_content
 cargo test adopt_existing
 cargo test profile_updates_refresh_open_tracks_but_preserve_finalized_snapshots
 cargo test generation_moves_managed_lyrics_and_style_documents_into_suno_folder
+cargo test reopening_assigns_saved_global_profile_to_existing_legacy_track
 ```
 
 Expected Rust evidence is `tests::document_generation_is_deterministic_and_requires_adoption`. Attach golden-output or deterministic-comparison results when executed.
@@ -107,7 +109,7 @@ Evidence includes the template version, normalized fixture, two output-tree dige
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 4, 5, and 7–11 passed; three mandatory steps remain `NOT RUN`.
+- Summary: Steps 1, 4, 5, and 7–12 passed; three mandatory steps remain `NOT RUN`.
 - Residual risks: Negative-only prose and stale-input propagation still require complete acceptance fixtures.
 
 ## Sign-off

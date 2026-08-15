@@ -63,7 +63,7 @@ The minimal reusable settings are:
 | Default AI image service | Used only when artwork is AI-generated or AI-assisted |
 | AI artwork transparency policy | Defaults to `Always add visible AI disclosure` |
 
-The default profile does not request a birthday, private telephone number, private email address, Google account, or unrelated account data. Saving the profile updates the embedded snapshot of every non-finalized track, marks its generated documents stale, and reevaluates its requirements. Finalized and superseded tracks retain their historical snapshot. A generated track document contains the embedded values actually used; it never contains only a pointer to mutable global settings.
+The default profile does not request a birthday, private telephone number, private email address, Google account, or unrelated account data. Saving the profile updates the embedded snapshot of every non-finalized track, marks its generated documents stale, and reevaluates its requirements. Opening an existing workspace performs the same reconciliation so tracks created or scanned by an older build receive the already saved global profile. Finalized and superseded tracks retain their historical snapshot. A generated track document contains the embedded values actually used; it never contains only a pointer to mutable global settings.
 
 ## Track facts
 

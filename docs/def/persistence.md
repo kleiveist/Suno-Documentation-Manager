@@ -49,7 +49,7 @@ The product uses bounded authority rather than treating every copy as equally au
 
 Deleting the database can lose unfinished form state or reusable global defaults. It must not make a complete finalized track folder impossible to inspect and verify.
 
-Saving the workspace profile and the affected non-finalized track records is one SQLite transaction. Each open track receives the changed profile snapshot, generated-document freshness and integrity state are reset, and the workflow is reevaluated. Finalized and superseded track snapshots are excluded from this synchronization.
+Saving the workspace profile and the affected non-finalized track records is one SQLite transaction. Each open track receives the changed profile snapshot, generated-document freshness and integrity state are reset, and the workflow is reevaluated. Workspace opening also reconciles older non-finalized records against the already stored profile. Finalized and superseded track snapshots are excluded from this synchronization.
 
 ## Workspace management area
 

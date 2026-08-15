@@ -62,7 +62,35 @@ impl WorkspaceApp {
         let app = Self { root, persistence };
         app.reconcile_physical_library()?;
         app.recover_interrupted_operations()?;
+        let profile = app.profile()?;
+        app.synchronize_open_track_profiles(&profile, false)?;
         Ok(app)
+    }
+
+    fn synchronize_open_track_profiles(&self, profile: &Profile, save_profile: bool) -> Result<()> {
+        let mut tracks = self.persistence.tracks()?;
+        let updated_at = now();
+        let mut changed = false;
+        for track in &mut tracks {
+            if matches!(
+                track.status,
+                TrackStatus::Finalized | TrackStatus::Superseded
+            ) || track.profile_snapshot == *profile
+            {
+                continue;
+            }
+            track.profile_snapshot = profile.clone();
+            mark_content_changed(track);
+            track.status = TrackStatus::Active;
+            track.updated_at = updated_at.clone();
+            changed = true;
+        }
+        if save_profile {
+            self.persistence.save_profile_and_tracks(profile, &tracks)?;
+        } else if changed {
+            self.persistence.save_tracks(&tracks)?;
+        }
+        Ok(())
     }
 
     fn recover_interrupted_operations(&self) -> Result<()> {
@@ -245,23 +273,7 @@ impl WorkspaceApp {
 
     pub fn update_profile(&self, profile: Profile) -> Result<Profile> {
         validate_profile(&profile, false)?;
-        let mut tracks = self.persistence.tracks()?;
-        let updated_at = now();
-        for track in &mut tracks {
-            if matches!(
-                track.status,
-                TrackStatus::Finalized | TrackStatus::Superseded
-            ) || track.profile_snapshot == profile
-            {
-                continue;
-            }
-            track.profile_snapshot = profile.clone();
-            mark_content_changed(track);
-            track.status = TrackStatus::Active;
-            track.updated_at = updated_at.clone();
-        }
-        self.persistence
-            .save_profile_and_tracks(&profile, &tracks)?;
+        self.synchronize_open_track_profiles(&profile, true)?;
         Ok(profile)
     }
 
@@ -3234,6 +3246,68 @@ mod tests {
         assert!(readme.contains("- Suno profile: updated-profile"));
         assert!(readme.contains("- Suno handle: @updated"));
         assert!(!readme.contains("Artist: Not documented"));
+    }
+
+    #[test]
+    fn reopening_assigns_saved_global_profile_to_existing_legacy_track() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        let profile = complete_profile();
+        app.update_profile(profile.clone())
+            .expect("saved global profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("legacy-profile-fixtures"),
+            "Legacy Global Profile",
+        );
+        let mut stale = app
+            .persistence
+            .track(&ready.id)
+            .expect("stored ready track");
+        stale.profile_snapshot = Profile::default();
+        stale.legacy = true;
+        app.persistence
+            .save_track(&stale)
+            .expect("stale track fixture");
+        for step_id in ["track", "suno", "integrity", "finalize"] {
+            app.persistence
+                .save_step(
+                    &stale.id,
+                    &StepState {
+                        id: step_id.into(),
+                        status: StepStatus::NotVerified,
+                        na_reason: None,
+                        updated_at: Some("2026-08-14T00:00:00Z".into()),
+                    },
+                )
+                .expect("stored legacy status");
+        }
+        drop(app);
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");
+        let recovered = reopened.load_track(&ready.id).expect("recovered track");
+
+        assert_eq!(recovered.profile_snapshot, profile);
+        for step_id in ["track", "suno", "integrity", "finalize"] {
+            assert_eq!(
+                recovered
+                    .steps
+                    .iter()
+                    .find(|step| step.id == step_id)
+                    .map(|step| &step.status),
+                Some(&StepStatus::Pass),
+                "{step_id} did not recover from NOT_VERIFIED"
+            );
+        }
+        let validation = reopened
+            .validate_track(&ready.id)
+            .expect("validate recovered track");
+        assert!(
+            validation.valid,
+            "missing={:?}; blocking={:?}",
+            validation.missing_items, validation.blocking_items
+        );
     }
 
     #[test]

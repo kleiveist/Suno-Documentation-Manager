@@ -81,7 +81,7 @@ stateDiagram-v2
 | `N/A` | The step or requirement is not applicable and has a stored reason. | No, only with a non-empty reason |
 | `NOT VERIFIED` | A historical value or file was discovered but cannot be verified. | Yes |
 
-An empty N/A reason is invalid. A conditional child requirement can become N/A automatically only with a deterministic stored reason that identifies the controlling answer, for example `Not applicable: external audio uploaded is No`.
+An empty N/A reason is invalid. A conditional child requirement can become N/A automatically only with a deterministic stored reason that identifies the controlling answer, for example `Not applicable: external audio uploaded is No`. A historical `NOT VERIFIED` result remains blocking only while its current requirements are missing; once the profile, fields, and evidence satisfy them, reevaluation promotes the step to `PASS`.
 
 ## Ordered steps
 

@@ -321,10 +321,10 @@ pub fn evaluate(
                     .na_reason
                     .as_deref()
                     .is_some_and(|r| !r.trim().is_empty());
-            let explicitly_blocking = matches!(
-                stored.status,
-                StepStatus::Fail | StepStatus::Blocked | StepStatus::NotVerified
-            );
+            let explicitly_blocking =
+                matches!(stored.status, StepStatus::Fail | StepStatus::Blocked)
+                    || (stored.status == StepStatus::NotVerified
+                        && (!missing.is_empty() || preceding_step_blocked));
             if justified_na || explicitly_blocking {
                 (*stored).clone()
             } else if missing.is_empty() && !preceding_step_blocked {
@@ -883,6 +883,38 @@ mod tests {
                 .find(|step| step.id == "finalize")
                 .map(|step| &step.status),
             Some(&StepStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn fulfilled_legacy_step_recovers_from_stored_not_verified_status() {
+        let mut track = disclosure_track("none", None);
+        track.legacy = true;
+        track.fields.title = "Recovered Track".into();
+        track.fields.production_start_date = "2026-08-01".into();
+        track.fields.production_end_date = "2026-08-02".into();
+        let profile = Profile {
+            artist_name: "Recovered Artist".into(),
+            artwork_transparency_policy: "always".into(),
+            ..Default::default()
+        };
+        let stored = StepState {
+            id: "track".into(),
+            status: StepStatus::NotVerified,
+            na_reason: None,
+            updated_at: Some("2026-08-01T00:00:00Z".into()),
+        };
+
+        let evaluation = evaluate(&track, &profile, &[], &[], &[stored])
+            .expect("evaluate recovered legacy step");
+
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "track")
+                .map(|step| &step.status),
+            Some(&StepStatus::Pass)
         );
     }
 }
