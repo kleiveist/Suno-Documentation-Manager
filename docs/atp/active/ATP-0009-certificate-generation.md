@@ -8,8 +8,8 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-14 |
-| Executed | 2026-08-13/14 — partial automated execution |
+| Last review | 2026-08-15 |
+| Executed | 2026-08-13/15 — partial automated execution |
 | Requirement | [`REQ-CER-001`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-PER-005`, `REQ-PER-006`](../../def/persistence.md#requirements-and-atp-mapping) |
 | Tested commit/build | Product `0.1.0`; regression automation rerun at implementation commit `b7e9797b277f0bcac58d4503049002e354cb93fb`; previously retained package digests still identify the older stabilization build in the central report |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; native ready-track, artifact cross-check, and failure-injection fixtures |
@@ -46,6 +46,7 @@ Accept certificate generation when a ready track produces a complete self-contai
 | Certificate overstates meaning | Misleading legal reliance | Match mandatory disclaimer and prohibited-claim scan |
 | Hash list omits one certificate input | Undetected artifact change | Compare exact required set and independently verify |
 | Partial write still marks finalized | False snapshot | Inject a write failure before index commit |
+| Finalization appears frozen or presents stale summary data | Duplicate action or misleading certificate overview | Run native work off the main thread, stream real phases, and render the summary only from the returned valid finalized track |
 
 ## Preconditions
 
@@ -78,6 +79,7 @@ Accept certificate generation when a ready track produces a complete self-contai
 | 8 | `REQ-CER-001` | Inspect `CERTIFICATE_SHA256.txt`. | It hashes the main hash list, manifest, and certificate Markdown; it has no self-entry. | The exact-set parser accepted only the three required inputs and rejected incomplete, duplicate, extra, and self-entry sets. | PASS | Rust `certificate_hash_parser_requires_exact_complete_unique_set` |
 | 9 | `REQ-CER-001` | Verify certificate hashes natively and, where available, with `sha256sum`. | Every entry passes and the finalized state is committed only after success. | Not run | NOT RUN | — |
 | 10 | `REQ-CER-001` | Repeat with TD-04. | No partial artifact set is presented as finalized and a controlled error leaves a recoverable working state. | Six deterministic publication failpoints covered staging creation, each artifact write, publish rename, and post-publish verification; each returned a controlled error, preserved any prior set, removed staging, and exposed no partial finalized set. A separate DB-commit failure rolled publication back and reopened cleanly. | PASS | Rust certificate publication failure tests; `finalization_database_commit_failure_rolls_back_publication_and_reopens_cleanly` |
+| 11 | `REQ-CER-001` | Finalize TD-01 while collecting progress, then inspect and reopen the certificate summary. | Gate, certificate publication, certificate verification, final SHA-256 reread, persistence, and completion phases are reported without blocking repaint. The summary opens only after success and uses the returned certificate ID, track, artist, workflow, timestamp, file/evidence counts, deviation count, and result. It can be reopened from Finalize and Certificate. | Native finalization reported every specified phase plus real final reread bytes/files. The typed frontend channel, phase-aware meter, automatic post-success dialog, and both explicit reopen actions were implemented against `TrackDetail`. | PASS | Rust `finalization_reports_certificate_and_snapshot_verification_progress`; frontend finalization progress/channel tests |
 
 ## Automated checks
 
@@ -86,6 +88,7 @@ cd src-tauri
 cargo test finalized_certificate_fields_cross_check_sqlite_track_evidence_hashes_and_manifest
 cargo test publication_failure
 cargo test finalization_database_commit_failure_rolls_back_publication_and_reopens_cleanly
+cargo test finalization_reports_certificate_and_snapshot_verification_progress
 ```
 
 Expected Rust evidence is `end_to_end_documentation_workflow_creates_portable_certificate`, `global_subscription_evidence_requires_pdf_signature_and_covering_dates`, and `finalized_certificate_fields_cross_check_sqlite_track_evidence_hashes_and_manifest`.
@@ -109,7 +112,7 @@ Attach redacted synthetic certificate/manifest artifacts, JSON schema checks, ex
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 2, 4, 6, 8, and 10 passed; four mandatory steps remain `NOT RUN`.
+- Summary: Steps 1, 2, 4, 6, 8, 10, and 11 passed; four mandatory steps remain `NOT RUN`.
 - Residual risks: Independent CLI verification and retained field-by-field artifact review remain open.
 
 ## Sign-off

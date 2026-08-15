@@ -121,6 +121,10 @@ Select `FINALIZE DOCUMENTATION`. The native layer reevaluates the complete gate;
 └── CERTIFICATE_SHA256.txt
 ```
 
+During finalization, the progress view distinguishes native gate validation, snapshot collection, transaction protection, certificate/manifest generation, certificate verification, the complete SHA-256 reread, and the final database commit. File names, byte counts, file counts, and elapsed time remain visible while the filesystem work runs outside the Tauri main thread.
+
+After the verified native result is committed, a certificate summary opens automatically. It shows the certificate ID, track, artist, finalization time, workflow, verified integrity count, evidence count, blocking-deviation count, and final result. Close it to continue, or open the complete certificate view. For a still-valid finalized track, the same summary remains available through `Show certificate` in Finalize and `Open certificate summary` in the Certificate section.
+
 Review the certificate ID, track, artist, workflow and application versions, timestamp, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, and final status. Expected success status is `DOCUMENTATION COMPLETE`.
 
 Review `EVIDENCE_MANIFEST.json` and confirm that file paths are relative to the track root. The manifest contains no local absolute workspace path. Each verified evidence object includes `provenance`; global copies retain their source record and coverage, while a local generated disclosure retains `derivedFromEvidenceId`, `generatorVersion`, and `generatedDisclosureText`. These fields are the portable lineage record and should agree with the evidence role and current artwork policy.
@@ -185,6 +189,7 @@ Executed results and remaining manual checks are recorded in [ATP-0007](../atp/a
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Added finalization progress and the automatic, reusable certificate-summary dialog. | Project team |
 | 2026-08-15 | Documented live document, SHA-256, and verification progress, including the immediate second hash pass and reduced-motion behavior. | Project team |
 | 2026-08-15 | Documented automatic revision-parent repair for older and imported tracks. | Project team |
 | 2026-08-15 | Clarified read-only finalized navigation and the directly available revision action. | Project team |

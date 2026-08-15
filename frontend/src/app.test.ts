@@ -119,6 +119,7 @@ describe("navigation", () => {
         relativePath: "02_SUNO/preview.png",
         sizeBytes: 42
       },
+      showCertificatePopup: true,
       query: "old workspace query",
       trackFilter: "finalized",
       draftDirty: true
@@ -137,6 +138,7 @@ describe("navigation", () => {
       showTrackLibrary: false,
       showSubscriptionEvidence: false,
       evidencePreview: null,
+      showCertificatePopup: false,
       query: "",
       trackFilter: "all",
       draftDirty: false
@@ -195,7 +197,14 @@ describe("navigation", () => {
     expect(operationProgressPercent("documents", {
       stage: "complete", processedBytes: 0, totalBytes: 0, processedFiles: 8, totalFiles: 8
     })).toBe(100);
+    expect(operationProgressPercent("finalization", {
+      stage: "verifying", processedBytes: 500, totalBytes: 1_000, processedFiles: 5, totalFiles: 10
+    })).toBe(76);
+    expect(operationProgressPercent("finalization", {
+      stage: "saving_final_snapshot", processedBytes: 1_000, totalBytes: 1_000, processedFiles: 10, totalFiles: 10
+    })).toBe(97);
     expect(operationStageLabel("comparing_hashes")).toBe("Ergebnisse werden verglichen");
+    expect(operationStageLabel("generating_certificate")).toBe("Zertifikat und Manifest entstehen");
   });
 
   it("keeps a changed library assignment when applying a track detail", () => {

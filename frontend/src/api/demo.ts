@@ -554,11 +554,23 @@ export function createDemoApi(): DesktopApi {
       const track = get(trackId);
       return finalizationGate(track, track.profileSnapshot);
     },
-    async finalizeTrack(trackId) {
-      await wait();
+    async finalizeTrack(trackId, onProgress) {
       const track = get(trackId);
       const gate = finalizationGate(track, track.profileSnapshot);
       if (!gate.valid) throw new Error(`Finalisierung blockiert: ${[...gate.missingItems, ...gate.blockingItems].join(", ")}`);
+      const totalFiles = track.integrity.fileCount;
+      const totalBytes = Math.max(totalFiles, 1) * 8_476_231;
+      await demoProgress(onProgress, [
+        { stage: "validating_finalization_gate", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles },
+        { stage: "collecting_final_snapshot", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles },
+        { stage: "writing_finalization_marker", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles },
+        { stage: "generating_certificate", processedBytes: 0, totalBytes: 0, processedFiles: track.evidence.length, totalFiles: track.evidence.length },
+        { stage: "verifying_certificate", processedBytes: 0, totalBytes: 0, processedFiles: 3, totalFiles: 3 },
+        { stage: "verifying", processedBytes: Math.round(totalBytes * .45), totalBytes, processedFiles: Math.floor(totalFiles * .45), totalFiles, currentFile: "03_DOCUMENTATION/README.md" },
+        { stage: "verifying", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles, currentFile: "01_RELEASE/demo.wav" },
+        { stage: "saving_final_snapshot", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles },
+        { stage: "complete", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles }
+      ]);
       track.status = "FINALIZED";
       track.certificate = { valid: true, certificateId: `SDM-${new Date().getFullYear()}-${track.id.slice(0, 8).toUpperCase()}`, finalizedAt: now(), workflowVersion: WORKFLOW_VERSION };
       refresh(track);

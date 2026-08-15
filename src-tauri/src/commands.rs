@@ -375,8 +375,23 @@ pub fn validate_track(state: State<'_, AppState>, track_id: String) -> Result<Va
 }
 
 #[tauri::command]
-pub fn finalize_track(state: State<'_, AppState>, track_id: String) -> Result<ActionResult> {
-    with_workspace(&state, |app| app.finalize_track(&track_id))
+pub async fn finalize_track(
+    state: State<'_, AppState>,
+    track_id: String,
+    on_progress: Channel<OperationProgress>,
+) -> Result<ActionResult> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace.finalize_track_with_progress(&track_id, &mut |progress| {
+            let _ = on_progress.send(progress);
+        })
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("Finalization task failed: {error}")))?
 }
 
 #[tauri::command]

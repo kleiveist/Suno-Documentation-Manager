@@ -48,7 +48,7 @@ import {
 type MainView = "dashboard" | "tracks" | "current" | "workspace" | "settings";
 type TrackTab = "overview" | "suno" | "artwork" | "release" | "evidence" | "certificate";
 type ToastKind = "success" | "error" | "info";
-export type LongOperationKind = "documents" | "hashes" | "verification";
+export type LongOperationKind = "documents" | "hashes" | "verification" | "finalization";
 
 interface ToastState {
   kind: ToastKind;
@@ -85,6 +85,7 @@ interface AppState {
   showTrackLibrary: boolean;
   showSubscriptionEvidence: boolean;
   evidencePreview: EvidencePreview | null;
+  showCertificatePopup: boolean;
   theme: ColorTheme;
   toast: ToastState | null;
 }
@@ -93,6 +94,7 @@ export type WorkspaceScopedUiState = Pick<
   AppState,
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" | "albums" |
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
+  | "showCertificatePopup"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -108,6 +110,7 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
     evidencePreview: null,
+    showCertificatePopup: false,
     query: "",
     trackFilter: "all",
     draftDirty: false
@@ -175,6 +178,18 @@ export function operationProgressPercent(kind: LongOperationKind, progress: Oper
     if (progress.stage === "comparing_hashes") return 96;
     return 2;
   }
+  if (kind === "finalization") {
+    if (progress.stage === "validating_finalization_gate") return 5;
+    if (progress.stage === "collecting_final_snapshot") return 13;
+    if (progress.stage === "writing_finalization_marker") return 22;
+    if (progress.stage === "generating_certificate") return 35;
+    if (progress.stage === "verifying_certificate") return 50;
+    if (progress.stage === "verifying_final_snapshot" || progress.stage === "reading_hash_list") return 58;
+    if (progress.stage === "verifying") return Math.round(62 + ratio * 28);
+    if (progress.stage === "comparing_hashes") return 92;
+    if (progress.stage === "saving_final_snapshot") return 97;
+    return 2;
+  }
   if (progress.stage === "reading_hash_list") return 6;
   if (progress.stage === "verifying") return Math.round(10 + ratio * 82);
   if (progress.stage === "comparing_hashes") return 96;
@@ -195,7 +210,14 @@ export function operationStageLabel(stage: string): string {
     writing_documents: "Dokumente werden sicher geschrieben",
     finalizing_documents: "Dokumentsatz wird aufgeräumt",
     saving_result: "Ergebnis wird lokal gespeichert",
-    complete: "Vorgang abgeschlossen"
+    complete: "Vorgang abgeschlossen",
+    validating_finalization_gate: "Finalisierungs-Gate wird geprüft",
+    collecting_final_snapshot: "Unveränderlicher Snapshot wird vorbereitet",
+    writing_finalization_marker: "Transaktion wird abgesichert",
+    generating_certificate: "Zertifikat und Manifest entstehen",
+    verifying_certificate: "Zertifikatssatz wird geprüft",
+    verifying_final_snapshot: "Finaler Snapshot wird gegengeprüft",
+    saving_final_snapshot: "Finalisierung wird verbindlich gespeichert"
   } as Record<string, string>)[stage] ?? "Lokaler Vorgang läuft";
 }
 
@@ -419,6 +441,7 @@ export class SunoDocumentationApp {
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
     evidencePreview: null,
+    showCertificatePopup: false,
     theme: "light",
     toast: null
   };
@@ -513,7 +536,13 @@ export class SunoDocumentationApp {
     label: string,
     action: (onProgress: (progress: OperationProgress) => void) => Promise<T>
   ): Promise<T | undefined> {
-    const initialStage = kind === "documents" ? "preparing_documents" : kind === "hashes" ? "discovering_files" : "reading_hash_list";
+    const initialStage = kind === "documents"
+      ? "preparing_documents"
+      : kind === "hashes"
+        ? "discovering_files"
+        : kind === "finalization"
+          ? "validating_finalization_gate"
+          : "reading_hash_list";
     this.state.busy = true;
     this.state.busyLabel = label;
     this.state.operationProgress = {
@@ -604,6 +633,18 @@ export class SunoDocumentationApp {
           "Zusätzliche, fehlende und veränderte Dateien werden getrennt als Abweichung erkannt.",
           "Die Verifikation bleibt lokal; keine Datei und kein Hash verlässt den Workspace."
         ]
+      },
+      finalization: {
+        eyebrow: "Zertifikats-Tresor",
+        title: "Dein finaler Snapshot wird versiegelt",
+        iconName: "certificate" as const,
+        steps: ["Gate bestätigen", "Zertifikat erzeugen", "Snapshot gegenprüfen", "Sicher versiegeln"],
+        thresholds: [0, 13, 58, 92],
+        tips: [
+          "Zertifikat, Evidence-Manifest und Zertifikats-Hashliste werden als zusammengehöriger Satz veröffentlicht.",
+          "Vor dem Abschluss prüft die App die komplette SHA-256-Liste noch einmal von der Festplatte.",
+          "Der finalisierte Snapshot bleibt unverändert; spätere Änderungen beginnen als ausdrücklich angelegte Revision."
+        ]
       }
     } as const)[operation.kind];
     const detail = progress.totalBytes > 0
@@ -660,6 +701,7 @@ export class SunoDocumentationApp {
       showTrackLibrary: this.state.showTrackLibrary,
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
       evidencePreview: this.state.evidencePreview,
+      showCertificatePopup: this.state.showCertificatePopup,
       query: this.state.query,
       trackFilter: this.state.trackFilter,
       draftDirty: this.draftDirty
@@ -725,7 +767,9 @@ export class SunoDocumentationApp {
           ${this.renderTopbar()}
           <div class="view-shell">${view}</div>
         </main>
-        ${this.state.showNewTrack
+        ${this.state.showCertificatePopup
+          ? this.renderCertificatePopupDialog()
+          : this.state.showNewTrack
           ? this.renderNewTrackDialog()
           : this.state.showTrackLibrary
             ? this.renderTrackLibraryDialog()
@@ -893,6 +937,32 @@ export class SunoDocumentationApp {
       ${content}
       <dl class="evidence-preview-meta"><div><dt>Rolle</dt><dd>${escapeHtml(evidenceRoleLabel(preview.role))}</dd></div><div><dt>Größe</dt><dd>${escapeHtml(formatBytes(preview.sizeBytes))}</dd></div><div><dt>Pfad</dt><dd>${escapeHtml(preview.relativePath)}</dd></div></dl>
       <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Schließen</button></div>
+    </section></div>`;
+  }
+
+  private renderCertificatePopupDialog(): string {
+    const track = this.state.track;
+    if (!track?.certificate.valid || !track.certificate.certificateId) return "";
+    const openBlockingDeviations = (track.blockingDeviations ?? [])
+      .filter((item) => item.blocking && !item.resolved).length;
+    return `<div class="modal-backdrop certificate-popup-backdrop" data-action="close-modal"><section class="modal certificate-popup-modal" role="dialog" aria-modal="true" aria-labelledby="certificate-popup-title" data-modal-panel>
+      <button class="icon-button certificate-popup-close" data-action="close-modal" aria-label="Zertifikat schließen">${icon("close")}</button>
+      <div class="certificate-popup-celebration" aria-hidden="true"><i></i><i></i><i></i><span>${icon("certificate")}</span></div>
+      <p class="overline">Track Documentation Completion Certificate</p>
+      <h2 id="certificate-popup-title">Dokumentation erfolgreich finalisiert</h2>
+      <span class="certificate-popup-result">${icon("check")} DOCUMENTATION COMPLETE</span>
+      <dl class="certificate-popup-facts">
+        <div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div>
+        <div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div>
+        <div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div>
+        <div><dt>Finalisiert</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div>
+        <div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div>
+        <div><dt>Integrität</dt><dd>${track.integrity.verifiedCount} / ${track.integrity.fileCount} Dateien verifiziert</dd></div>
+        <div><dt>Evidence</dt><dd>${track.evidence.length} Dateien</dd></div>
+        <div><dt>Blockierende Abweichungen</dt><dd>${openBlockingDeviations}</dd></div>
+      </dl>
+      <p class="certificate-popup-note">Der lokale Zertifikatssatz wurde erzeugt und verifiziert. Er bestätigt den Abschluss des konfigurierten Dokumentations- und Integritätsworkflows, ist aber keine behördliche oder rechtliche Zertifizierung.</p>
+      <div class="modal-actions certificate-popup-actions"><button type="button" class="button button--secondary" data-action="close-modal">Schließen</button><button type="button" class="button button--primary" data-action="open-certificate-tab">${icon("certificate")} Vollständiges Zertifikat öffnen</button></div>
     </section></div>`;
   }
 
@@ -1241,7 +1311,11 @@ export class SunoDocumentationApp {
       <div class="finalize-mark ${localGate.valid ? "is-ready" : ""}">${icon(localGate.valid ? "certificate" : "lock")}</div>
       <p class="overline">Track Documentation Completion Certificate</p><h3>${heading}</h3><p>${summary}</p>
       ${blockers.length ? `<ul class="gate-list">${blockers.map((item) => `<li>${icon("alert")}<span>${escapeHtml(item)}</span></li>`).join("")}</ul>` : `<ul class="gate-list gate-list--success"><li>${icon("check")}<span>Pflichtschritte erfüllt</span></li><li>${icon("check")}<span>Evidence vollständig</span></li><li>${icon("check")}<span>Dokumente aktuell</span></li><li>${icon("check")}<span>SHA-256 vollständig verifiziert</span></li></ul>`}
-      ${finalized ? "" : `<button class="button button--finalize" data-action="finalize-track" ${!localGate.valid ? "disabled" : ""}>${icon("certificate")} Dokumentation finalisieren</button>`}
+      ${finalized
+        ? track.certificate.valid && track.certificate.certificateId
+          ? `<button class="button button--finalize" data-action="show-certificate-popup">${icon("certificate")} Zertifikat anzeigen</button>`
+          : ""
+        : `<button class="button button--finalize" data-action="finalize-track" ${!localGate.valid ? "disabled" : ""}>${icon("certificate")} Dokumentation finalisieren</button>`}
       <p class="certificate-disclaimer">Das Zertifikat bestätigt ausschließlich den Abschluss des konfigurierten Dokumentations- und Integritätsworkflows. Es ist keine behördliche Zertifizierung, Rechtsberatung oder unabhängige Feststellung von Urheberschaft oder Rechtskonformität.</p>
     </div>`;
   }
@@ -1253,7 +1327,7 @@ export class SunoDocumentationApp {
       <div class="certificate-paper"><header><div class="certificate-seal">${icon("certificate")}</div><div><p>Suno Documentation Manager</p><h3>Track Documentation<br>Completion Certificate</h3></div><span class="certificate-result">${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "CERTIFICATE INVALID"}</span></header>
       <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div></dl>
       <footer>This certificate confirms completion of the configured documentation workflow and integrity checks. It does not constitute governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.</footer></div>
-      <div class="certificate-actions"><button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>${track.certificate.valid ? `<button class="button button--danger-soft" data-action="invalidate-certificate">Zertifikat invalidieren</button>` : ""}</div>
+      <div class="certificate-actions">${track.certificate.valid ? `<button class="button button--secondary" data-action="show-certificate-popup">${icon("certificate")} Zertifikatsübersicht öffnen</button>` : ""}<button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>${track.certificate.valid ? `<button class="button button--danger-soft" data-action="invalidate-certificate">Zertifikat invalidieren</button>` : ""}</div>
     </div>`;
   }
 
@@ -1533,7 +1607,20 @@ export class SunoDocumentationApp {
         this.state.showTrackLibrary = true;
         this.render();
         break;
-      case "close-modal": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.render(); break;
+      case "close-modal": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.render(); break;
+      case "show-certificate-popup":
+        if (this.requireTrack().certificate.valid && this.requireTrack().certificate.certificateId) {
+          this.state.showCertificatePopup = true;
+          this.render();
+        }
+        break;
+      case "open-certificate-tab":
+        this.state.showCertificatePopup = false;
+        this.state.view = "current";
+        this.state.activeStep = null;
+        this.state.trackTab = "certificate";
+        this.render();
+        break;
       case "open-sidebar": this.state.sidebarOpen = true; this.render(); break;
       case "close-sidebar": this.state.sidebarOpen = false; this.render(); break;
       case "dismiss-toast": this.state.toast = null; this.render(); break;
@@ -1908,10 +1995,17 @@ export class SunoDocumentationApp {
     const validation = await this.withBusy("Finalisierungs-Gate wird nativ geprüft …", () => this.api.validateTrack(track.id));
     if (!validation) return;
     if (!validation.valid) { this.showToast("error", "Finalisierung blockiert", [...validation.missingItems, ...validation.blockingItems].join(" · ")); return; }
-    const result = await this.withBusy("Unveränderlicher Snapshot und Zertifikat werden erzeugt …", () => this.api.finalizeTrack(track.id));
+    const result = await this.withOperationProgress(
+      "finalization",
+      "Unveränderlicher Snapshot und Zertifikat werden erzeugt …",
+      (onProgress) => this.api.finalizeTrack(track.id, onProgress)
+    );
     if (result) {
       if (result.track) this.applyTrack(result.track); else await this.refreshTracks();
       this.state.trackTab = "certificate"; this.state.activeStep = null;
+      this.state.showCertificatePopup = Boolean(
+        this.state.track?.certificate.valid && this.state.track.certificate.certificateId
+      );
       this.showToast("success", "Dokumentation finalisiert", result.message);
     }
   }

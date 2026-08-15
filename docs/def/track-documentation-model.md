@@ -239,6 +239,8 @@ After the finalization gate passes, the product writes:
 
 The certificate ends with this meaning: it confirms completion of the configured documentation workflow and integrity checks, but is not governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.
 
+After authoritative native commit, the UI may present a reusable certificate summary from the returned finalized `TrackDetail`. The summary does not create or reinterpret certificate data. It remains available in Finalize and the Certificate section only while the snapshot has a valid certificate ID, and links to the complete in-app certificate presentation.
+
 ## Requirements and ATP mapping
 
 | Requirement | Acceptance criterion | Acceptance plan |
@@ -284,6 +286,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Defined the post-commit reusable certificate summary as a presentation of authoritative finalized track data. | Project team |
 | 2026-08-15 | Defined non-persistent live progress for deterministic document writes and native integrity reads. | Project team |
 | 2026-08-15 | Added guided Source classifications, conditional source-code evidence, English choice rendering, legacy reclassification, and template version 1.2. | Project team |
 | 2026-08-14 | Defined new-track dialog retention/dismissal behavior and clarified supported subscription-evidence formats. | Project team |

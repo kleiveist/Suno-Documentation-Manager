@@ -1444,11 +1444,21 @@ impl WorkspaceApp {
         self.validation_for(track)
     }
 
+    #[cfg(test)]
     pub fn finalize_track(&self, id: &str) -> Result<ActionResult> {
+        self.finalize_track_with_progress(id, &mut |_| {})
+    }
+
+    pub fn finalize_track_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
         self.finalize_track_impl(
             id,
             #[cfg(test)]
             None,
+            on_progress,
         )
     }
 
@@ -1456,7 +1466,12 @@ impl WorkspaceApp {
         &self,
         id: &str,
         #[cfg(test)] failure: Option<FinalizationFailure>,
+        on_progress: &mut impl FnMut(OperationProgress),
     ) -> Result<ActionResult> {
+        on_progress(OperationProgress {
+            stage: "validating_finalization_gate".into(),
+            ..OperationProgress::default()
+        });
         let mut track = self.mutable_track(id)?;
         let validation = self.validation_for(track.clone())?;
         if !validation.valid {
@@ -1470,6 +1485,10 @@ impl WorkspaceApp {
                     .join("; "),
             ));
         }
+        on_progress(OperationProgress {
+            stage: "collecting_final_snapshot".into(),
+            ..OperationProgress::default()
+        });
         // Re-read all state after validation so the certificate uses exactly the gate input.
         track = self.persistence.track(id)?;
         let evidence = self.verified_evidence(&track)?;
@@ -1506,7 +1525,17 @@ impl WorkspaceApp {
             "certificate_id": certificate_id,
             "started_at": now(),
         }))?;
+        on_progress(OperationProgress {
+            stage: "writing_finalization_marker".into(),
+            ..OperationProgress::default()
+        });
         atomic_write_new(&finalization_marker, &marker)?;
+        on_progress(OperationProgress {
+            stage: "generating_certificate".into(),
+            processed_files: evidence.len() as u32,
+            total_files: evidence.len() as u32,
+            ..OperationProgress::default()
+        });
         let publication = certificate::generate(
             &track_root,
             &track,
@@ -1524,6 +1553,10 @@ impl WorkspaceApp {
             }
             return Err(error);
         }
+        on_progress(OperationProgress {
+            stage: "verifying_certificate".into(),
+            ..OperationProgress::default()
+        });
         if let Err(error) = certificate::verify(&track_root) {
             let rolled_back = rollback_certificate_set(&track_root, error);
             if rolled_back.complete {
@@ -1531,7 +1564,14 @@ impl WorkspaceApp {
             }
             return Err(rolled_back.error);
         }
-        let post_publish_integrity = match integrity::verify(&track_root) {
+        on_progress(OperationProgress {
+            stage: "verifying_final_snapshot".into(),
+            processed_files: 0,
+            total_files: track.integrity.file_count,
+            ..OperationProgress::default()
+        });
+        let post_publish_integrity = match integrity::verify_with_progress(&track_root, on_progress)
+        {
             Ok(state) if state.verified => state,
             Ok(state) => {
                 let rolled_back = rollback_certificate_set(
@@ -1565,6 +1605,12 @@ impl WorkspaceApp {
             invalidation_reason: None,
         };
         track.updated_at = now();
+        on_progress(OperationProgress {
+            stage: "saving_final_snapshot".into(),
+            processed_files: track.integrity.verified_count,
+            total_files: track.integrity.file_count,
+            ..OperationProgress::default()
+        });
         #[cfg(test)]
         let database_commit = if failure == Some(FinalizationFailure::DatabaseCommit) {
             Err(AppError::Data(
@@ -1585,9 +1631,16 @@ impl WorkspaceApp {
         // The database commit is authoritative. A stale marker is harmless and is
         // removed during the next workspace recovery if this best-effort cleanup fails.
         let _ = fs::remove_file(&finalization_marker);
+        let detail = self.detail_from_record(track, false)?;
+        on_progress(OperationProgress {
+            stage: "complete".into(),
+            processed_files: detail.integrity.verified_count,
+            total_files: detail.integrity.file_count,
+            ..OperationProgress::default()
+        });
         Ok(ActionResult {
             message: "Documentation finalized and certificate set verified.".into(),
-            track: Some(self.detail_from_record(track, false)?),
+            track: Some(detail),
         })
     }
 
@@ -3343,6 +3396,54 @@ mod tests {
             .expect("finalization")
             .track
             .expect("finalized track detail")
+    }
+
+    #[test]
+    fn finalization_reports_certificate_and_snapshot_verification_progress() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Progress Certificate",
+        );
+        let mut events = Vec::new();
+
+        let finalized = app
+            .finalize_track_with_progress(&ready.id, &mut |progress| events.push(progress))
+            .expect("finalization with progress")
+            .track
+            .expect("finalized detail");
+
+        assert!(finalized.certificate.valid);
+        for stage in [
+            "validating_finalization_gate",
+            "collecting_final_snapshot",
+            "writing_finalization_marker",
+            "generating_certificate",
+            "verifying_certificate",
+            "verifying_final_snapshot",
+            "verifying",
+            "comparing_hashes",
+            "saving_final_snapshot",
+            "complete",
+        ] {
+            assert!(
+                events.iter().any(|progress| progress.stage == stage),
+                "missing finalization progress stage {stage}"
+            );
+        }
+        assert!(events.iter().any(|progress| {
+            progress.stage == "verifying"
+                && progress.total_bytes > 0
+                && progress.current_file.is_some()
+        }));
+        assert!(events.last().is_some_and(|progress| {
+            progress.stage == "complete"
+                && progress.processed_files == finalized.integrity.verified_count
+                && progress.total_files == finalized.integrity.file_count
+        }));
     }
 
     #[test]
@@ -6036,7 +6137,11 @@ mod tests {
         let track_root = workspace.join(&ready.relative_path);
 
         let error = app
-            .finalize_track_impl(&ready.id, Some(FinalizationFailure::DatabaseCommit))
+            .finalize_track_impl(
+                &ready.id,
+                Some(FinalizationFailure::DatabaseCommit),
+                &mut |_| {},
+            )
             .expect_err("injected database commit failure");
         assert!(error
             .to_string()

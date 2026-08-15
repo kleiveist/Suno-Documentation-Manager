@@ -139,4 +139,21 @@ describe("runtime selection", () => {
       onProgress: expect.anything()
     });
   });
+
+  it("streams finalization progress through the certificate command", async () => {
+    const progress = vi.fn();
+    invokeMock.mockImplementationOnce(async (_command, args) => {
+      args.onProgress.onmessage({ stage: "generating_certificate", processedBytes: 0, totalBytes: 0, processedFiles: 4, totalFiles: 4 });
+      return { message: "finalized" };
+    });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.finalizeTrack("track-1", progress);
+
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ stage: "generating_certificate" }));
+    expect(invokeMock).toHaveBeenCalledWith("finalize_track", {
+      trackId: "track-1",
+      onProgress: expect.anything()
+    });
+  });
 });
