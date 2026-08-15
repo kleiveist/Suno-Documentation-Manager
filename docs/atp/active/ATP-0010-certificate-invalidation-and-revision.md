@@ -8,8 +8,8 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-14 |
-| Executed | 2026-08-13/14 — partial automated execution |
+| Last review | 2026-08-15 |
+| Executed | 2026-08-13/15 — partial automated execution |
 | Requirement | [`REQ-WFL-005`, `REQ-WFL-006`](../../def/workflow-model.md#requirements-and-atp-mapping) |
 | Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; finalized native revision and workflow-upgrade fixtures |
@@ -46,6 +46,8 @@ Accept revision handling when a protected byte change is detected, the current c
 | Refinalization overwrites old artifacts | Loss of audit trail | Digest certificate files before revision and compare archive |
 | Workflow upgrade rewrites old meaning | Historical result corruption | Finalize under 1.0, load a newer definition, and inspect old archive |
 | Archive enters current hash list | Recursive or unstable integrity | Inspect inclusion/exclusion sets after revision |
+| Rejected finalized write traps all navigation | User cannot reach Integrity, Finalize, Settings, or revision creation | Exercise navigation with a stale locked draft and verify direct revision access |
+| Legacy track lacks `.archive/revisions` | Revision publication fails after staging | Remove the empty managed parent before revision and require automatic recreation before any live artifact move |
 
 ## Preconditions
 
@@ -78,6 +80,9 @@ Accept revision handling when a protected byte change is detected, the current c
 | 8 | `REQ-WFL-006` | Resolve changes and pass the complete gate again. | A distinct new certificate/revision is created; the old revision remains preserved and superseded as appropriate. | Not run | NOT RUN | — |
 | 9 | `REQ-WFL-005` | Load TD-01 with TD-04 current. | UI shows finalized workflow `1.0` and current newer version; old certificate bytes and meaning do not change. | Frontend presentation tests exposed the explicit reevaluation action for an older workflow, including finalized tracks, without mutating certificate state; the native fixture snapshotted old certificate bytes before action. | PASS | Frontend `workflowUpgradePresentation` tests; Rust workflow-upgrade fixture |
 | 10 | `REQ-WFL-005` | Choose explicit reevaluation under TD-04. | A new working revision is created; a new certificate requires all current requirements and never rewrites archived `1.0`. | Native explicit reevaluation from `1.0` to test workflow `1.1` created one revision archive with exact old certificate/hash bytes, reset current outputs and status, and rejected a duplicate reevaluation. | PASS | Rust `workflow_upgrade_archives_finalized_v1_and_requires_fresh_v11_outputs` |
+| 11 | `REQ-WFL-006` | Evaluate valid/invalid finalized presentation and the locked-draft navigation guard. | Both certificate states expose `Create new revision and edit`; a stale finalized draft is discarded locally, while active drafts retain normal save behavior. | The focused regression covered all three states and the complete 59-test frontend suite plus production build passed. | PASS | Frontend `keeps finalized snapshots navigable while requiring an explicit revision for edits`; frontend build |
+| 12 | `REQ-WFL-006` | In the packaged GUI, attempt a finalized field interaction and navigate through Integrity, Finalize, Dashboard, Tracks, Workspace, and Settings. | Controls remain read-only, navigation is never trapped by a rejected save, and the revision action activates editing after confirmation. | Not run in the current package. | NOT RUN | — |
+| 13 | `REQ-WFL-006` | Remove `.archive/revisions` from a finalized legacy-layout fixture, then create a revision. | The application recreates the managed parent, archives the former certificate and hash list, activates the revision, and leaves no failed staging transaction. | The native regression removed the parent immediately before revision creation and completed the existing byte-preservation and active-state assertions successfully. | PASS | Rust `finalized_track_rejects_mutation_until_revision_archives_snapshot` |
 
 ## Automated checks
 
@@ -86,10 +91,10 @@ cd src-tauri
 cargo test finalized_track_rejects_mutation_until_revision_archives_snapshot
 cargo test workflow_upgrade_archives_finalized_v1_and_requires_fresh_v11_outputs
 cd ../frontend
-npm test -- --run src/domain/workflow.test.ts
+npm test -- --run src/app.test.ts src/domain/workflow.test.ts
 ```
 
-Expected Rust evidence is `tests::finalized_track_requires_revision_and_archives_snapshot`. Expected frontend evidence includes the `statuses and finalization` suite in `frontend/src/domain/workflow.test.ts`.
+Expected Rust evidence is `application::tests::finalized_track_rejects_mutation_until_revision_archives_snapshot`. Expected frontend evidence includes the finalized-navigation regression in `frontend/src/app.test.ts` and the `statuses and finalization` suite in `frontend/src/domain/workflow.test.ts`.
 
 ## Verification
 
@@ -99,13 +104,13 @@ The reviewer verifies old/new certificate IDs and versions, exact archive bytes,
 
 | ID | Description | Severity | Owner | Follow-up | Status |
 | --- | --- | --- | --- | --- | --- |
-| DEV-01 | Untouched reopen and full refinalization after revision remain unexecuted as specified. | High | Product team | Execute steps 1 and 8; corrupt-certificate recovery is covered by a native test but does not replace these steps. | open |
+| DEV-01 | Untouched reopen, packaged navigation, and full refinalization after revision remain unexecuted as specified. | High | Product team | Execute steps 1, 8, and 12; automated state/presentation coverage, legacy-parent recovery, and corrupt-certificate recovery do not replace these package checks. | open |
 
 ## Result
 
 - Overall result: `PARTIAL`
 - Summary: Steps 2–7, 9, and 10 passed; two mandatory steps remain `NOT RUN`.
-- Residual risks: Untouched packaged reopen and full refinalization after revision still lack complete acceptance evidence.
+- Residual risks: Untouched packaged reopen, finalized-track navigation in the packaged GUI, and full refinalization after revision still lack complete acceptance evidence.
 
 ## Sign-off
 

@@ -172,7 +172,9 @@ The Finalize button remains disabled before readiness, or the interface exposes 
 
 ## Certificate invalidation and revision
 
-Opening or verifying a `FINALIZED` track recalculates the protected integrity state. A mismatch changes the certificate presentation to invalid and offers `Create new revision`. The application does not overwrite the previous certificate set.
+Opening or verifying a `FINALIZED` track recalculates the protected integrity state. A mismatch changes the certificate presentation to invalid. The application does not overwrite the previous certificate set.
+
+A finalized track is a read-only UI snapshot: ordinary field, evidence, document-generation, hash-generation, deviation, and step-status mutations are unavailable. Navigation between every workflow step and the main application views remains available, as do evidence previews and read-only integrity verification. A stale browser draft belonging to the locked snapshot is discarded locally instead of being resubmitted on every navigation attempt. `Create new revision and edit` is visible for both valid and invalid finalized certificates without requiring prior invalidation.
 
 Revision creation archives the old certificate artifacts and revision metadata below `.archive/revisions/<revision-id>/`, marks the previous revision superseded when appropriate, and creates an active working revision. A new certificate requires the complete gate again.
 
@@ -196,7 +198,7 @@ Re-evaluation is explicit. It creates new working state and, after successful ac
 | `REQ-WFL-003` | Missing items and progress derive from applicable mandatory requirements. | [ATP-0008](../atp/active/ATP-0008-finalization-gate.md) |
 | `REQ-WFL-004` | `FAIL`, `BLOCKED`, `NOT VERIFIED`, missing evidence, stale documents, and hash failure block finalization. | [ATP-0008](../atp/active/ATP-0008-finalization-gate.md) |
 | `REQ-WFL-005` | A workflow version change never retroactively mutates a finalized certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
-| `REQ-WFL-006` | A post-finalization mismatch invalidates the current certificate and requires an archived revision before refinalization. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
+| `REQ-WFL-006` | A finalized snapshot remains read-only and navigable; an explicit archived revision is required before editing or refinalization, and a post-finalization mismatch invalidates the current certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
 
 ## Verification
 
@@ -230,6 +232,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Defined read-only finalized navigation, stale-draft disposal, and direct revision access. | Project team |
 | 2026-08-15 | Added the conditional code-based Source branch, guided Source classifications, and English canonical values for localized choice controls. | Project team |
 | 2026-08-15 | Added the Suno style prompt, guided work/release choices, three-negative AI Transparency deactivation, one final-artwork requirement, and prerequisite-aware Finalize status. | Project team |
 | 2026-08-13 | Added provenance and source-lineage checks to the AI artwork finalization gate. | Project team |

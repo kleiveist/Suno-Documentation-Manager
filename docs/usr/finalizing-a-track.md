@@ -141,9 +141,15 @@ Do not edit a finalized file in place. If a release asset, evidence file, genera
 
 ## Create a revision after a change
 
-When the application reports `Documentation changed after finalization`, review the mismatch before proceeding. Choose `Create new revision` only when you intend to document a new snapshot.
+Every finalized track is shown as a read-only snapshot. Its workflow rail, tabs, Dashboard, Tracks, Workspace, and Settings remain navigable, and evidence previews plus non-mutating integrity verification remain available. The application does not repeatedly attempt to save a finalized form while navigating. Actions that would change fields, evidence, generated documents, hashes, or step status stay disabled until a revision exists.
+
+Use `Create new revision and edit` from the overview, any workflow step (including Integrity and Finalize), or the certificate view when you intend to document a new snapshot. This action is available for both valid and invalid finalized certificates. Do not invalidate a valid certificate merely to make the revision action appear.
+
+When the application reports `Documentation changed after finalization`, review the mismatch before proceeding. Then create the revision explicitly.
 
 The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, and the complete former certificate directory below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
+
+Tracks created by an older application version or recovered from an imported folder may not yet contain `.archive/revisions/`. Revision creation safely creates this managed parent before moving any live certificate artifact; users do not need to create the folder manually.
 
 If the application or machine stops during certificate publication, reopening the workspace uses the matching `.archive/finalization-in-progress.json` marker to identify only that application transaction. A published set beside a non-finalized record is then moved to `.archive/recovery/<transaction-id>/certificate/` with recovery metadata. A stale marker beside an already finalized record is removed. Historical `06_CERTIFICATE/` files without this marker are left untouched and are not assumed to be a failed application finalization.
 
@@ -173,6 +179,8 @@ Executed results and remaining manual checks are recorded in [ATP-0007](../atp/a
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Documented automatic revision-parent repair for older and imported tracks. | Project team |
+| 2026-08-15 | Clarified read-only finalized navigation and the directly available revision action. | Project team |
 | 2026-08-13 | Added portable disclosure-lineage review and marker-scoped finalization recovery. | Project team |
 | 2026-08-13 | Documented revision archive contents and interrupted-operation recovery. | Project team |
 | 2026-08-13 | Added the finalization, certificate-verification, and revision guide. | Project team |

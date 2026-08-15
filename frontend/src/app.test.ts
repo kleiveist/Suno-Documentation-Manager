@@ -4,10 +4,12 @@ import {
   MAIN_NAVIGATION,
   canonicalGuidedChoiceList,
   canonicalGuidedChoiceValue,
+  finalizedTrackPresentation,
   missingProfileFields,
   normalizeGuidedTrackFields,
   parseMultiChoiceValue,
   resetWorkspaceScopedUiState,
+  shouldDiscardLockedDraft,
   shouldIgnoreModalBackdropClick,
   serializeMultiChoiceValue,
   trackSummaryFromDetail,
@@ -149,6 +151,30 @@ describe("navigation", () => {
     expect(shouldIgnoreModalBackdropClick(true, false)).toBe(true);
     expect(shouldIgnoreModalBackdropClick(true, true)).toBe(false);
     expect(shouldIgnoreModalBackdropClick(false, false)).toBe(false);
+  });
+
+  it("keeps finalized snapshots navigable while requiring an explicit revision for edits", () => {
+    expect(finalizedTrackPresentation({
+      status: "FINALIZED",
+      certificate: { valid: true, certificateId: "SDM-2026-TEST" }
+    })).toEqual({
+      title: "Finalisierter Snapshot – nur lesbar",
+      message: expect.stringContaining("Navigation und reine Prüfungen bleiben verfügbar"),
+      actionLabel: "Neue Revision anlegen und bearbeiten",
+      invalid: false
+    });
+    expect(finalizedTrackPresentation({
+      status: "FINALIZED",
+      certificate: { valid: false, certificateId: "SDM-2026-TEST" }
+    })).toEqual(expect.objectContaining({
+      actionLabel: "Neue Revision anlegen und bearbeiten",
+      invalid: true
+    }));
+    expect(finalizedTrackPresentation({ status: "ACTIVE", certificate: { valid: false } })).toBeNull();
+
+    expect(shouldDiscardLockedDraft("FINALIZED", true)).toBe(true);
+    expect(shouldDiscardLockedDraft("FINALIZED", false)).toBe(false);
+    expect(shouldDiscardLockedDraft("ACTIVE", true)).toBe(false);
   });
 
   it("keeps a changed library assignment when applying a track detail", () => {

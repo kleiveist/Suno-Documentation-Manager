@@ -109,6 +109,36 @@ export function shouldIgnoreModalBackdropClick(isBackdrop: boolean, isDirectClic
   return isBackdrop && !isDirectClick;
 }
 
+export interface FinalizedTrackPresentation {
+  title: string;
+  message: string;
+  actionLabel: string;
+  invalid: boolean;
+}
+
+export function finalizedTrackPresentation(
+  track: Pick<TrackDetail, "status" | "certificate">
+): FinalizedTrackPresentation | null {
+  if (track.status !== "FINALIZED") return null;
+  return track.certificate.valid
+    ? {
+        title: "Finalisierter Snapshot – nur lesbar",
+        message: "Lege eine neue Revision an, bevor du Angaben, Nachweise oder erzeugte Dokumente änderst. Die Navigation und reine Prüfungen bleiben verfügbar.",
+        actionLabel: "Neue Revision anlegen und bearbeiten",
+        invalid: false
+      }
+    : {
+        title: "Finalisierter Snapshot mit ungültigem Zertifikat",
+        message: "Der bisherige Snapshot bleibt erhalten. Lege eine neue Revision an, um Abweichungen zu bearbeiten und anschließend neu zu finalisieren.",
+        actionLabel: "Neue Revision anlegen und bearbeiten",
+        invalid: true
+      };
+}
+
+export function shouldDiscardLockedDraft(status: TrackDetail["status"], draftDirty: boolean): boolean {
+  return status === "FINALIZED" && draftDirty;
+}
+
 export function parseMultiChoiceValue(value: string): string[] {
   return value.split(" | ").map((item) => item.trim()).filter(Boolean);
 }
@@ -804,7 +834,7 @@ export class SunoDocumentationApp {
       case "suno": return this.renderWorkflowEditor(track, "suno");
       case "artwork": return this.renderWorkflowEditor(track, "artwork");
       case "release": return this.renderWorkflowEditor(track, "release");
-      case "evidence": return this.renderEvidence(track);
+      case "evidence": return `${this.renderFinalizedSnapshotNotice(track)}${this.renderEvidence(track)}`;
       case "certificate": return this.renderCertificate(track);
     }
   }
@@ -815,8 +845,8 @@ export class SunoDocumentationApp {
     const statuses = this.runtimeSteps().map((step) => evaluatedStatuses.find((state) => state.id === step.id) ?? { id: step.id, status: "NOT_RUN" as const });
     return `<div class="workflow-layout">
       <section class="workflow-main">
-        ${track.status === "FINALIZED" && !track.certificate.valid ? this.renderInvalidCertificateNotice() : ""}
-        ${track.legacy && missingProfileFields(track.profileSnapshot).length ? `<div class="policy-card">${icon("info")}<div><p class="overline">Legacy-Track</p><h4>Historische Stammdaten ausdrücklich bestätigen</h4><p>Der Scan hat keine fehlenden Fakten erfunden. Übernimm die aktuellen Workspace-Stammdaten nur, wenn sie für diesen Track tatsächlich zutreffen; danach kannst du weitere Angaben prüfen und speichern.</p></div><button class="button button--secondary" data-action="adopt-legacy-profile">Stammdaten als Snapshot bestätigen</button></div>` : ""}
+        ${this.renderFinalizedSnapshotNotice(track)}
+        ${track.status !== "FINALIZED" && track.legacy && missingProfileFields(track.profileSnapshot).length ? `<div class="policy-card">${icon("info")}<div><p class="overline">Legacy-Track</p><h4>Historische Stammdaten ausdrücklich bestätigen</h4><p>Der Scan hat keine fehlenden Fakten erfunden. Übernimm die aktuellen Workspace-Stammdaten nur, wenn sie für diesen Track tatsächlich zutreffen; danach kannst du weitere Angaben prüfen und speichern.</p></div><button class="button button--secondary" data-action="adopt-legacy-profile">Stammdaten als Snapshot bestätigen</button></div>` : ""}
         <div class="panel missing-panel ${missing.length === 0 ? "is-complete" : ""}">
           <div class="panel-heading"><div><p class="overline">Finalisierungs-Gate</p><h3>${missing.length ? "Was fehlt noch?" : "Bereit zur Finalisierung"}</h3></div><span class="missing-total">${missing.length}</span></div>
           ${missing.length ? `<ul class="missing-list">${missing.slice(0, 8).map((item) => `<li><span>${icon("alert")}</span><div><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(this.runtimeSteps().find((step) => step.id === item.stepId)?.title ?? item.stepId)}</small></div><button data-step-open="${item.stepId}">${item.evidenceRole ? "Nachweis" : "Öffnen"} ${icon("arrow")}</button></li>`).join("")}</ul>${missing.length > 8 ? `<button class="text-button" data-track-tab="evidence">Alle ${missing.length} offenen Punkte anzeigen</button>` : ""}` : `<div class="success-message">${icon("check")}<div><strong>Alle lokalen Vorprüfungen sind erfüllt.</strong><span>Rust validiert den Track vor der Finalisierung nochmals vollständig.</span></div></div>`}
@@ -827,8 +857,8 @@ export class SunoDocumentationApp {
       </section>
       <aside class="workflow-side">
         <div class="panel quick-actions"><p class="overline">Schnellaktionen</p><h3>Dokumentsatz</h3>
-          ${this.actionRow("file", "Dokumente", track.documents.current ? "Aktuell" : track.documents.generated ? "Veraltet" : "Nicht erzeugt", "generate-documents")}
-          ${this.actionRow("hash", "SHA-256", track.integrity.generated ? `${track.integrity.fileCount} Dateien` : "Nicht erzeugt", "calculate-hashes")}
+          ${this.actionRow("file", "Dokumente", track.documents.current ? "Aktuell" : track.documents.generated ? "Veraltet" : "Nicht erzeugt", "generate-documents", track.status === "FINALIZED")}
+          ${this.actionRow("hash", "SHA-256", track.integrity.generated ? `${track.integrity.fileCount} Dateien` : "Nicht erzeugt", "calculate-hashes", track.status === "FINALIZED")}
           ${this.actionRow("shield", "Verifikation", track.integrity.verified ? "Bestanden" : "Offen", "verify-hashes")}
         </div>
         <div class="panel snapshot-card"><p class="overline">Track-Snapshot</p><dl><div><dt>Evidence</dt><dd>${track.evidence.length}</dd></div><div><dt>Dokumente</dt><dd>${track.documents.files.length}</dd></div><div><dt>Verifiziert</dt><dd>${track.integrity.verifiedCount}/${track.integrity.fileCount}</dd></div><div><dt>Abweichungen</dt><dd>${track.blockingDeviations?.filter((item) => item.blocking && !item.resolved).length ?? track.integrity.mismatchFiles.length}</dd></div></dl></div>
@@ -858,12 +888,14 @@ export class SunoDocumentationApp {
     return WORKFLOW_STEPS.map((step) => ({ id: step.id, number: step.number, title: step.title, description: step.description }));
   }
 
-  private actionRow(iconName: "file" | "hash" | "shield", label: string, state: string, action: string): string {
-    return `<button class="action-row" data-action="${action}"><span>${icon(iconName)}</span><div><strong>${label}</strong><small>${state}</small></div>${icon("arrow")}</button>`;
+  private actionRow(iconName: "file" | "hash" | "shield", label: string, state: string, action: string, disabled = false): string {
+    return `<button class="action-row" data-action="${action}" ${disabled ? "disabled" : ""}><span>${icon(iconName)}</span><div><strong>${label}</strong><small>${state}</small></div>${icon("arrow")}</button>`;
   }
 
-  private renderInvalidCertificateNotice(): string {
-    return `<div class="danger-banner">${icon("alert")}<div><strong>Dokumentation nach Finalisierung geändert.</strong><span>Das Zertifikat stimmt nicht mehr mit dem aktuellen Track-Zustand überein.</span></div><button class="button button--danger" data-action="create-revision">Neue Revision anlegen</button></div>`;
+  private renderFinalizedSnapshotNotice(track: TrackDetail): string {
+    const presentation = finalizedTrackPresentation(track);
+    if (!presentation) return "";
+    return `<div class="policy-card finalized-snapshot-notice ${presentation.invalid ? "is-invalid" : ""}">${icon(presentation.invalid ? "alert" : "lock")}<div><p class="overline">Revisionsschutz</p><h4>${escapeHtml(presentation.title)}</h4><p>${escapeHtml(presentation.message)}</p></div><button class="button ${presentation.invalid ? "button--danger" : "button--primary"}" data-action="create-revision">${icon("current")} ${escapeHtml(presentation.actionLabel)}</button></div>`;
   }
 
   private renderWorkflowEditor(track: TrackDetail, stepId: StepId): string {
@@ -889,7 +921,8 @@ export class SunoDocumentationApp {
       </aside>
       <section class="editor-main">
         <header class="editor-head"><div><p class="overline">Schritt ${escapeHtml(definition?.number ?? fallback.number)}</p><h3>${escapeHtml(label)}</h3><p>${escapeHtml(description)}</p></div><span class="status-chip step-status-chip step-status-chip--${currentStatus.toLowerCase().replace("_", "-")}">${statusLabel(currentStatus)}</span></header>
-        ${naEligible ? `<div class="na-control">${icon("info")}<div><strong>Dieser Schritt hat für den aktuellen Track keine anwendbaren Pflichtpunkte.</strong><span>N/A wird nur mit einer gespeicherten sachlichen Begründung akzeptiert.</span></div>${currentStatus === "N_A" ? `<button class="button button--secondary" data-reset-na="${stepId}">N/A zurücksetzen</button>` : `<button class="button button--secondary" data-mark-na="${stepId}">Als N/A dokumentieren</button>`}</div>` : ""}
+        ${this.renderFinalizedSnapshotNotice(track)}
+        ${naEligible ? `<div class="na-control">${icon("info")}<div><strong>Dieser Schritt hat für den aktuellen Track keine anwendbaren Pflichtpunkte.</strong><span>N/A wird nur mit einer gespeicherten sachlichen Begründung akzeptiert.</span></div>${currentStatus === "N_A" ? `<button class="button button--secondary" data-reset-na="${stepId}" ${track.status === "FINALIZED" ? "disabled" : ""}>N/A zurücksetzen</button>` : `<button class="button button--secondary" data-mark-na="${stepId}" ${track.status === "FINALIZED" ? "disabled" : ""}>Als N/A dokumentieren</button>`}</div>` : ""}
         ${this.renderStepContent(track, stepId)}
         <footer class="editor-footer">
           <button class="button button--secondary" ${index === 0 ? "disabled" : ""} data-step-open="${runtimeSteps[Math.max(index - 1, 0)].id}">${icon("arrow")} Zurück</button>
@@ -950,33 +983,35 @@ export class SunoDocumentationApp {
           <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Für die Finalisierung ist eine WAV-Datei erforderlich. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Release-WAV importieren"], ["release_mp3", "MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
         break;
     }
-    return `<form id="track-step-form" class="workflow-form" data-step="${stepId}">${body}<div class="form-save"><span>${icon("shield")} Änderungen bleiben lokal im Workspace.</span><button class="button button--primary" type="submit">${icon("check")} Schritt speichern</button></div></form>`;
+    const locked = track.status === "FINALIZED";
+    return `<form id="track-step-form" class="workflow-form ${locked ? "is-read-only" : ""}" data-step="${stepId}" ${locked ? `aria-label="Finalisierter Snapshot – schreibgeschützt"` : ""}><fieldset class="workflow-form-fields" ${locked ? "disabled" : ""}>${body}</fieldset>${locked ? "" : `<div class="form-save"><span>${icon("shield")} Änderungen bleiben lokal im Workspace.</span><button class="button button--primary" type="submit">${icon("check")} Schritt speichern</button></div>`}</form>`;
   }
 
   private renderEvidence(track: TrackDetail, embedded = false): string {
+    const locked = track.status === "FINALIZED";
     const missing = calculateMissingRequirements(track, track.profileSnapshot).filter((item) => item.evidenceRole);
     return `<div class="${embedded ? "embedded-content" : "evidence-page"}">
-      <div class="section-intro"><div><p class="overline">Lokale Nachweise</p><h3>Evidence & Lizenzen</h3><p>Originale bleiben am Quellort. Importierte Kopien werden gehasht und niemals still überschrieben.</p></div><button class="button button--primary" data-action="import-evidence">${icon("upload")} Evidence importieren</button></div>
+      <div class="section-intro"><div><p class="overline">Lokale Nachweise</p><h3>Evidence & Lizenzen</h3><p>Originale bleiben am Quellort. Importierte Kopien werden gehasht und niemals still überschrieben.</p></div><button class="button button--primary" data-action="import-evidence" ${locked ? "disabled" : ""}>${icon("upload")} Evidence importieren</button></div>
       ${missing.length ? `<div class="evidence-needed"><strong>${missing.length} erforderliche Nachweise fehlen</strong><div>${missing.map((item) => {
         if (item.evidenceRole === "subscription_payment") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – unten aus globaler Evidence zuordnen</span>`;
         const current = [...track.evidence].reverse().find((evidence) => evidence.role === item.evidenceRole);
-        return `<button data-import-role="${item.evidenceRole}" ${current ? `data-replace-evidence="${escapeHtml(current.id)}"` : ""}>${icon(current ? "upload" : "plus")}<span><strong>${escapeHtml(item.label)}</strong><small>${current ? "Vorhandene Datei sicher ersetzen" : escapeHtml(evidenceRoleLabel(item.evidenceRole!))}</small><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`;
+        return `<button data-import-role="${item.evidenceRole}" ${current ? `data-replace-evidence="${escapeHtml(current.id)}"` : ""} ${locked ? "disabled" : ""}>${icon(current ? "upload" : "plus")}<span><strong>${escapeHtml(item.label)}</strong><small>${current ? "Vorhandene Datei sicher ersetzen" : escapeHtml(evidenceRoleLabel(item.evidenceRole!))}</small><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`;
       }).join("")}</div></div>` : ""}
-      ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track) : ""}
+      ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track, locked) : ""}
       <div class="panel evidence-table-panel"><div class="evidence-table-head"><span>Datei</span><span>Rolle</span><span>Integrität</span><span>Größe</span><span></span></div>
-        ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><span class="evidence-name"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small></span><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${item.id}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${item.id}" aria-label="Evidence entfernen">${icon("trash")}</button></span></div>`).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
+        ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><button class="evidence-name" data-preview-evidence="${item.id}" title="Evidence-Vorschau öffnen"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small></button><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${item.id}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${item.id}" aria-label="Evidence entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></span></div>`).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
       </div>
-      <div class="deviation-section"><div class="section-intro compact"><div><p class="overline">Abweichungen</p><h3>Offene Hinweise & Blocker</h3></div><button class="button button--secondary" data-action="add-deviation">${icon("plus")} Abweichung erfassen</button></div>${this.renderDeviations(track)}</div>
+      <div class="deviation-section"><div class="section-intro compact"><div><p class="overline">Abweichungen</p><h3>Offene Hinweise & Blocker</h3></div><button class="button button--secondary" data-action="add-deviation" ${locked ? "disabled" : ""}>${icon("plus")} Abweichung erfassen</button></div>${this.renderDeviations(track, locked)}</div>
     </div>`;
   }
 
-  private renderDeviations(track: TrackDetail): string {
+  private renderDeviations(track: TrackDetail, locked = false): string {
     const deviations = track.blockingDeviations ?? [];
     if (!deviations.length) return `<div class="neutral-message">${icon("check")}<div><strong>Keine Abweichungen erfasst.</strong><span>Ungeklärte blockierende Abweichungen verhindern die Finalisierung.</span></div></div>`;
-    return `<div class="deviation-list">${deviations.map((item) => `<article class="deviation ${item.resolved ? "is-resolved" : ""}">${icon(item.resolved ? "check" : "alert")}<div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p><small>${item.resolved ? `Gelöst ${formatDate(item.resolvedAt, true)}` : `Erfasst ${formatDate(item.createdAt, true)}`}</small></div><div>${!item.resolved ? `<button class="button button--small button--secondary" data-resolve-deviation="${item.id}">Als gelöst markieren</button>` : ""}<button class="icon-button danger" data-remove-deviation="${item.id}" aria-label="Abweichung entfernen">${icon("trash")}</button></div></article>`).join("")}</div>`;
+    return `<div class="deviation-list">${deviations.map((item) => `<article class="deviation ${item.resolved ? "is-resolved" : ""}">${icon(item.resolved ? "check" : "alert")}<div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p><small>${item.resolved ? `Gelöst ${formatDate(item.resolvedAt, true)}` : `Erfasst ${formatDate(item.createdAt, true)}`}</small></div><div>${!item.resolved ? `<button class="button button--small button--secondary" data-resolve-deviation="${item.id}" ${locked ? "disabled" : ""}>Als gelöst markieren</button>` : ""}<button class="icon-button danger" data-remove-deviation="${item.id}" aria-label="Abweichung entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></div></article>`).join("")}</div>`;
   }
 
-  private renderGlobalEvidencePicker(track: TrackDetail): string {
+  private renderGlobalEvidencePicker(track: TrackDetail, locked = false): string {
     const attached = track.evidence.some((item) => item.role === "subscription_payment" && item.verified && Boolean(item.sha256)
       && Boolean(item.coverageStart) && Boolean(item.coverageEnd)
       && item.coverageStart! <= track.fields.productionStartDate && item.coverageEnd! >= track.fields.productionEndDate);
@@ -985,7 +1020,7 @@ export class SunoDocumentationApp {
         && Boolean(track.fields.productionStartDate) && Boolean(track.fields.productionEndDate)
         && item.coverageStart! <= track.fields.productionStartDate
         && item.coverageEnd! >= track.fields.productionEndDate;
-      return `<article class="${covers ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · ${covers ? "Zeitraum passend" : "Deckt den Track-Zeitraum nicht ab"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${attached || !covers ? "disabled" : ""}>${attached ? "Zugeordnet" : covers ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
+      return `<article class="${covers ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · ${covers ? "Zeitraum passend" : "Deckt den Track-Zeitraum nicht ab"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !covers ? "disabled" : ""}>${attached ? "Zugeordnet" : covers ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
     }).join("")}</div>` : `<p class="empty-inline">Noch keine globale Abo-Evidence. Registriere sie unter Einstellungen.</p>`}</section>`;
   }
 
@@ -994,8 +1029,8 @@ export class SunoDocumentationApp {
     return `<div class="integrity-page">
       <div class="integrity-hero ${track.integrity.verified && !mismatches.length ? "is-valid" : ""}"><span>${icon("shield")}</span><div><p class="overline">SHA-256 Integrität</p><h3>${track.integrity.verified ? "Dateien erfolgreich verifiziert" : "Integritätsprüfung ausstehend"}</h3><p>${track.integrity.fileCount} Dateien gehasht · ${track.integrity.verifiedCount} Dateien verifiziert</p></div><strong>${track.integrity.verified && !mismatches.length ? "PASS" : track.integrity.generated ? "NICHT VERIFIZIERT" : "NICHT ERZEUGT"}</strong></div>
       ${mismatches.length ? `<div class="danger-banner">${icon("alert")}<div><strong>${mismatches.length} Integritätsabweichungen</strong><span>${mismatches.map(escapeHtml).join(", ")}</span></div></div>` : ""}
-      <div class="integrity-actions"><article class="action-card">${icon("file")}<div><h4>1. Dokumente erzeugen</h4><p>Versionierte Markdown- und Textdokumente aus den aktuellen Angaben erstellen.</p><span>${track.documents.current ? "Aktuell · " + formatDate(track.documents.generatedAt, true) : "Ausstehend oder veraltet"}</span></div><button class="button button--secondary" data-action="generate-documents">Erzeugen</button></article>
-      <article class="action-card">${icon("hash")}<div><h4>2. SHA-256 berechnen</h4><p>Alle relevanten Dateien in einer extern prüfbaren Hashliste erfassen.</p><span>${track.integrity.generated ? `${track.integrity.fileCount} Dateien` : "Ausstehend"}</span></div><button class="button button--secondary" data-action="calculate-hashes" ${!track.documents.current ? "disabled" : ""}>Berechnen</button></article>
+      <div class="integrity-actions"><article class="action-card">${icon("file")}<div><h4>1. Dokumente erzeugen</h4><p>Versionierte Markdown- und Textdokumente aus den aktuellen Angaben erstellen.</p><span>${track.documents.current ? "Aktuell · " + formatDate(track.documents.generatedAt, true) : "Ausstehend oder veraltet"}</span></div><button class="button button--secondary" data-action="generate-documents" ${track.status === "FINALIZED" ? "disabled" : ""}>Erzeugen</button></article>
+      <article class="action-card">${icon("hash")}<div><h4>2. SHA-256 berechnen</h4><p>Alle relevanten Dateien in einer extern prüfbaren Hashliste erfassen.</p><span>${track.integrity.generated ? `${track.integrity.fileCount} Dateien` : "Ausstehend"}</span></div><button class="button button--secondary" data-action="calculate-hashes" ${track.status === "FINALIZED" || !track.documents.current ? "disabled" : ""}>Berechnen</button></article>
       <article class="action-card">${icon("shield")}<div><h4>3. Prüfsummen verifizieren</h4><p>Hashliste erneut lesen und jede erfasste Datei nativ überprüfen.</p><span>${track.integrity.verified ? formatDate(track.integrity.verifiedAt, true) : "Ausstehend"}</span></div><button class="button button--primary" data-action="verify-hashes" ${!track.integrity.generated ? "disabled" : ""}>Verifizieren</button></article></div>
       <div class="technical-note">${icon("info")}<p><strong>Unabhängig prüfbar.</strong> SHA256SUMS.txt bleibt möglichst mit <code>sha256sum -c</code> kompatibel. Zertifikat, Archiv und interne Verwaltungsdaten werden nicht in dieselbe Hashliste aufgenommen.</p></div>
     </div>`;
@@ -1004,23 +1039,34 @@ export class SunoDocumentationApp {
   private renderFinalization(track: TrackDetail): string {
     const localGate = finalizationGate(track, track.profileSnapshot);
     const blockers = [...localGate.missingItems, ...localGate.blockingItems];
+    const finalized = track.status === "FINALIZED";
+    const heading = finalized
+      ? track.certificate.valid ? "Dokumentation finalisiert" : "Finalisierter Snapshot nicht mehr gültig"
+      : localGate.valid ? "Bereit für den Abschluss" : "Finalisierung noch blockiert";
+    const summary = finalized
+      ? track.certificate.valid
+        ? "Dieser Snapshot ist abgeschlossen und schreibgeschützt. Verwende die Revisionsaktion oben, um eine bearbeitbare Folgeversion anzulegen."
+        : "Das bisherige Zertifikat ist ungültig. Verwende die Revisionsaktion oben, um die Abweichung in einer neuen Folgeversion zu bearbeiten."
+      : localGate.valid
+        ? "Die UI-Vorprüfung ist vollständig. Der native Dienst validiert vor dem Erzeugen des Zertifikats nochmals alle Pflichtschritte, Evidence und Hashes."
+        : `${blockers.length} Punkte müssen vor dem Abschluss geklärt werden.`;
     return `<div class="finalize-page">
       <div class="finalize-mark ${localGate.valid ? "is-ready" : ""}">${icon(localGate.valid ? "certificate" : "lock")}</div>
-      <p class="overline">Track Documentation Completion Certificate</p><h3>${localGate.valid ? "Bereit für den Abschluss" : "Finalisierung noch blockiert"}</h3><p>${localGate.valid ? "Die UI-Vorprüfung ist vollständig. Der native Dienst validiert vor dem Erzeugen des Zertifikats nochmals alle Pflichtschritte, Evidence und Hashes." : `${blockers.length} Punkte müssen vor dem Abschluss geklärt werden.`}</p>
+      <p class="overline">Track Documentation Completion Certificate</p><h3>${heading}</h3><p>${summary}</p>
       ${blockers.length ? `<ul class="gate-list">${blockers.map((item) => `<li>${icon("alert")}<span>${escapeHtml(item)}</span></li>`).join("")}</ul>` : `<ul class="gate-list gate-list--success"><li>${icon("check")}<span>Pflichtschritte erfüllt</span></li><li>${icon("check")}<span>Evidence vollständig</span></li><li>${icon("check")}<span>Dokumente aktuell</span></li><li>${icon("check")}<span>SHA-256 vollständig verifiziert</span></li></ul>`}
-      <button class="button button--finalize" data-action="finalize-track" ${!localGate.valid || track.status === "FINALIZED" ? "disabled" : ""}>${icon("certificate")} Dokumentation finalisieren</button>
+      ${finalized ? "" : `<button class="button button--finalize" data-action="finalize-track" ${!localGate.valid ? "disabled" : ""}>${icon("certificate")} Dokumentation finalisieren</button>`}
       <p class="certificate-disclaimer">Das Zertifikat bestätigt ausschließlich den Abschluss des konfigurierten Dokumentations- und Integritätsworkflows. Es ist keine behördliche Zertifizierung, Rechtsberatung oder unabhängige Feststellung von Urheberschaft oder Rechtskonformität.</p>
     </div>`;
   }
 
   private renderCertificate(track: TrackDetail): string {
-    if (!track.certificate.certificateId) return `<div class="certificate-empty">${icon("certificate")}<p class="overline">Zertifikat</p><h3>Noch kein Completion Certificate</h3><p>Das Zertifikat wird erst nach erfolgreicher nativer Finalisierungsprüfung erzeugt.</p><button class="button button--dark" data-step-open="finalize">Finalisierungs-Gate öffnen ${icon("arrow")}</button></div>`;
+    if (!track.certificate.certificateId) return `<div class="certificate-empty">${icon("certificate")}<p class="overline">Zertifikat</p><h3>Noch kein Completion Certificate</h3><p>Das Zertifikat wird erst nach erfolgreicher nativer Finalisierungsprüfung erzeugt.</p>${track.status === "FINALIZED" ? `<button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>` : `<button class="button button--dark" data-step-open="finalize">Finalisierungs-Gate öffnen ${icon("arrow")}</button>`}</div>`;
     const deviations = (track.blockingDeviations ?? []).filter((item) => item.blocking && !item.resolved);
     return `<div class="certificate-view ${track.certificate.valid ? "is-valid" : "is-invalid"}">
       <div class="certificate-paper"><header><div class="certificate-seal">${icon("certificate")}</div><div><p>Suno Documentation Manager</p><h3>Track Documentation<br>Completion Certificate</h3></div><span class="certificate-result">${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "CERTIFICATE INVALID"}</span></header>
       <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div></dl>
       <footer>This certificate confirms completion of the configured documentation workflow and integrity checks. It does not constitute governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.</footer></div>
-      <div class="certificate-actions">${track.certificate.valid ? `<button class="button button--danger-soft" data-action="invalidate-certificate">Zertifikat invalidieren</button>` : `<button class="button button--primary" data-action="create-revision">Neue Revision anlegen</button>`}</div>
+      <div class="certificate-actions"><button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>${track.certificate.valid ? `<button class="button button--danger-soft" data-action="invalidate-certificate">Zertifikat invalidieren</button>` : ""}</div>
     </div>`;
   }
 
@@ -1423,6 +1469,12 @@ export class SunoDocumentationApp {
       return;
     }
     if (form.id === "track-step-form") {
+      if (this.state.track?.status === "FINALIZED") {
+        this.state.trackDraft = structuredClone(this.state.track.fields);
+        this.draftDirty = false;
+        this.showToast("info", "Neue Revision erforderlich", "Lege über die angezeigte Schaltfläche eine neue Revision an, bevor du Track-Angaben bearbeitest.");
+        return;
+      }
       const emptyRequiredChoice = [...form.querySelectorAll<HTMLElement>("[data-multi-choice-required]")]
         .find((group) => !group.querySelector("input[data-multi-choice]:checked"));
       if (emptyRequiredChoice) {
@@ -1446,6 +1498,11 @@ export class SunoDocumentationApp {
       return;
     }
     if (!input.closest("#track-step-form") || !this.state.trackDraft) return;
+    if (this.state.track?.status === "FINALIZED") {
+      this.state.trackDraft = structuredClone(this.state.track.fields);
+      this.draftDirty = false;
+      return;
+    }
     if (input.matches("[data-multi-choice]")) {
       const group = input.closest<HTMLElement>("[data-multi-choice-group]");
       const checked = [...(group?.querySelectorAll<HTMLInputElement>("input[data-multi-choice]:checked") ?? [])]
@@ -1483,6 +1540,11 @@ export class SunoDocumentationApp {
       return;
     }
     if (input.closest("#track-step-form") && this.state.trackDraft && input.name) {
+      if (this.state.track?.status === "FINALIZED") {
+        this.state.trackDraft = structuredClone(this.state.track.fields);
+        this.draftDirty = false;
+        return;
+      }
       (this.state.trackDraft as unknown as Record<string, unknown>)[input.name] = input.value;
       this.draftDirty = true;
     }
@@ -1600,6 +1662,12 @@ export class SunoDocumentationApp {
 
   private async saveTrackDraft(): Promise<void> {
     if (!this.state.trackDraft) return;
+    if (this.state.track?.status === "FINALIZED") {
+      this.state.trackDraft = structuredClone(this.state.track.fields);
+      this.draftDirty = false;
+      this.showToast("info", "Neue Revision erforderlich", "Der finalisierte Snapshot wurde nicht verändert. Lege zuerst eine neue Revision an.");
+      return;
+    }
     const normalizedDraft = normalizeGuidedTrackFields(this.state.trackDraft);
     const updated = await this.withBusy("Track-Angaben werden gespeichert …", () => this.api.updateTrack(this.requireTrack().id, normalizedDraft));
     if (updated) { this.applyTrack(updated); this.showToast("success", "Schritt gespeichert", "Der Dokumentationsstatus wurde neu bewertet."); }
@@ -1607,6 +1675,11 @@ export class SunoDocumentationApp {
 
   private async flushDraft(): Promise<boolean> {
     if (!this.draftDirty || !this.state.trackDraft || !this.state.track) return true;
+    if (shouldDiscardLockedDraft(this.state.track.status, this.draftDirty)) {
+      this.state.trackDraft = structuredClone(this.state.track.fields);
+      this.draftDirty = false;
+      return true;
+    }
     const normalizedDraft = normalizeGuidedTrackFields(this.state.trackDraft);
     const updated = await this.withBusy("Ungespeicherte Angaben werden zuerst gesichert …", () => this.api.updateTrack(this.state.track!.id, normalizedDraft));
     if (!updated) return false;

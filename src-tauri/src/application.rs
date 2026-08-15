@@ -1554,6 +1554,16 @@ impl WorkspaceApp {
             "invalid_or_incomplete"
         };
         let revision_id = Uuid::new_v4().to_string();
+        // Older and imported track layouts can predate the managed revisions
+        // directory. Resolve and create the publish parent before staging or
+        // moving any live certificate artifacts so the final rename cannot fail
+        // merely because `.archive/revisions` is absent.
+        ensure_contained_directory(&root, Path::new(".archive/revisions"))?;
+        let archive_relative = PathBuf::from(".archive/revisions").join(&revision_id);
+        let archive = contained_path(&root, &archive_relative, false)?;
+        if archive.exists() {
+            return Err(AppError::Collision(archive.display().to_string()));
+        }
         let stage_relative = PathBuf::from(".archive/revision-staging").join(&revision_id);
         let stage = ensure_contained_directory(&root, &stage_relative)?;
         let live_hashes = contained_path(&root, Path::new(integrity::HASH_FILE), false)?;
@@ -1568,11 +1578,6 @@ impl WorkspaceApp {
                     "The revision SHA256SUMS archive copy could not be verified.".into(),
                 ));
             }
-        }
-        let archive_relative = PathBuf::from(".archive/revisions").join(&revision_id);
-        let archive = contained_path(&root, &archive_relative, false)?;
-        if archive.exists() {
-            return Err(AppError::Collision(archive.display().to_string()));
         }
         let metadata = serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
@@ -4659,6 +4664,8 @@ mod tests {
             .expect_err("finalized mutation must be refused");
         assert!(matches!(locked, AppError::Finalized));
 
+        fs::remove_dir(track_root.join(".archive/revisions"))
+            .expect("simulate an older track without the managed revision parent");
         let revision = app.create_revision(&detail.id).expect("new revision");
         let revised = revision.track.expect("revised track detail");
         assert_eq!(revised.status, TrackStatus::Active);
