@@ -8,20 +8,22 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.0";
+pub const TEMPLATE_VERSION: &str = "1.1";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
 pub const DOCUMENT_PATHS: [&str; 8] = [
     "02_SUNO/suno_project.txt",
+    "02_SUNO/Lyrics.md",
+    "02_SUNO/Style.md",
     "03_DOCUMENTATION/README.md",
     "03_DOCUMENTATION/AI_USAGE.md",
-    "03_DOCUMENTATION/Lyrics.md",
-    "03_DOCUMENTATION/Styles.md",
     "04_LICENSES/suno_account_and_license.md",
     "04_LICENSES/openai_image_generation.md",
     "05_ARTWORK/artwork_process.md",
 ];
+const LEGACY_MANAGED_DOCUMENT_PATHS: [&str; 2] =
+    ["03_DOCUMENTATION/Lyrics.md", "03_DOCUMENTATION/Styles.md"];
 
 #[derive(Serialize)]
 struct Fingerprint<'a> {
@@ -128,6 +130,12 @@ pub fn generate(
         let target = contained_path(track_root, Path::new(relative), false)?;
         atomic_write(&target, content.as_bytes())?;
     }
+    for relative in LEGACY_MANAGED_DOCUMENT_PATHS {
+        let legacy = contained_path(track_root, Path::new(relative), false)?;
+        if legacy.is_file() && has_exact_managed_header(&legacy, relative)? {
+            fs::remove_file(&legacy).map_err(|error| AppError::io(&legacy, error))?;
+        }
+    }
     Ok(generated.keys().cloned().collect())
 }
 
@@ -219,6 +227,10 @@ fn render(
     let f = &normalized_fields;
     let artwork_present = !matches!(f.artwork_origin.as_str(), "" | "none");
     let ai_artwork = matches!(f.artwork_origin.as_str(), "ai_generated" | "ai_assisted");
+    let ai_transparency_disabled = ai_artwork
+        && f.depicts_real_person == Some(false)
+        && f.depicts_real_event == Some(false)
+        && f.contains_trademark == Some(false);
     let ai_original = evidence
         .iter()
         .find(|item| item.role == crate::model::EvidenceRole::AiArtworkOriginal)
@@ -234,35 +246,40 @@ fn render(
         marker(),
         value_or_missing(&f.lyrics_source)
     );
-    if matches!(f.lyrics_source.as_str(), "human" | "mixed") {
+    if !matches!(f.lyrics_source.as_str(), "" | "instrumental") {
         lyrics_document.push_str(&format!(
             "\n## Text\n\n{}\n",
             value_or_missing(&f.lyrics_text)
         ));
     }
 
-    let mut styles_document = format!(
-        "{}# Styles and editing\n\n- Human editing performed: {}\n",
+    let style_document = format!(
+        "{}# Suno style prompt\n\n{}\n",
         marker(),
+        value_or_missing(&f.suno_style_prompt)
+    );
+
+    let mut confirmed_work = format!(
+        "\n## Confirmed work and release choices\n\n- Human editing performed: {}\n",
         yes_no(f.human_editing_performed)
     );
     if f.human_editing_performed == Some(true) {
-        styles_document.push_str(&format!(
+        confirmed_work.push_str(&format!(
             "- Confirmed human work: {}\n",
             value_or_missing(&f.human_editing_details)
         ));
     }
-    styles_document.push_str(&format!(
+    confirmed_work.push_str(&format!(
         "- Post-export editing performed: {}\n",
         yes_no(f.post_export_editing_performed)
     ));
     if f.post_export_editing_performed == Some(true) {
-        styles_document.push_str(&format!(
+        confirmed_work.push_str(&format!(
             "- Confirmed post-export work: {}\n",
             value_or_missing(&f.post_export_editing_details)
         ));
     }
-    styles_document.push_str(&format!(
+    confirmed_work.push_str(&format!(
         "- Release notes: {}\n",
         value_or_missing(&f.release_notes)
     ));
@@ -281,16 +298,22 @@ fn render(
                     value_or_missing(&f.human_artwork_modifications)
                 ));
             }
-            ai_artwork_usage.push_str(&format!(
-                "- Project transparency policy: {}\n- Visible disclosure applied: {}\n",
-                profile.artwork_transparency_policy,
-                yes_no(f.disclosure_applied)
-            ));
-            if f.disclosure_applied == Some(true) {
+            if ai_transparency_disabled {
+                ai_artwork_usage.push_str(
+                    "- AI transparency step: Disabled after all three content checks were answered No\n",
+                );
+            } else {
                 ai_artwork_usage.push_str(&format!(
-                    "- Disclosure text: {}\n",
-                    value_or_missing(&f.disclosure_text)
+                    "- Project transparency policy: {}\n- Visible disclosure applied: {}\n",
+                    profile.artwork_transparency_policy,
+                    yes_no(f.disclosure_applied)
                 ));
+                if f.disclosure_applied == Some(true) {
+                    ai_artwork_usage.push_str(&format!(
+                        "- Disclosure text: {}\n",
+                        value_or_missing(&f.disclosure_text)
+                    ));
+                }
             }
         }
         ai_artwork_usage.push_str(&format!("- Final output: {}\n", final_artwork));
@@ -298,18 +321,25 @@ fn render(
 
     let image_generation_document = if ai_artwork {
         let mut content = format!(
-            "{}# AI image generation record\n\n- AI image service: {}\n- Artwork origin: {}\n- Project transparency policy: {}\n- Disclosure applied: {}\n",
+            "{}# AI image generation record\n\n- AI image service: {}\n- Artwork origin: {}\n",
             marker(),
             value_or_missing(&f.ai_image_service),
-            value_or_missing(&f.artwork_origin),
-            profile.artwork_transparency_policy,
-            yes_no(f.disclosure_applied)
+            value_or_missing(&f.artwork_origin)
         );
-        if f.disclosure_applied == Some(true) {
+        if ai_transparency_disabled {
+            content.push_str("- AI transparency step: Disabled after all three content checks were answered No\n");
+        } else {
             content.push_str(&format!(
-                "- Disclosure text: {}\n",
-                value_or_missing(&f.disclosure_text)
+                "- Project transparency policy: {}\n- Disclosure applied: {}\n",
+                profile.artwork_transparency_policy,
+                yes_no(f.disclosure_applied)
             ));
+            if f.disclosure_applied == Some(true) {
+                content.push_str(&format!(
+                    "- Disclosure text: {}\n",
+                    value_or_missing(&f.disclosure_text)
+                ));
+            }
         }
         content.push_str(
             "\nThe service name is a user-supplied fact; this document does not assert license rights.\n",
@@ -341,16 +371,22 @@ fn render(
                     value_or_missing(&f.human_artwork_modifications)
                 ));
             }
-            artwork_document.push_str(&format!(
-                "- Disclosure policy: {}\n- Disclosure applied: {}\n",
-                profile.artwork_transparency_policy,
-                yes_no(f.disclosure_applied)
-            ));
-            if f.disclosure_applied == Some(true) {
+            if ai_transparency_disabled {
+                artwork_document.push_str(
+                    "- AI transparency step: Disabled after all three content checks were answered No\n",
+                );
+            } else {
                 artwork_document.push_str(&format!(
-                    "- Disclosure text: {}\n",
-                    value_or_missing(&f.disclosure_text)
+                    "- Disclosure policy: {}\n- Disclosure applied: {}\n",
+                    profile.artwork_transparency_policy,
+                    yes_no(f.disclosure_applied)
                 ));
+                if f.disclosure_applied == Some(true) {
+                    artwork_document.push_str(&format!(
+                        "- Disclosure text: {}\n",
+                        value_or_missing(&f.disclosure_text)
+                    ));
+                }
             }
         }
         artwork_document.push_str(&format!(
@@ -425,13 +461,14 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`  \nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n\n## Workflow status\n\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
             if f.commercial_use_intended { "Yes" } else { "No" },
             value_or_missing(&f.production_start_date), value_or_missing(&f.production_end_date),
             value_or_missing(&f.final_export_date),
+            confirmed_work,
             "- The authoritative evaluated step results are stored in the completion certificate after finalization.\n",
             evidence_list(evidence)
         ),
@@ -445,8 +482,8 @@ fn render(
             ai_artwork_usage
         ),
     );
-    values.insert("03_DOCUMENTATION/Lyrics.md".into(), lyrics_document);
-    values.insert("03_DOCUMENTATION/Styles.md".into(), styles_document);
+    values.insert("02_SUNO/Lyrics.md".into(), lyrics_document);
+    values.insert("02_SUNO/Style.md".into(), style_document);
     values.insert(
         "04_LICENSES/suno_account_and_license.md".into(),
         format!(
@@ -530,6 +567,7 @@ mod tests {
             final_export_date: "2026-02-06".into(),
             lyrics_source: "instrumental".into(),
             lyrics_text: INACTIVE_FIXTURE_VALUES[0].into(),
+            suno_style_prompt: "dark synthwave, driving bass, cinematic".into(),
             external_audio_uploaded: Some(false),
             external_audio_source: INACTIVE_FIXTURE_VALUES[1].into(),
             external_audio_ownership: INACTIVE_FIXTURE_VALUES[2].into(),
@@ -695,6 +733,32 @@ mod tests {
     }
 
     #[test]
+    fn generation_moves_managed_lyrics_and_style_documents_into_suno_folder() {
+        let workspace = tempfile::tempdir().expect("temporary track root");
+        let legacy_directory = workspace.path().join("03_DOCUMENTATION");
+        fs::create_dir_all(&legacy_directory).expect("legacy document directory");
+        fs::write(
+            legacy_directory.join("Lyrics.md"),
+            format!("{}# Legacy lyrics\n", marker()),
+        )
+        .expect("legacy lyrics");
+        fs::write(
+            legacy_directory.join("Styles.md"),
+            format!("{}# Legacy styles\n", marker()),
+        )
+        .expect("legacy styles");
+        let (track, profile, evidence) = fixture_input();
+
+        generate(workspace.path(), &track, &profile, &evidence, &[], false)
+            .expect("generate migrated documents");
+
+        assert!(workspace.path().join("02_SUNO/Lyrics.md").is_file());
+        assert!(workspace.path().join("02_SUNO/Style.md").is_file());
+        assert!(!legacy_directory.join("Lyrics.md").exists());
+        assert!(!legacy_directory.join("Styles.md").exists());
+    }
+
+    #[test]
     fn adopt_existing_false_leaves_unmanaged_sentinel_unchanged() {
         let workspace = tempfile::tempdir().expect("temporary track root");
         let sentinel = write_adoption_sentinel(workspace.path());
@@ -845,9 +909,9 @@ mod tests {
                 "inactive value was rendered: {stale_value}"
             );
         }
-        assert!(!rendered["03_DOCUMENTATION/Lyrics.md"].contains("## Text"));
-        assert!(!rendered["03_DOCUMENTATION/Styles.md"].contains("Confirmed human work"));
-        assert!(!rendered["03_DOCUMENTATION/Styles.md"].contains("Confirmed post-export work"));
+        assert!(!rendered["02_SUNO/Lyrics.md"].contains("## Text"));
+        assert!(!rendered["03_DOCUMENTATION/README.md"].contains("Confirmed human work"));
+        assert!(!rendered["03_DOCUMENTATION/README.md"].contains("Confirmed post-export work"));
         assert!(!rendered["03_DOCUMENTATION/AI_USAGE.md"].contains("AI service:"));
         assert!(!rendered["05_ARTWORK/artwork_process.md"].contains("Real-person note:"));
 

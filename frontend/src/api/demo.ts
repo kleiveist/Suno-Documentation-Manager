@@ -75,6 +75,7 @@ function makeTrack(
     finalExportDate: complete ? "2026-07-24" : "",
     lyricsSource: complete ? ("human" as const) : ("" as const),
     lyricsText: complete ? "Eigene Lyrics – im Track-Dokument vollständig gespeichert." : "",
+    sunoStylePrompt: complete ? "cinematic synthwave, driving bass, wide vocal" : "",
     externalAudioUploaded: false,
     ownAudioUploaded: false,
     thirdPartySamplesUploaded: false,
@@ -127,8 +128,8 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.0",
-      files: complete ? ["README.md", "AI_USAGE.md", "Lyrics.md", "Styles.md"] : []
+      templateVersion: "1.1",
+      files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
       generated: complete,
@@ -224,6 +225,12 @@ export function createDemoApi(): DesktopApi {
     async updateProfile(next) {
       await wait();
       profile = clone(next);
+      for (const track of tracks.values()) {
+        if (track.status === "FINALIZED" || track.status === "SUPERSEDED") continue;
+        track.profileSnapshot = clone(profile);
+        track.documents.current = false;
+        refresh(track);
+      }
       return clone(profile);
     },
     async listGlobalEvidence() {
@@ -414,7 +421,7 @@ export function createDemoApi(): DesktopApi {
     async previewDocumentGeneration(trackId) {
       await wait();
       get(trackId);
-      return { files: ["README.md", "AI_USAGE.md", "Lyrics.md", "Styles.md"], collisions: [], adoptionRequired: false };
+      return { files: ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"], collisions: [], adoptionRequired: false };
     },
     async generateDocuments(trackId) {
       await wait();
@@ -423,8 +430,8 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.0",
-        files: ["suno_project.txt", "README.md", "AI_USAGE.md", "Lyrics.md", "Styles.md", "suno_account_and_license.md", "openai_image_generation.md", "artwork_process.md"]
+        templateVersion: "1.1",
+        files: ["02_SUNO/suno_project.txt", "02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md", "04_LICENSES/suno_account_and_license.md", "04_LICENSES/openai_image_generation.md", "05_ARTWORK/artwork_process.md"]
       };
       track.integrity.generated = false;
       track.integrity.verified = false;

@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   MAIN_NAVIGATION,
   missingProfileFields,
+  parseMultiChoiceValue,
   resetWorkspaceScopedUiState,
   shouldIgnoreModalBackdropClick,
+  serializeMultiChoiceValue,
   trackSummaryFromDetail,
   type WorkspaceScopedUiState,
   workflowUpgradePresentation
@@ -32,6 +34,11 @@ describe("theme", () => {
 });
 
 describe("navigation", () => {
+  it("stores multiple guided choices deterministically", () => {
+    expect(serializeMultiChoiceValue(["Mixing", "Mastering", "Mixing"])).toBe("Mixing | Mastering");
+    expect(parseMultiChoiceValue("Mixing | Mastering")).toEqual(["Mixing", "Mastering"]);
+  });
+
   it("exposes every required German main view", () => {
     expect(MAIN_NAVIGATION.map((item) => [item.id, item.label])).toEqual([
       ["dashboard", "Dashboard"], ["tracks", "Tracks"], ["current", "Aktueller Track"],

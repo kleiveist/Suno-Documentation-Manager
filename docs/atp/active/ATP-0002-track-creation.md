@@ -8,10 +8,10 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-14 |
-| Executed | 2026-08-13/14 — partial automated execution |
+| Last review | 2026-08-15 |
+| Executed | 2026-08-13/15 — partial automated execution |
 | Requirement | [`REQ-TRK-001` through `REQ-TRK-003`](../../def/track-documentation-model.md#requirements-and-atp-mapping), [`REQ-WFL-002`](../../def/workflow-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; regression implementation commit `b7e9797b277f0bcac58d4503049002e354cb93fb` (`🐛 Fix modal interaction and subscription evidence imports`); package rebuild remains open in the central report |
+| Tested commit/build | Product `0.1.0`; current 2026-08-15 working tree not yet committed; package rebuild remains open in the central report |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; temporary Rust workspaces plus Vitest workflow, navigation, and delegated-dialog fixtures |
 
 ## Purpose
@@ -79,6 +79,8 @@ Accept track creation when the modal remains usable while its fields are edited,
 | 5 | `REQ-TRK-002` | Answer `No` to external, own, and third-party audio upload. | Dependent source, ownership, license, and file questions are hidden and excluded from the applicable requirement set. | Vitest confirmed hidden fields and exclusion from the applicable set for negative controllers. | PASS | Frontend `conditional fields` and `progress` suites; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 6 | `REQ-WFL-002` | Change external audio upload to `Yes`. | Source, ownership, license evidence, and uploaded-file requirements appear as missing items. | Vitest produced the four external-source, ownership, file, and license missing items. | PASS | Frontend `lists only applicable missing items` |
 | 7 | `REQ-TRK-002` | Answer `No` to human editing and post-export editing. | Specific editing fields are hidden and no generic arrangement, mixing, or mastering claim is selected. | Not run | NOT RUN | — |
+| 7a | `REQ-WFL-002` | In Human Work, select a lyrics source, enter the used lyrics and Suno style prompt, then choose multiple confirmed editing steps. | Non-instrumental lyrics and the style prompt are required; confirmed work is stored as the deterministic multi-selection rather than unrestricted prose. | The frontend requires the style prompt, conditionally requires used lyrics, and round-trips de-duplicated guided choices. Native workflow evaluation requires `human_work.suno_style_prompt`. | PASS | Vitest `stores multiple guided choices deterministically`, `lists only applicable missing items`; Rust embedded workflow validation |
+| 7b | `REQ-WFL-002` | In Release, choose multiple release-note options. | The field accepts the declared release-version choices and does not present an unrestricted notes textarea. | The release editor uses the same deterministic multi-choice control and retains optional selection semantics. | PASS | Vitest `stores multiple guided choices deterministically`; frontend `renderStepContent` |
 | 8 | `REQ-WFL-002` | Declare AI-assisted artwork and then human-only artwork in separate runs. | AI evidence/disclosure requirements appear only for the AI-assisted run; the whole AI Transparency step can be stored as N/A for the human-only run only with a reason. | Not run | NOT RUN | — |
 | 9 | `REQ-TRK-001` | Create TD-03, then attempt TD-02 again. | Creation stops with a collision error and the sentinel remains byte-identical. | Not run | NOT RUN | — |
 | 10 | `REQ-TRK-001` | Attempt each TD-04 title. | Each invalid title returns a controlled error and no outside or malformed track is created. | Path-like, absolute-looking, traversal, separator-only, and empty titles are rejected before folder creation. | PASS | Rust `track_creation_rejects_path_like_titles_without_writing_folders`; native title validation review |

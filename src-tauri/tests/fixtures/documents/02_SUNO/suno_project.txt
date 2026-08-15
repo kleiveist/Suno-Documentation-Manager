@@ -1,5 +1,5 @@
 # suno-documentation-manager:template-v1
-Template version: 1.0
+Template version: 1.1
 Track: Golden Signal
 Suno project URL: https://suno.example/projects/golden-signal
 Suno model: v4.5

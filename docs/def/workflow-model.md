@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-15 |
 | Audience | Product developers and acceptance owners |
 | Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md) |
 
@@ -90,10 +90,10 @@ An empty N/A reason is invalid. A conditional child requirement can become N/A a
 | 01 | `track` | Track | Title, production dates, commercial intent, and workflow identity |
 | 02 | `source` | Source | External, own, and third-party audio branches plus applicable ownership and license evidence |
 | 03 | `suno` | Suno | Model, project URL, plan at creation, export date, and Suno evidence |
-| 04 | `human-work` | Human Work | Lyrics source and only the human or post-export edits that actually occurred |
+| 04 | `human-work` | Human Work | Lyrics source/text, Suno style prompt, and guided human or post-export edits that actually occurred |
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
-| 06 | `ai-transparency` | AI Transparency | AI service and visible-disclosure policy and result when AI artwork applies |
-| 07 | `release` | Release | Final release files, final artwork when applicable, and export facts |
+| 06 | `ai-transparency` | AI Transparency | AI service and visible-disclosure policy/result unless all three content checks are explicitly `No` |
+| 07 | `release` | Release | Final release audio, guided release-note choices, and export facts |
 | 08 | `evidence-licenses` | Evidence & Licenses | Required evidence coverage, including selected subscription evidence |
 | 09 | `integrity` | Integrity | Current generated documents, SHA-256 list, complete native re-verification, and no mismatch |
 | 10 | `finalize` | Finalize | Blocking-deviation check and native certificate transaction |
@@ -117,9 +117,9 @@ The following branch rules are mandatory:
 | External audio uploaded | Hide dependent source/license requirements and exclude them from evaluation | Require source, ownership, license evidence, and uploaded file |
 | Own audio uploaded | Hide own-audio details | Require confirmed ownership/source details and file role |
 | Third-party samples uploaded | Hide sample details | Require sample source, permission/license note, and applicable evidence |
-| Human lyrics | Hide human-lyrics details | Require source/authoring statement without making an ownership judgment |
+| Lyrics source | Instrumental hides lyrics text | Every non-instrumental source requires the exact text used; the Suno style prompt is always required |
 | Human or post-export editing | Do not add generic editing claims | Require the specific operations actually performed |
-| AI-generated or AI-assisted artwork | Permit the whole AI Transparency step to be stored as N/A only with a reason | Require AI original, service, policy decision, disclosure result, and final output; when disclosure applies, require locally generated provenance and source lineage |
+| AI-generated or AI-assisted artwork | Permit the whole AI Transparency step to be stored as N/A only with a reason | Require AI original and one final artwork under Artwork. If all three content checks are `No`, deactivate AI Transparency; otherwise require service, policy decision, disclosure result, and locally generated provenance/source lineage when disclosure applies |
 | Real person, real event, trademark, or logo content check | End that question | Require a factual note and any configured evidence; do not decide legality |
 | External license evidence | Do not ask for unrelated license fields | Require evidence selection, contained copy, and integrity inclusion |
 
@@ -135,7 +135,7 @@ For each declared requirement:
 2. If a requirement is not applicable, exclude it from the applicable denominator. If an entire step is explicitly stored as `N/A`, require and persist a non-empty reason.
 3. If applicable, evaluate its field, evidence role, artifact freshness, integrity, or deviation predicate.
 4. Add a missing item for `NOT RUN`, `FAIL`, `BLOCKED`, or `NOT VERIFIED`.
-5. Mark the step `PASS` only when every applicable mandatory requirement passes.
+5. Mark the step `PASS` only when every applicable mandatory requirement passes. `Finalize` remains `BLOCKED` while any preceding step is not `PASS` or justified `N/A`.
 6. Derive the track lifecycle without trusting a frontend-provided status.
 
 The UI answers `What is missing?` with concrete items such as Suno project URL, final WAV, AI artwork original, or subscription evidence.
@@ -227,5 +227,6 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Added the Suno style prompt, guided work/release choices, three-negative AI Transparency deactivation, one final-artwork requirement, and prerequisite-aware Finalize status. | Project team |
 | 2026-08-13 | Added provenance and source-lineage checks to the AI artwork finalization gate. | Project team |
 | 2026-08-13 | Defined the ten-step conditional workflow and finalization gate. | Project team |

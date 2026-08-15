@@ -103,11 +103,12 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         "external_audio",
         "own_audio",
         "third_party_samples",
-        "human_lyrics",
+        "lyrics_text",
         "human_editing",
         "post_export_editing",
         "artwork_present",
         "ai_artwork",
+        "ai_transparency_required",
         "real_person",
         "real_event",
         "trademark_or_logo",
@@ -303,6 +304,16 @@ pub fn evaluate(
                     && requirement.required
                     && condition_applies(&requirement.when, track)
             });
+        let preceding_step_blocked = step.id == "finalize"
+            && (missing_by_step
+                .iter()
+                .any(|(step_id, items)| step_id != "finalize" && !items.is_empty())
+                || steps.iter().any(|state: &StepState| {
+                    matches!(
+                        state.status,
+                        StepStatus::Fail | StepStatus::Blocked | StepStatus::NotVerified
+                    )
+                }));
         let state = if let Some(stored) = stored.get(step.id.as_str()) {
             let justified_na = stored.status == StepStatus::NotApplicable
                 && !applicable
@@ -316,7 +327,7 @@ pub fn evaluate(
             );
             if justified_na || explicitly_blocking {
                 (*stored).clone()
-            } else if missing.is_empty() {
+            } else if missing.is_empty() && !preceding_step_blocked {
                 StepState {
                     id: step.id.clone(),
                     status: StepStatus::Pass,
@@ -334,7 +345,7 @@ pub fn evaluate(
         } else {
             StepState {
                 id: step.id.clone(),
-                status: if missing.is_empty() {
+                status: if missing.is_empty() && !preceding_step_blocked {
                     StepStatus::Pass
                 } else if track.legacy {
                     StepStatus::NotVerified
@@ -423,11 +434,15 @@ fn condition_applies(condition: &str, track: &TrackRecord) -> bool {
         "external_audio" => f.external_audio_uploaded == Some(true),
         "own_audio" => f.own_audio_uploaded == Some(true),
         "third_party_samples" => f.third_party_samples_uploaded == Some(true),
-        "human_lyrics" => matches!(f.lyrics_source.as_str(), "human" | "mixed"),
+        "lyrics_text" => !matches!(f.lyrics_source.as_str(), "" | "instrumental"),
         "human_editing" => f.human_editing_performed == Some(true),
         "post_export_editing" => f.post_export_editing_performed == Some(true),
         "artwork_present" => !matches!(f.artwork_origin.as_str(), "" | "none"),
         "ai_artwork" => matches!(f.artwork_origin.as_str(), "ai_generated" | "ai_assisted"),
+        "ai_transparency_required" => {
+            matches!(f.artwork_origin.as_str(), "ai_generated" | "ai_assisted")
+                && !content_check_all_negative(track)
+        }
         "real_person" => f.depicts_real_person == Some(true),
         "real_event" => f.depicts_real_event == Some(true),
         "trademark_or_logo" => f.contains_trademark == Some(true),
@@ -463,12 +478,7 @@ fn requirement_met(
                         .is_some_and(|end| end >= track.fields.production_end_date.as_str())
             })
         }
-        "evidence"
-            if matches!(
-                requirement.key.as_str(),
-                "artwork.final" | "release.final_artwork"
-            ) && disclosure_required(track, profile) =>
-        {
+        "evidence" if requirement.key == "artwork.final" && disclosure_required(track, profile) => {
             let disclosed_hashes = evidence
                 .iter()
                 .filter(|item| verified_local_disclosure(item, track, evidence))
@@ -549,9 +559,16 @@ fn disclosure_required(track: &TrackRecord, profile: &Profile) -> bool {
     matches!(
         track.fields.artwork_origin.as_str(),
         "ai_generated" | "ai_assisted"
-    ) && (profile.artwork_transparency_policy == "always"
-        || (profile.artwork_transparency_policy == "per_artwork"
-            && track.fields.disclosure_applied == Some(true)))
+    ) && !content_check_all_negative(track)
+        && (profile.artwork_transparency_policy == "always"
+            || (profile.artwork_transparency_policy == "per_artwork"
+                && track.fields.disclosure_applied == Some(true)))
+}
+
+fn content_check_all_negative(track: &TrackRecord) -> bool {
+    track.fields.depicts_real_person == Some(false)
+        && track.fields.depicts_real_event == Some(false)
+        && track.fields.contains_trademark == Some(false)
 }
 
 fn present(value: &str) -> bool {
@@ -598,6 +615,7 @@ fn field_requirement_met(
         "suno.final_export_date" => present(&f.final_export_date),
         "human_work.lyrics_source" => present(&f.lyrics_source),
         "human_work.human_lyrics_details" => present(&f.lyrics_text),
+        "human_work.suno_style_prompt" => present(&f.suno_style_prompt),
         "human_work.human_editing_performed" => f.human_editing_performed.is_some(),
         "human_work.human_editing_details" => present(&f.human_editing_details),
         "human_work.post_export_editing_performed" => f.post_export_editing_performed.is_some(),
@@ -647,6 +665,27 @@ mod tests {
             created_at: "2026-08-13T00:00:00Z".into(),
             updated_at: "2026-08-13T00:00:00Z".into(),
             legacy: false,
+        }
+    }
+
+    fn verified_evidence(role: EvidenceRole) -> EvidenceItem {
+        EvidenceItem {
+            id: role.as_str().into(),
+            role,
+            file_name: "fixture.png".into(),
+            relative_path: "05_ARTWORK/fixture.png".into(),
+            sha256: Some("a".repeat(64)),
+            size_bytes: 42,
+            imported_at: "2026-08-15T00:00:00Z".into(),
+            verified: true,
+            verification_error: None,
+            source_global_evidence_id: None,
+            coverage_start: None,
+            coverage_end: None,
+            provenance: crate::model::EvidenceProvenance::ManagedCopy,
+            derived_from_evidence_id: None,
+            generator_version: None,
+            generated_disclosure_text: None,
         }
     }
 
@@ -802,5 +841,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn three_negative_content_checks_disable_ai_transparency() {
+        let mut track = disclosure_track("ai_assisted", Some(true));
+        track.fields.depicts_real_person = Some(false);
+        track.fields.depicts_real_event = Some(false);
+        track.fields.contains_trademark = Some(false);
+        let profile = Profile {
+            artwork_transparency_policy: "always".into(),
+            ..Default::default()
+        };
+
+        assert!(content_check_all_negative(&track));
+        assert!(!condition_applies("ai_transparency_required", &track));
+        assert!(!disclosure_required(&track, &profile));
+
+        let evidence = vec![
+            verified_evidence(EvidenceRole::AiArtworkOriginal),
+            verified_evidence(EvidenceRole::FinalArtwork),
+        ];
+        let evaluation = evaluate(&track, &profile, &evidence, &[], &[])
+            .expect("evaluate negative content checks");
+        assert!(!evaluation
+            .missing
+            .iter()
+            .any(|item| item.contains("AI-Kennzeichnung") || item.contains("finale Artwork")));
+    }
+
+    #[test]
+    fn finalize_is_blocked_while_a_preceding_step_is_incomplete() {
+        let track = disclosure_track("none", None);
+        let evaluation = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate incomplete track");
+
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "finalize")
+                .map(|step| &step.status),
+            Some(&StepStatus::Blocked)
+        );
     }
 }

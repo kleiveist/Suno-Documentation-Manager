@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-14 |
+| Last review | 2026-08-15 |
 | Audience | Product developers and documentation reviewers |
 | Related ATP | [Track and document acceptance plans](../atp/active/active.md) |
 
@@ -19,7 +19,7 @@ This document defines the facts, evidence roles, generated documents, folder str
 
 ### Included
 
-- global defaults and immutable track snapshots;
+- global defaults, synchronized open-track snapshots, and immutable finalized snapshots;
 - track metadata, evidence, documents, artwork stages, integrity data, and revisions;
 - required folder and file names;
 - factual-generation and privacy rules; and
@@ -63,7 +63,7 @@ The minimal reusable settings are:
 | Default AI image service | Used only when artwork is AI-generated or AI-assisted |
 | AI artwork transparency policy | Defaults to `Always add visible AI disclosure` |
 
-The default profile does not request a birthday, private telephone number, private email address, Google account, or unrelated account data. A generated track document contains the values actually used as a snapshot. It never contains only a pointer to mutable global settings.
+The default profile does not request a birthday, private telephone number, private email address, Google account, or unrelated account data. Saving the profile updates the embedded snapshot of every non-finalized track, marks its generated documents stale, and reevaluates its requirements. Finalized and superseded tracks retain their historical snapshot. A generated track document contains the embedded values actually used; it never contains only a pointer to mutable global settings.
 
 ## Track facts
 
@@ -75,12 +75,14 @@ At minimum, the workflow can record the following confirmed facts:
 - Suno plan at creation;
 - final export date;
 - lyrics source;
+- the lyrics text actually used when the track is not instrumental;
+- the complete Suno style prompt;
 - whether external audio, own audio, or third-party samples were uploaded;
 - whether human editing or post-export editing occurred;
 - the specific confirmed human editing operations; and
 - whether commercial use is intended.
 
-An editing label such as `EQ preset`, `cuts`, `track editing`, `mastering/finalization`, or `post-export processing` appears only when the user confirms that operation. The generator does not add generic arrangement, mixing, or mastering claims by default.
+Confirmed human-work labels are selected from the guided choices for arrangement, lyrics, timing/cuts, sound design, EQ, mixing, mastering, and loudness adjustment. Release notes likewise use guided release-version choices. A label appears only when the user selects it; the generator does not add generic arrangement, mixing, mastering, or release claims by default.
 
 ## Conditional facts
 
@@ -108,13 +110,13 @@ A negative answer ends the branch. A positive content-check answer can require a
 │   └── track.json
 ├── 01_RELEASE/
 ├── 02_SUNO/
+│   ├── Lyrics.md
+│   ├── Style.md
 │   └── suno_project.txt
 ├── 03_DOCUMENTATION/
 │   ├── AI_USAGE.md
-│   ├── Lyrics.md
 │   ├── README.md
-│   ├── SHA256SUMS.txt
-│   └── Styles.md
+│   └── SHA256SUMS.txt
 ├── 04_LICENSES/
 │   ├── openai_image_generation.md
 │   └── suno_account_and_license.md
@@ -141,7 +143,7 @@ Folder generation creates directories and managed text documents only when appro
 | AI artwork original | `05_ARTWORK/` | Required when an AI base image is declared |
 | AI artwork edited | `05_ARTWORK/` | Required only when that production stage occurred |
 | Human-edited artwork | `05_ARTWORK/` | Required only when that production stage occurred |
-| Final artwork | `05_ARTWORK/` or release destination | Required when artwork is part of the release |
+| Final artwork | `05_ARTWORK/` | The authoritative JPG/PNG downloaded from Suno, or the required locally disclosed derivative |
 | Other evidence | Role-selected contained destination | Optional; must have a factual description |
 
 `release_wav` and `final_artwork` are singular authoritative roles in version 0.1. To replace either asset, use the explicit upload control attached to the current evidence. The app reuses that evidence record, archives the previous managed bytes, and never chooses silently between competing final assets.
@@ -178,7 +180,7 @@ The supported naming convention is:
 
 `AI_ORIGINAL` is the unchanged AI output. `AI_EDITED` is a later AI-generated or AI-edited version. `EDITED` is a human-edited version. `FINAL` is the final artwork. Only stages that actually occurred are required.
 
-For AI-generated or AI-assisted artwork, the default project transparency policy enables a visible local disclosure. The default text is `AI-assisted`, with reproducible bottom-right placement. The original is never overwritten. The output has `generated_disclosure` provenance, points through `derivedFromEvidenceId` to verified AI-original evidence, records `generatorVersion: local-disclosure-v1`, and retains the exact normalized disclosure text.
+For AI-generated or AI-assisted artwork, the default project transparency policy enables a visible local disclosure. The default text is `AI-assisted`, with reproducible bottom-right placement. The original is never overwritten. The output has `generated_disclosure` provenance, points through `derivedFromEvidenceId` to verified AI-original evidence, records `generatorVersion: local-disclosure-v1`, and retains the exact normalized disclosure text. When all three content checks—real person, authentic real event, and trademark/logo—are explicitly answered `No`, the AI Transparency step is deactivated and no disclosed derivative is required.
 
 When disclosure is required, the gate checks that lineage and requires the final-artwork evidence to be byte-identical to the locally generated `AI_EDITED` disclosure output. Merely importing another image as `ai_artwork_edited`, asserting that disclosure occurred, or keeping a disclosed intermediate next to an unrelated final cover does not pass. `artwork_process.md` and `AI_USAGE.md` record the service, base image, human modifications, policy, whether disclosure was applied, disclosure text, and final output.
 
@@ -186,15 +188,15 @@ This is a project transparency policy. The product does not label it as a univer
 
 ## Generated documents
 
-The template version is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the workspace snapshot, track facts, workflow results, and evidence metadata.
+Template version `1.1` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and evidence metadata. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
 
 | Output | Minimum purpose |
 | --- | --- |
 | `02_SUNO/suno_project.txt` | Suno project URL and confirmed Suno production facts |
+| `02_SUNO/Lyrics.md` | Lyrics source and the exact used lyrics text when applicable |
+| `02_SUNO/Style.md` | The complete style prompt entered in Suno |
 | `03_DOCUMENTATION/README.md` | Human-readable track documentation entry point |
 | `03_DOCUMENTATION/AI_USAGE.md` | Confirmed AI systems, uses, and artwork disclosure facts |
-| `03_DOCUMENTATION/Lyrics.md` | Lyrics source and confirmed lyrics content or reference |
-| `03_DOCUMENTATION/Styles.md` | Confirmed style and production notes |
 | `04_LICENSES/suno_account_and_license.md` | Snapshot of relevant account, plan, and selected subscription evidence facts |
 | `04_LICENSES/openai_image_generation.md` | AI image service facts when applicable; the historical file name does not imply an API integration |
 | `05_ARTWORK/artwork_process.md` | Artwork stages, human changes, content-check declarations, and disclosure result |

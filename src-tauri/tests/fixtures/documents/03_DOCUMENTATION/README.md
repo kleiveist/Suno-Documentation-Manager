@@ -1,7 +1,7 @@
 <!-- suno-documentation-manager:template-v1 -->
 # Track documentation: Golden Signal
 
-Template version: `1.0`  
+Template version: `1.1`
 Workflow: `suno-track-documentation` version `1.0`
 
 ## Snapshot
@@ -13,6 +13,13 @@ Workflow: `suno-track-documentation` version `1.0`
 - Commercial use intended: Yes
 - Production period: 2026-02-03 to 2026-02-05
 - Final export date: 2026-02-06
+
+## Confirmed work and release choices
+
+- Human editing performed: Yes
+- Confirmed human work: Adjusted timing and dynamics.
+- Post-export editing performed: No
+- Release notes: Export reviewed against the project.
 
 ## Workflow status
 

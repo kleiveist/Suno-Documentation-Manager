@@ -200,6 +200,7 @@ pub struct TrackFields {
     pub final_export_date: String,
     pub lyrics_source: String,
     pub lyrics_text: String,
+    pub suno_style_prompt: String,
     pub external_audio_uploaded: Option<bool>,
     pub external_audio_source: String,
     pub external_audio_ownership: String,
@@ -240,6 +241,7 @@ impl Default for TrackFields {
             final_export_date: String::new(),
             lyrics_source: String::new(),
             lyrics_text: String::new(),
+            suno_style_prompt: String::new(),
             external_audio_uploaded: None,
             external_audio_source: String::new(),
             external_audio_ownership: String::new(),
@@ -289,7 +291,7 @@ impl TrackFields {
             self.third_party_sample_source.clear();
             self.third_party_sample_ownership.clear();
         }
-        if !matches!(self.lyrics_source.as_str(), "human" | "mixed") {
+        if matches!(self.lyrics_source.as_str(), "" | "instrumental") {
             self.lyrics_text.clear();
         }
         if self.human_editing_performed != Some(true) {
@@ -360,6 +362,7 @@ pub struct TrackPatch {
     pub final_export_date: Option<String>,
     pub lyrics_source: Option<String>,
     pub lyrics_text: Option<String>,
+    pub suno_style_prompt: Option<String>,
     pub external_audio_uploaded: Option<bool>,
     pub external_audio_source: Option<String>,
     pub external_audio_ownership: Option<String>,

@@ -34,7 +34,7 @@ order = 4
 name = "04 Human Work"
 required = true
 when = "always"
-description = "Lyrics source and only the confirmed human and post-export editing work."
+description = "Lyrics, Suno style prompt, and only the confirmed human and post-export editing work."
 
 [[steps]]
 id = "artwork"
@@ -49,7 +49,7 @@ id = "ai_transparency"
 order = 6
 name = "06 AI Transparency"
 required = true
-when = "ai_artwork"
+when = "ai_transparency_required"
 description = "AI artwork service, project transparency policy, and visible disclosure result when applicable."
 
 [[steps]]
@@ -58,7 +58,7 @@ order = 7
 name = "07 Release"
 required = true
 when = "always"
-description = "Final release assets, final artwork when applicable, and export facts."
+description = "Final release audio, selected release notes, and export facts."
 
 [[steps]]
 id = "evidence_licenses"
@@ -169,7 +169,7 @@ key = "profile.default_ai_image_service"
 step_id = "ai_transparency"
 kind = "field"
 required = true
-when = "ai_artwork"
+when = "ai_transparency_required"
 missing_message = "Der globale Standarddienst für AI-Bilder fehlt."
 
 [[requirements]]
@@ -319,8 +319,16 @@ key = "human_work.human_lyrics_details"
 step_id = "human_work"
 kind = "field"
 required = true
-when = "human_lyrics"
-missing_message = "Die Angaben zu menschlich erstellten Lyrics fehlen."
+when = "lyrics_text"
+missing_message = "Der tatsächlich verwendete Lyrics-Text fehlt."
+
+[[requirements]]
+key = "human_work.suno_style_prompt"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der in Suno verwendete Style-Prompt fehlt."
 
 [[requirements]]
 key = "human_work.human_editing_performed"
@@ -433,7 +441,7 @@ key = "ai_transparency.image_service"
 step_id = "ai_transparency"
 kind = "field"
 required = true
-when = "ai_artwork"
+when = "ai_transparency_required"
 missing_message = "Der verwendete AI-Bilddienst fehlt."
 
 [[requirements]]
@@ -441,7 +449,7 @@ key = "ai_transparency.policy"
 step_id = "ai_transparency"
 kind = "field"
 required = true
-when = "ai_artwork"
+when = "ai_transparency_required"
 missing_message = "Die Transparenzrichtlinie für AI-Artwork fehlt."
 
 [[requirements]]
@@ -449,7 +457,7 @@ key = "ai_transparency.disclosure_result"
 step_id = "ai_transparency"
 kind = "field"
 required = true
-when = "ai_artwork"
+when = "ai_transparency_required"
 missing_message = "Das Ergebnis der sichtbaren AI-Kennzeichnung fehlt."
 
 [[requirements]]
@@ -460,15 +468,6 @@ required = true
 when = "always"
 missing_message = "Die finale Release-Audiodatei fehlt."
 evidence_role = "release_wav"
-
-[[requirements]]
-key = "release.final_artwork"
-step_id = "release"
-kind = "evidence"
-required = true
-when = "artwork_present"
-missing_message = "Das finale Release-Cover fehlt."
-evidence_role = "final_artwork"
 
 [[requirements]]
 key = "evidence_licenses.portable_copy"

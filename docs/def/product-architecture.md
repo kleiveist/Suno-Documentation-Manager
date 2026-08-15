@@ -160,6 +160,8 @@ Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclo
 
 Evidence import is dispatched as blocking native work rather than running on the webview event loop. Copy and SHA-256 calculation share one bounded-buffer stream. Routine track loading performs metadata checks instead of repeatedly hashing evidence above 64 MiB; explicit verification and integrity/finalization remain full checks. Preview commands embed only bounded images or text, and treat project ZIPs as metadata-only. An explicit replacement preserves the evidence ID, archives the previous bytes, and coordinates the filesystem change with the SQLite update so an occupied `(track_id, relative_path)` never becomes a raw user-facing uniqueness error.
 
+Profile updates and their non-finalized track snapshots are committed in one SQLite transaction. The native service marks affected documents stale and resets integrity; finalized and superseded snapshots are deliberately skipped. The frontend reloads the current track after the update, so workflow rails, missing items, and generated Markdown all evaluate the same embedded profile values.
+
 Track library placement is synchronized between the workspace index and physical folder hierarchy. `create_track` creates `Singles/<track>/` or `<album>/<track>/`; `update_track_library` moves the complete track root and then persists its new relative path. `rename_album` moves one album directory and updates all member paths in a single SQLite transaction. These organizational commands deliberately bypass content-edit lifecycle restrictions so a finalized track can be reorganized without changing its update timestamp, workflow, documents, integrity state, certificate, or bytes below the track root. Destination collisions never overwrite, and a failed database write triggers a compensating folder move. The general `update_track` command retains its existing content-change and invalidation behavior; when the editable title changes, it also renames the track leaf folder.
 
 ## Product requirements and ATP mapping
@@ -210,6 +212,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Synchronized profile changes into open tracks, corrected prerequisite-aware step status, and moved lyrics/style outputs into `02_SUNO`. | Project team |
 | 2026-08-14 | Replaced virtual-only library placement with synchronized physical album/single paths and atomic album-folder rename. | Project team |
 | 2026-08-14 | Added the typed library-assignment boundary and separated virtual reclassification from portable track mutation. | Project team |
 | 2026-08-14 | Defined filesystem-scoped no-clobber publication acceptance and documented the global-evidence command boundary. | Project team |

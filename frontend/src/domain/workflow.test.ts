@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateMissingRequirements,
   calculateProgress,
+  contentCheckAllNegative,
   deriveStepStatus,
   evaluateRequirements,
   finalizationGate,
@@ -55,6 +56,7 @@ function completeTrack(): TrackDetail {
     sunoPlanAtCreation: "Premier",
     finalExportDate: "2026-07-03",
     lyricsSource: "instrumental" as const,
+    sunoStylePrompt: "cinematic synthwave, driving bass",
     externalAudioUploaded: false,
     ownAudioUploaded: false,
     thirdPartySamplesUploaded: false,
@@ -78,7 +80,7 @@ function completeTrack(): TrackDetail {
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.0", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.1", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     blockingDeviations: []
@@ -160,7 +162,8 @@ describe("missing requirements", () => {
     track.fields.aiImageService = "Local Image Tool";
     track.fields.disclosureApplied = true;
     track.fields.disclosureText = "AI-assisted";
-    track.fields.depictsRealPerson = false;
+    track.fields.depictsRealPerson = true;
+    track.fields.realPersonNotes = "Fiktive Bearbeitung einer realen Person";
     track.fields.depictsRealEvent = false;
     track.fields.containsTrademark = false;
     const independentFinal = evidence("final_artwork");
@@ -177,13 +180,27 @@ describe("missing requirements", () => {
     };
     track.evidence.push(disclosed);
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("ai-disclosure");
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toEqual(
-      expect.arrayContaining(["artwork-final", "release-final-artwork"])
-    );
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("artwork-final");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("release-final-artwork");
     const final = track.evidence.find((item) => item.role === "final_artwork")!;
     final.sha256 = disclosed.sha256;
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("artwork-final");
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("release-final-artwork");
+  });
+
+  it("deactivates AI Transparency after three explicit No answers", () => {
+    const track = completeTrack();
+    track.fields.artworkOrigin = "ai_generated";
+    track.fields.aiImageService = "Local Image Tool";
+    track.fields.depictsRealPerson = false;
+    track.fields.depictsRealEvent = false;
+    track.fields.containsTrademark = false;
+    track.evidence.push(evidence("ai_artwork_original"), evidence("final_artwork"));
+
+    expect(contentCheckAllNegative(track.fields)).toBe(true);
+    expect(visibleConditionalFields(track.fields, profile)).not.toContain("disclosure");
+    expect(calculateMissingRequirements(track, profile).filter((item) => item.stepId === "ai_transparency")).toEqual([]);
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("artwork-final");
   });
 
   it("surfaces every attached but missing or unverified evidence item", () => {
@@ -246,6 +263,14 @@ describe("statuses and finalization", () => {
     expect(deriveStepStatus("artwork", [], { id: "artwork", status: "N_A", naReason: "Kein Artwork" }, true)).toBe("PASS");
     expect(deriveStepStatus("artwork", [], { id: "artwork", status: "N_A" })).toBe("PASS");
     expect(deriveStepStatus("artwork", [], { id: "artwork", status: "BLOCKED" })).toBe("PASS");
+  });
+
+  it("keeps Finalize blocked until every preceding step is complete", () => {
+    const track = completeTrack();
+    track.fields.productionEndDate = "";
+    const statuses = stepStatuses(track, profile);
+    expect(statuses.find((step) => step.id === "track")?.status).not.toBe("PASS");
+    expect(statuses.find((step) => step.id === "finalize")?.status).toBe("BLOCKED");
   });
 
   it("blocks finalization for stale documents, mismatches and unresolved deviations", () => {

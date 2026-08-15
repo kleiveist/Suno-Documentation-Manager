@@ -144,6 +144,7 @@ export interface TrackFields {
   finalExportDate: string;
   lyricsSource: LyricsSource | "";
   lyricsText: string;
+  sunoStylePrompt: string;
   externalAudioUploaded: boolean | null;
   externalAudioSource: string;
   externalAudioOwnership: string;
@@ -285,6 +286,7 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     finalExportDate: "",
     lyricsSource: "",
     lyricsText: "",
+    sunoStylePrompt: "",
     externalAudioUploaded: null,
     externalAudioSource: "",
     externalAudioOwnership: "",

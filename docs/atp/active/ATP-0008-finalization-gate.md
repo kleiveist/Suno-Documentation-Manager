@@ -8,10 +8,10 @@
 | Status | active |
 | Owner | Product team |
 | Created | 2026-08-13 |
-| Last review | 2026-08-14 |
-| Executed | 2026-08-13/14 — partial automated execution |
+| Last review | 2026-08-15 |
+| Executed | 2026-08-13/15 — partial automated execution |
 | Requirement | [`REQ-WFL-001`, `REQ-WFL-003`, `REQ-WFL-004`](../../def/workflow-model.md#requirements-and-atp-mapping) |
-| Tested commit/build | Product `0.1.0`; stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571`; package digests in the central report |
+| Tested commit/build | Product `0.1.0`; current 2026-08-15 working tree not yet committed; package digests in the central report |
 | Environment | Linux `7.1.4-arch1-1` `x86_64`; Vitest workflow fixtures and native end-to-end fixture |
 
 ## Purpose
@@ -73,6 +73,7 @@ Accept the finalization gate when it exposes every actionable blocker, permits o
 | 3 | `REQ-WFL-003` | Evaluate TD-02 with each negative conditional controller. | Dependent requirements are excluded from numerator and denominator; explicitly marking a wholly non-applicable step N/A requires a non-empty reason. | Not run | NOT RUN | — |
 | 4 | `REQ-WFL-004` | Attempt manual N/A with an empty or whitespace reason. | Validation rejects it and finalization remains blocked. | Not run | NOT RUN | — |
 | 5 | `REQ-WFL-004` | Evaluate every TD-03 status fixture. | Each `NOT RUN`, `FAIL`, `BLOCKED`, and `NOT VERIFIED` mandatory result appears as an exact blocker. | Not run | NOT RUN | — |
+| 5a | `REQ-WFL-004` | Leave any preceding step incomplete and inspect `10 Finalize`. | Finalize cannot display a completion check while an earlier mandatory step is open. | Both native and frontend status evaluation return `BLOCKED` for Finalize until every preceding step is `PASS` or justified `N/A`. | PASS | Rust `finalize_is_blocked_while_a_preceding_step_is_incomplete`; Vitest `keeps Finalize blocked until every preceding step is complete` |
 | 6 | `REQ-WFL-004` | Evaluate missing evidence, stale document, hash failure, and open deviation fixtures. | Each independently blocks readiness even if all other steps pass. | Not run | NOT RUN | — |
 | 7 | `REQ-WFL-003` | Compare progress before and after making an optional branch applicable. | Denominator and missing items update deterministically; optional nonmandatory values do not lower mandatory progress. | Vitest asserted both denominator change for an applicable branch and exclusion of non-applicable requirements. | PASS | Frontend `progress` suite; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 8 | `REQ-WFL-004` | Evaluate TD-04. | Lifecycle is `READY`, no blocker remains, and the Finalize action is enabled. | The complete frontend fixture enabled its gate, and native validation returned `valid` with no missing or blocking item. | PASS | Frontend `allows finalization only when every applicable requirement is complete`; Rust end-to-end test |

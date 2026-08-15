@@ -82,7 +82,7 @@ Open `Einstellungen` and enter the minimal defaults:
 
 The project default transparency policy is `Always add visible AI disclosure`. This is a project transparency choice, not a statement that a particular watermark is universally required by law. The default disclosure text is `AI-assisted` and can be configured.
 
-Later changes to global settings do not rewrite a finalized track. Generated documents contain a snapshot of the values actually used for that track.
+Saving global settings updates all open tracks and marks their generated documents stale, so artist name, Suno profile, handle, plan, and policy do not remain `Not documented`. Finalized and superseded tracks are not rewritten. Generated documents contain the profile snapshot actually assigned to that track.
 
 ## Register subscription evidence
 
@@ -155,6 +155,10 @@ Use the current-track view to work through:
 The application displays one task-oriented set of questions at a time. A negative controlling answer closes its branch. For example, answering `No` to external audio upload means source, ownership, license, and uploaded-file details for external audio are not requested. Answering `Yes` makes those details applicable.
 
 Record only work that occurred. Do not select arrangement, mixing, mastering, or another editing label unless it accurately describes confirmed work on this track.
+
+In `04 Human Work`, record the lyrics source, the exact lyrics text used for every non-instrumental source, and the complete Suno style prompt. Select all actually performed human-editing steps from the guided choices. Document generation writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`; managed files at the former `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md` locations are removed during regeneration.
+
+In `05 Artwork`, answer the three content checks and upload the final JPG or PNG downloaded from Suno. The final-artwork role is requested exactly once in this step, not again under Release. If a file already occupies the role but does not satisfy the current rule, the open requirement uses the safe replacement action and archives the previous managed bytes. For AI artwork, three explicit `No` answers deactivate `06 AI Transparency`; otherwise the configured disclosure policy applies. In `07 Release`, choose any applicable release-note labels and import the final audio files.
 
 ## Import evidence
 

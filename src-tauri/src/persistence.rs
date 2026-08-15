@@ -74,12 +74,37 @@ impl Persistence {
             .unwrap_or_else(|| Ok(Profile::default()))
     }
 
-    pub fn save_profile(&self, profile: &Profile) -> Result<()> {
-        let json = serde_json::to_string(profile)?;
-        self.open()?.execute(
+    pub fn save_profile_and_tracks(&self, profile: &Profile, tracks: &[TrackRecord]) -> Result<()> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let profile_json = serde_json::to_string(profile)?;
+        transaction.execute(
             "INSERT INTO profile(singleton,data_json) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET data_json=excluded.data_json",
-            [json],
+            [profile_json],
         )?;
+        for track in tracks {
+            let json = serde_json::to_string(track)?;
+            transaction.execute(
+                "INSERT INTO tracks(id,title,relative_path,status,workflow_id,workflow_version,data_json,created_at,updated_at,legacy)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                 ON CONFLICT(id) DO UPDATE SET title=excluded.title,relative_path=excluded.relative_path,
+                 status=excluded.status,workflow_id=excluded.workflow_id,workflow_version=excluded.workflow_version,
+                 data_json=excluded.data_json,updated_at=excluded.updated_at,legacy=excluded.legacy",
+                params![
+                    track.id,
+                    track.fields.title,
+                    track.relative_path,
+                    track.status.as_str(),
+                    track.workflow_id,
+                    track.workflow_version,
+                    json,
+                    track.created_at,
+                    track.updated_at,
+                    track.legacy as i64
+                ],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 

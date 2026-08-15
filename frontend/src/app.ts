@@ -2,6 +2,7 @@ import type { DesktopApi } from "./api/desktop";
 import { toUserMessage } from "./api/desktop";
 import {
   calculateMissingRequirements,
+  contentCheckAllNegative,
   evaluateRequirements,
   evidenceRoleFileTypes,
   evidenceRoleLabel,
@@ -104,6 +105,14 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
 
 export function shouldIgnoreModalBackdropClick(isBackdrop: boolean, isDirectClick: boolean): boolean {
   return isBackdrop && !isDirectClick;
+}
+
+export function parseMultiChoiceValue(value: string): string[] {
+  return value.split(" | ").map((item) => item.trim()).filter(Boolean);
+}
+
+export function serializeMultiChoiceValue(values: string[]): string {
+  return [...new Set(values.map((item) => item.trim()).filter(Boolean))].join(" | ");
 }
 
 export function trackSummaryFromDetail(track: TrackDetail): TrackSummary {
@@ -777,9 +786,10 @@ export class SunoDocumentationApp {
         break;
       case "human_work":
         body = `<div class="field-grid two-col">${this.selectField("lyricsSource", "Lyrics-Quelle", draft.lyricsSource, [["", "Bitte auswählen"], ["instrumental", "Instrumental – keine Lyrics"], ["human", "Menschlich geschrieben"], ["suno", "Von Suno erzeugt"], ["mixed", "Gemischt"]], true)}</div>
-          ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Menschliche Lyrics", "Nur die tatsächlich verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
+          ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Verwendeter Lyrics-Text", "Nur die tatsächlich in Suno verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
+          ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
           ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat.", draft.humanEditingPerformed)}
-          ${conditional.has("humanEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.textArea("humanEditingDetails", "Bestätigte Schritte", "z. B. Cuts, Track Editing, EQ-Preset", draft.humanEditingDetails, true)}</div>` : ""}
+          ${conditional.has("humanEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("humanEditingDetails", "Bestätigte Schritte", draft.humanEditingDetails, ["Arrangement", "Lyrics", "Timing und Cuts", "Sounddesign", "EQ", "Mixing", "Mastering", "Lautheitsanpassung"], true)}</div>` : ""}
           ${this.boolQuestion("postExportEditingPerformed", "Nach dem Suno-Export weiter bearbeitet?", "Bearbeitung der exportierten Audiodatei.", draft.postExportEditingPerformed)}
           ${conditional.has("postExportEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.textArea("postExportEditingDetails", "Nachbearbeitung", "z. B. Lautheitsanpassung und finaler Schnitt", draft.postExportEditingDetails, true)}</div>` : ""}`;
         break;
@@ -787,15 +797,15 @@ export class SunoDocumentationApp {
         body = `<div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.textField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, true) : ""}</div>
           ${conditional.has("humanArtworkModifications") ? this.textArea("humanArtworkModifications", "Menschliche Änderungen", "Nur tatsächlich ausgeführte Änderungen", draft.humanArtworkModifications, true) : ""}
           ${conditional.has("aiArtworkOriginal") ? `<div class="form-section"><p class="field-label">Originale KI-Ausgabe</p>${this.inlineEvidenceActions(track, [["ai_artwork_original", "KI-Original importieren"], ["ai_artwork_edited", "KI-bearbeitete Version importieren"], ["human_edited_artwork", "Menschlich bearbeitete Version importieren"]])}</div>` : ""}
-          ${draft.artworkOrigin && draft.artworkOrigin !== "none" ? `<div class="question-group"><div><p class="overline">Kurzer Content-Check</p><h4>Nur relevante Angaben</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div>${this.boolQuestion("depictsRealPerson", "Zeigt das Artwork absichtlich eine reale Person?", "", draft.depictsRealPerson)}${conditional.has("realPersonNotes") ? this.textArea("realPersonNotes", "Notiz zur realen Person", "Darstellung und Kontext", draft.realPersonNotes, true) : ""}${this.boolQuestion("depictsRealEvent", "Stellt es ein reales Ereignis als authentisch dar?", "", draft.depictsRealEvent)}${conditional.has("realEventNotes") ? this.textArea("realEventNotes", "Notiz zum realen Ereignis", "Darstellung und Kontext", draft.realEventNotes, true) : ""}${this.boolQuestion("containsTrademark", "Reproduziert es eine Marke oder ein Firmenlogo?", "", draft.containsTrademark)}${conditional.has("trademarkNotes") ? this.textArea("trademarkNotes", "Notiz zur Marke / zum Logo", "Darstellung und Kontext", draft.trademarkNotes, true) : ""}</div>` : ""}`;
+          ${draft.artworkOrigin && draft.artworkOrigin !== "none" ? `<div class="question-group"><div><p class="overline">Kurzer Content-Check</p><h4>Nur relevante Angaben</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div>${this.boolQuestion("depictsRealPerson", "Zeigt das Artwork absichtlich eine reale Person?", "", draft.depictsRealPerson)}${conditional.has("realPersonNotes") ? this.textArea("realPersonNotes", "Notiz zur realen Person", "Darstellung und Kontext", draft.realPersonNotes, true) : ""}${this.boolQuestion("depictsRealEvent", "Stellt es ein reales Ereignis als authentisch dar?", "", draft.depictsRealEvent)}${conditional.has("realEventNotes") ? this.textArea("realEventNotes", "Notiz zum realen Ereignis", "Darstellung und Kontext", draft.realEventNotes, true) : ""}${this.boolQuestion("containsTrademark", "Reproduziert es eine Marke oder ein Firmenlogo?", "", draft.containsTrademark)}${conditional.has("trademarkNotes") ? this.textArea("trademarkNotes", "Notiz zur Marke / zum Logo", "Darstellung und Kontext", draft.trademarkNotes, true) : ""}</div><div class="form-section"><p class="field-label">Finales Artwork</p><p class="field-help">Lade hier die endgültige JPG- oder PNG-Datei hoch, die du aus Suno heruntergeladen hast. Falls ein sichtbarer KI-Hinweis erforderlich ist, ersetzt du sie anschließend durch die lokal gekennzeichnete Fassung.</p>${this.inlineEvidenceActions(track, [["final_artwork", "Finales Suno-Artwork importieren"]])}</div>` : ""}`;
         break;
       case "ai_transparency":
-        body = `<div class="policy-card">${icon("info")}<div><p class="overline">Projektinterne Transparenzrichtlinie · Track-Snapshot</p><h4>${this.policyLabel(track.profileSnapshot.artworkTransparencyPolicy)}</h4><p>Dies ist die beim Anlegen gespeicherte Projektregel – keine pauschale gesetzliche Aussage. Spätere globale Änderungen verändern diesen Track nicht.</p></div></div>
-          ${conditional.has("disclosure") ? `<div class="field-grid two-col">${this.textField("disclosureText", "Sichtbarer Hinweis", "AI-assisted", draft.disclosureText, true)}${track.profileSnapshot.artworkTransparencyPolicy === "per_artwork" ? this.boolQuestion("disclosureApplied", "Sichtbaren Hinweis anwenden?", "Bei Ja muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied) : `<div class="read-only-field"><span>Status</span><strong>${draft.disclosureApplied ? "Lokal erzeugt" : "Noch nicht erzeugt"}</strong></div>`}</div><button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Hinweis lokal erzeugen</button>` : `<div class="neutral-message">${icon("check")}<div><strong>Kein automatischer Transparenzschritt erforderlich.</strong><span>Grundlage: Artwork-Angabe und aktive Workspace-Policy.</span></div></div>`}`;
+        body = `<div class="policy-card">${icon("info")}<div><p class="overline">Projektinterne Transparenzrichtlinie · Track-Snapshot</p><h4>${this.policyLabel(track.profileSnapshot.artworkTransparencyPolicy)}</h4><p>Dies ist die aktuell für den Track gespeicherte Projektregel – keine pauschale gesetzliche Aussage. Globale Änderungen aktualisieren offene Tracks; finalisierte Snapshots bleiben unverändert.</p></div></div>
+          ${conditional.has("disclosure") ? `<div class="field-grid two-col">${this.textField("disclosureText", "Sichtbarer Hinweis", "AI-assisted", draft.disclosureText, true)}${track.profileSnapshot.artworkTransparencyPolicy === "per_artwork" ? this.boolQuestion("disclosureApplied", "Sichtbaren Hinweis anwenden?", "Bei Ja muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied) : `<div class="read-only-field"><span>Status</span><strong>${draft.disclosureApplied ? "Lokal erzeugt" : "Noch nicht erzeugt"}</strong></div>`}</div><button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Hinweis lokal erzeugen</button>` : `<div class="neutral-message">${icon("check")}<div><strong>AI Transparency ist für diesen Track deaktiviert.</strong><span>${contentCheckAllNegative(draft) ? "Alle drei Content-Checks wurden mit Nein beantwortet." : "Grundlage: Artwork-Angabe und aktive Workspace-Policy."}</span></div></div>`}`;
         break;
       case "release":
-        body = `<div class="field-grid two-col">${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}${this.textArea("releaseNotes", "Release-Notizen", "Optional: Format, Version oder Ziel", draft.releaseNotes)}</div>
-          <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">WAV ist für die Finalisierung erforderlich. Wenn die KI-Disclosure aktiv ist, wähle als finales Artwork exakt die lokal erzeugte <code>_AI_EDITED.png</code>; die App prüft die Byte-Identität.</p>${this.inlineEvidenceActions(track, [["release_wav", "Release-WAV importieren"], ["release_mp3", "MP3 importieren"], ["release_mp4", "MP4 importieren"], ["final_artwork", "Finales Artwork importieren"]])}</div>`;
+        body = `<div class="field-grid two-col">${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, ["Originale Suno-Fassung", "Streaming-Master", "Radio Edit", "Extended Mix", "Instrumental", "Clean Version", "Explicit Version", "Social-Media-Version"])}</div>
+          <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Für die Finalisierung ist eine WAV-Datei erforderlich. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Release-WAV importieren"], ["release_mp3", "MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
         break;
     }
     return `<form id="track-step-form" class="workflow-form" data-step="${stepId}">${body}<div class="form-save"><span>${icon("shield")} Änderungen bleiben lokal im Workspace.</span><button class="button button--primary" type="submit">${icon("check")} Schritt speichern</button></div></form>`;
@@ -805,7 +815,11 @@ export class SunoDocumentationApp {
     const missing = calculateMissingRequirements(track, track.profileSnapshot).filter((item) => item.evidenceRole);
     return `<div class="${embedded ? "embedded-content" : "evidence-page"}">
       <div class="section-intro"><div><p class="overline">Lokale Nachweise</p><h3>Evidence & Lizenzen</h3><p>Originale bleiben am Quellort. Importierte Kopien werden gehasht und niemals still überschrieben.</p></div><button class="button button--primary" data-action="import-evidence">${icon("upload")} Evidence importieren</button></div>
-      ${missing.length ? `<div class="evidence-needed"><strong>${missing.length} erforderliche Nachweise fehlen</strong><div>${missing.map((item) => item.evidenceRole === "subscription_payment" ? `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – unten aus globaler Evidence zuordnen</span>` : `<button data-import-role="${item.evidenceRole}">${icon("plus")}<span><strong>${escapeHtml(item.label)}</strong><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`).join("")}</div></div>` : ""}
+      ${missing.length ? `<div class="evidence-needed"><strong>${missing.length} erforderliche Nachweise fehlen</strong><div>${missing.map((item) => {
+        if (item.evidenceRole === "subscription_payment") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – unten aus globaler Evidence zuordnen</span>`;
+        const current = [...track.evidence].reverse().find((evidence) => evidence.role === item.evidenceRole);
+        return `<button data-import-role="${item.evidenceRole}" ${current ? `data-replace-evidence="${escapeHtml(current.id)}"` : ""}>${icon(current ? "upload" : "plus")}<span><strong>${escapeHtml(item.label)}</strong><small>${current ? "Vorhandene Datei sicher ersetzen" : escapeHtml(evidenceRoleLabel(item.evidenceRole!))}</small><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`;
+      }).join("")}</div></div>` : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track) : ""}
       <div class="panel evidence-table-panel"><div class="evidence-table-head"><span>Datei</span><span>Rolle</span><span>Integrität</span><span>Größe</span><span></span></div>
         ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><span class="evidence-name"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small></span><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${item.id}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${item.id}" aria-label="Evidence entfernen">${icon("trash")}</button></span></div>`).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
@@ -899,10 +913,10 @@ export class SunoDocumentationApp {
 
   private inlineEvidenceActions(track: TrackDetail, actions: Array<[EvidenceRole, string]>): string {
     return `<div class="inline-evidence">${actions.map(([role, label]) => {
-      const present = [...track.evidence].reverse().find((item) => item.role === role && item.verified);
+      const present = [...track.evidence].reverse().find((item) => item.role === role);
       const types = evidenceRoleFileTypes(role);
       return `<div class="evidence-control ${present ? "is-present" : ""}">
-        <button type="button" class="evidence-button ${present ? "is-present" : ""}" ${present ? `data-preview-evidence="${escapeHtml(present.id)}"` : `data-import-role="${role}"`}>${present ? icon("check") : icon("upload")}<span><strong>${escapeHtml(label)}</strong><small>${present ? "Vorhanden – klicken für Vorschau" : evidenceRoleLabel(role)}</small><small class="evidence-types">Gefordert: ${escapeHtml(types)}</small></span></button>
+        <button type="button" class="evidence-button ${present?.verified ? "is-present" : ""}" ${present ? `data-preview-evidence="${escapeHtml(present.id)}"` : `data-import-role="${role}"`}>${present?.verified ? icon("check") : icon("upload")}<span><strong>${escapeHtml(label)}</strong><small>${present ? present.verified ? "Vorhanden – klicken für Vorschau" : "Vorhanden, aber nicht verifiziert – klicken für Vorschau" : evidenceRoleLabel(role)}</small><small class="evidence-types">Gefordert: ${escapeHtml(types)}</small></span></button>
         ${present ? `<button type="button" class="evidence-reupload" data-import-role="${role}" data-replace-evidence="${escapeHtml(present.id)}" aria-label="${escapeHtml(label)} ersetzen" title="Datei ersetzen">${icon("upload")}</button>` : ""}
       </div>`;
     }).join("")}</div>`;
@@ -918,6 +932,12 @@ export class SunoDocumentationApp {
 
   private textArea(name: string, label: string, placeholder: string, value: string, required = false): string {
     return `<label class="field field--wide"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><textarea name="${name}" placeholder="${escapeHtml(placeholder)}" ${required ? "required" : ""}>${escapeHtml(value)}</textarea></label>`;
+  }
+
+  private multiChoiceField(name: string, label: string, value: string, options: string[], required = false): string {
+    const selected = parseMultiChoiceValue(value);
+    const values = [...options, ...selected.filter((item) => !options.includes(item))];
+    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${values.map((option) => `<label><input type="checkbox" name="${name}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(option)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : ""}</fieldset>`;
   }
 
   private selectField(name: string, label: string, value: string, options: Array<[string, string]>, required = false): string {
@@ -976,6 +996,7 @@ export class SunoDocumentationApp {
 
     const view = button.dataset.view as MainView | undefined;
     if (view) {
+      if (!(await this.flushDraft())) return;
       this.state.view = view;
       this.state.sidebarOpen = false;
       this.state.activeStep = null;
@@ -996,6 +1017,7 @@ export class SunoDocumentationApp {
     }
     const stepId = button.dataset.stepOpen as StepId | undefined;
     if (stepId) {
+      if (!(await this.flushDraft())) return;
       this.state.activeStep = stepId;
       this.state.view = "current";
       this.render();
@@ -1003,6 +1025,7 @@ export class SunoDocumentationApp {
     }
     const tab = button.dataset.trackTab as TrackTab | undefined;
     if (tab) {
+      if (!(await this.flushDraft())) return;
       this.state.trackTab = tab;
       this.state.activeStep = null;
       this.render();
@@ -1102,8 +1125,8 @@ export class SunoDocumentationApp {
       case "open-sidebar": this.state.sidebarOpen = true; this.render(); break;
       case "close-sidebar": this.state.sidebarOpen = false; this.render(); break;
       case "dismiss-toast": this.state.toast = null; this.render(); break;
-      case "go-tracks": this.state.view = "tracks"; this.render(); break;
-      case "back-overview": this.state.activeStep = null; this.state.trackTab = "overview"; this.render(); break;
+      case "go-tracks": if (await this.flushDraft()) { this.state.view = "tracks"; this.render(); } break;
+      case "back-overview": if (await this.flushDraft()) { this.state.activeStep = null; this.state.trackTab = "overview"; this.render(); } break;
       case "scan-workspace": await this.scanWorkspace(); break;
       case "adopt-legacy-profile":
         if (window.confirm("Treffen die aktuellen Workspace-Stammdaten auf diesen historischen Track zu? Sie werden als Track-Snapshot übernommen.")) await this.trackMutation("Stammdaten werden als Legacy-Snapshot übernommen …", () => this.api.adoptLegacyProfile(this.requireTrack().id), "Legacy-Snapshot übernommen");
@@ -1213,10 +1236,20 @@ export class SunoDocumentationApp {
         disclosureText: String(data.get("disclosureText") ?? "AI-assisted")
       };
       const saved = await this.withBusy("Stammdaten werden gespeichert …", () => this.api.updateProfile(profile));
-      if (saved) { this.state.profile = saved; this.showToast("success", "Einstellungen gespeichert", "Neue Tracks verwenden diese Werte als Vorbelegung."); }
+      if (saved) {
+        this.state.profile = saved;
+        await this.refreshTracks();
+        this.showToast("success", "Einstellungen gespeichert", "Offene Tracks wurden aktualisiert; finalisierte Track-Snapshots bleiben unverändert.");
+      }
       return;
     }
     if (form.id === "track-step-form") {
+      const emptyRequiredChoice = [...form.querySelectorAll<HTMLElement>("[data-multi-choice-required]")]
+        .find((group) => !group.querySelector("input[data-multi-choice]:checked"));
+      if (emptyRequiredChoice) {
+        this.showToast("error", "Auswahl fehlt", "Wähle mindestens einen tatsächlich ausgeführten Schritt aus.");
+        return;
+      }
       await this.saveTrackDraft();
     }
   }
@@ -1234,6 +1267,14 @@ export class SunoDocumentationApp {
       return;
     }
     if (!input.closest("#track-step-form") || !this.state.trackDraft) return;
+    if (input.matches("[data-multi-choice]")) {
+      const group = input.closest<HTMLElement>("[data-multi-choice-group]");
+      const checked = [...(group?.querySelectorAll<HTMLInputElement>("input[data-multi-choice]:checked") ?? [])]
+        .map((item) => item.value);
+      (this.state.trackDraft as unknown as Record<string, unknown>)[input.name] = serializeMultiChoiceValue(checked);
+      this.draftDirty = true;
+      return;
+    }
     const key = input.name as keyof TrackFields;
     if (!key) return;
     let value: string | boolean | null = input.value;
@@ -1364,7 +1405,10 @@ export class SunoDocumentationApp {
     if (!choice) return;
     const role = evidenceRoles[Number(choice) - 1];
     if (!role) { this.showToast("error", "Ungültige Rolle", "Wähle eine Nummer aus der angezeigten Liste."); return; }
-    await this.importEvidence(role);
+    const existing = ["release_wav", "final_artwork"].includes(role)
+      ? [...this.requireTrack().evidence].reverse().find((item) => item.role === role)
+      : undefined;
+    await this.importEvidence(role, existing?.id);
   }
 
   private async addDeviation(): Promise<void> {

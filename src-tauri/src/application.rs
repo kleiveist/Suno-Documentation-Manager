@@ -245,7 +245,23 @@ impl WorkspaceApp {
 
     pub fn update_profile(&self, profile: Profile) -> Result<Profile> {
         validate_profile(&profile, false)?;
-        self.persistence.save_profile(&profile)?;
+        let mut tracks = self.persistence.tracks()?;
+        let updated_at = now();
+        for track in &mut tracks {
+            if matches!(
+                track.status,
+                TrackStatus::Finalized | TrackStatus::Superseded
+            ) || track.profile_snapshot == profile
+            {
+                continue;
+            }
+            track.profile_snapshot = profile.clone();
+            mark_content_changed(track);
+            track.status = TrackStatus::Active;
+            track.updated_at = updated_at.clone();
+        }
+        self.persistence
+            .save_profile_and_tracks(&profile, &tracks)?;
         Ok(profile)
     }
 
@@ -1165,6 +1181,15 @@ impl WorkspaceApp {
         ) {
             return Err(AppError::Validation(
                 "Visible disclosure is available only for AI-generated or AI-assisted artwork."
+                    .into(),
+            ));
+        }
+        if track.fields.depicts_real_person == Some(false)
+            && track.fields.depicts_real_event == Some(false)
+            && track.fields.contains_trademark == Some(false)
+        {
+            return Err(AppError::Validation(
+                "AI Transparency ist deaktiviert, weil alle drei Content-Checks mit Nein beantwortet wurden."
                     .into(),
             ));
         }
@@ -2540,6 +2565,11 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
     for (name, value, max) in [
         ("Lyrics", fields.lyrics_text.as_str(), 1_000_000),
         (
+            "Suno style prompt",
+            fields.suno_style_prompt.as_str(),
+            100_000,
+        ),
+        (
             "External audio source",
             fields.external_audio_source.as_str(),
             4000,
@@ -2975,6 +3005,9 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     if let Some(value) = patch.lyrics_text {
         fields.lyrics_text = value;
     }
+    if let Some(value) = patch.suno_style_prompt {
+        fields.suno_style_prompt = value;
+    }
     if let Some(value) = patch.external_audio_uploaded {
         fields.external_audio_uploaded = Some(value);
     }
@@ -3102,6 +3135,7 @@ mod tests {
                     suno_plan_at_creation: Some("Pro".into()),
                     final_export_date: Some("2026-08-03".into()),
                     lyrics_source: Some("instrumental".into()),
+                    suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
                     third_party_samples_uploaded: Some(false),
@@ -3148,6 +3182,58 @@ mod tests {
             .expect("finalization")
             .track
             .expect("finalized track detail")
+    }
+
+    #[test]
+    fn profile_updates_refresh_open_tracks_but_preserve_finalized_snapshots() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let original_profile = complete_profile();
+        app.update_profile(original_profile.clone())
+            .expect("original profile");
+        let finalized = finalize_acceptance_track(
+            &app,
+            &directory.path().join("finalized-fixtures"),
+            "Frozen Profile",
+        );
+        let active = app
+            .create_track(CreateTrackInput {
+                title: "Current Profile".into(),
+                production_start_date: "2026-08-10".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("active track");
+        app.generate_documents(&active.id, false)
+            .expect("initial active documents");
+
+        let mut changed_profile = original_profile.clone();
+        changed_profile.artist_name = "Updated Artist".into();
+        changed_profile.suno_profile_name = "updated-profile".into();
+        changed_profile.suno_handle = "@updated".into();
+        app.update_profile(changed_profile.clone())
+            .expect("updated profile");
+
+        let refreshed = app.load_track(&active.id).expect("refreshed active track");
+        assert_eq!(refreshed.profile_snapshot, changed_profile);
+        assert!(!refreshed.documents.current);
+        let frozen = app
+            .load_track(&finalized.id)
+            .expect("unchanged finalized track");
+        assert_eq!(frozen.profile_snapshot, original_profile);
+
+        app.generate_documents(&active.id, false)
+            .expect("regenerated active documents");
+        let readme = fs::read_to_string(
+            app.root()
+                .join(&refreshed.relative_path)
+                .join("03_DOCUMENTATION/README.md"),
+        )
+        .expect("generated README");
+        assert!(readme.contains("- Artist: Updated Artist"));
+        assert!(readme.contains("- Suno profile: updated-profile"));
+        assert!(readme.contains("- Suno handle: @updated"));
+        assert!(!readme.contains("Artist: Not documented"));
     }
 
     #[test]
@@ -4411,6 +4497,7 @@ mod tests {
                     suno_plan_at_creation: Some("Pro".into()),
                     final_export_date: Some("2026-08-03".into()),
                     lyrics_source: Some("instrumental".into()),
+                    suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
                     third_party_samples_uploaded: Some(false),
@@ -4420,7 +4507,8 @@ mod tests {
                     artwork_origin: Some("ai_assisted".into()),
                     ai_image_service: Some("Local Tool".into()),
                     human_artwork_modifications: Some("Visible disclosure added locally".into()),
-                    depicts_real_person: Some(false),
+                    depicts_real_person: Some(true),
+                    real_person_notes: Some("Documented real-person depiction".into()),
                     depicts_real_event: Some(false),
                     contains_trademark: Some(false),
                     ..TrackPatch::default()
@@ -4568,6 +4656,7 @@ mod tests {
                     suno_plan_at_creation: Some("Pro".into()),
                     final_export_date: Some("2026-08-03".into()),
                     lyrics_source: Some("instrumental".into()),
+                    suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
                     third_party_samples_uploaded: Some(false),
@@ -5833,7 +5922,8 @@ mod tests {
                 artwork_origin: Some("ai_assisted".into()),
                 ai_image_service: Some("Local Tool".into()),
                 human_artwork_modifications: Some("Visible disclosure added locally".into()),
-                depicts_real_person: Some(false),
+                depicts_real_person: Some(true),
+                real_person_notes: Some("Documented real-person depiction".into()),
                 depicts_real_event: Some(false),
                 contains_trademark: Some(false),
                 disclosure_applied: Some(true),
@@ -5890,10 +5980,15 @@ mod tests {
             .missing_items
             .iter()
             .any(|item| item.contains("AI-Kennzeichnung")));
-        assert!(rejected
-            .missing_items
-            .iter()
-            .any(|item| item.contains("Release-Cover")));
+        assert_eq!(
+            rejected
+                .missing_items
+                .iter()
+                .filter(|item| item.contains("finale Artwork"))
+                .count(),
+            1,
+            "final artwork must be required exactly once"
+        );
         assert!(matches!(
             app.finalize_track(&base.id),
             Err(AppError::Validation(_))

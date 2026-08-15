@@ -63,6 +63,7 @@ Accept disclosure generation when applicable artwork produces a separate visible
 | TD-02 | Default disclosure | Policy `Always add visible AI disclosure`, text `AI-assisted`, bottom-right placement |
 | TD-03 | Custom disclosure | Short visible text at the sole supported fixed bottom-right placement |
 | TD-04 | Human-only artwork | Same dimensions, origin declared human-only |
+| TD-05 | AI artwork with negative content checks | Real person, authentic real event, and trademark/logo all explicitly `No` |
 
 ## Acceptance steps
 
@@ -78,6 +79,7 @@ Accept disclosure generation when applicable artwork produces a separate visible
 | 8 | `REQ-ART-002` | Set policy to `Decide per artwork`. | The track requires an explicit decision; no automatic claim or silent processing occurs. | Not run | NOT RUN | — |
 | 9 | `REQ-ART-002` | Set policy to `No automatic visible disclosure`. | The choice and result are documented; the app does not falsely report that disclosure was applied. | Not run | NOT RUN | — |
 | 10 | `REQ-ART-002` | Use TD-04. | AI disclosure requirements are excluded; the AI Transparency step accepts N/A only with a saved reason, and the human-only original is not processed automatically. | Not run | NOT RUN | — |
+| 11 | `REQ-ART-002` | Use TD-05 under the default `Always` policy. | AI Transparency is deactivated, the disclosure generator is unavailable, and a verified final Suno JPG/PNG does not need to match a generated disclosure image. | Native condition and disclosure gating returned false for the three-negative branch; the frontend hid disclosure controls and removed all AI Transparency missing items. | PASS | Rust `three_negative_content_checks_disable_ai_transparency`; Vitest `deactivates AI Transparency after three explicit No answers` |
 
 ## Automated checks
 
@@ -86,6 +88,7 @@ cd src-tauri
 cargo test artwork_disclosure_preserves_original_and_creates_traceable_copy
 cargo test disclosure_renderer_is_deterministic_and_bottom_right_only
 cargo test end_to_end_documentation_workflow_creates_portable_certificate
+cargo test three_negative_content_checks_disable_ai_transparency
 ```
 
 Expected Rust evidence is `tests::artwork_disclosure_preserves_original`. Attach pixel/digest comparison, offline processing, branch, and document-output results when executed.
