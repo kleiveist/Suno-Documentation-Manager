@@ -67,6 +67,7 @@ Accept track creation when the modal remains usable while its fields are edited,
 | TD-03 | Collision | Existing child folder named for TD-02 containing a sentinel text file |
 | TD-04 | Unsafe titles | `../escape`, `/absolute`, a separator-only value, and an empty value |
 | TD-05 | New-track modal | Empty modal with title, production-start date, commercial-use toggle, close button, cancel action, and backdrop |
+| TD-06 | Source-code evidence | Small UTF-8 `.py` file plus a binary file disguised with the same extension |
 
 ## Acceptance steps
 
@@ -78,8 +79,11 @@ Accept track creation when the modal remains usable while its fields are edited,
 | 4 | `REQ-TRK-001` | Open the track facts. | TD-01 defaults appear as editable track values and later document generation can snapshot them. | Not run | NOT RUN | — |
 | 5 | `REQ-TRK-002` | Answer `No` to external, own, and third-party audio upload. | Dependent source, ownership, license, and file questions are hidden and excluded from the applicable requirement set. | Vitest confirmed hidden fields and exclusion from the applicable set for negative controllers. | PASS | Frontend `conditional fields` and `progress` suites; [final suite](../../../.report/test-report-20260813-232332-suite-all-ok.md) |
 | 6 | `REQ-WFL-002` | Change external audio upload to `Yes`. | Source, ownership, license evidence, and uploaded-file requirements appear as missing items. | Vitest produced the four external-source, ownership, file, and license missing items. | PASS | Frontend `lists only applicable missing items` |
+| 6a | `REQ-WFL-002` | Answer code-based generation first with `No`, then with `Yes`, and attach TD-06. | The evidence control and requirement are absent for `No`; `Yes` requires the source file. Valid text source is copied to `02_SUNO/`, while disguised binary content is rejected. | Frontend and native workflow tests exercised both branches. Native evidence import accepted the UTF-8 Python fixture, placed it under `02_SUNO/`, preserved its bytes, and rejected the binary fixture. | PASS | Vitest `shows the source-code upload only for code-based generation`, `requires source-code evidence only after an explicit Yes answer`; Rust `code_based_generation_requires_an_answer_and_then_source_code_evidence`, `source_code_import_accepts_text_formats_and_rejects_binary_content` |
+| 6b | `REQ-WFL-002` | Inspect every applicable Source category and rights field and save German presentation labels. | New input is limited to the declared single-choice options; persistence uses stable English values. An unknown old free-text value remains visible for deliberate reclassification. | Choice-normalization tests converted known German labels to English values and retained unknown legacy text. The Source renderer uses guided selects for all three source/right pairs. | PASS | Vitest `stores English values while accepting localized labels and retaining unknown legacy data`, `normalizes every guided track value before saving`; frontend `renderStepContent` |
 | 7 | `REQ-TRK-002` | Answer `No` to human editing and post-export editing. | Specific editing fields are hidden and no generic arrangement, mixing, or mastering claim is selected. | Not run | NOT RUN | — |
 | 7a | `REQ-WFL-002` | In Human Work, select a lyrics source, enter the used lyrics and Suno style prompt, then choose multiple confirmed editing steps. | Non-instrumental lyrics and the style prompt are required; confirmed work is stored as the deterministic multi-selection rather than unrestricted prose. | The frontend requires the style prompt, conditionally requires used lyrics, and round-trips de-duplicated guided choices. Native workflow evaluation requires `human_work.suno_style_prompt`. | PASS | Vitest `stores multiple guided choices deterministically`, `lists only applicable missing items`; Rust embedded workflow validation |
+| 7c | `REQ-WFL-002` | Answer post-export editing with `Yes` without selecting an operation, then select two operations and save. Repeat with `No`. | `Yes` blocks save until at least one guided operation is selected; selected English values persist. `No` hides and does not require the operation field. | The shared required multi-choice control enforces one checked operation and the conditional requirement is active only for `Yes`; normalized selection tests cover English persistence. | PASS | Frontend `handleSubmit`, `visibleConditionalFields`, and Vitest `normalizes every guided track value before saving` |
 | 7b | `REQ-WFL-002` | In Release, choose multiple release-note options. | The field accepts the declared release-version choices and does not present an unrestricted notes textarea. | The release editor uses the same deterministic multi-choice control and retains optional selection semantics. | PASS | Vitest `stores multiple guided choices deterministically`; frontend `renderStepContent` |
 | 8 | `REQ-WFL-002` | Declare AI-assisted artwork and then human-only artwork in separate runs. | AI evidence/disclosure requirements appear only for the AI-assisted run; the whole AI Transparency step can be stored as N/A for the human-only run only with a reason. | Not run | NOT RUN | — |
 | 9 | `REQ-TRK-001` | Create TD-03, then attempt TD-02 again. | Creation stops with a collision error and the sentinel remains byte-identical. | Not run | NOT RUN | — |
@@ -97,7 +101,7 @@ npm test -- --run src/domain/workflow.test.ts
 npm test -- --run src/app.test.ts
 ```
 
-Expected Rust evidence is `tests::track_creation_builds_exact_folders`. Expected Vitest evidence includes `conditional fields > hides external-audio details until yes`, `shows own-audio and sample details only when applicable`, `shows AI/artwork follow-ups conditionally`, and `navigation > ignores delegated backdrop actions for clicks inside a modal`.
+Expected Rust evidence includes `track_creation_builds_exact_folders`, `code_based_generation_requires_an_answer_and_then_source_code_evidence`, and `source_code_import_accepts_text_formats_and_rejects_binary_content`. Expected Vitest evidence includes `conditional fields > hides external-audio details until yes`, `shows own-audio and sample details only when applicable`, `shows the source-code upload only for code-based generation`, `requires source-code evidence only after an explicit Yes answer`, and `navigation > ignores delegated backdrop actions for clicks inside a modal`.
 
 ## Verification
 
@@ -112,14 +116,14 @@ Record the relative tree, initial view model, branch-specific missing items, col
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 2, 5, 6, 10, and 11 passed; six mandatory steps remain `NOT RUN`.
+- Summary: Steps 1, 2, 5, 6, 6a, 6b, 7a, 7b, 7c, 10, and 11 passed; steps 3, 4, 7, 8, 9, and 12 remain `NOT RUN`.
 - Residual risks: The event-routing regression is covered, but real GUI field retention/dismissal, collision sentinels, immutable snapshot details, and editing/N/A branches are not accepted yet.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-15 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

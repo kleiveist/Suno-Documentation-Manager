@@ -1,5 +1,5 @@
 # suno-documentation-manager:template-v1
-Template version: 1.1
+Template version: 1.2
 Track: Golden Signal
 Suno project URL: https://suno.example/projects/golden-signal
 Suno model: v4.5
@@ -9,4 +9,6 @@ Production end: 2026-02-05
 Final export date: 2026-02-06
 External audio uploaded: No
 Own audio uploaded: Yes
+Code-based generation: No
+Source-code evidence: Not applicable
 Third-party samples uploaded: No

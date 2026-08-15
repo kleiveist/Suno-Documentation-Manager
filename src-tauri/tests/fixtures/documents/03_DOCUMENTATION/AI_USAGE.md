@@ -7,6 +7,8 @@
 - Suno project: https://suno.example/projects/golden-signal
 - Lyrics source: instrumental
 - External audio uploaded: No
+- Code-based generation: No
+- Source-code evidence: Not applicable
 
 ## Artwork
 

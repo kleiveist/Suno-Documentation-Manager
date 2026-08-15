@@ -102,6 +102,7 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         "always",
         "external_audio",
         "own_audio",
+        "code_based_generation",
         "third_party_samples",
         "lyrics_text",
         "human_editing",
@@ -433,6 +434,7 @@ fn condition_applies(condition: &str, track: &TrackRecord) -> bool {
         "always" => true,
         "external_audio" => f.external_audio_uploaded == Some(true),
         "own_audio" => f.own_audio_uploaded == Some(true),
+        "code_based_generation" => f.code_based_generation == Some(true),
         "third_party_samples" => f.third_party_samples_uploaded == Some(true),
         "lyrics_text" => !matches!(f.lyrics_source.as_str(), "" | "instrumental"),
         "human_editing" => f.human_editing_performed == Some(true),
@@ -605,6 +607,7 @@ fn field_requirement_met(
         "source.own_audio_details" => {
             present(&f.own_audio_source) && present(&f.own_audio_ownership)
         }
+        "source.code_based_generation" => f.code_based_generation.is_some(),
         "source.third_party_samples_uploaded" => f.third_party_samples_uploaded.is_some(),
         "source.third_party_sample_details" => {
             present(&f.third_party_sample_source) && present(&f.third_party_sample_ownership)
@@ -868,6 +871,43 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("AI-Kennzeichnung") || item.contains("finale Artwork")));
+    }
+
+    #[test]
+    fn code_based_generation_requires_an_answer_and_then_source_code_evidence() {
+        let mut track = disclosure_track("none", None);
+        let profile = Profile::default();
+
+        let unanswered = evaluate(&track, &profile, &[], &[], &[])
+            .expect("evaluate unanswered code-generation branch");
+        assert!(unanswered
+            .missing
+            .iter()
+            .any(|item| item.contains("codebasierten Erzeugung")));
+
+        track.fields.code_based_generation = Some(false);
+        let negative = evaluate(&track, &profile, &[], &[], &[])
+            .expect("evaluate negative code-generation branch");
+        assert!(!negative
+            .missing
+            .iter()
+            .any(|item| item.contains("Quellcode oder die Quelldatei")));
+
+        track.fields.code_based_generation = Some(true);
+        let positive_without_file = evaluate(&track, &profile, &[], &[], &[])
+            .expect("evaluate positive code-generation branch without evidence");
+        assert!(positive_without_file
+            .missing
+            .iter()
+            .any(|item| item.contains("Quellcode oder die Quelldatei")));
+
+        let evidence = vec![verified_evidence(EvidenceRole::SourceCodeFile)];
+        let positive_with_file = evaluate(&track, &profile, &evidence, &[], &[])
+            .expect("evaluate positive code-generation branch with evidence");
+        assert!(!positive_with_file
+            .missing
+            .iter()
+            .any(|item| item.contains("Quellcode oder die Quelldatei")));
     }
 
     #[test]

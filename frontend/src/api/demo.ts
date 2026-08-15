@@ -78,9 +78,10 @@ function makeTrack(
     sunoStylePrompt: complete ? "cinematic synthwave, driving bass, wide vocal" : "",
     externalAudioUploaded: false,
     ownAudioUploaded: false,
+    codeBasedGeneration: false,
     thirdPartySamplesUploaded: false,
     humanEditingPerformed: complete,
-    humanEditingDetails: complete ? "Cuts, EQ und Lautheitsanpassung" : "",
+    humanEditingDetails: complete ? "Timing and cuts | EQ | Loudness adjustment" : "",
     postExportEditingPerformed: false,
     artworkOrigin: complete ? ("ai_assisted" as const) : ("" as const),
     aiImageService: complete ? "OpenAI" : "",
@@ -128,7 +129,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.1",
+      templateVersion: "1.2",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -404,6 +405,8 @@ export function createDemoApi(): DesktopApi {
         ? "png"
         : role === "release_wav" || role === "suno_final_export"
           ? "wav"
+          : role === "source_code_file"
+            ? "py"
           : role.includes("subscription")
             ? "pdf"
             : "zip";
@@ -465,7 +468,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.1",
+        templateVersion: "1.2",
         files: ["02_SUNO/suno_project.txt", "02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md", "04_LICENSES/suno_account_and_license.md", "04_LICENSES/openai_image_generation.md", "05_ARTWORK/artwork_process.md"]
       };
       track.integrity.generated = false;

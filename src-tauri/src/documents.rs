@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.1";
+pub const TEMPLATE_VERSION: &str = "1.2";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -196,6 +196,166 @@ fn value_or_missing(value: &str) -> &str {
     }
 }
 
+const LEGACY_SELECTION_NOTICE: &str =
+    "Legacy value retained in the track record; select a defined category in the app.";
+
+const SOURCE_CHOICES: &[(&str, &[&str])] = &[
+    (
+        "Audio from a licensed sample library",
+        &["Lizenzierte Sample-Bibliothek"],
+    ),
+    (
+        "Licensed beat or instrumental",
+        &["Lizenzierter Beat oder Instrumentaltrack"],
+    ),
+    (
+        "Audio supplied by a collaborator",
+        &["Von Mitwirkenden bereitgestelltes Audio"],
+    ),
+    ("Commissioned recording", &["Beauftragte Aufnahme"]),
+    ("Public-domain recording", &["Gemeinfreie Aufnahme"]),
+    (
+        "Creative Commons recording",
+        &["Aufnahme unter Creative-Commons-Lizenz"],
+    ),
+    ("Original vocal recording", &["Eigene Gesangsaufnahme"]),
+    (
+        "Original instrument recording",
+        &["Eigene Instrumentalaufnahme"],
+    ),
+    (
+        "Original field recording",
+        &["Eigene Feldaufnahme", "Eigene Aufnahme"],
+    ),
+    (
+        "Original MIDI or software render",
+        &["Eigener MIDI- oder Software-Render"],
+    ),
+    ("Original sound design", &["Eigenes Sounddesign"]),
+    (
+        "Commercial sample library",
+        &["Kommerzielle Sample-Bibliothek"],
+    ),
+    ("Royalty-free sample pack", &["Royalty-free Sample-Pack"]),
+    (
+        "Directly licensed from the sample creator",
+        &["Direkt vom Sample-Urheber lizenziert"],
+    ),
+    ("Public-domain archive", &["Gemeinfreies Archiv"]),
+    ("Creative Commons source", &["Creative-Commons-Quelle"]),
+];
+
+const RIGHTS_CHOICES: &[(&str, &[&str])] = &[
+    (
+        "Commercial-use license",
+        &["Lizenz für kommerzielle Nutzung"],
+    ),
+    (
+        "Direct permission from the rights holder",
+        &["Direkte Erlaubnis des Rechteinhabers"],
+    ),
+    ("Joint rights agreement", &["Gemeinsame Rechtevereinbarung"]),
+    ("Public domain", &["Gemeinfreiheit"]),
+    ("Creative Commons license", &["Creative-Commons-Lizenz"]),
+    (
+        "Solely owned by the artist",
+        &["Ausschließlich eigene Rechte", "Eigene Produktion"],
+    ),
+    (
+        "Jointly owned with collaborators",
+        &["Gemeinsame Rechte mit Mitwirkenden"],
+    ),
+    (
+        "Participant permissions documented",
+        &["Einwilligungen der Beteiligten dokumentiert"],
+    ),
+    ("Commercial sample license", &["Kommerzielle Sample-Lizenz"]),
+    ("Royalty-free license", &["Royalty-free Lizenz"]),
+];
+
+const HUMAN_WORK_CHOICES: &[(&str, &[&str])] = &[
+    ("Arrangement", &[]),
+    ("Lyrics", &[]),
+    ("Timing and cuts", &["Timing und Cuts"]),
+    ("Sound design", &["Sounddesign"]),
+    ("EQ", &[]),
+    ("Mixing", &[]),
+    ("Mastering", &[]),
+    ("Loudness adjustment", &["Lautheitsanpassung"]),
+];
+
+const POST_EXPORT_CHOICES: &[(&str, &[&str])] = &[
+    ("Editing and cuts", &["Schnitt"]),
+    ("Arrangement", &[]),
+    ("Timing correction", &["Timing-Korrektur"]),
+    ("Sound design", &["Sounddesign"]),
+    ("EQ", &[]),
+    ("Mixing", &[]),
+    ("Mastering", &[]),
+    ("Loudness adjustment", &["Lautheitsanpassung"]),
+    ("Noise reduction", &["Rauschreduzierung"]),
+    ("Dynamics processing", &["Dynamikbearbeitung"]),
+];
+
+const RELEASE_CHOICES: &[(&str, &[&str])] = &[
+    ("Original Suno version", &["Originale Suno-Fassung"]),
+    ("Streaming master", &["Streaming-Master"]),
+    ("Radio edit", &["Radio Edit"]),
+    ("Extended mix", &["Extended Mix"]),
+    ("Instrumental version", &["Instrumental"]),
+    ("Clean version", &["Clean Version"]),
+    ("Explicit version", &["Explicit Version"]),
+    ("Social-media version", &["Social-Media-Version"]),
+];
+
+fn choice_key(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn english_guided_value(value: &str, choices: &[(&str, &[&str])]) -> String {
+    if value.trim().is_empty() {
+        return "Not documented".into();
+    }
+    let key = choice_key(value);
+    choices
+        .iter()
+        .find(|(english, aliases)| {
+            choice_key(english) == key || aliases.iter().any(|alias| choice_key(alias) == key)
+        })
+        .map(|(english, _)| (*english).to_owned())
+        .unwrap_or_else(|| LEGACY_SELECTION_NOTICE.into())
+}
+
+fn english_guided_list(value: &str, choices: &[(&str, &[&str])]) -> String {
+    if value.trim().is_empty() {
+        return "Not documented".into();
+    }
+    let mut normalized = Vec::new();
+    for item in value
+        .split('|')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let mapped = english_guided_value(item, choices);
+        if !normalized.contains(&mapped) {
+            normalized.push(mapped);
+        }
+    }
+    if normalized.is_empty() {
+        "Not documented".into()
+    } else {
+        normalized.join(", ")
+    }
+}
+
+fn evidence_path<'a>(evidence: &'a [EvidenceItem], role: crate::model::EvidenceRole) -> &'a str {
+    evidence
+        .iter()
+        .find(|item| item.role == role)
+        .map(|item| item.relative_path.as_str())
+        .unwrap_or("Not documented")
+}
+
 fn evidence_list(evidence: &[EvidenceItem]) -> String {
     if evidence.is_empty() {
         return "- No evidence files registered\n".into();
@@ -241,6 +401,47 @@ fn render(
         .find(|item| item.role == crate::model::EvidenceRole::FinalArtwork)
         .map(|item| item.relative_path.as_str())
         .unwrap_or("Not documented");
+    let source_code_file = evidence_path(evidence, crate::model::EvidenceRole::SourceCodeFile);
+    let mut source_declarations = format!(
+        "\n## Source declarations\n\n- External audio uploaded: {}\n",
+        yes_no(f.external_audio_uploaded)
+    );
+    if f.external_audio_uploaded == Some(true) {
+        source_declarations.push_str(&format!(
+            "- External audio source category: {}\n- External audio rights basis: {}\n",
+            english_guided_value(&f.external_audio_source, SOURCE_CHOICES),
+            english_guided_value(&f.external_audio_ownership, RIGHTS_CHOICES)
+        ));
+    }
+    source_declarations.push_str(&format!(
+        "- Own audio uploaded: {}\n",
+        yes_no(f.own_audio_uploaded)
+    ));
+    if f.own_audio_uploaded == Some(true) {
+        source_declarations.push_str(&format!(
+            "- Own audio source category: {}\n- Own audio rights basis: {}\n",
+            english_guided_value(&f.own_audio_source, SOURCE_CHOICES),
+            english_guided_value(&f.own_audio_ownership, RIGHTS_CHOICES)
+        ));
+    }
+    source_declarations.push_str(&format!(
+        "- Code-based generation: {}\n",
+        yes_no(f.code_based_generation)
+    ));
+    if f.code_based_generation == Some(true) {
+        source_declarations.push_str(&format!("- Source-code evidence: {source_code_file}\n"));
+    }
+    source_declarations.push_str(&format!(
+        "- Third-party samples uploaded: {}\n",
+        yes_no(f.third_party_samples_uploaded)
+    ));
+    if f.third_party_samples_uploaded == Some(true) {
+        source_declarations.push_str(&format!(
+            "- Third-party sample source category: {}\n- Third-party sample rights basis: {}\n",
+            english_guided_value(&f.third_party_sample_source, SOURCE_CHOICES),
+            english_guided_value(&f.third_party_sample_ownership, RIGHTS_CHOICES)
+        ));
+    }
     let mut lyrics_document = format!(
         "{}# Lyrics\n\nSource: {}\n",
         marker(),
@@ -266,7 +467,7 @@ fn render(
     if f.human_editing_performed == Some(true) {
         confirmed_work.push_str(&format!(
             "- Confirmed human work: {}\n",
-            value_or_missing(&f.human_editing_details)
+            english_guided_list(&f.human_editing_details, HUMAN_WORK_CHOICES)
         ));
     }
     confirmed_work.push_str(&format!(
@@ -276,12 +477,12 @@ fn render(
     if f.post_export_editing_performed == Some(true) {
         confirmed_work.push_str(&format!(
             "- Confirmed post-export work: {}\n",
-            value_or_missing(&f.post_export_editing_details)
+            english_guided_list(&f.post_export_editing_details, POST_EXPORT_CHOICES)
         ));
     }
     confirmed_work.push_str(&format!(
         "- Release notes: {}\n",
-        value_or_missing(&f.release_notes)
+        english_guided_list(&f.release_notes, RELEASE_CHOICES)
     ));
 
     let mut ai_artwork_usage = format!("- Origin: {}\n", value_or_missing(&f.artwork_origin));
@@ -445,7 +646,7 @@ fn render(
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
             value_or_missing(&f.suno_project_url),
             value_or_missing(&f.suno_model),
@@ -455,19 +656,22 @@ fn render(
             value_or_missing(&f.final_export_date),
             yes_no(f.external_audio_uploaded),
             yes_no(f.own_audio_uploaded),
+            yes_no(f.code_based_generation),
+            if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
             yes_no(f.third_party_samples_uploaded),
         ),
     );
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
             if f.commercial_use_intended { "Yes" } else { "No" },
             value_or_missing(&f.production_start_date), value_or_missing(&f.production_end_date),
             value_or_missing(&f.final_export_date),
+            source_declarations,
             confirmed_work,
             "- The authoritative evaluated step results are stored in the completion certificate after finalization.\n",
             evidence_list(evidence)
@@ -476,9 +680,11 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/AI_USAGE.md".into(),
         format!(
-            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Lyrics source: {}\n- External audio uploaded: {}\n\n## Artwork\n\n{}",
+            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Lyrics source: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n\n## Artwork\n\n{}",
             marker(), value_or_missing(&f.suno_model), value_or_missing(&f.suno_project_url),
             value_or_missing(&f.lyrics_source), yes_no(f.external_audio_uploaded),
+            yes_no(f.code_based_generation),
+            if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
             ai_artwork_usage
         ),
     );
@@ -572,13 +778,14 @@ mod tests {
             external_audio_source: INACTIVE_FIXTURE_VALUES[1].into(),
             external_audio_ownership: INACTIVE_FIXTURE_VALUES[2].into(),
             own_audio_uploaded: Some(true),
-            own_audio_source: "Field recording by Fixture Artist".into(),
-            own_audio_ownership: "Recorded by Fixture Artist".into(),
+            own_audio_source: "Original field recording".into(),
+            own_audio_ownership: "Solely owned by the artist".into(),
+            code_based_generation: Some(false),
             third_party_samples_uploaded: Some(false),
             third_party_sample_source: INACTIVE_FIXTURE_VALUES[3].into(),
             third_party_sample_ownership: INACTIVE_FIXTURE_VALUES[4].into(),
             human_editing_performed: Some(true),
-            human_editing_details: "Adjusted timing and dynamics.".into(),
+            human_editing_details: "Timing and cuts | EQ".into(),
             post_export_editing_performed: Some(false),
             post_export_editing_details: INACTIVE_FIXTURE_VALUES[5].into(),
             commercial_use_intended: true,
@@ -593,7 +800,7 @@ mod tests {
             trademark_notes: INACTIVE_FIXTURE_VALUES[7].into(),
             disclosure_applied: Some(false),
             disclosure_text: String::new(),
-            release_notes: "Export reviewed against the project.".into(),
+            release_notes: "Streaming master".into(),
         };
         fields.normalize_conditionals();
 
@@ -756,6 +963,70 @@ mod tests {
         assert!(workspace.path().join("02_SUNO/Style.md").is_file());
         assert!(!legacy_directory.join("Lyrics.md").exists());
         assert!(!legacy_directory.join("Styles.md").exists());
+    }
+
+    #[test]
+    fn guided_german_ui_labels_render_as_english_document_values() {
+        let (mut track, profile, mut evidence) = fixture_input();
+        track.fields.external_audio_uploaded = Some(true);
+        track.fields.external_audio_source = "Lizenzierte Sample-Bibliothek".into();
+        track.fields.external_audio_ownership = "Lizenz für kommerzielle Nutzung".into();
+        track.fields.code_based_generation = Some(true);
+        track.fields.human_editing_details = "Timing und Cuts | Lautheitsanpassung".into();
+        track.fields.post_export_editing_performed = Some(true);
+        track.fields.post_export_editing_details = "Schnitt | Mastering".into();
+        track.fields.release_notes = "Originale Suno-Fassung | Radio Edit".into();
+        evidence.push(fixture_evidence(
+            "source-code",
+            crate::model::EvidenceRole::SourceCodeFile,
+            "02_SUNO/generator.py",
+            '4',
+        ));
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let combined = rendered.values().cloned().collect::<String>();
+
+        for expected in [
+            "External audio source category: Audio from a licensed sample library",
+            "External audio rights basis: Commercial-use license",
+            "Source-code evidence: 02_SUNO/generator.py",
+            "Confirmed human work: Timing and cuts, Loudness adjustment",
+            "Confirmed post-export work: Editing and cuts, Mastering",
+            "Release notes: Original Suno version, Radio edit",
+        ] {
+            assert!(
+                combined.contains(expected),
+                "missing English value: {expected}"
+            );
+        }
+        for german_label in [
+            "Lizenzierte Sample-Bibliothek",
+            "Lizenz für kommerzielle Nutzung",
+            "Timing und Cuts",
+            "Lautheitsanpassung",
+            "Originale Suno-Fassung",
+        ] {
+            assert!(
+                !combined.contains(german_label),
+                "localized UI label leaked into generated documents: {german_label}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_legacy_selection_is_retained_in_data_but_not_copied_into_english_documents() {
+        let (mut track, profile, evidence) = fixture_input();
+        track.fields.own_audio_source = "Historischer deutscher Freitext".into();
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let readme = &rendered["03_DOCUMENTATION/README.md"];
+
+        assert!(!readme.contains("Historischer deutscher Freitext"));
+        assert!(readme.contains(LEGACY_SELECTION_NOTICE));
+        assert_eq!(
+            track.fields.own_audio_source,
+            "Historischer deutscher Freitext"
+        );
     }
 
     #[test]

@@ -117,6 +117,25 @@ export function serializeMultiChoiceValue(values: string[]): string {
   return [...new Set(values.map((item) => item.trim()).filter(Boolean))].join(" | ");
 }
 
+export type GuidedChoice = readonly [value: string, label: string, aliases?: readonly string[]];
+
+const normalizedChoiceText = (value: string): string => value.trim().normalize("NFKC").toLocaleLowerCase("de-DE");
+
+export function canonicalGuidedChoiceValue(value: string, choices: readonly GuidedChoice[]): string {
+  const normalized = normalizedChoiceText(value);
+  if (!normalized) return "";
+  const choice = choices.find(([candidate, label, aliases = []]) =>
+    [candidate, label, ...aliases].some((item) => normalizedChoiceText(item) === normalized)
+  );
+  return choice?.[0] ?? value.trim();
+}
+
+export function canonicalGuidedChoiceList(value: string, choices: readonly GuidedChoice[]): string {
+  return serializeMultiChoiceValue(
+    parseMultiChoiceValue(value).map((item) => canonicalGuidedChoiceValue(item, choices))
+  );
+}
+
 export function trackSummaryFromDetail(track: TrackDetail): TrackSummary {
   return {
     id: track.id,
@@ -174,9 +193,110 @@ const evidenceRoles: EvidenceRole[] = [
   "suno_final_export", "suno_project_zip", "suno_screenshot",
   "release_wav", "release_mp3", "release_mp4", "release_artwork", "ai_artwork_original",
   "ai_artwork_edited", "human_edited_artwork", "final_artwork", "external_audio_file",
-  "external_audio_license", "own_audio_file", "third_party_sample_file",
+  "external_audio_license", "own_audio_file", "source_code_file", "third_party_sample_file",
   "third_party_sample_license", "other"
 ];
+
+const externalAudioSourceChoices: readonly GuidedChoice[] = [
+  ["Audio from a licensed sample library", "Lizenzierte Sample-Bibliothek"],
+  ["Licensed beat or instrumental", "Lizenzierter Beat oder Instrumentaltrack"],
+  ["Audio supplied by a collaborator", "Von Mitwirkenden bereitgestelltes Audio"],
+  ["Commissioned recording", "Beauftragte Aufnahme"],
+  ["Public-domain recording", "Gemeinfreie Aufnahme"],
+  ["Creative Commons recording", "Aufnahme unter Creative-Commons-Lizenz"]
+];
+
+const externalAudioRightsChoices: readonly GuidedChoice[] = [
+  ["Commercial-use license", "Lizenz für kommerzielle Nutzung"],
+  ["Direct permission from the rights holder", "Direkte Erlaubnis des Rechteinhabers"],
+  ["Joint rights agreement", "Gemeinsame Rechtevereinbarung"],
+  ["Public domain", "Gemeinfreiheit"],
+  ["Creative Commons license", "Creative-Commons-Lizenz"]
+];
+
+const ownAudioSourceChoices: readonly GuidedChoice[] = [
+  ["Original vocal recording", "Eigene Gesangsaufnahme"],
+  ["Original instrument recording", "Eigene Instrumentalaufnahme"],
+  ["Original field recording", "Eigene Feldaufnahme", ["Eigene Aufnahme"]],
+  ["Original MIDI or software render", "Eigener MIDI- oder Software-Render"],
+  ["Original sound design", "Eigenes Sounddesign"]
+];
+
+const ownAudioRightsChoices: readonly GuidedChoice[] = [
+  ["Solely owned by the artist", "Ausschließlich eigene Rechte", ["Eigene Produktion"]],
+  ["Jointly owned with collaborators", "Gemeinsame Rechte mit Mitwirkenden"],
+  ["Participant permissions documented", "Einwilligungen der Beteiligten dokumentiert"]
+];
+
+const sampleSourceChoices: readonly GuidedChoice[] = [
+  ["Commercial sample library", "Kommerzielle Sample-Bibliothek"],
+  ["Royalty-free sample pack", "Royalty-free Sample-Pack"],
+  ["Directly licensed from the sample creator", "Direkt vom Sample-Urheber lizenziert"],
+  ["Public-domain archive", "Gemeinfreies Archiv"],
+  ["Creative Commons source", "Creative-Commons-Quelle"]
+];
+
+const sampleRightsChoices: readonly GuidedChoice[] = [
+  ["Commercial sample license", "Kommerzielle Sample-Lizenz"],
+  ["Royalty-free license", "Royalty-free Lizenz"],
+  ["Direct permission from the rights holder", "Direkte Erlaubnis des Rechteinhabers"],
+  ["Public domain", "Gemeinfreiheit"],
+  ["Creative Commons license", "Creative-Commons-Lizenz"]
+];
+
+const humanWorkChoices: readonly GuidedChoice[] = [
+  ["Arrangement", "Arrangement"],
+  ["Lyrics", "Lyrics"],
+  ["Timing and cuts", "Timing und Cuts"],
+  ["Sound design", "Sounddesign"],
+  ["EQ", "EQ"],
+  ["Mixing", "Mixing"],
+  ["Mastering", "Mastering"],
+  ["Loudness adjustment", "Lautheitsanpassung"]
+];
+
+const postExportWorkChoices: readonly GuidedChoice[] = [
+  ["Editing and cuts", "Schnitt"],
+  ["Arrangement", "Arrangement"],
+  ["Timing correction", "Timing-Korrektur"],
+  ["Sound design", "Sounddesign"],
+  ["EQ", "EQ"],
+  ["Mixing", "Mixing"],
+  ["Mastering", "Mastering"],
+  ["Loudness adjustment", "Lautheitsanpassung"],
+  ["Noise reduction", "Rauschreduzierung"],
+  ["Dynamics processing", "Dynamikbearbeitung"]
+];
+
+const releaseNoteChoices: readonly GuidedChoice[] = [
+  ["Original Suno version", "Originale Suno-Fassung"],
+  ["Streaming master", "Streaming-Master"],
+  ["Radio edit", "Radio Edit"],
+  ["Extended mix", "Extended Mix"],
+  ["Instrumental version", "Instrumental"],
+  ["Clean version", "Clean Version"],
+  ["Explicit version", "Explicit Version"],
+  ["Social-media version", "Social-Media-Version"]
+];
+
+/**
+ * Convert known localized labels from older UI versions to the stable English values used by
+ * persistence and document generation. Unknown legacy values are intentionally retained so the
+ * user can see and reclassify them instead of losing information during an ordinary save.
+ */
+export function normalizeGuidedTrackFields(fields: TrackFields): TrackFields {
+  const normalized = structuredClone(fields);
+  normalized.externalAudioSource = canonicalGuidedChoiceValue(normalized.externalAudioSource, externalAudioSourceChoices);
+  normalized.externalAudioOwnership = canonicalGuidedChoiceValue(normalized.externalAudioOwnership, externalAudioRightsChoices);
+  normalized.ownAudioSource = canonicalGuidedChoiceValue(normalized.ownAudioSource, ownAudioSourceChoices);
+  normalized.ownAudioOwnership = canonicalGuidedChoiceValue(normalized.ownAudioOwnership, ownAudioRightsChoices);
+  normalized.thirdPartySampleSource = canonicalGuidedChoiceValue(normalized.thirdPartySampleSource, sampleSourceChoices);
+  normalized.thirdPartySampleOwnership = canonicalGuidedChoiceValue(normalized.thirdPartySampleOwnership, sampleRightsChoices);
+  normalized.humanEditingDetails = canonicalGuidedChoiceList(normalized.humanEditingDetails, humanWorkChoices);
+  normalized.postExportEditingDetails = canonicalGuidedChoiceList(normalized.postExportEditingDetails, postExportWorkChoices);
+  normalized.releaseNotes = canonicalGuidedChoiceList(normalized.releaseNotes, releaseNoteChoices);
+  return normalized;
+}
 
 const evidenceProvenanceLabel = (value: TrackDetail["evidence"][number]["provenance"]): string => ({
   managed_copy: "Verwaltete Kopie",
@@ -794,11 +914,13 @@ export class SunoDocumentationApp {
         break;
       case "source":
         body = `${this.boolQuestion("externalAudioUploaded", "Externes Audio hochgeladen?", "Audio außerhalb der eigenen Produktion, das Suno als Quelle erhalten hat.", draft.externalAudioUploaded)}
-          ${conditional.has("externalAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.textField("externalAudioSource", "Quelle", "Woher stammt die Datei?", draft.externalAudioSource, true)}${this.textField("externalAudioOwnership", "Rechtezuordnung", "Eigentum / Lizenz", draft.externalAudioOwnership, true)}</div>${this.inlineEvidenceActions(track, [["external_audio_file", "Audiodatei importieren"], ["external_audio_license", "Lizenznachweis importieren"]])}</div>` : ""}
+          ${conditional.has("externalAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSelectField("externalAudioSource", "Quelle", draft.externalAudioSource, externalAudioSourceChoices, true)}${this.guidedSelectField("externalAudioOwnership", "Rechtezuordnung", draft.externalAudioOwnership, externalAudioRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["external_audio_file", "Audiodatei importieren"], ["external_audio_license", "Lizenznachweis importieren"]])}</div>` : ""}
           ${this.boolQuestion("ownAudioUploaded", "Eigene Audiodatei hochgeladen?", "Eine von dir erstellte Aufnahme oder Instrumentalspur.", draft.ownAudioUploaded)}
-          ${conditional.has("ownAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.textField("ownAudioSource", "Quelle", "z. B. eigene Aufnahme", draft.ownAudioSource, true)}${this.textField("ownAudioOwnership", "Rechtezuordnung", "Eigene Produktion / Mitwirkende", draft.ownAudioOwnership, true)}</div>${this.inlineEvidenceActions(track, [["own_audio_file", "Eigene Audiodatei importieren"]])}</div>` : ""}
+          ${conditional.has("ownAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSelectField("ownAudioSource", "Quelle", draft.ownAudioSource, ownAudioSourceChoices, true)}${this.guidedSelectField("ownAudioOwnership", "Rechtezuordnung", draft.ownAudioOwnership, ownAudioRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["own_audio_file", "Eigene Audiodatei importieren"]])}</div>` : ""}
+          ${this.boolQuestion("codeBasedGeneration", "Codebasierte Erzeugung?", "Wurde eine Audiodatei oder ein Ausgangsmaterial mithilfe von Quellcode erzeugt?", draft.codeBasedGeneration)}
+          ${conditional.has("sourceCodeFile") ? `<div class="conditional-panel"><div class="conditional-line"></div><p class="field-help">Wähle den tatsächlich verwendeten Quellcode oder die Quelldatei aus. Unterstützt werden unter anderem Ruby, Python, Text, Markdown, JavaScript, TypeScript und weitere textbasierte Formate.</p>${this.inlineEvidenceActions(track, [["source_code_file", "Quellcode oder Quelldatei importieren"]])}</div>` : ""}
           ${this.boolQuestion("thirdPartySamplesUploaded", "Fremde Samples hochgeladen?", "Samples oder Loops, die von Dritten stammen.", draft.thirdPartySamplesUploaded)}
-          ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.textField("thirdPartySampleSource", "Sample-Quelle", "Bibliothek oder Anbieter", draft.thirdPartySampleSource, true)}${this.textField("thirdPartySampleOwnership", "Lizenz / Rechte", "Lizenzmodell oder Rechteinhaber", draft.thirdPartySampleOwnership, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
+          ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSelectField("thirdPartySampleSource", "Sample-Quelle", draft.thirdPartySampleSource, sampleSourceChoices, true)}${this.guidedSelectField("thirdPartySampleOwnership", "Lizenz / Rechte", draft.thirdPartySampleOwnership, sampleRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
         break;
       case "suno":
         body = `<div class="field-grid two-col">${this.textField("sunoModel", "Suno-Modell", "z. B. v4.5", draft.sunoModel, true)}${this.textField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier", draft.sunoPlanAtCreation, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}</div>
@@ -809,9 +931,9 @@ export class SunoDocumentationApp {
           ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Verwendeter Lyrics-Text", "Nur die tatsächlich in Suno verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
           ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat.", draft.humanEditingPerformed)}
-          ${conditional.has("humanEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("humanEditingDetails", "Bestätigte Schritte", draft.humanEditingDetails, ["Arrangement", "Lyrics", "Timing und Cuts", "Sounddesign", "EQ", "Mixing", "Mastering", "Lautheitsanpassung"], true)}</div>` : ""}
+          ${conditional.has("humanEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("humanEditingDetails", "Bestätigte Schritte", draft.humanEditingDetails, humanWorkChoices, true)}</div>` : ""}
           ${this.boolQuestion("postExportEditingPerformed", "Nach dem Suno-Export weiter bearbeitet?", "Bearbeitung der exportierten Audiodatei.", draft.postExportEditingPerformed)}
-          ${conditional.has("postExportEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.textArea("postExportEditingDetails", "Nachbearbeitung", "z. B. Lautheitsanpassung und finaler Schnitt", draft.postExportEditingDetails, true)}</div>` : ""}`;
+          ${conditional.has("postExportEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("postExportEditingDetails", "Bestätigte Nachbearbeitungsschritte", draft.postExportEditingDetails, postExportWorkChoices, true)}</div>` : ""}`;
         break;
       case "artwork":
         body = `<div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.textField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, true) : ""}</div>
@@ -824,7 +946,7 @@ export class SunoDocumentationApp {
           ${conditional.has("disclosure") ? `<div class="field-grid two-col">${this.textField("disclosureText", "Sichtbarer Hinweis", "AI-assisted", draft.disclosureText, true)}${track.profileSnapshot.artworkTransparencyPolicy === "per_artwork" ? this.boolQuestion("disclosureApplied", "Sichtbaren Hinweis anwenden?", "Bei Ja muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied) : `<div class="read-only-field"><span>Status</span><strong>${draft.disclosureApplied ? "Lokal erzeugt" : "Noch nicht erzeugt"}</strong></div>`}</div><button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Hinweis lokal erzeugen</button>` : `<div class="neutral-message">${icon("check")}<div><strong>AI Transparency ist für diesen Track deaktiviert.</strong><span>${contentCheckAllNegative(draft) ? "Alle drei Content-Checks wurden mit Nein beantwortet." : "Grundlage: Artwork-Angabe und aktive Workspace-Policy."}</span></div></div>`}`;
         break;
       case "release":
-        body = `<div class="field-grid two-col">${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, ["Originale Suno-Fassung", "Streaming-Master", "Radio Edit", "Extended Mix", "Instrumental", "Clean Version", "Explicit Version", "Social-Media-Version"])}</div>
+        body = `<div class="field-grid two-col">${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, releaseNoteChoices)}</div>
           <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Für die Finalisierung ist eine WAV-Datei erforderlich. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Release-WAV importieren"], ["release_mp3", "MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
         break;
     }
@@ -954,14 +1076,29 @@ export class SunoDocumentationApp {
     return `<label class="field field--wide"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><textarea name="${name}" placeholder="${escapeHtml(placeholder)}" ${required ? "required" : ""}>${escapeHtml(value)}</textarea></label>`;
   }
 
-  private multiChoiceField(name: string, label: string, value: string, options: string[], required = false): string {
-    const selected = parseMultiChoiceValue(value);
-    const values = [...options, ...selected.filter((item) => !options.includes(item))];
-    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${values.map((option) => `<label><input type="checkbox" name="${name}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(option)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : ""}</fieldset>`;
+  private multiChoiceField(name: string, label: string, value: string, options: readonly GuidedChoice[], required = false): string {
+    const selected = parseMultiChoiceValue(canonicalGuidedChoiceList(value, options));
+    const known = new Set(options.map(([option]) => option));
+    const choices: GuidedChoice[] = [
+      ...options,
+      ...selected.filter((item) => !known.has(item)).map((item) => [item, `Bisherige Auswahl: ${item} (bitte prüfen)`] as const)
+    ];
+    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${name}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : ""}</fieldset>`;
   }
 
   private selectField(name: string, label: string, value: string, options: Array<[string, string]>, required = false): string {
     return `<label class="field"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><select name="${name}" ${required ? "required" : ""}>${options.map(([id, text]) => `<option value="${escapeHtml(id)}" ${value === id ? "selected" : ""}>${escapeHtml(text)}</option>`).join("")}</select></label>`;
+  }
+
+  private guidedSelectField(name: string, label: string, value: string, choices: readonly GuidedChoice[], required = false): string {
+    const selected = canonicalGuidedChoiceValue(value, choices);
+    const known = choices.some(([option]) => option === selected);
+    const options: Array<[string, string]> = [
+      ["", "Bitte auswählen"],
+      ...choices.map(([option, optionLabel]) => [option, optionLabel] as [string, string])
+    ];
+    if (selected && !known) options.splice(1, 0, [selected, `Bisheriger Wert: ${selected} (bitte prüfen)`]);
+    return this.selectField(name, label, selected, options, required);
   }
 
   private boolQuestion(name: string, label: string, help: string, value: boolean | null): string {
@@ -1463,13 +1600,15 @@ export class SunoDocumentationApp {
 
   private async saveTrackDraft(): Promise<void> {
     if (!this.state.trackDraft) return;
-    const updated = await this.withBusy("Track-Angaben werden gespeichert …", () => this.api.updateTrack(this.requireTrack().id, this.state.trackDraft!));
+    const normalizedDraft = normalizeGuidedTrackFields(this.state.trackDraft);
+    const updated = await this.withBusy("Track-Angaben werden gespeichert …", () => this.api.updateTrack(this.requireTrack().id, normalizedDraft));
     if (updated) { this.applyTrack(updated); this.showToast("success", "Schritt gespeichert", "Der Dokumentationsstatus wurde neu bewertet."); }
   }
 
   private async flushDraft(): Promise<boolean> {
     if (!this.draftDirty || !this.state.trackDraft || !this.state.track) return true;
-    const updated = await this.withBusy("Ungespeicherte Angaben werden zuerst gesichert …", () => this.api.updateTrack(this.state.track!.id, this.state.trackDraft!));
+    const normalizedDraft = normalizeGuidedTrackFields(this.state.trackDraft);
+    const updated = await this.withBusy("Ungespeicherte Angaben werden zuerst gesichert …", () => this.api.updateTrack(this.state.track!.id, normalizedDraft));
     if (!updated) return false;
     this.applyTrack(updated);
     return true;

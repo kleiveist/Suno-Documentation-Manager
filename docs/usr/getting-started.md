@@ -156,9 +156,13 @@ Use the current-track view to work through:
 
 The application displays one task-oriented set of questions at a time. A negative controlling answer closes its branch. For example, answering `No` to external audio upload means source, ownership, license, and uploaded-file details for external audio are not requested. Answering `Yes` makes those details applicable.
 
+In `02 Source`, choose the applicable source category and rights basis from the guided lists instead of writing an unrestricted description. Answer `Code-based generation?` explicitly. A `No` answer ends that branch. A `Yes` answer opens a source-file evidence control for the code or text that was actually used; supported formats include Ruby, Python, plain text, Markdown, JavaScript, TypeScript, Rust, shell scripts, and other listed text-based source formats. The managed copy is stored below `02_SUNO/`.
+
 Record only work that occurred. Do not select arrangement, mixing, mastering, or another editing label unless it accurately describes confirmed work on this track.
 
-In `04 Human Work`, record the lyrics source, the exact lyrics text used for every non-instrumental source, and the complete Suno style prompt. Select all actually performed human-editing steps from the guided choices. Document generation writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`; managed files at the former `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md` locations are removed during regeneration.
+In `04 Human Work`, record the lyrics source, the exact lyrics text used for every non-instrumental source, and the complete Suno style prompt. Select all actually performed human-editing steps from the guided choices. If post-export editing is `Yes`, select at least one actual post-export operation; a free-text processing claim is neither shown nor accepted for a new selection. Document generation writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`; managed files at the former `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md` locations are removed during regeneration.
+
+The interface can display guided labels in German, but the corresponding stored values and generated choice statements are English. Exact user-authored facts such as lyrics and the Suno style prompt remain verbatim.
 
 In `05 Artwork`, answer the three content checks and upload the final JPG or PNG downloaded from Suno. The final-artwork role is requested exactly once in this step, not again under Release. If a file already occupies the role but does not satisfy the current rule, the open requirement uses the safe replacement action and archives the previous managed bytes. For AI artwork, three explicit `No` answers deactivate `06 AI Transparency`; otherwise the configured disclosure policy applies. In `07 Release`, choose any applicable release-note labels and import the final audio files.
 
@@ -172,7 +176,7 @@ Use the native evidence picker from the relevant step:
 4. Confirm the copy.
 5. Check that the application reports the copied file, size, SHA-256 digest, and updated workflow state.
 
-Every evidence control states the accepted file types. After a file is present, select the large checked area to open its in-app preview. PNG, JPEG, and WebP images are shown as images; small TXT, Markdown, and JSON files are shown as text. Large images, large text files, archives, audio, video, and PDF files show safe metadata and an explanation instead of being loaded wholesale. In particular, ZIP files are never unpacked for preview.
+Every evidence control states the accepted file types. After a file is present, select the large checked area to open its in-app preview. PNG, JPEG, and WebP images are shown as images; small TXT, Markdown, JSON, and supported source-code files are shown as text. Large images, large text files, archives, audio, video, and PDF files show safe metadata and an explanation instead of being loaded wholesale. In particular, ZIP files are never unpacked for preview.
 
 The separate upload button on the right replaces the selected evidence record explicitly. The replacement keeps the record identity, writes and hashes the new managed copy, and moves the previous managed bytes below `.archive/evidence-replacements/`. If the evidence-record update fails, the filesystem change is rolled back. A normal import to an already registered relative path produces a controlled message directing the user to this replacement action; it does not surface a raw SQLite `UNIQUE` error.
 
@@ -245,6 +249,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Explained guided Source and post-export choices, conditional source-code evidence, supported formats, and English document values. | Project team |
 | 2026-08-14 | Explained the collapsible top-level and album folder rows and their keyboard operation. | Project team |
 | 2026-08-14 | Explained album and single creation, search, reclassification, invariants, and version 0.1 album limits. | Project team |
 | 2026-08-14 | Documented per-invoice billing cadence, single-file registration, materialized coverage, and the no-extrapolation rule. | Project team |

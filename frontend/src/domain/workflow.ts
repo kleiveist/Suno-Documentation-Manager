@@ -112,6 +112,7 @@ export function visibleConditionalFields(fields: TrackFields, profile: GlobalPro
     visible.add("ownAudioOwnership");
     visible.add("ownAudioFile");
   }
+  if (fields.codeBasedGeneration === true) visible.add("sourceCodeFile");
   if (fields.thirdPartySamplesUploaded === true) {
     visible.add("thirdPartySampleSource");
     visible.add("thirdPartySampleOwnership");
@@ -158,6 +159,7 @@ export function evaluateRequirements(
 
   add("external-audio-answer", "source", "Angabe zu externem Audio", fields.externalAudioUploaded !== null);
   add("own-audio-answer", "source", "Angabe zu eigenem Audio", fields.ownAudioUploaded !== null);
+  add("code-generation-answer", "source", "Angabe zur codebasierten Erzeugung", fields.codeBasedGeneration !== null);
   add("samples-answer", "source", "Angabe zu fremden Samples", fields.thirdPartySamplesUploaded !== null);
   if (fields.externalAudioUploaded === true) {
     add("external-source", "source", "Quelle des externen Audios", hasText(fields.externalAudioSource));
@@ -169,6 +171,9 @@ export function evaluateRequirements(
     add("own-source", "source", "Quelle des eigenen Audios", hasText(fields.ownAudioSource));
     add("own-ownership", "source", "Rechtezuordnung des eigenen Audios", hasText(fields.ownAudioOwnership));
     add("own-audio-file", "evidence_licenses", "Importierte eigene Audiodatei", hasEvidence(evidence, "own_audio_file"), "own_audio_file");
+  }
+  if (fields.codeBasedGeneration === true) {
+    add("source-code-file", "evidence_licenses", "Quellcode oder Quelldatei der codebasierten Erzeugung", hasEvidence(evidence, "source_code_file"), "source_code_file");
   }
   if (fields.thirdPartySamplesUploaded === true) {
     add("sample-source", "source", "Quelle der fremden Samples", hasText(fields.thirdPartySampleSource));
@@ -354,6 +359,7 @@ export function evidenceRoleLabel(role: EvidenceRole): string {
     external_audio_license: "Lizenz für externes Audio",
     external_audio_file: "Externe Audiodatei",
     own_audio_file: "Eigene Audiodatei",
+    source_code_file: "Quellcode / Quelldatei",
     third_party_sample_file: "Fremde Sample-Datei",
     third_party_sample_license: "Lizenz für fremde Samples",
     other: "Sonstiger Nachweis"
@@ -378,6 +384,7 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     external_audio_license: "PDF, PNG, JPG, TXT oder Markdown",
     external_audio_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     own_audio_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
+    source_code_file: "Ruby, Python, JavaScript, TypeScript, Text, Markdown und weitere Text-/Quellcodeformate",
     third_party_sample_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     third_party_sample_license: "PDF, PNG, JPG, TXT oder Markdown",
     other: "PDF, Bild, Text, ZIP, WAV, MP3 oder MP4"

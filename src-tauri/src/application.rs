@@ -1099,6 +1099,7 @@ impl WorkspaceApp {
             "txt" => Some("text/plain"),
             "md" => Some("text/markdown"),
             "json" => Some("application/json"),
+            _ if item.role == EvidenceRole::SourceCodeFile => Some("text/plain"),
             _ => None,
         };
         let (mime_type, data_url, text_content, message) = if let Some(mime) = image_mime {
@@ -3112,6 +3113,9 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     if let Some(value) = patch.own_audio_ownership {
         fields.own_audio_ownership = value;
     }
+    if let Some(value) = patch.code_based_generation {
+        fields.code_based_generation = Some(value);
+    }
     if let Some(value) = patch.third_party_samples_uploaded {
         fields.third_party_samples_uploaded = Some(value);
     }
@@ -3224,6 +3228,7 @@ mod tests {
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
+                    code_based_generation: Some(false),
                     third_party_samples_uploaded: Some(false),
                     human_editing_performed: Some(false),
                     post_export_editing_performed: Some(false),
@@ -3574,6 +3579,7 @@ mod tests {
                 lyrics_source: Some("instrumental".into()),
                 external_audio_uploaded: Some(false),
                 own_audio_uploaded: Some(false),
+                code_based_generation: Some(false),
                 third_party_samples_uploaded: Some(false),
                 human_editing_performed: Some(false),
                 post_export_editing_performed: Some(false),
@@ -3895,6 +3901,11 @@ mod tests {
             .as_object_mut()
             .expect("track object")
             .remove("library");
+        legacy_json
+            .pointer_mut("/fields")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("track fields")
+            .remove("codeBasedGeneration");
         app.persistence
             .open()
             .expect("database")
@@ -3909,8 +3920,10 @@ mod tests {
 
         let defaulted = app.persistence.track(&created.id).expect("defaulted track");
         assert_eq!(defaulted.library, TrackLibraryPlacement::default());
+        assert_eq!(defaulted.fields.code_based_generation, None);
         let loaded = app.load_track(&created.id).expect("load defaulted track");
         assert_eq!(loaded.library, TrackLibraryPlacement::default());
+        assert_eq!(loaded.fields.code_based_generation, None);
         let materialized_json: String = app
             .persistence
             .open()
@@ -4434,7 +4447,7 @@ mod tests {
     }
 
     #[test]
-    fn evidence_preview_embeds_images_but_does_not_load_zip_archives() {
+    fn evidence_preview_embeds_images_and_source_text_but_does_not_load_zip_archives() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
@@ -4469,6 +4482,25 @@ mod tests {
             .data_url
             .as_deref()
             .is_some_and(|value| value.starts_with("data:image/png;base64,")));
+
+        let source_code = fixtures.join("generator.py");
+        fs::write(&source_code, b"def generate():\n    return 'sound'\n")
+            .expect("source-code fixture");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SourceCodeFile, &source_code)
+            .expect("source-code import");
+        let source_code_item = imported
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::SourceCodeFile)
+            .expect("source-code evidence");
+        let source_code_preview = app
+            .preview_evidence(&track.id, &source_code_item.id)
+            .expect("source-code preview");
+        assert_eq!(
+            source_code_preview.text_content.as_deref(),
+            Some("def generate():\n    return 'sound'\n")
+        );
 
         let imported = app
             .import_evidence_from(&track.id, EvidenceRole::SunoProjectZip, &project)
@@ -4695,6 +4727,7 @@ mod tests {
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
+                    code_based_generation: Some(false),
                     third_party_samples_uploaded: Some(false),
                     human_editing_performed: Some(false),
                     post_export_editing_performed: Some(false),
@@ -4854,6 +4887,7 @@ mod tests {
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
+                    code_based_generation: Some(false),
                     third_party_samples_uploaded: Some(false),
                     human_editing_performed: Some(false),
                     post_export_editing_performed: Some(false),

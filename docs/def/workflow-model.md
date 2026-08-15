@@ -88,7 +88,7 @@ An empty N/A reason is invalid. A conditional child requirement can become N/A a
 | Order | Step ID | Label | Primary responsibility |
 | --- | --- | --- | --- |
 | 01 | `track` | Track | Title, production dates, commercial intent, and workflow identity |
-| 02 | `source` | Source | External, own, and third-party audio branches plus applicable ownership and license evidence |
+| 02 | `source` | Source | Guided external, own, code-based, and third-party source branches plus applicable rights and evidence |
 | 03 | `suno` | Suno | Model, project URL, plan at creation, export date, and Suno evidence |
 | 04 | `human-work` | Human Work | Lyrics source/text, Suno style prompt, and guided human or post-export edits that actually occurred |
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
@@ -116,14 +116,17 @@ The following branch rules are mandatory:
 | --- | --- | --- |
 | External audio uploaded | Hide dependent source/license requirements and exclude them from evaluation | Require source, ownership, license evidence, and uploaded file |
 | Own audio uploaded | Hide own-audio details | Require confirmed ownership/source details and file role |
+| Code-based generation | Hide the source-code evidence control and requirement | Require one supported source-code or source-text evidence file under `02_SUNO/` |
 | Third-party samples uploaded | Hide sample details | Require sample source, permission/license note, and applicable evidence |
 | Lyrics source | Instrumental hides lyrics text | Every non-instrumental source requires the exact text used; the Suno style prompt is always required |
-| Human or post-export editing | Do not add generic editing claims | Require the specific operations actually performed |
+| Human or post-export editing | Do not add generic editing claims | Require at least one specific operation from the applicable guided multi-selection |
 | AI-generated or AI-assisted artwork | Permit the whole AI Transparency step to be stored as N/A only with a reason | Require AI original and one final artwork under Artwork. If all three content checks are `No`, deactivate AI Transparency; otherwise require service, policy decision, disclosure result, and locally generated provenance/source lineage when disclosure applies |
 | Real person, real event, trademark, or logo content check | End that question | Require a factual note and any configured evidence; do not decide legality |
 | External license evidence | Do not ask for unrelated license fields | Require evidence selection, contained copy, and integrity inclusion |
 
 Changing a controller reevaluates and clears the requirement status of now-hidden dependent fields. Historical values are not silently presented as current answers; removal follows an explicit domain rule or confirmation.
+
+Source categories, rights bases, human-work operations, post-export operations, and release-note selections use stable English values with localized presentation labels. This keeps generated document choices English without requiring the interface itself to be English. Unknown historical free text remains reviewable as a legacy option until the user deliberately replaces it.
 
 ## Missing-item calculation
 
@@ -227,6 +230,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Added the conditional code-based Source branch, guided Source classifications, and English canonical values for localized choice controls. | Project team |
 | 2026-08-15 | Added the Suno style prompt, guided work/release choices, three-negative AI Transparency deactivation, one final-artwork requirement, and prerequisite-aware Finalize status. | Project team |
 | 2026-08-13 | Added provenance and source-lineage checks to the AI artwork finalization gate. | Project team |
 | 2026-08-13 | Defined the ten-step conditional workflow and finalization gate. | Project team |

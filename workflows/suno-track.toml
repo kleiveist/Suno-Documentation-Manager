@@ -18,7 +18,7 @@ order = 2
 name = "02 Source"
 required = true
 when = "always"
-description = "External, own, and third-party audio declarations with conditional evidence."
+description = "Guided external, own, code-based, and third-party source declarations with conditional evidence."
 
 [[steps]]
 id = "suno"
@@ -230,6 +230,23 @@ required = true
 when = "own_audio"
 missing_message = "Die eigene hochgeladene Audiodatei fehlt."
 evidence_role = "own_audio_file"
+
+[[requirements]]
+key = "source.code_based_generation"
+step_id = "source"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Angabe zur codebasierten Erzeugung fehlt."
+
+[[requirements]]
+key = "source.source_code_file"
+step_id = "evidence_licenses"
+kind = "evidence"
+required = true
+when = "code_based_generation"
+missing_message = "Der Quellcode oder die Quelldatei der codebasierten Erzeugung fehlt."
+evidence_role = "source_code_file"
 
 [[requirements]]
 key = "source.third_party_samples_uploaded"

@@ -77,18 +77,23 @@ At minimum, the workflow can record the following confirmed facts:
 - lyrics source;
 - the lyrics text actually used when the track is not instrumental;
 - the complete Suno style prompt;
-- whether external audio, own audio, or third-party samples were uploaded;
+- whether external audio, own audio, code-based generation, or third-party samples were used;
+- the guided source category and rights basis for every applicable audio-source branch;
+- the source-code or source-text evidence file when code-based generation is confirmed;
 - whether human editing or post-export editing occurred;
 - the specific confirmed human editing operations; and
 - whether commercial use is intended.
 
-Confirmed human-work labels are selected from the guided choices for arrangement, lyrics, timing/cuts, sound design, EQ, mixing, mastering, and loudness adjustment. Release notes likewise use guided release-version choices. A label appears only when the user selects it; the generator does not add generic arrangement, mixing, mastering, or release claims by default.
+Confirmed human-work labels are selected from the guided choices for arrangement, lyrics, timing/cuts, sound design, EQ, mixing, mastering, and loudness adjustment. Post-export work uses its own guided set for editing/cuts, arrangement, timing correction, sound design, EQ, mixing, mastering, loudness adjustment, noise reduction, and dynamics processing. Release notes likewise use guided release-version choices. A label appears only when the user selects it; the generator does not add generic arrangement, mixing, mastering, or release claims by default.
+
+The localized UI label and the stored value are deliberately separate. New guided selections are persisted as stable English values even when the interface presents German labels. A recognized localized value from an older record is normalized on the next save. An unknown historical free-text value remains visible as a legacy choice for explicit reclassification and is not silently discarded.
 
 ## Conditional facts
 
 The model stores a controlling answer separately from its dependent details. If `External audio uploaded?` is `No`, source, ownership, license, and uploaded-file questions are not required. If it is `Yes`, the dependent facts and evidence become applicable. The same rule applies to:
 
 - own audio;
+- code-based generation, which requires a source-code or source-text evidence file only after an explicit positive answer;
 - third-party samples;
 - human lyrics and human editing;
 - post-export processing;
@@ -137,6 +142,7 @@ Folder generation creates directories and managed text documents only when appro
 | Suno final export | `02_SUNO/` | Evidence of the selected Suno output when required by the workflow |
 | Suno project ZIP | `02_SUNO/` | Optional project evidence |
 | Suno screenshot | `02_SUNO/` | Optional factual evidence |
+| Source code or source text (`.rb`, `.py`, `.txt`, `.md`, and other supported text-based formats) | `02_SUNO/` | Required only when code-based generation is confirmed |
 | Subscription or payment evidence (PDF, PNG/JPEG, TXT, or Markdown) | `04_LICENSES/` | Selected when its materialized coverage interval covers the track production period |
 | Release WAV, MP3, or MP4 | `01_RELEASE/` | Release output; the configured final release role is mandatory |
 | Release artwork | `01_RELEASE/` | Final release package artwork when applicable |
@@ -150,7 +156,7 @@ Folder generation creates directories and managed text documents only when appro
 
 An import validates the type and role, calculates a safe destination, detects a collision, copies without deleting the source, calculates SHA-256 during the same streaming copy, records size and metadata, and reevaluates the workflow. It runs outside the webview thread. Routine loading avoids a repeated full SHA-256 read for evidence larger than 64 MiB; explicit evidence verification and integrity/finalization operations remain full cryptographic checks. Manifest paths are relative to the track root.
 
-The evidence UI exposes accepted file types for every role. Existing images and bounded text files can be previewed inside the app. Archive preview is metadata-only and never expands or reads an entire project ZIP into memory. The adjacent replacement action is distinct from preview so viewing evidence cannot accidentally open a file picker.
+The evidence UI exposes accepted file types for every role. Existing images and bounded text or source-code files can be previewed inside the app. Archive preview is metadata-only and never expands or reads an entire project ZIP into memory. The adjacent replacement action is distinct from preview so viewing evidence cannot accidentally open a file picker.
 
 ## Evidence provenance
 
@@ -188,11 +194,13 @@ This is a project transparency policy. The product does not label it as a univer
 
 ## Generated documents
 
-Template version `1.1` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and evidence metadata. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
+Template version `1.2` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and evidence metadata. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
+
+Generated headings, explanatory prose, and guided-choice values are always English. German UI labels are mapped to their stable English values before rendering. An unknown legacy selection is represented by an English reclassification notice rather than copying potentially non-English unrestricted text into a generated choice field. User-authored factual content that must remain exact—such as lyrics, the Suno style prompt, a disclosure text, or an individually required factual note—is preserved verbatim and is not treated as generated prose.
 
 | Output | Minimum purpose |
 | --- | --- |
-| `02_SUNO/suno_project.txt` | Suno project URL and confirmed Suno production facts |
+| `02_SUNO/suno_project.txt` | Suno project URL, confirmed production facts, code-generation answer, and applicable source-code evidence path |
 | `02_SUNO/Lyrics.md` | Lyrics source and the exact used lyrics text when applicable |
 | `02_SUNO/Style.md` | The complete style prompt entered in Suno |
 | `03_DOCUMENTATION/README.md` | Human-readable track documentation entry point |
@@ -272,6 +280,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-15 | Added guided Source classifications, conditional source-code evidence, English choice rendering, legacy reclassification, and template version 1.2. | Project team |
 | 2026-08-14 | Defined new-track dialog retention/dismissal behavior and clarified supported subscription-evidence formats. | Project team |
 | 2026-08-13 | Added evidence provenance, portable disclosure lineage, and recoverable indexed-legacy removal. | Project team |
 | 2026-08-13 | Defined the portable track documentation and certificate model. | Project team |

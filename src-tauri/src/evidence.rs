@@ -64,7 +64,12 @@ fn validate_signature(source: &Path, extension: &str) -> Result<()> {
         "flac" => bytes.starts_with(b"fLaC"),
         "ogg" => bytes.starts_with(b"OggS"),
         "mp4" | "m4v" | "m4a" => bytes.len() >= 12 && &bytes[4..8] == b"ftyp",
-        "txt" | "md" | "json" => valid_text_prefix(bytes),
+        "txt" | "md" | "json" | "rb" | "py" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs"
+        | "java" | "kt" | "kts" | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "cs" | "rs" | "go"
+        | "php" | "swift" | "scala" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "lua" | "r"
+        | "jl" | "ex" | "exs" | "erl" | "hrl" | "fs" | "fsx" | "vb" | "sql" | "html" | "htm"
+        | "css" | "scss" | "sass" | "less" | "xml" | "yaml" | "yml" | "toml" | "csv" | "ipynb"
+        | "svg" => valid_text_prefix(bytes),
         _ => false,
     };
     if count == 0 || !matches {
@@ -525,6 +530,42 @@ mod tests {
                 "Other Track",
                 EvidenceRole::AiArtworkOriginal,
                 &disguised
+            ),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn source_code_import_accepts_text_formats_and_rejects_binary_content() {
+        let directory = tempdir().expect("temporary directory");
+        let track_root = directory.path().join("track");
+        fs::create_dir(&track_root).expect("track root");
+        let source = directory.path().join("generator.py");
+        fs::write(&source, b"def render_note(value):\n    return value * 2\n")
+            .expect("Python source");
+
+        let imported = import(
+            &track_root,
+            "Code Track",
+            EvidenceRole::SourceCodeFile,
+            &source,
+        )
+        .expect("source-code import");
+
+        assert_eq!(imported.relative_path, "02_SUNO/generator.py");
+        assert_eq!(
+            fs::read(track_root.join(&imported.relative_path)).expect("managed source code"),
+            b"def render_note(value):\n    return value * 2\n"
+        );
+
+        let binary = directory.path().join("binary.py");
+        fs::write(&binary, b"\0\x01\x02not source text").expect("binary fixture");
+        assert!(matches!(
+            import(
+                &track_root,
+                "Binary Track",
+                EvidenceRole::SourceCodeFile,
+                &binary
             ),
             Err(AppError::Validation(_))
         ));

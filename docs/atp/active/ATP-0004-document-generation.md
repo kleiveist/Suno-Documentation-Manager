@@ -80,7 +80,8 @@ Accept document generation when identical normalized inputs produce identical by
 | 8 | `REQ-DOC-001` | Attempt generation over TD-04. | Generation stops and requests explicit adoption; sentinel content remains unchanged. | Generation without adoption returned `AdoptionRequired`; the exact binary sentinel remained unchanged and no other managed output was written. | PASS | Rust `adopt_existing_false_leaves_unmanaged_sentinel_unchanged` |
 | 9 | `REQ-DOC-001` | Confirm adoption in a fresh fixture. | The sentinel is backed up below `.archive/` before an atomic managed write succeeds. | Confirmed adoption archived the exact sentinel bytes under `.archive/adoptions/` before the managed golden replacement appeared. | PASS | Rust `adopt_existing_true_archives_exact_bytes_before_managed_replacement` |
 | 10 | `REQ-DOC-001` | Scan generated prose for prohibited certification or legal-guarantee claims. | No invented legality, ownership, governmental certification, or guaranteed-noninfringement statement exists. | The combined eight-file golden output was scanned against the prohibited-claim list; no forbidden claim was present. | PASS | Rust `all_documents_match_golden_bytes_and_exclude_forbidden_content` |
-| 11 | `REQ-DOC-001` | Regenerate with TD-05 present. | Template `1.1` writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`, then removes only the old managed files. | Both new Suno documents were generated and both exact-marker legacy files were removed. | PASS | Rust `generation_moves_managed_lyrics_and_style_documents_into_suno_folder` |
+| 11 | `REQ-DOC-001` | Regenerate with TD-05 present. | Template `1.2` writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`, then removes only the old managed files. | Both new Suno documents were generated and both exact-marker legacy files were removed. | PASS | Rust `generation_moves_managed_lyrics_and_style_documents_into_suno_folder` |
+| 11a | `REQ-DOC-001` | Generate with German presentation labels for guided Source, Human Work, post-export, and Release choices, then repeat with one unknown legacy selection. | Generated headings, prose, and guided values are English. The unknown legacy text remains in track data but is replaced in output by an English reclassification notice. | Rendering mapped all known German fixtures to their canonical English values and asserted that no German UI label leaked into any managed document. The unknown legacy fixture stayed unchanged in the track record and was not copied into output. | PASS | Rust `guided_german_ui_labels_render_as_english_document_values`, `unknown_legacy_selection_is_retained_in_data_but_not_copied_into_english_documents` |
 | 12 | `REQ-DOC-001` | Reopen an older non-finalized track whose embedded profile is empty while the workspace profile is complete. | Artist, Suno profile, handle, plan, and subscription date are assigned without re-entering the settings. | Workspace opening reconciled the saved profile into the legacy track; Track and Suno requirements no longer reported missing global values. | PASS | Rust `reopening_assigns_saved_global_profile_to_existing_legacy_track` |
 
 ## Automated checks
@@ -109,14 +110,14 @@ Evidence includes the template version, normalized fixture, two output-tree dige
 ## Result
 
 - Overall result: `PARTIAL`
-- Summary: Steps 1, 4, 5, and 7–12 passed; three mandatory steps remain `NOT RUN`.
+- Summary: Steps 1, 4, 5, 7–11a, and 12 passed; steps 2, 3, and 6 remain `NOT RUN`.
 - Residual risks: Negative-only prose and stale-input propagation still require complete acceptance fixtures.
 
 ## Sign-off
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Automated acceptance executor | Codex | PARTIAL | 2026-08-14 |
+| Automated acceptance executor | Codex | PARTIAL | 2026-08-15 |
 | Product acceptance owner | — | PENDING | — |
 
 ## Related documents

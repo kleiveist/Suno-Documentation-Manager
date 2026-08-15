@@ -2,17 +2,21 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAIN_NAVIGATION,
+  canonicalGuidedChoiceList,
+  canonicalGuidedChoiceValue,
   missingProfileFields,
+  normalizeGuidedTrackFields,
   parseMultiChoiceValue,
   resetWorkspaceScopedUiState,
   shouldIgnoreModalBackdropClick,
   serializeMultiChoiceValue,
   trackSummaryFromDetail,
+  type GuidedChoice,
   type WorkspaceScopedUiState,
   workflowUpgradePresentation
 } from "./app";
 import { WORKFLOW_STEPS } from "./domain/workflow";
-import { emptyProfile } from "./domain/types";
+import { emptyProfile, emptyTrackFields } from "./domain/types";
 import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
 
 describe("theme", () => {
@@ -37,6 +41,35 @@ describe("navigation", () => {
   it("stores multiple guided choices deterministically", () => {
     expect(serializeMultiChoiceValue(["Mixing", "Mastering", "Mixing"])).toBe("Mixing | Mastering");
     expect(parseMultiChoiceValue("Mixing | Mastering")).toEqual(["Mixing", "Mastering"]);
+  });
+
+  it("stores English values while accepting localized labels and retaining unknown legacy data", () => {
+    const choices: readonly GuidedChoice[] = [
+      ["Timing and cuts", "Timing und Cuts"],
+      ["Loudness adjustment", "Lautheitsanpassung"]
+    ];
+    expect(canonicalGuidedChoiceValue("Timing und Cuts", choices)).toBe("Timing and cuts");
+    expect(canonicalGuidedChoiceList("Timing und Cuts | Lautheitsanpassung", choices)).toBe(
+      "Timing and cuts | Loudness adjustment"
+    );
+    expect(canonicalGuidedChoiceValue("Historischer Freitext", choices)).toBe("Historischer Freitext");
+  });
+
+  it("normalizes every guided track value before saving", () => {
+    const normalized = normalizeGuidedTrackFields({
+      ...emptyTrackFields(),
+      ownAudioSource: "Eigene Aufnahme",
+      ownAudioOwnership: "Eigene Produktion",
+      humanEditingDetails: "Timing und Cuts | Lautheitsanpassung",
+      postExportEditingDetails: "Schnitt | Mixing",
+      releaseNotes: "Originale Suno-Fassung | Radio Edit"
+    });
+
+    expect(normalized.ownAudioSource).toBe("Original field recording");
+    expect(normalized.ownAudioOwnership).toBe("Solely owned by the artist");
+    expect(normalized.humanEditingDetails).toBe("Timing and cuts | Loudness adjustment");
+    expect(normalized.postExportEditingDetails).toBe("Editing and cuts | Mixing");
+    expect(normalized.releaseNotes).toBe("Original Suno version | Radio edit");
   });
 
   it("exposes every required German main view", () => {

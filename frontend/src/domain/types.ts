@@ -30,6 +30,7 @@ export type EvidenceRole =
   | "external_audio_license"
   | "external_audio_file"
   | "own_audio_file"
+  | "source_code_file"
   | "third_party_sample_file"
   | "third_party_sample_license"
   | "other";
@@ -151,6 +152,7 @@ export interface TrackFields {
   ownAudioUploaded: boolean | null;
   ownAudioSource: string;
   ownAudioOwnership: string;
+  codeBasedGeneration: boolean | null;
   thirdPartySamplesUploaded: boolean | null;
   thirdPartySampleSource: string;
   thirdPartySampleOwnership: string;
@@ -293,6 +295,7 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     ownAudioUploaded: null,
     ownAudioSource: "",
     ownAudioOwnership: "",
+    codeBasedGeneration: null,
     thirdPartySamplesUploaded: null,
     thirdPartySampleSource: "",
     thirdPartySampleOwnership: "",

@@ -68,6 +68,7 @@ pub enum EvidenceRole {
     ExternalAudioLicense,
     ExternalAudioFile,
     OwnAudioFile,
+    SourceCodeFile,
     ThirdPartySampleFile,
     ThirdPartySampleLicense,
     Other,
@@ -98,6 +99,7 @@ impl EvidenceRole {
             Self::ExternalAudioLicense => "external_audio_license",
             Self::ExternalAudioFile => "external_audio_file",
             Self::OwnAudioFile => "own_audio_file",
+            Self::SourceCodeFile => "source_code_file",
             Self::ThirdPartySampleFile => "third_party_sample_file",
             Self::ThirdPartySampleLicense => "third_party_sample_license",
             Self::Other => "other",
@@ -116,7 +118,10 @@ impl EvidenceRole {
             | Self::AiArtworkEdited
             | Self::HumanEditedArtwork
             | Self::FinalArtwork => "05_ARTWORK",
-            Self::ExternalAudioFile | Self::OwnAudioFile | Self::ThirdPartySampleFile => "02_SUNO",
+            Self::ExternalAudioFile
+            | Self::OwnAudioFile
+            | Self::SourceCodeFile
+            | Self::ThirdPartySampleFile => "02_SUNO",
             Self::Other => "03_DOCUMENTATION",
         }
     }
@@ -140,6 +145,13 @@ impl EvidenceRole {
             | Self::ExternalAudioFile
             | Self::OwnAudioFile
             | Self::ThirdPartySampleFile => &["wav", "mp3", "flac", "m4a", "aiff", "aif", "ogg"],
+            Self::SourceCodeFile => &[
+                "rb", "py", "txt", "md", "js", "jsx", "ts", "tsx", "mjs", "cjs", "java", "kt",
+                "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "rs", "go", "php", "swift",
+                "scala", "sh", "bash", "zsh", "fish", "ps1", "lua", "r", "jl", "ex", "exs", "erl",
+                "hrl", "fs", "fsx", "vb", "sql", "html", "htm", "css", "scss", "sass", "less",
+                "xml", "yaml", "yml", "toml", "json", "csv", "ipynb", "svg",
+            ],
             Self::Other => &[
                 "pdf", "png", "jpg", "jpeg", "txt", "md", "json", "zip", "wav", "mp3", "mp4",
             ],
@@ -207,6 +219,7 @@ pub struct TrackFields {
     pub own_audio_uploaded: Option<bool>,
     pub own_audio_source: String,
     pub own_audio_ownership: String,
+    pub code_based_generation: Option<bool>,
     pub third_party_samples_uploaded: Option<bool>,
     pub third_party_sample_source: String,
     pub third_party_sample_ownership: String,
@@ -248,6 +261,7 @@ impl Default for TrackFields {
             own_audio_uploaded: None,
             own_audio_source: String::new(),
             own_audio_ownership: String::new(),
+            code_based_generation: None,
             third_party_samples_uploaded: None,
             third_party_sample_source: String::new(),
             third_party_sample_ownership: String::new(),
@@ -369,6 +383,7 @@ pub struct TrackPatch {
     pub own_audio_uploaded: Option<bool>,
     pub own_audio_source: Option<String>,
     pub own_audio_ownership: Option<String>,
+    pub code_based_generation: Option<bool>,
     pub third_party_samples_uploaded: Option<bool>,
     pub third_party_sample_source: Option<String>,
     pub third_party_sample_ownership: Option<String>,
