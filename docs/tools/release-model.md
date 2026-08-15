@@ -98,7 +98,7 @@ python tools/control.py init \
   --identifier com.customer.app
 ```
 
-The command derives `customer-app` and updates the frontend package, lockfile, backend display/service names, web artifact name, Compose names, Tauri product metadata, SVG icon title, binary name, Cargo package/author, and window title. Use `--slug` only when the derived value is unsuitable.
+The command derives `customer-app` and uses that short slug for generated artifact names, the frontend package, Tauri product and binary names, Cargo package, web ZIP, and Compose services. The full `CustomerApp` name remains the window title and other user-visible display text. Use `--slug` only when the derived value is unsuitable.
 
 Run the non-publishing gate before a release:
 

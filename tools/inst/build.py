@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = ROOT / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 WEB_ARTIFACT_DIR = ROOT / ".dist" / "web"
-WEB_ZIP_PATH = WEB_ARTIFACT_DIR / "suno-documentation-manager-web.zip"
+WEB_ZIP_PATH = WEB_ARTIFACT_DIR / "sunodm-web.zip"
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:

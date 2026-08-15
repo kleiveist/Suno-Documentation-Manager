@@ -182,7 +182,7 @@ def _build_command(host: str, *, runner: str | None = None) -> list[str]:
 
 def _zip_portable_binary(*, dry_run: bool) -> int:
     release_dir = paths.TAURI_DIR / "target" / WINDOWS_TARGET / "release"
-    zip_path = paths.DIST_DIR / f"{paths.APP_NAME}-windows-portable.zip"
+    zip_path = paths.DIST_DIR / f"{paths.APP_ARTIFACT_NAME}-windows-portable.zip"
 
     if dry_run:
         logger.info(f"DRY-RUN create portable ZIP {zip_path}")

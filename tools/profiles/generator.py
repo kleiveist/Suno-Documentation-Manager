@@ -347,7 +347,19 @@ def _configure_project_identity(
         existing_tauri = _read_json_object(existing_tauri_path)
         product_name = existing_tauri.get("productName")
         binary_name = existing_tauri.get("mainBinaryName")
-        if isinstance(product_name, str) and product_name.strip():
+        app = existing_tauri.get("app")
+        if isinstance(app, dict):
+            windows = app.get("windows")
+            if isinstance(windows, list):
+                main_window = next(
+                    (window for window in windows if isinstance(window, dict) and window.get("label") == "main"),
+                    None,
+                )
+                if isinstance(main_window, dict):
+                    window_title = main_window.get("title")
+                    if isinstance(window_title, str) and window_title.strip():
+                        source_name = window_title
+        if source_name == "Template Project" and isinstance(product_name, str) and product_name.strip():
             source_name = product_name
         if isinstance(binary_name, str) and binary_name.strip():
             source_binary = binary_name
@@ -414,7 +426,7 @@ def _configure_project_identity(
 
     tauri_path = target_dir / "src-tauri" / "tauri.conf.json"
     tauri = _read_json_object(tauri_path)
-    tauri["productName"] = identity.name
+    tauri["productName"] = identity.slug
     tauri["identifier"] = identity.identifier
     tauri["mainBinaryName"] = identity.slug
     app = tauri.get("app")

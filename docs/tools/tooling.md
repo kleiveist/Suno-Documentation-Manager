@@ -217,7 +217,7 @@ Display the available build targets first:
 python tools/control.py build
 ```
 
-A web build creates `frontend/dist/` and `.dist/web/suno-documentation-manager-web.zip`:
+A web build creates `frontend/dist/` and `.dist/web/sunodm-web.zip`:
 
 ```sh
 python tools/control.py build web
@@ -339,4 +339,5 @@ python tools/control.py build desktop --dry-run --no-clean
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Standardized generated desktop, portable, and web artifact base names on `sunodm` while retaining the full visible product title. | Project team |
 | 2026-08-13 | Scoped retained tooling to the active desktop-local product, documented Rust 1.88 MSRV, and corrected the web artifact name. | Project team |

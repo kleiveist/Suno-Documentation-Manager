@@ -248,7 +248,7 @@ example:
     web_parser = build_subparsers.add_parser(
         "web",
         help="compile and package the Vite web app",
-        description="Build frontend/dist and create .dist/web/suno-documentation-manager-web.zip.",
+        description="Build frontend/dist and create .dist/web/sunodm-web.zip.",
         formatter_class=HelpFormatter,
     )
     _add_examples(web_parser, "examples:\n  python tools/control.py build web")

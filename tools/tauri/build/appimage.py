@@ -14,7 +14,7 @@ from tools.tauri import common, paths
 from tools.tauri.linux import install as linux_install
 
 DESKTOP_FILE_NAME = f"{paths.APP_SLUG}.desktop"
-STABLE_APPIMAGE_NAME = f"{paths.APP_NAME}.AppImage"
+STABLE_APPIMAGE_NAME = f"{paths.APP_ARTIFACT_NAME}.AppImage"
 STABLE_ICON_BASENAME = paths.APP_SLUG
 NAME_PREFERENCE_TOKEN = paths.APP_SLUG
 
@@ -123,13 +123,15 @@ def package_existing_appdir(*, dry_run: bool = False) -> int:
         return 1
 
     if dry_run:
+        logger.info(f"DRY-RUN remove legacy long-name entries from {appdir}")
         logger.info(f"DRY-RUN repair AppDir icon metadata in {appdir}")
         logger.info(f"DRY-RUN {plugin} --appdir {appdir}")
         return 0
 
     try:
+        _cleanup_legacy_appdir(appdir)
         _repair_appdir_icon(appdir)
-    except AppImageInstallError as exc:
+    except (AppImageInstallError, OSError) as exc:
         logger.fail(str(exc))
         return 1
 
@@ -296,6 +298,10 @@ def install_latest(*, dry_run: bool = False) -> int:
             _desktop_file_content(_target_appimage_path(), target_icon),
             dry_run=dry_run,
         )
+        _cleanup_legacy_install(
+            {_target_appimage_path(), _target_desktop_path(), target_icon},
+            dry_run=dry_run,
+        )
 
         logger.ok(f"{paths.APP_NAME} AppImage installed locally")
         logger.info(f"🧩 Installed AppImage: {_target_appimage_path()}")
@@ -323,7 +329,7 @@ def _appimage_dir() -> Path:
 
 
 def _appdir() -> Path:
-    return _appimage_dir() / f"{paths.APP_NAME}.AppDir"
+    return _appimage_dir() / f"{paths.APP_ARTIFACT_NAME}.AppDir"
 
 
 def _appimage_plugin() -> Path:
@@ -353,6 +359,27 @@ def _repair_appdir_icon(appdir: Path) -> None:
     shutil.copy2(source, target)
 
 
+def _cleanup_legacy_appdir(appdir: Path) -> None:
+    if paths.APP_DISPLAY_SLUG == paths.APP_SLUG:
+        return
+
+    legacy_names = {
+        paths.APP_NAME,
+        paths.APP_DISPLAY_SLUG,
+    }
+    candidates = {
+        appdir / "usr" / "bin" / paths.APP_DISPLAY_SLUG,
+        *{appdir / f"{name}.desktop" for name in legacy_names},
+        *{appdir / f"{name}{extension}" for name in legacy_names for extension in ICON_EXTENSIONS},
+        *{appdir / "usr" / "share" / "applications" / f"{name}.desktop" for name in legacy_names},
+    }
+    for candidate in sorted(candidates):
+        if not candidate.is_file() and not candidate.is_symlink():
+            continue
+        logger.info(f"▶️ remove legacy long-name AppDir entry {candidate.relative_to(appdir)}")
+        candidate.unlink()
+
+
 def _desktop_icon_name(desktop_file: Path) -> str | None:
     for line in desktop_file.read_text(encoding="utf-8").splitlines():
         if not line.startswith("Icon="):
@@ -365,7 +392,7 @@ def _desktop_icon_name(desktop_file: Path) -> str | None:
 
 
 def _find_appdir_icon_source(appdir: Path) -> Path | None:
-    preferred_names = [f"{paths.APP_NAME}.png", "icon.png", "128x128.png"]
+    preferred_names = [f"{paths.APP_ARTIFACT_NAME}.png", f"{paths.APP_NAME}.png", "icon.png", "128x128.png"]
     by_lower_name = {path.name.lower(): path for path in _collect_files(appdir, PNG_PATTERNS)}
     for name in preferred_names:
         candidate = by_lower_name.get(name.lower())
@@ -395,7 +422,7 @@ def _normalize_fallback_appimage_name() -> None:
 
 def _expected_appimage_name() -> str:
     version = _tauri_version()
-    return f"{paths.APP_NAME}_{version}_amd64.AppImage"
+    return f"{paths.APP_ARTIFACT_NAME}_{version}_amd64.AppImage"
 
 
 def _tauri_version() -> str:
@@ -456,7 +483,7 @@ def _select_appimage(appimage_dir: Path) -> Path:
     pool = preferred if preferred else candidates
     if len(candidates) > 1:
         detail = (
-            f"preferred {paths.APP_NAME} candidates: {len(preferred)}"
+            f"preferred {paths.APP_ARTIFACT_NAME} candidates: {len(preferred)}"
             if preferred
             else "using newest by modification time"
         )
@@ -528,6 +555,25 @@ def _cleanup_stale_icons(keep_path: Path, *, dry_run: bool) -> None:
         if candidate == keep_path or not candidate.exists():
             continue
         logger.info(f"▶️ remove stale icon {candidate}")
+        if not dry_run:
+            candidate.unlink()
+
+
+def _cleanup_legacy_install(keep_paths: set[Path], *, dry_run: bool) -> None:
+    if paths.APP_DISPLAY_SLUG == paths.APP_SLUG:
+        return
+    candidates = {
+        _home() / "Applications" / f"{paths.APP_NAME}.AppImage",
+        _data_home() / "applications" / f"{paths.APP_DISPLAY_SLUG}.desktop",
+        *{
+            _target_icon_dir() / f"{paths.APP_DISPLAY_SLUG}{extension}"
+            for extension in ICON_EXTENSIONS
+        },
+    }
+    for candidate in sorted(candidates):
+        if candidate in keep_paths or not candidate.exists():
+            continue
+        logger.info(f"▶️ remove legacy long-name install file {candidate}")
         if not dry_run:
             candidate.unlink()
 

@@ -477,9 +477,10 @@ def test_init_command_applies_complete_release_identity(tmp_path: Path) -> None:
     tauri = json.loads((target / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     assert package["name"] == "customer-app-frontend"
     assert package_lock["name"] == "customer-app-frontend"
-    assert tauri["productName"] == "CustomerApp"
+    assert tauri["productName"] == "customer-app"
     assert tauri["identifier"] == "com.customer.app"
     assert tauri["mainBinaryName"] == "customer-app"
+    assert tauri["app"]["windows"][0]["title"] == "CustomerApp"
     assert 'name = "customer-app"' in (target / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     assert "CustomerApp Contributors" in (target / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     assert 'name = "customer-app"' in (target / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")

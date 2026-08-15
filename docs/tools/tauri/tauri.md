@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-16 |
 | Audience | Desktop developers and package operators |
 | Related ATP | [ATP-0013: End-to-end offline workflow](../../atp/active/ATP-0013-end-to-end-offline-workflow.md) |
 
@@ -63,6 +63,14 @@ python tools/control.py build desktop --target linux --bundles deb,rpm
 ```
 
 Use `python tools/control.py build desktop --help` for target and bundle options. Packages produced by the ordinary local path are unsigned verification artifacts unless a separate reviewed signing process is configured.
+
+## Artifact names
+
+`src-tauri/tauri.conf.json` defines the shared technical artifact base as `sunodm` through both `productName` and `mainBinaryName`. The full product label, `Suno Documentation Manager`, remains the main-window title and is kept separate from filenames.
+
+All generated native outputs therefore use the short base name: `sunodm` or `sunodm.exe` for binaries and `sunodm…` for DEB, RPM, AppImage, MSI, NSIS/EXE, DMG, and application bundles. Package formats may append their required version, architecture, or installer suffixes. The stable local Linux install is `~/Applications/sunodm.AppImage`; collected web and Windows portable archives are `sunodm-web.zip` and `sunodm-windows-portable.zip`.
+
+The Python build tools expose the same value as `tools.tauri.paths.APP_ARTIFACT_NAME`. Project generation applies the generated project slug in the same places, while preserving its full display name in the window title.
 
 ## Security boundary
 

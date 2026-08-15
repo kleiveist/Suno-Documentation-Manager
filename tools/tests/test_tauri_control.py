@@ -44,6 +44,17 @@ def test_tauri_parser_recognizes_subcommands() -> None:
         assert args.tauri_command == argv[1]
 
 
+def test_tauri_identity_separates_display_and_artifact_names() -> None:
+    payload = json.loads(paths.TAURI_CONFIG.read_text(encoding="utf-8"))
+
+    assert paths.APP_NAME == "Suno Documentation Manager"
+    assert paths.APP_ARTIFACT_NAME == "sunodm"
+    assert paths.APP_SLUG == "sunodm"
+    assert payload["productName"] == "sunodm"
+    assert payload["mainBinaryName"] == "sunodm"
+    assert payload["app"]["windows"][0]["title"] == paths.APP_NAME
+
+
 def test_bare_tauri_command_prints_help(capsys) -> None:
     code = control.main(["tauri"])
 
@@ -214,9 +225,11 @@ def test_tauri_run_command_reports_missing_binary(monkeypatch) -> None:
 
 def test_tauri_windows_portable_dry_run_uses_cargo_xwin_on_linux(monkeypatch) -> None:
     calls: list[tuple[list[str], bool]] = []
+    messages: list[str] = []
 
     monkeypatch.setattr(common, "host_os", lambda: "linux")
     monkeypatch.setattr("tools.tauri.build.windows_portable.shutil.which", lambda name, path=None: "cargo" if name == "cargo" else None)
+    monkeypatch.setattr(windows_portable.logger, "info", messages.append)
     monkeypatch.setattr(
         common,
         "run_command",
@@ -236,6 +249,7 @@ def test_tauri_windows_portable_dry_run_uses_cargo_xwin_on_linux(monkeypatch) ->
     runner = calls[2][0][calls[2][0].index("--runner") + 1]
     assert Path(runner).name == "cargo-xwin"
     assert calls[2][0][-1:] == ["--no-bundle"]
+    assert any(message.endswith(".dist/desktop/sunodm-windows-portable.zip") for message in messages)
 
 
 def test_tauri_raw_windows_portable_flags_map_to_portable_target(monkeypatch) -> None:
@@ -672,7 +686,7 @@ def test_tauri_install_appimage_packages_existing_appdir_when_final_file_is_miss
     home = tmp_path / "home"
     tauri_dir = root / "src-tauri"
     appimage_dir = tauri_dir / "target" / "release" / "bundle" / "appimage"
-    appdir = appimage_dir / f"{paths.APP_NAME}.AppDir"
+    appdir = appimage_dir / f"{paths.APP_ARTIFACT_NAME}.AppDir"
     icon_dir = tauri_dir / "icons"
     appdir.mkdir(parents=True)
     icon_dir.mkdir(parents=True)
@@ -681,7 +695,7 @@ def test_tauri_install_appimage_packages_existing_appdir_when_final_file_is_miss
 
     def fake_package_existing_appdir(dry_run: bool = False) -> int:
         packaged.append(dry_run)
-        (appimage_dir / f"{paths.APP_NAME}_0.1.0_amd64.AppImage").write_bytes(b"appimage")
+        (appimage_dir / f"{paths.APP_ARTIFACT_NAME}_0.1.0_amd64.AppImage").write_bytes(b"appimage")
         return 0
 
     monkeypatch.setattr(paths, "ROOT", root)
@@ -693,7 +707,7 @@ def test_tauri_install_appimage_packages_existing_appdir_when_final_file_is_miss
 
     assert code == 0
     assert packaged == [False]
-    assert (home / "Applications" / f"{paths.APP_NAME}.AppImage").read_bytes() == b"appimage"
+    assert (home / "Applications" / f"{paths.APP_ARTIFACT_NAME}.AppImage").read_bytes() == b"appimage"
 
 
 def test_tauri_build_appimage_dry_run_does_not_install(monkeypatch) -> None:
@@ -800,6 +814,15 @@ def test_tauri_appimage_install_copies_artifact_icon_and_desktop_entry(monkeypat
     source_icon = icon_dir / "icon.png"
     source_appimage.write_bytes(b"appimage")
     source_icon.write_bytes(b"png")
+    legacy_appimage = home / "Applications" / f"{paths.APP_NAME}.AppImage"
+    legacy_desktop = home / ".local" / "share" / "applications" / f"{paths.APP_DISPLAY_SLUG}.desktop"
+    legacy_icon = home / ".local" / "share" / "icons" / f"{paths.APP_DISPLAY_SLUG}.png"
+    legacy_appimage.parent.mkdir(parents=True)
+    legacy_desktop.parent.mkdir(parents=True)
+    legacy_icon.parent.mkdir(parents=True)
+    legacy_appimage.write_bytes(b"legacy")
+    legacy_desktop.write_text("legacy", encoding="utf-8")
+    legacy_icon.write_bytes(b"legacy")
 
     monkeypatch.setattr(paths, "ROOT", root)
     monkeypatch.setattr(paths, "TAURI_DIR", tauri_dir)
@@ -807,7 +830,7 @@ def test_tauri_appimage_install_copies_artifact_icon_and_desktop_entry(monkeypat
 
     code = appimage.install_latest()
 
-    installed_appimage = home / "Applications" / f"{paths.APP_NAME}.AppImage"
+    installed_appimage = home / "Applications" / f"{paths.APP_ARTIFACT_NAME}.AppImage"
     installed_icon = home / ".local" / "share" / "icons" / f"{paths.APP_SLUG}.png"
     desktop_entry = home / ".local" / "share" / "applications" / f"{paths.APP_SLUG}.desktop"
     assert code == 0
@@ -815,6 +838,9 @@ def test_tauri_appimage_install_copies_artifact_icon_and_desktop_entry(monkeypat
     assert installed_appimage.stat().st_mode & 0o111
     assert installed_icon.read_bytes() == b"png"
     assert f"Name={paths.APP_NAME}" in desktop_entry.read_text(encoding="utf-8")
+    assert not legacy_appimage.exists()
+    assert not legacy_desktop.exists()
+    assert not legacy_icon.exists()
 
 
 def test_tauri_appimage_repair_icon_matches_desktop_icon_name(tmp_path, monkeypatch) -> None:
@@ -824,10 +850,32 @@ def test_tauri_appimage_repair_icon_matches_desktop_icon_name(tmp_path, monkeypa
     (appdir / "Template Project.png").write_bytes(b"png")
 
     monkeypatch.setattr(paths, "APP_NAME", "Template Project")
+    monkeypatch.setattr(paths, "APP_ARTIFACT_NAME", "template-project")
 
     appimage._repair_appdir_icon(appdir)
 
     assert (appdir / "project-template.png").read_bytes() == b"png"
+
+
+def test_tauri_appimage_fallback_removes_legacy_long_name_entries(tmp_path) -> None:
+    appdir = tmp_path / "sunodm.AppDir"
+    current_binary = appdir / "usr" / "bin" / paths.APP_ARTIFACT_NAME
+    legacy_binary = appdir / "usr" / "bin" / paths.APP_DISPLAY_SLUG
+    current_desktop = appdir / "usr" / "share" / "applications" / f"{paths.APP_ARTIFACT_NAME}.desktop"
+    legacy_desktop = appdir / "usr" / "share" / "applications" / f"{paths.APP_NAME}.desktop"
+    current_binary.parent.mkdir(parents=True)
+    current_desktop.parent.mkdir(parents=True)
+    current_binary.write_bytes(b"current")
+    legacy_binary.write_bytes(b"legacy")
+    current_desktop.write_text("current", encoding="utf-8")
+    legacy_desktop.write_text("legacy", encoding="utf-8")
+
+    appimage._cleanup_legacy_appdir(appdir)
+
+    assert current_binary.read_bytes() == b"current"
+    assert current_desktop.read_text(encoding="utf-8") == "current"
+    assert not legacy_binary.exists()
+    assert not legacy_desktop.exists()
 
 
 def test_tauri_build_fails_when_frontend_dependencies_are_missing(monkeypatch) -> None:
