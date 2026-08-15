@@ -65,6 +65,17 @@ describe("runtime selection", () => {
     expect(invokeMock).toHaveBeenCalledWith("create_track", { input });
   });
 
+  it("maps physical album listing and creation to narrow native commands", async () => {
+    invokeMock.mockResolvedValue(["Gravity Drift"]);
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await expect(api.listAlbums()).resolves.toEqual(["Gravity Drift"]);
+    await expect(api.createAlbum("Gravity Drift")).resolves.toEqual(["Gravity Drift"]);
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "list_albums", undefined);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "create_album", { title: "Gravity Drift" });
+  });
+
   it("maps physical reclassification to the narrow native command", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);

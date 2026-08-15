@@ -28,6 +28,8 @@ fn main() {
             commands::remove_global_evidence,
             commands::attach_global_evidence,
             commands::list_tracks,
+            commands::list_albums,
+            commands::create_album,
             commands::create_track,
             commands::load_track,
             commands::update_track,

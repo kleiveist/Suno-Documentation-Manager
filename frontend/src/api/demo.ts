@@ -169,7 +169,17 @@ export function createDemoApi(): DesktopApi {
     defaultAiImageService: "OpenAI"
   };
   const tracks = new Map<string, TrackDetail>();
+  const albums = new Map<string, string>();
   let globalEvidence: GlobalEvidenceItem[] = [{ ...evidence("subscription_payment", "subscription_2026-07.pdf"), coverageStart: "2026-07-01", coverageEnd: "2026-07-31" }];
+
+  const albumKey = (title: string): string => title.trim().normalize("NFKC").toLocaleLowerCase("de-DE");
+  const rememberAlbum = (library: TrackLibraryAssignment): void => {
+    if (library.section === "album" && library.albumTitle) {
+      albums.set(albumKey(library.albumTitle), library.albumTitle.trim());
+    }
+  };
+  const albumList = (): string[] => [...albums.values()]
+    .sort((left, right) => left.localeCompare(right, "de", { sensitivity: "base", numeric: true }));
 
   const get = (trackId: string): TrackDetail => {
     const track = tracks.get(trackId);
@@ -204,7 +214,9 @@ export function createDemoApi(): DesktopApi {
       await wait();
       workspace = { id: "demo-workspace", name: "Music Projects", path: "Beispiel/Workspace", trackCount: 2, lastScannedAt: now() };
       if (tracks.size === 0) {
-        tracks.set("gravity", makeTrack("gravity", "Gravity", profile, true, { section: "album", albumTitle: "Event Horizon" }));
+        const demoAlbum = { section: "album", albumTitle: "Event Horizon" } as const;
+        rememberAlbum(demoAlbum);
+        tracks.set("gravity", makeTrack("gravity", "Gravity", profile, true, demoAlbum));
         tracks.set("cosmic-pulse", makeTrack("cosmic-pulse", "Cosmic Pulse", profile));
       }
       return clone(workspace);
@@ -263,11 +275,25 @@ export function createDemoApi(): DesktopApi {
       await wait();
       return [...tracks.values()].map(({ fields: _fields, steps: _steps, evidence: _evidence, documents: _documents, integrity: _integrity, certificate: _certificate, ...summary }) => clone(summary));
     },
+    async listAlbums(): Promise<string[]> {
+      await wait();
+      return clone(albumList());
+    },
+    async createAlbum(title): Promise<string[]> {
+      await wait();
+      const normalized = trackLibraryAssignment("album", title);
+      if (!normalized?.albumTitle) throw new Error("Der Albumtitel ist ungültig.");
+      const key = albumKey(normalized.albumTitle);
+      if (albums.has(key)) throw new Error(`Ein Albumordner mit diesem Namen existiert bereits: ${albums.get(key)}`);
+      rememberAlbum(normalized);
+      return clone(albumList());
+    },
     async createTrack(input: TrackCreateInput) {
       await wait();
       const id = crypto.randomUUID();
       const library = trackLibraryAssignment(input.library.section, input.library.albumTitle ?? "");
       if (!library) throw new Error("Für einen Album-Track ist ein Albumtitel erforderlich.");
+      rememberAlbum(library);
       const track = makeTrack(id, input.title.trim(), profile, false, library);
       track.fields.productionStartDate = input.productionStartDate;
       track.fields.commercialUseIntended = input.commercialUseIntended;
@@ -285,6 +311,7 @@ export function createDemoApi(): DesktopApi {
       const track = get(trackId);
       const library = trackLibraryAssignment(input.section, input.albumTitle ?? "");
       if (!library) throw new Error("Für einen Album-Track ist ein Albumtitel erforderlich.");
+      rememberAlbum(library);
       track.library = library;
       track.relativePath = trackRelativePath(library, track.title);
       return clone(track);
@@ -292,15 +319,23 @@ export function createDemoApi(): DesktopApi {
     async renameAlbum(oldTitle, newTitle) {
       await wait();
       const normalized = trackLibraryAssignment("album", newTitle);
-      if (!normalized) throw new Error("Der neue Albumtitel ist ungültig.");
+      if (!normalized?.albumTitle) throw new Error("Der neue Albumtitel ist ungültig.");
+      const oldKey = albumKey(oldTitle);
+      const newKey = albumKey(normalized.albumTitle);
+      const existingTitle = albums.get(oldKey);
+      if (!existingTitle) throw new Error(`Album nicht gefunden: ${oldTitle}`);
+      if (oldKey !== newKey && albums.has(newKey)) {
+        throw new Error(`Ein Albumordner mit diesem Namen existiert bereits: ${albums.get(newKey)}`);
+      }
       const matching = [...tracks.values()].filter((track) =>
-        track.library.section === "album" && track.library.albumTitle === oldTitle
+        track.library.section === "album" && albumKey(track.library.albumTitle ?? "") === oldKey
       );
-      if (!matching.length) throw new Error(`Album nicht gefunden: ${oldTitle}`);
       for (const track of matching) {
         track.library = clone(normalized);
         track.relativePath = trackRelativePath(normalized, track.title);
       }
+      albums.delete(oldKey);
+      rememberAlbum(normalized);
       return [...tracks.values()].map(({ fields: _fields, steps: _steps, evidence: _evidence, documents: _documents, integrity: _integrity, certificate: _certificate, ...summary }) => clone(summary));
     },
     async updateTrack(trackId, patch) {

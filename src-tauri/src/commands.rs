@@ -131,6 +131,16 @@ pub fn list_tracks(state: State<'_, AppState>) -> Result<Vec<TrackSummary>> {
 }
 
 #[tauri::command]
+pub fn list_albums(state: State<'_, AppState>) -> Result<Vec<String>> {
+    with_workspace(&state, WorkspaceApp::list_albums)
+}
+
+#[tauri::command]
+pub fn create_album(state: State<'_, AppState>, title: String) -> Result<Vec<String>> {
+    with_workspace(&state, |app| app.create_album(&title))
+}
+
+#[tauri::command]
 pub fn create_track(state: State<'_, AppState>, input: CreateTrackInput) -> Result<TrackDetail> {
     with_workspace(&state, |app| app.create_track(input))
 }

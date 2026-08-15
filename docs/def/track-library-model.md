@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Product team |
-| Last review | 2026-08-14 |
+| Last review | 2026-08-15 |
 | Audience | Product developers and acceptance reviewers |
 | Related ATP | [ATP-0014: Track library album and single organization](../atp/active/ATP-0014-track-library-organization.md) |
 
@@ -21,6 +21,7 @@ This document defines how the track library classifies every indexed track as ei
 
 - the permanent `Albums` and `Singles` library sections;
 - named album groups and their track membership;
+- direct creation and display of empty physical album folders;
 - creation, later reclassification, validation, sorting, search, and legacy defaults;
 - physical folder creation, movement, renaming, recovery, and rollback;
 - the persistence and portability boundary; and
@@ -29,7 +30,6 @@ This document defines how the track library classifies every indexed track as ei
 ### Excluded
 
 - album cover art, release dates, catalog numbers, sequencing, or album-level certificates;
-- empty albums without tracks;
 - nested disc, edition, playlist, or collection hierarchies;
 - deriving an album assignment from a track title, document, or evidence file without a matching physical parent.
 
@@ -47,6 +47,8 @@ Library
 ```
 
 Every visible indexed track belongs to exactly one section. An album track belongs to exactly one named album folder; a single belongs directly to the permanent `Singles` folder. `Alben` is the UI umbrella for all album folders and is not an additional physical directory.
+
+Opening or creating a workspace ensures the physical `Singles/` folder exists. The `Album anlegen` control in the `Alben` summary creates a named sibling folder immediately, even before a track is assigned. Empty album folders remain visible and survive restart, scanning, and moving their last track elsewhere.
 
 The authoritative workspace layout is:
 
@@ -99,7 +101,7 @@ Tracks with the same normalized album title appear in one group. Presentation co
 
 ## Creation, movement, and renaming
 
-New-track creation asks the user to choose `Single` or `Album track`. Choosing an album reveals the required album-title field and offers existing album titles as input suggestions. The native create operation creates the physical parent and track folders before storing the normalized assignment and relative path. Folder names retain the trimmed visible album and track titles. The native layer rejects reserved, traversal, separator, control-character, and collision cases before moving data.
+The `Alben` section header exposes `Album anlegen`. It validates the title through the same native boundary as track assignment, creates exactly one empty physical album folder, rejects case-insensitive duplicates and collisions, and returns the refreshed folder list. New-track creation asks the user to choose `Single` or `Album track`. Choosing an album reveals the required album-title field and offers every physical album title as an input suggestion. The native create operation creates the physical parent and track folders before storing the normalized assignment and relative path. Folder names retain the trimmed visible album and track titles. The native layer rejects reserved, traversal, separator, control-character, and collision cases before moving data.
 
 The current-track header exposes a separate library-assignment action. It can move a track:
 
@@ -115,7 +117,7 @@ The assignment action moves the complete track root to its new parent. It remain
 - generated-document, integrity, and certificate state; and
 - every file and directory below the portable track root.
 
-Reclassification therefore does not invalidate a certificate or create a revision. The application checks the destination first, never merges or overwrites an existing folder, persists the new path after the move, and moves the folder back if the database write fails. Empty former album folders are removed; the permanent `Singles` parent remains.
+Reclassification therefore does not invalidate a certificate or create a revision. The application checks the destination first, never merges or overwrites an existing folder, persists the new path after the move, and moves the folder back if the database write fails. Empty album folders remain available for later tracks; an album folder created only as part of a failed move is removed during rollback. The permanent `Singles` parent always remains.
 
 Each album header exposes `Umbenennen`. Renaming an album moves the complete album directory once and updates every contained track path and album title in one SQLite transaction. A destination collision stops the operation without overwriting either album. Changing a non-finalized track title through its track fields also renames that track's leaf directory. Normal finalized-track editing rules still apply to a title change because the title is certificate content.
 
@@ -140,14 +142,14 @@ This additive JSON field does not change the relational SQLite layout, so the sc
 
 New managed tracks contain `.summary/track.json`, which stores only the stable track ID. `.summary/` is already excluded from the track integrity set and certificate file set. The marker lets reopening or scanning reconnect a managed track after its track folder or album parent was renamed outside the application. It does not alter evidence, generated documentation, hashes, or certificate bytes.
 
-Workspace scanning recognizes all three supported layouts: managed singles below `Singles/`, managed or historical tracks below a named album folder, and historical direct-child track roots from versions predating this hierarchy. A historical scan remains read-only for the candidate folder and does not add the identity marker. When a stale legacy index path is missing and exactly one unclaimed candidate exists in its assigned album folder, reopening repairs the database path conservatively. Ambiguous candidates remain unresolved instead of being guessed.
+Workspace scanning recognizes all three supported layouts: managed singles below `Singles/`, managed or historical tracks below a named album folder, and historical direct-child track roots from versions predating this hierarchy. An empty album is listed as a library folder but never indexed as a track. A historical scan remains read-only for the candidate folder and does not add the identity marker. When a stale legacy index path is missing and exactly one unclaimed candidate exists in its assigned album folder, reopening repairs the database path conservatively. Ambiguous candidates remain unresolved instead of being guessed.
 
 ## Requirements and ATP mapping
 
 | Requirement | Acceptance criterion | Acceptance plan |
 | --- | --- | --- |
-| `REQ-LIB-001` | The library always renders `Albums`, each named album, and `Singles` as nested collapsible nodes, places each filtered track exactly once below its parent, groups valid album assignments by normalized title, and searches track and album text within the hierarchy. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
-| `REQ-LIB-002` | Create and reclassification validate and persist the assignment and physical path; moves preserve every track-root byte and protected track state and roll back on database failure. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
+| `REQ-LIB-001` | The library always renders `Albums`, every physical named album including empty folders, and `Singles` as nested collapsible nodes, places each filtered track exactly once below its parent, groups valid album assignments by normalized title, and searches track and album text within the hierarchy. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
+| `REQ-LIB-002` | Workspace opening creates the permanent `Singles/` folder. Direct album creation, track creation, and reclassification validate and persist their physical paths; moves preserve every track-root byte and protected track state and roll back on database failure. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
 | `REQ-LIB-003` | Album and track folders can be renamed without overwriting collisions; every affected SQLite path is updated, and managed external renames are recovered by stable identity. | [ATP-0014](../atp/active/ATP-0014-track-library-organization.md) |
 
 ## Verification
@@ -164,7 +166,7 @@ The focused native tests cover physical creation, validation, create and reopen,
 
 ## Risks and limitations
 
-- Album identity remains name-based; empty albums without tracks are not shown as independent release records.
+- Album identity remains name-based and filesystem-backed; an empty album has no separate database record or release metadata.
 - Two visually similar Unicode titles may remain separate if their normalized comparison keys differ.
 - A legacy track without a managed identity marker may require an unambiguous folder location for automatic stale-path recovery.
 - Version 0.1 does not provide manual track order within an album.

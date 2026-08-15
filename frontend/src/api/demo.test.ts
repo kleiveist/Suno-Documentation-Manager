@@ -10,6 +10,18 @@ async function settle<T>(promise: Promise<T>): Promise<T> {
 afterEach(() => vi.useRealTimers());
 
 describe("demo track library", () => {
+  it("creates and renames an album before it contains a track", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+
+    expect(await settle(api.createAlbum("  Empty Album  "))).toContain("Empty Album");
+    await settle(api.renameAlbum("Empty Album", "Future Album"));
+
+    expect(await settle(api.listAlbums())).toContain("Future Album");
+    expect(await settle(api.listAlbums())).not.toContain("Empty Album");
+  });
+
   it("reclassifies a track by moving its folder without changing documentation state", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();

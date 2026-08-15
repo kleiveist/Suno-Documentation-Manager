@@ -34,6 +34,8 @@ export interface DesktopApi {
   removeGlobalEvidence(evidenceId: string): Promise<void>;
   attachGlobalEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
   listTracks(): Promise<TrackSummary[]>;
+  listAlbums(): Promise<string[]>;
+  createAlbum(title: string): Promise<string[]>;
   createTrack(input: TrackCreateInput): Promise<TrackDetail>;
   loadTrack(trackId: string): Promise<TrackDetail>;
   updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail>;
@@ -154,6 +156,14 @@ class TauriDesktopApi implements DesktopApi {
 
   listTracks(): Promise<TrackSummary[]> {
     return command("list_tracks");
+  }
+
+  listAlbums(): Promise<string[]> {
+    return command("list_albums");
+  }
+
+  createAlbum(title: string): Promise<string[]> {
+    return command("create_album", { title });
   }
 
   createTrack(input: TrackCreateInput): Promise<TrackDetail> {

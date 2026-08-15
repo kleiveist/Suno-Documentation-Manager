@@ -72,12 +72,20 @@ export function normalizedTrackLibrary(
  */
 export function groupTrackLibrary<T extends TrackLibrarySource>(
   tracks: readonly T[],
-  filters: TrackLibraryFilters = {}
+  filters: TrackLibraryFilters = {},
+  albumTitles: readonly string[] = []
 ): GroupedTrackLibrary<T> {
   const query = normalizedText(filters.query ?? "");
   const status = filters.status ?? "all";
   const singles: T[] = [];
   const albums = new Map<string, AlbumTrackGroup<T>>();
+
+  for (const rawTitle of albumTitles) {
+    const title = rawTitle.trim();
+    if (!title) continue;
+    const key = normalizedText(title);
+    if (!albums.has(key)) albums.set(key, { title, tracks: [] });
+  }
 
   for (const track of tracks) {
     if (!matchesStatus(track.status, status)) continue;
@@ -101,7 +109,7 @@ export function groupTrackLibrary<T extends TrackLibrarySource>(
 
   return {
     albums: [...albums.values()]
-      .filter((group) => group.tracks.length > 0)
+      .filter((group) => !query || normalizedText(group.title).includes(query) || group.tracks.length > 0)
       .map((group) => ({ ...group, tracks: group.tracks.sort(compareTracks) }))
       .sort((left, right) => germanCollator.compare(left.title, right.title)),
     singles: singles.sort(compareTracks)

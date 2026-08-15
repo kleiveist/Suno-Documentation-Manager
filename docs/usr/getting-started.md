@@ -108,6 +108,8 @@ Open `Tracks` and choose the new-track action. Enter the track title and product
 
 Album titles are trimmed, limited to 200 characters, and cannot contain control characters, path separators, traversal names, or reserved workspace names. Titles that differ only by case are presented as the same album group. The visible trimmed track title is also used as its folder name. If a file or folder already occupies the destination, the application reports a collision and does not overwrite it.
 
+You can also select `Album anlegen` directly in the `Alben` folder header. Entering `Gravity Drift` immediately creates `<workspace>/Gravity Drift/` and displays the empty, collapsible album. The permanent `<workspace>/Singles/` folder is created automatically when the workspace opens. Assigning tracks later produces `Gravity Drift/<track title>/` or `Singles/<track title>/`.
+
 The resulting structure is visible without the application:
 
 ```text
@@ -133,9 +135,9 @@ To change an existing assignment:
 
 Saving the assignment moves the complete track folder to the selected physical parent. It does not change files inside the track folder, update the track timestamp, change workflow or finalization status, regenerate documents, recalculate hashes, or invalidate a certificate. It is therefore also available for a finalized track. A destination collision stops the operation without overwriting data; a database failure moves the folder back.
 
-To rename an album folder, select `Umbenennen` in its album header and enter the new folder name. The application moves the album once and updates all contained track paths together. Changing an editable track title also renames that track's folder. A finalized track title still requires the normal revision workflow because the title is certificate content.
+To rename an album folder, including an empty album, select `Umbenennen` in its album header and enter the new folder name. The application moves the album once and updates all contained track paths together. Changing an editable track title also renames that track's folder. A finalized track title still requires the normal revision workflow because the title is certificate content.
 
-An album is a named physical group of indexed tracks, not an independent release object. Version 0.1 does not create empty albums or store album artwork, release metadata, track order, or a separate album certificate. Existing direct-child historical track folders remain supported. A scan also recognizes tracks below `Singles/` and named album folders.
+An album is a named physical folder for indexed tracks, not an independent release object. Empty albums are supported and remain visible until they are renamed or used; they do not contain a separate album database record. Version 0.1 does not store album artwork, release metadata, track order, or a separate album certificate. Existing direct-child historical track folders remain supported. A scan recognizes tracks below `Singles/` and named album folders without treating an empty album as a track.
 
 ## Follow the documentation steps
 

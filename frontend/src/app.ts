@@ -58,6 +58,7 @@ interface AppState {
   workspace: WorkspaceSummary | null;
   profile: GlobalProfile;
   tracks: TrackSummary[];
+  albums: string[];
   track: TrackDetail | null;
   workflow: WorkflowDefinitionDto | null;
   globalEvidence: GlobalEvidenceItem[];
@@ -81,7 +82,7 @@ interface AppState {
 
 export type WorkspaceScopedUiState = Pick<
   AppState,
-  "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" |
+  "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" | "albums" |
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
 > & { draftDirty: boolean };
 
@@ -93,6 +94,7 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     activeStep: null,
     trackTab: "overview",
     scanResult: null,
+    albums: [],
     showNewTrack: false,
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
@@ -188,6 +190,7 @@ export class SunoDocumentationApp {
     workspace: null,
     profile: { ...emptyProfile },
     tracks: [],
+    albums: [],
     track: null,
     workflow: null,
     globalEvidence: [],
@@ -315,6 +318,7 @@ export class SunoDocumentationApp {
       activeStep: this.state.activeStep,
       trackTab: this.state.trackTab,
       scanResult: this.state.scanResult,
+      albums: this.state.albums,
       showNewTrack: this.state.showNewTrack,
       showTrackLibrary: this.state.showTrackLibrary,
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
@@ -326,10 +330,10 @@ export class SunoDocumentationApp {
     Object.assign(this.state, resetState);
     this.draftDirty = draftDirty;
     const loaded = await this.withBusy("Workspace wird eingelesen …", async () => {
-      const [profile, tracks, workflow, globalEvidence] = await Promise.all([
-        this.api.getProfile(), this.api.listTracks(), this.api.getWorkflow(), this.api.listGlobalEvidence()
+      const [profile, tracks, albums, workflow, globalEvidence] = await Promise.all([
+        this.api.getProfile(), this.api.listTracks(), this.api.listAlbums(), this.api.getWorkflow(), this.api.listGlobalEvidence()
       ]);
-      return { profile, tracks, workflow, globalEvidence };
+      return { profile, tracks, albums, workflow, globalEvidence };
     });
     if (!loaded) {
       this.state.workspace = null;
@@ -337,13 +341,16 @@ export class SunoDocumentationApp {
     }
     this.state.profile = loaded.profile;
     this.state.tracks = loaded.tracks;
+    this.state.albums = loaded.albums;
     this.state.workflow = loaded.workflow;
     this.state.globalEvidence = loaded.globalEvidence;
     this.state.view = "dashboard";
   }
 
   private async refreshTracks(): Promise<void> {
-    this.state.tracks = await this.api.listTracks();
+    const [tracks, albums] = await Promise.all([this.api.listTracks(), this.api.listAlbums()]);
+    this.state.tracks = tracks;
+    this.state.albums = albums;
     if (this.state.track) {
       this.state.track = await this.api.loadTrack(this.state.track.id);
       this.state.trackDraft = structuredClone(this.state.track.fields);
@@ -354,6 +361,13 @@ export class SunoDocumentationApp {
     this.state.track = track;
     this.state.trackDraft = structuredClone(track.fields);
     this.draftDirty = false;
+    const albumTitle = track.library.section === "album" ? track.library.albumTitle?.trim() : "";
+    if (albumTitle && !this.state.albums.some((title) =>
+      title.normalize("NFKC").localeCompare(albumTitle.normalize("NFKC"), "de", { sensitivity: "base" }) === 0
+    )) {
+      this.state.albums.push(albumTitle);
+      this.state.albums.sort((left, right) => left.localeCompare(right, "de", { sensitivity: "base", numeric: true }));
+    }
     const summaryIndex = this.state.tracks.findIndex((item) => item.id === track.id);
     const summary = trackSummaryFromDetail(track);
     if (summaryIndex >= 0) this.state.tracks[summaryIndex] = summary;
@@ -498,6 +512,10 @@ export class SunoDocumentationApp {
 
   private albumTitles(): string[] {
     const titles = new Map<string, string>();
+    for (const title of this.state.albums) {
+      const normalized = title.trim();
+      if (normalized) titles.set(normalized.normalize("NFKC").toLocaleLowerCase("de-DE"), normalized);
+    }
     for (const track of this.state.tracks) {
       const title = track.library?.section === "album" ? track.library.albumTitle?.trim() : "";
       if (title) titles.set(title.normalize("NFKC").toLocaleLowerCase("de-DE"), title);
@@ -582,10 +600,10 @@ export class SunoDocumentationApp {
     const library = groupTrackLibrary(this.state.tracks, {
       query: this.state.query,
       status: this.state.trackFilter
-    });
+    }, this.state.albums);
     const albumTrackCount = library.albums.reduce((total, album) => total + album.tracks.length, 0);
     return `<div class="page-content tracks-page">
-      <div class="page-lead"><div><p class="overline">Bibliothek</p><h2>Alben & Singles</h2><p>Die Ansicht entspricht der echten Ordnerstruktur im Workspace. Albumordner können direkt am Ordnerkopf umbenannt werden.</p></div><button class="button button--primary" data-action="new-track">${icon("plus")} Neuer Track</button></div>
+      <div class="page-lead"><div><p class="overline">Bibliothek</p><h2>Alben & Singles</h2><p>Die Ansicht entspricht der echten Ordnerstruktur im Workspace. Albumordner können direkt angelegt und umbenannt werden.</p></div><button class="button button--primary" data-action="new-track">${icon("plus")} Neuer Track</button></div>
       <section class="panel tracks-panel">
         <div class="tracks-toolbar">
           <label class="search-field"><span class="sr-only">Tracks und Alben durchsuchen</span>${icon("scan")}<input type="search" data-track-search placeholder="Tracks und Alben durchsuchen …" value="${escapeHtml(this.state.query)}"></label>
@@ -596,10 +614,10 @@ export class SunoDocumentationApp {
         </div>
         <div class="track-library-content">
           <details class="library-section" aria-labelledby="albums-library-title" open>
-            <summary class="library-section-head"><span class="library-section-icon">${icon("workspace")}</span><span class="library-section-copy"><strong class="library-section-title" id="albums-library-title" role="heading" aria-level="3">Alben</strong><small>${library.albums.length} ${library.albums.length === 1 ? "Album" : "Alben"} · ${albumTrackCount} ${albumTrackCount === 1 ? "Track" : "Tracks"}</small></span><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
+            <summary class="library-section-head"><span class="library-section-icon">${icon("workspace")}</span><span class="library-section-copy"><strong class="library-section-title" id="albums-library-title" role="heading" aria-level="3">Alben</strong><small>${library.albums.length} ${library.albums.length === 1 ? "Album" : "Alben"} · ${albumTrackCount} ${albumTrackCount === 1 ? "Track" : "Tracks"}</small></span><button type="button" class="album-create-button" data-action="create-album" aria-label="Neuen Albumordner anlegen" title="Neuen Albumordner anlegen">${icon("plus")} Album anlegen</button><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
             <div class="library-section-content">${library.albums.length
               ? `<div class="album-group-list">${library.albums.map((album) => this.renderAlbumGroup(album)).join("")}</div>`
-              : this.renderLibraryEmpty("Keine passenden Album-Tracks", "Lege einen Album-Track an oder passe Suche und Statusfilter an.")}</div>
+              : this.renderLibraryEmpty("Noch keine Alben", "Lege hier zuerst einen Albumordner an.")}</div>
           </details>
           <details class="library-section" aria-labelledby="singles-library-title" open>
             <summary class="library-section-head"><span class="library-section-icon library-section-icon--single">${icon("tracks")}</span><span class="library-section-copy"><strong class="library-section-title" id="singles-library-title" role="heading" aria-level="3">Singles</strong><small>${library.singles.length} ${library.singles.length === 1 ? "Track" : "Tracks"}</small></span><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
@@ -615,7 +633,9 @@ export class SunoDocumentationApp {
   private renderAlbumGroup(album: AlbumTrackGroup<TrackSummary>): string {
     return `<details class="album-group" open>
       <summary class="album-group-head"><span class="album-cover" aria-hidden="true">${escapeHtml(titleInitials(album.title))}<i></i></span><span class="album-group-copy"><strong>${escapeHtml(album.title)}</strong><small>${album.tracks.length} ${album.tracks.length === 1 ? "Track" : "Tracks"}</small></span><button type="button" class="album-rename-button" data-rename-album="${escapeHtml(album.title)}" aria-label="Album ${escapeHtml(album.title)} umbenennen" title="Albumordner umbenennen">Umbenennen</button><span class="library-disclosure-icon">${icon("chevronDown")}</span></summary>
-      <div class="album-group-content">${this.renderTrackTableHead()}<div class="track-list">${album.tracks.map((track) => this.renderTrackRow(track, true)).join("")}</div></div>
+      <div class="album-group-content">${album.tracks.length
+        ? `${this.renderTrackTableHead()}<div class="track-list">${album.tracks.map((track) => this.renderTrackRow(track, true)).join("")}</div>`
+        : this.renderLibraryEmpty("Album ist noch leer", "Lege einen Track an und ordne ihn diesem Album zu.")}</div>
     </details>`;
   }
 
@@ -969,20 +989,42 @@ export class SunoDocumentationApp {
       target === button
     )) return;
 
+    if (button.dataset.action === "create-album") {
+      event.preventDefault();
+      event.stopPropagation();
+      const title = window.prompt("Name des neuen Albumordners:")?.trim();
+      if (!title) return;
+      const albums = await this.withBusy(
+        "Albumordner wird angelegt …",
+        () => this.api.createAlbum(title)
+      );
+      if (albums) {
+        this.state.albums = albums;
+        this.showToast("success", "Albumordner angelegt", `${title} wurde erstellt. Tracks können diesem Album jetzt zugeordnet werden.`);
+        this.render();
+      }
+      return;
+    }
+
     const albumTitle = button.dataset.renameAlbum;
     if (albumTitle) {
       event.preventDefault();
       event.stopPropagation();
       const newTitle = window.prompt("Neuer Name des Albumordners:", albumTitle)?.trim();
       if (!newTitle || newTitle === albumTitle) return;
-      const tracks = await this.withBusy(
+      const result = await this.withBusy(
         "Albumordner wird umbenannt …",
-        () => this.api.renameAlbum(albumTitle, newTitle)
+        async () => {
+          const tracks = await this.api.renameAlbum(albumTitle, newTitle);
+          const albums = await this.api.listAlbums();
+          return { tracks, albums };
+        }
       );
-      if (tracks) {
-        this.state.tracks = tracks;
+      if (result) {
+        this.state.tracks = result.tracks;
+        this.state.albums = result.albums;
         const currentSummary = this.state.track
-          ? tracks.find((track) => track.id === this.state.track!.id)
+          ? result.tracks.find((track) => track.id === this.state.track!.id)
           : undefined;
         if (this.state.track && currentSummary) {
           this.state.track.library = structuredClone(currentSummary.library);

@@ -25,6 +25,19 @@ describe("track library grouping", () => {
     expect(groupTrackLibrary([])).toEqual({ albums: [], singles: [] });
   });
 
+  it("keeps physical albums visible before their first track is created", () => {
+    expect(groupTrackLibrary([], {}, ["  Gravity Drift  ", "Gravity Drift", "Second Album"]))
+      .toEqual({
+        albums: [
+          { title: "Gravity Drift", tracks: [] },
+          { title: "Second Album", tracks: [] }
+        ],
+        singles: []
+      });
+    expect(groupTrackLibrary([], { query: "second" }, ["Gravity Drift", "Second Album"]).albums)
+      .toEqual([{ title: "Second Album", tracks: [] }]);
+  });
+
   it("groups album names case-insensitively and sorts albums and tracks", () => {
     const grouped = groupTrackLibrary([
       track("4", "Zulu", { section: "album", albumTitle: "neon nights" }),

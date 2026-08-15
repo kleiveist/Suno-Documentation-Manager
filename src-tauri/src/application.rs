@@ -60,6 +60,7 @@ impl WorkspaceApp {
             persistence.set_meta("workspace_id", &Uuid::new_v4().to_string())?;
         }
         let app = Self { root, persistence };
+        ensure_contained_directory(&app.root, Path::new(SINGLES_DIRECTORY))?;
         app.reconcile_physical_library()?;
         app.recover_interrupted_operations()?;
         let profile = app.profile()?;
@@ -374,6 +375,58 @@ impl WorkspaceApp {
         Ok(result)
     }
 
+    pub fn list_albums(&self) -> Result<Vec<String>> {
+        let mut albums = Vec::new();
+        for entry in fs::read_dir(&self.root).map_err(|error| AppError::io(&self.root, error))? {
+            let entry = entry.map_err(|error| AppError::io(&self.root, error))?;
+            let Some(title) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if title == ".suno-doc" || title == SINGLES_DIRECTORY {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())
+                .map_err(|error| AppError::io(entry.path(), error))?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || looks_like_track_root(&entry.path())
+                || safe_album_directory(&title).is_err()
+            {
+                continue;
+            }
+            albums.push(title);
+        }
+        albums.sort_by(|left, right| {
+            left.to_lowercase()
+                .cmp(&right.to_lowercase())
+                .then_with(|| left.cmp(right))
+        });
+        Ok(albums)
+    }
+
+    pub fn create_album(&self, title: &str) -> Result<Vec<String>> {
+        let library = normalize_track_library(TrackLibraryPlacement {
+            section: TrackLibrarySection::Album,
+            album_title: Some(title.to_owned()),
+        })?;
+        let title = library.album_title.as_deref().expect("normalized album");
+        if let Some(existing) = self
+            .list_albums()?
+            .into_iter()
+            .find(|existing| existing.eq_ignore_ascii_case(title))
+        {
+            return Err(AppError::Collision(existing));
+        }
+        ensure_contained_directory(&self.root, Path::new(SINGLES_DIRECTORY))?;
+        let relative = PathBuf::from(safe_album_directory(title)?);
+        let album = contained_path(&self.root, &relative, false)?;
+        if album.exists() {
+            return Err(AppError::Collision(portable_relative(&relative)));
+        }
+        fs::create_dir(&album).map_err(|error| AppError::io(&album, error))?;
+        self.list_albums()
+    }
+
     pub fn load_track(&self, id: &str) -> Result<TrackDetail> {
         self.reconcile_physical_library()?;
         self.detail_from_record(self.persistence.track(id)?, true)
@@ -388,7 +441,7 @@ impl WorkspaceApp {
         if track.fields != previous_fields {
             if track.fields.title != previous_fields.title {
                 let target = physical_track_relative(&track.library, &track.fields.title)?;
-                self.move_track_directory(&previous_path, &target)?;
+                self.move_track_directory(&previous_path, &target, false)?;
                 track.relative_path = target;
             }
             mark_content_changed(&mut track);
@@ -422,7 +475,7 @@ impl WorkspaceApp {
         let previous_path = track.relative_path.clone();
         let target_path = physical_track_relative(&library, &track.fields.title)?;
         if previous_path != target_path {
-            self.move_track_directory(&previous_path, &target_path)?;
+            self.move_track_directory(&previous_path, &target_path, false)?;
             track.relative_path = target_path;
         }
         if track.library != library || track.relative_path != previous_path {
@@ -454,10 +507,17 @@ impl WorkspaceApp {
             section: TrackLibrarySection::Album,
             album_title: Some(new_title.to_owned()),
         })?;
-        let old_title = old_library
+        let requested_old_title = old_library
             .album_title
             .as_deref()
             .expect("normalized album");
+        let old_title = self
+            .list_albums()?
+            .into_iter()
+            .find(|existing| existing.eq_ignore_ascii_case(requested_old_title))
+            .ok_or_else(|| {
+                AppError::Validation(format!("Album not found: {requested_old_title}"))
+            })?;
         let new_title = new_library
             .album_title
             .as_deref()
@@ -472,16 +532,15 @@ impl WorkspaceApp {
             .into_iter()
             .filter(|track| {
                 track.library.section == TrackLibrarySection::Album
-                    && track.library.album_title.as_deref() == Some(old_title)
+                    && track
+                        .library
+                        .album_title
+                        .as_deref()
+                        .is_some_and(|title| title.eq_ignore_ascii_case(&old_title))
             })
             .collect::<Vec<_>>();
-        if tracks.is_empty() {
-            return Err(AppError::Validation(format!(
-                "Album not found: {old_title}"
-            )));
-        }
 
-        let source_relative = PathBuf::from(safe_album_directory(old_title)?);
+        let source_relative = PathBuf::from(safe_album_directory(&old_title)?);
         let target_relative = PathBuf::from(safe_album_directory(new_title)?);
         let source = contained_path(&self.root, &source_relative, true)?;
         let target = contained_path(&self.root, &target_relative, false)?;
@@ -510,10 +569,7 @@ impl WorkspaceApp {
             track.library = new_library.clone();
         }
         if let Err(error) = self.persistence.save_tracks(&tracks) {
-            if let Err(rollback) = self.rollback_track_move(
-                &portable_relative(&target_relative),
-                &portable_relative(&source_relative),
-            ) {
+            if let Err(rollback) = fs::rename(&target, &source) {
                 return Err(AppError::Data(format!(
                     "Album rename failed ({error}); folder rollback failed: {rollback}"
                 )));
@@ -1829,6 +1885,16 @@ impl WorkspaceApp {
         }
         let requested = library.album_title.as_deref().expect("normalized album");
         let comparison = requested.to_lowercase();
+        if let Some(existing) = self
+            .list_albums()?
+            .into_iter()
+            .find(|existing| existing.to_lowercase() == comparison)
+        {
+            return Ok(TrackLibraryPlacement {
+                section: TrackLibrarySection::Album,
+                album_title: Some(existing),
+            });
+        }
         for track in self.persistence.tracks()? {
             let Some(existing) = track.library.album_title.as_deref() else {
                 continue;
@@ -1845,7 +1911,12 @@ impl WorkspaceApp {
         Ok(library)
     }
 
-    fn move_track_directory(&self, source_relative: &str, target_relative: &str) -> Result<()> {
+    fn move_track_directory(
+        &self,
+        source_relative: &str,
+        target_relative: &str,
+        remove_empty_source: bool,
+    ) -> Result<()> {
         if source_relative == target_relative {
             return Ok(());
         }
@@ -1877,14 +1948,17 @@ impl WorkspaceApp {
             )));
         }
         fs::rename(&source, &target).map_err(|error| AppError::io(&target, error))?;
-        if let Some(source_parent) = source_relative.parent() {
+        if remove_empty_source {
+            let source_parent = source_relative
+                .parent()
+                .ok_or_else(|| AppError::Validation("A track folder needs a parent.".into()))?;
             let _ = self.remove_empty_library_directory(source_parent);
         }
         Ok(())
     }
 
     fn rollback_track_move(&self, source_relative: &str, target_relative: &str) -> Result<()> {
-        self.move_track_directory(source_relative, target_relative)
+        self.move_track_directory(source_relative, target_relative, true)
     }
 
     fn remove_empty_library_directory(&self, relative: &Path) -> Result<()> {
@@ -1926,7 +2000,7 @@ impl WorkspaceApp {
                 })?;
                 let parent = physical_library_parent(&track.library)?;
                 let target = portable_relative(&parent.join(leaf));
-                self.move_track_directory(&original_path, &target)?;
+                self.move_track_directory(&original_path, &target, false)?;
                 claimed.remove(&original_path);
                 claimed.insert(target.clone());
                 moved_from = Some(original_path.clone());
@@ -3691,7 +3765,50 @@ mod tests {
         let root = directory.path().join("workspace");
         let app = WorkspaceApp::open(&root, true).expect("create workspace");
         assert!(root.join(".suno-doc/workspace.sqlite").is_file());
+        assert!(root.join(SINGLES_DIRECTORY).is_dir());
         assert_eq!(app.summary().expect("summary").track_count, 0);
+    }
+
+    #[test]
+    fn album_creation_persists_an_empty_folder_and_supports_rename() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+
+        assert_eq!(
+            app.create_album("  Gravity Drift  ")
+                .expect("create empty album"),
+            vec!["Gravity Drift"]
+        );
+        assert!(workspace.join("Gravity Drift").is_dir());
+        assert!(workspace.join(SINGLES_DIRECTORY).is_dir());
+        assert_eq!(
+            app.scan_workspace().expect("scan empty album").discovered,
+            0,
+            "an empty album must not be indexed as a track"
+        );
+
+        app.rename_album("Gravity Drift", "Gravity Drive")
+            .expect("rename empty album");
+        assert!(!workspace.join("Gravity Drift").exists());
+        assert!(workspace.join("Gravity Drive").is_dir());
+        assert_eq!(
+            app.list_albums().expect("album list"),
+            vec!["Gravity Drive"]
+        );
+        assert!(matches!(
+            app.create_album("gravity drive")
+                .expect_err("case-insensitive duplicate must fail"),
+            AppError::Collision(_)
+        ));
+        drop(app);
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("reopen workspace");
+        assert_eq!(
+            reopened.list_albums().expect("reopened album list"),
+            vec!["Gravity Drive"]
+        );
+        assert!(workspace.join(SINGLES_DIRECTORY).is_dir());
     }
 
     #[test]
@@ -3989,7 +4106,11 @@ mod tests {
         );
         let single_root = app.root().join(&single.relative_path);
         assert_eq!(track_tree_snapshot(&single_root), tree_before);
-        assert!(!album_root.exists());
+        assert!(!album_root.exists(), "the track left its former album path");
+        assert!(
+            app.root().join("Preserved Album").is_dir(),
+            "empty album folders remain reusable"
+        );
     }
 
     #[test]
