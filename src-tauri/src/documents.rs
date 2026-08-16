@@ -800,13 +800,10 @@ fn render(
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno project/version ID: {}\nFinal generation ID / project version: {}\nFinal generation date: {}\nFinal generation time: {}\nDownload/export date: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nActual Suno export filename: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nFinal generation date: {}\nDownload/export date: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nActual Suno export filename: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
             value_or_missing(&f.suno_project_url),
-            value_or_missing(&f.suno_project_version_id),
-            value_or_missing(&f.suno_final_generation_id),
             value_or_missing(&f.suno_final_generation_date),
-            value_or_missing(&f.suno_final_generation_time),
             value_or_missing(&f.suno_download_export_date),
             value_or_missing(&f.suno_model),
             value_or_missing(&f.suno_plan_at_creation),
@@ -827,7 +824,7 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n- Final generation date: {}\n- Final generation time: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n- Final generation date: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
@@ -835,7 +832,6 @@ fn render(
             value_or_missing(&f.production_start_date), value_or_missing(&f.production_end_date),
             value_or_missing(&f.final_export_date),
             value_or_missing(&f.suno_final_generation_date),
-            value_or_missing(&f.suno_final_generation_time),
             crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::ReleaseWav).unwrap_or("Not recorded"),
             crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::SunoFinalExport).unwrap_or("Not recorded"),
             source_declarations,
@@ -847,9 +843,8 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/AI_USAGE.md".into(),
         format!(
-            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Project/version ID: {}\n- Final generation ID: {}\n- Final generation date: {}\n- Lyrics source: {}\n- Instrumental track: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
+            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Final generation date: {}\n- Lyrics source: {}\n- Instrumental track: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
             marker(), value_or_missing(&f.suno_model), value_or_missing(&f.suno_project_url),
-            value_or_missing(&f.suno_project_version_id), value_or_missing(&f.suno_final_generation_id),
             value_or_missing(&f.suno_final_generation_date), value_or_missing(&f.lyrics_source),
             yes_no(f.instrumental_track), yes_no(f.external_audio_uploaded),
             yes_no(f.code_based_generation),

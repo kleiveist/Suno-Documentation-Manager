@@ -5,8 +5,6 @@
 
 - Suno model: v4.5
 - Suno project: https://suno.example/projects/golden-signal
-- Project/version ID: project-version-golden
-- Final generation ID: generation-golden
 - Final generation date: 2026-02-05
 - Lyrics source: instrumental
 - Instrumental track: Yes

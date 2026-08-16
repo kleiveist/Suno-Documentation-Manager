@@ -324,14 +324,6 @@ when = "always"
 missing_message = "Die Suno-Projekt-URL fehlt."
 
 [[requirements]]
-key = "suno.project_or_version_id"
-step_id = "suno"
-kind = "field"
-required = true
-when = "always"
-missing_message = "Die Suno-Projekt-/Versions-ID oder finale Generation-ID fehlt."
-
-[[requirements]]
 key = "suno.final_generation_date"
 step_id = "suno"
 kind = "field"

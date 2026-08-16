@@ -745,9 +745,6 @@ fn field_requirement_met(
         }
         "suno.model" => present(&f.suno_model),
         "suno.project_url" => present(&f.suno_project_url),
-        "suno.project_or_version_id" => {
-            present(&f.suno_project_version_id) || present(&f.suno_final_generation_id)
-        }
         "suno.final_generation_date" => present(&f.suno_final_generation_date),
         "suno.download_export_date" => present(&f.suno_download_export_date),
         "suno.plan_at_creation" => present(&f.suno_plan_at_creation),
@@ -1070,6 +1067,10 @@ mod tests {
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
+        assert!(!config
+            .requirements
+            .iter()
+            .any(|requirement| requirement.key == "suno.project_or_version_id"));
     }
 
     #[test]

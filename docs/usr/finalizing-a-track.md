@@ -137,6 +137,8 @@ Review the certificate ID, track, artist, workflow and application versions, tim
 
 Review manifest schema 2 and confirm that paths are track-root-relative. `documentedFacts` contains the full final-generation and consistency snapshot; each evidence item includes the original import filename, path, size, full hash, timestamp, provenance, lineage, and role-specific local metadata. Terms documents include title/provider/source URL/retrieval date; external timestamps include issuer, timestamp, referenced hash and artifact. No field is fetched from a network or inferred from a filename.
 
+Project/version ID, final generation ID/project version, and a final-generation time are not requested and are not finalization requirements. Compatibility fields from older local records are ignored by the current workflow and are not emitted into newly generated human-readable documents or certificates.
+
 The certificate includes this mandatory meaning:
 
 > This certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks. It does not confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.

@@ -107,7 +107,7 @@ Start with [Getting started](docs/usr/getting-started.md). Before finalization, 
 
 Step 10 now creates `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` directly in the track root. The local native renderer uses the same finalized structured snapshot as the Markdown certificate and evidence manifest; the PDF's SHA-256 is the fourth required entry in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`.
 
-Workflow 1.3 and certificate format 3.0 add explicit final Suno generation IDs/dates, instrumental and source-filename consistency checks, factual subscription coverage against the final-generation date, locally archived Suno terms/rights evidence, and optional external timestamp evidence. These are technical documentation facts only: the result does not certify authorship, ownership, non-infringement, legality, license validity, judicial weight, compliance, or governmental approval.
+Workflow 1.3 and certificate format 3.0 add explicit final Suno generation dates, instrumental and source-filename consistency checks, factual subscription coverage against the final-generation date, locally archived Suno terms/rights evidence, and optional external timestamp evidence. Project/version identifiers and a generation time are not requested. These are technical documentation facts only: the result does not certify authorship, ownership, non-infringement, legality, license validity, judicial weight, compliance, or governmental approval.
 
 ## Local data model
 

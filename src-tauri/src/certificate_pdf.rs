@@ -305,20 +305,8 @@ fn validate_rendered_text(
         ("Suno model", fields.suno_model.as_str()),
         ("Suno project URL", fields.suno_project_url.as_str()),
         (
-            "Suno project/version ID",
-            fields.suno_project_version_id.as_str(),
-        ),
-        (
-            "Suno final generation ID",
-            fields.suno_final_generation_id.as_str(),
-        ),
-        (
             "Suno final generation date",
             fields.suno_final_generation_date.as_str(),
-        ),
-        (
-            "Suno final generation time",
-            fields.suno_final_generation_time.as_str(),
         ),
         (
             "Suno download/export date",
@@ -614,21 +602,9 @@ fn render_final_suno_generation(layout: &mut PdfLayout, snapshot: &CertificatePd
             "Suno handle [User-confirmed fact]",
             documented(&snapshot.profile.suno_handle),
         ),
-        TableRow::mono(
-            "Project/version ID [User-confirmed fact]",
-            documented(&fields.suno_project_version_id),
-        ),
-        TableRow::mono(
-            "Final generation ID / project version [User-confirmed fact]",
-            documented(&fields.suno_final_generation_id),
-        ),
         TableRow::plain(
             "Final generation date [User-confirmed fact]",
             documented(&fields.suno_final_generation_date),
-        ),
-        TableRow::plain(
-            "Final generation time [User-confirmed fact]",
-            documented(&fields.suno_final_generation_time),
         ),
         TableRow::plain(
             "Download/export date [User-confirmed fact]",
@@ -2072,6 +2048,22 @@ mod tests {
         assert!(text.contains("Lyrics: N/A – instrumental track"));
         assert!(text.contains("does not confirm authorship"));
         assert!(!text.contains("Commercial rights confirmed"));
+    }
+
+    #[test]
+    fn omits_retired_generation_identifiers_and_time_from_pdf() {
+        let mut fixture = Fixture::new(1);
+        fixture.track.fields.suno_project_version_id = "legacy-project-version".into();
+        fixture.track.fields.suno_final_generation_id = "legacy-generation-id".into();
+        fixture.track.fields.suno_final_generation_time = "14:35".into();
+
+        let (_, text) = parse_text(&fixture.generate());
+        assert!(!text.contains("Project/version ID"));
+        assert!(!text.contains("Final generation ID"));
+        assert!(!text.contains("Final generation time"));
+        assert!(!text.contains("legacy-project-version"));
+        assert!(!text.contains("legacy-generation-id"));
+        assert!(!text.contains("14:35"));
     }
 
     #[test]

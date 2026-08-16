@@ -161,6 +161,20 @@ describe("missing requirements", () => {
     expect(ids).not.toContain("sample-license");
   });
 
+  it("does not require retired generation identifiers or a generation time", () => {
+    const track = completeTrack();
+    track.fields.sunoProjectVersionId = "";
+    track.fields.sunoFinalGenerationId = "";
+    track.fields.sunoFinalGenerationTime = "";
+
+    expect(calculateMissingRequirements(track, profile)).toEqual([]);
+    expect(finalizationGate(track, profile)).toEqual({
+      valid: true,
+      missingItems: [],
+      blockingItems: []
+    });
+  });
+
   it("blocks contradictory instrumental, lyrics and confirmed human-work facts", () => {
     const track = completeTrack();
     track.fields.instrumentalTrack = true;

@@ -3433,16 +3433,6 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
     for (name, value, max) in [
         ("Suno model", fields.suno_model.as_str(), 200),
         (
-            "Suno project/version ID",
-            fields.suno_project_version_id.as_str(),
-            500,
-        ),
-        (
-            "Suno final generation ID",
-            fields.suno_final_generation_id.as_str(),
-            500,
-        ),
-        (
             "Suno plan at creation",
             fields.suno_plan_at_creation.as_str(),
             200,
@@ -3592,14 +3582,6 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
                 "Suno project URL must be an HTTP(S) URL with a host.".into(),
             ));
         }
-    }
-    if !fields.suno_final_generation_time.trim().is_empty()
-        && chrono::NaiveTime::parse_from_str(fields.suno_final_generation_time.trim(), "%H:%M")
-            .is_err()
-    {
-        return Err(AppError::Validation(
-            "Final generation time must use HH:MM.".into(),
-        ));
     }
     Ok(())
 }

@@ -71,7 +71,7 @@ At minimum, the workflow can record the following confirmed facts:
 
 - track title;
 - production start and production end dates;
-- Suno model, project URL, project/version ID, final generation ID, final-generation date and optional time, and download/export date; all are user-confirmed local facts and are never fetched;
+- Suno model, project URL, final-generation date, and download/export date are required user-confirmed local facts. Project/version ID, final generation ID, and final-generation time are no longer collected or emitted; compatibility fields remain readable in persisted legacy data and never block finalization. No value is fetched;
 - Suno plan at creation, retained as unrestricted historical text;
 - final export date;
 - lyrics source;

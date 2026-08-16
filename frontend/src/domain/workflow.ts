@@ -234,7 +234,6 @@ export function evaluateRequirements(
   add("profile-suno-plan", "suno", "Globaler Suno-Tarif", hasText(profile.sunoPlan));
   add("profile-subscription-start", "suno", "Startdatum des globalen Suno-Abonnements", hasText(profile.subscriptionStartDate));
   add("suno-url", "suno", "Suno-Projekt-URL", hasText(fields.sunoProjectUrl));
-  add("suno-project-version", "suno", "Suno-Projekt-/Versions-ID oder finale Generation-ID", hasText(fields.sunoProjectVersionId) || hasText(fields.sunoFinalGenerationId));
   add("suno-generation-date", "suno", "Datum der finalen Suno-Generation", hasText(fields.sunoFinalGenerationDate));
   add("suno-download-date", "suno", "Download-/Exportdatum", hasText(fields.sunoDownloadExportDate));
   add("suno-plan", "suno", "Suno-Tarif bei Erstellung", hasText(fields.sunoPlanAtCreation));

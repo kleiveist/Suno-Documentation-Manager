@@ -82,8 +82,6 @@ function makeTrack(
     productionEndDate: complete ? "2026-07-24" : "",
     sunoModel: complete ? "v4.5" : "",
     sunoProjectUrl: complete ? "https://suno.com/song/demo-project" : "",
-    sunoProjectVersionId: complete ? "demo-project-version" : "",
-    sunoFinalGenerationId: complete ? "demo-generation" : "",
     sunoFinalGenerationDate: complete ? "2026-07-24" : "",
     sunoDownloadExportDate: complete ? "2026-07-24" : "",
     sunoPlanAtCreation: "Premier",

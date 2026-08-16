@@ -5,6 +5,8 @@
 
 ## 2026-08-16
 
+- Removed project/version ID, final generation ID, and final-generation time from current workflow inputs and generated certificate/documents; compatibility fields in existing stored records remain non-blocking.
+
 - Raised the Suno workflow to 1.3, document templates to 1.5, SQLite schema to 3, evidence manifest schema to 2, and certificate format to 3.0.
 - Added concrete final-generation metadata, instrumental/Lyrics consistency, original-filename deviation confirmation, and commercial subscription coverage checks.
 - Added local `suno_terms_rights` and `external_timestamp` evidence roles with persisted factual metadata.

@@ -89,7 +89,7 @@ An empty N/A reason is invalid. A conditional child requirement can become N/A a
 | --- | --- | --- | --- |
 | 01 | `track` | Track | Title, production dates, commercial intent, and workflow identity |
 | 02 | `source` | Source | Guided external, own, code-based, and third-party source branches plus applicable rights and evidence |
-| 03 | `suno` | Suno | Model, project URL/IDs, concrete final-generation date/time, download date, plan, export evidence, and filename confirmation |
+| 03 | `suno` | Suno | Model, project URL, concrete final-generation date, download date, plan, export evidence, and filename confirmation; project/version IDs and generation time are not workflow inputs |
 | 04 | `human-work` | Human Work | Lyrics source/text, Suno style prompt, and guided human or post-export edits that actually occurred |
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
 | 06 | `ai-transparency` | AI Transparency | AI service and visible-disclosure policy/result unless all three content checks are explicitly `No` |
