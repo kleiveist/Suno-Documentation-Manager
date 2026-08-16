@@ -51,6 +51,8 @@ Every visible indexed track belongs to exactly one section. An album track belon
 
 Opening or creating a workspace ensures the physical `Singles/` folder exists. The `Album anlegen` control in the `Alben` summary creates a named sibling folder immediately, even before a track is assigned. Empty album folders remain visible and survive restart, scanning, and moving their last track elsewhere.
 
+Workspace folders whose name begins with `.` are hidden management data, not albums or tracks. Album listing, identity recovery, workspace scanning, and library presentation prune those folders before reading their contents. This includes names such as `.archive`, `.cache`, and `.git`; previously indexed records below such a path also remain unavailable. Managed dot-directories inside a visible track root, including `.archive/` and `.summary/`, retain their documented evidence and recovery functions.
+
 The authoritative workspace layout is:
 
 ```text
@@ -95,7 +97,7 @@ The native layer is authoritative for state-changing validation:
 
 - trim leading and trailing whitespace from an album title;
 - require 1 through 200 Unicode characters after trimming;
-- reject control characters, path separators, traversal names, and reserved workspace names;
+- reject control characters, path separators, every leading-dot name, and reserved workspace names;
 - reject an unknown section value.
 
 Tracks with the same normalized album title appear in one group. Presentation compares the trimmed Unicode-normalized title without case distinctions. It retains one stored spelling for display. Album groups and the tracks inside them are sorted by the German locale with numeric ordering. This grouping does not rewrite the stored spelling of another track.

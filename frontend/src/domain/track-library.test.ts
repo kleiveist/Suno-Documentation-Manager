@@ -38,6 +38,25 @@ describe("track library grouping", () => {
       .toEqual([{ title: "Second Album", tracks: [] }]);
   });
 
+  it("does not load hidden folders or tracks into the rendered library", () => {
+    const grouped = groupTrackLibrary([
+      {
+        ...track("hidden-album", "Archived", { section: "album", albumTitle: ".archive" }),
+        relativePath: ".archive/Archived"
+      },
+      {
+        ...track("hidden-track", "Draft", { section: "album", albumTitle: "Visible" }),
+        relativePath: "Visible/.draft"
+      },
+      track("visible", "Current", { section: "album", albumTitle: "Visible" })
+    ], {}, [".archive", ".cache", "Visible"]);
+
+    expect(grouped.albums).toEqual([
+      { title: "Visible", tracks: [expect.objectContaining({ id: "visible" })] }
+    ]);
+    expect(grouped.singles).toEqual([]);
+  });
+
   it("groups album names case-insensitively and sorts albums and tracks", () => {
     const grouped = groupTrackLibrary([
       track("4", "Zulu", { section: "album", albumTitle: "neon nights" }),
@@ -126,6 +145,8 @@ describe("track library assignment", () => {
     expect(trackLibraryAssignment("album", "Invalid\nAlbum")).toBeNull();
     expect(trackLibraryAssignment("album", "unsafe/name")).toBeNull();
     expect(trackLibraryAssignment("album", "Singles")).toBeNull();
+    expect(trackLibraryAssignment("album", ".archive")).toBeNull();
+    expect(trackLibraryAssignment("album", "  .private  ")).toBeNull();
     expect(trackLibraryAssignment("single", "Ignored\nAlbum")).toEqual({ section: "single" });
   });
 });

@@ -53,6 +53,17 @@ function matchesTrackQuery(track: TrackLibrarySource, query: string): boolean {
     || normalizedText(track.relativePath).includes(query);
 }
 
+function startsWithHiddenDirectory(value: string): boolean {
+  return value.trim().startsWith(".");
+}
+
+function hasHiddenPathComponent(relativePath: string): boolean {
+  return relativePath
+    .replaceAll("\\", "/")
+    .split("/")
+    .some((component) => component.startsWith("."));
+}
+
 /**
  * Normalizes persisted and legacy values for presentation. Invalid or absent
  * album assignments remain visible by falling back to the Singles section.
@@ -67,8 +78,8 @@ export function normalizedTrackLibrary(
 }
 
 /**
- * Produces both permanent top-level library sections. Each input track is
- * classified exactly once before search and status filters are applied.
+ * Produces both permanent top-level library sections. Each non-hidden input
+ * track is classified exactly once before search and status filters are applied.
  */
 export function groupTrackLibrary<T extends TrackLibrarySource>(
   tracks: readonly T[],
@@ -82,12 +93,17 @@ export function groupTrackLibrary<T extends TrackLibrarySource>(
 
   for (const rawTitle of albumTitles) {
     const title = rawTitle.trim();
-    if (!title) continue;
+    if (!title || startsWithHiddenDirectory(title)) continue;
     const key = normalizedText(title);
     if (!albums.has(key)) albums.set(key, { title, tracks: [] });
   }
 
   for (const track of tracks) {
+    if (hasHiddenPathComponent(track.relativePath)
+      || (track.library?.section === "album"
+        && startsWithHiddenDirectory(track.library.albumTitle ?? ""))) {
+      continue;
+    }
     if (!matchesStatus(track.status, status)) continue;
     const library = normalizedTrackLibrary(track.library);
     if (library.section === "single") {
@@ -127,9 +143,8 @@ export function trackLibraryAssignment(
   const normalizedTitle = albumTitle.trim();
   if (section === "album"
     && normalizedTitle
-    && normalizedTitle !== "."
-    && normalizedTitle !== ".."
-    && !["singles", ".suno-doc"].includes(normalizedTitle.toLocaleLowerCase("de-DE"))
+    && !normalizedTitle.startsWith(".")
+    && normalizedTitle.toLocaleLowerCase("de-DE") !== "singles"
     && [...normalizedTitle].length <= 200) {
     return { section: "album", albumTitle: normalizedTitle };
   }

@@ -139,6 +139,7 @@ describe("navigation", () => {
       showNewTrack: true,
       showTrackLibrary: true,
       showSubscriptionEvidence: true,
+      showTermsEvidence: true,
       evidencePreview: {
         evidenceId: "preview",
         role: "suno_screenshot",
@@ -164,6 +165,7 @@ describe("navigation", () => {
       showNewTrack: false,
       showTrackLibrary: false,
       showSubscriptionEvidence: false,
+      showTermsEvidence: false,
       evidencePreview: null,
       showCertificatePopup: false,
       query: "",

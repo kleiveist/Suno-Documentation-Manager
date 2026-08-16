@@ -63,6 +63,8 @@ On first launch the application shows that no workspace is open and offers two n
 
 The application canonicalizes the selected root before it creates or opens `<workspace>/.suno-doc/`. This hidden management folder holds the local SQLite index and reusable workspace evidence. It is not part of any track evidence set.
 
+Any workspace folder whose name starts with `.` is treated as hidden management data and is not loaded as an album or track. For example, `.archive/`, `.cache/`, and `.git/` do not appear in the library and are not traversed by workspace scanning. Dot-directories managed inside a normal track folder keep their documented archive and identity purpose.
+
 Selecting a workspace does not authorize access outside that root. If the application reports a symbolic-link, traversal, permission, or collision error, choose a normal contained folder or correct its local permissions; do not bypass the check with a broader filesystem allowlist.
 
 ## Complete reusable settings

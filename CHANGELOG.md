@@ -5,6 +5,7 @@
 
 ## 2026-08-16
 
+- Excluded every leading-dot workspace folder (for example `.archive`, `.cache`, and `.git`) from album listing, track discovery, identity recovery, and library rendering, including previously indexed hidden paths.
 - Moved Suno terms/rights import to Settings as metadata-bearing global evidence, automatically copied into new and editable projects while finalized snapshots remain untouched; raised SQLite schema to 4.
 - Removed project/version ID, final generation ID, and final-generation time from current workflow inputs and generated certificate/documents; compatibility fields in existing stored records remain non-blocking.
 

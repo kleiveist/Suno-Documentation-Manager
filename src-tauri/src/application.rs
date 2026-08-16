@@ -88,7 +88,12 @@ impl WorkspaceApp {
     }
 
     fn synchronize_open_track_profiles(&self, profile: &Profile, save_profile: bool) -> Result<()> {
-        let mut tracks = self.persistence.tracks()?;
+        let mut tracks = self
+            .persistence
+            .tracks()?
+            .into_iter()
+            .filter(|track| !is_hidden_workspace_path(Path::new(&track.relative_path)))
+            .collect::<Vec<_>>();
         let updated_at = now();
         let mut changed = false;
         for track in &mut tracks {
@@ -115,7 +120,12 @@ impl WorkspaceApp {
 
     fn recover_interrupted_operations(&self) -> Result<()> {
         let mut recovered = false;
-        for track in self.persistence.tracks()? {
+        for track in self
+            .persistence
+            .tracks()?
+            .into_iter()
+            .filter(|track| !is_hidden_workspace_path(Path::new(&track.relative_path)))
+        {
             if !self.root.join(&track.relative_path).is_dir() {
                 continue;
             }
@@ -292,7 +302,12 @@ impl WorkspaceApp {
             id,
             name,
             path: self.root.display().to_string(),
-            track_count: self.persistence.tracks()?.len() as u32,
+            track_count: self
+                .persistence
+                .tracks()?
+                .into_iter()
+                .filter(|track| !is_hidden_workspace_path(Path::new(&track.relative_path)))
+                .count() as u32,
             last_scanned_at: self.persistence.get_meta("last_scanned_at")?,
         })
     }
@@ -412,6 +427,9 @@ impl WorkspaceApp {
         self.reconcile_physical_library()?;
         let mut result = Vec::new();
         for track in self.persistence.tracks()? {
+            if is_hidden_workspace_path(Path::new(&track.relative_path)) {
+                continue;
+            }
             let detail = self.detail_from_record(track, true)?;
             result.push(summary_from_detail(&detail));
         }
@@ -426,7 +444,7 @@ impl WorkspaceApp {
             let Some(title) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if title == ".suno-doc" || title == SINGLES_DIRECTORY {
+            if title.starts_with('.') || title == SINGLES_DIRECTORY {
                 continue;
             }
             let metadata = fs::symlink_metadata(entry.path())
@@ -473,7 +491,11 @@ impl WorkspaceApp {
 
     pub fn load_track(&self, id: &str) -> Result<TrackDetail> {
         self.reconcile_physical_library()?;
-        self.detail_from_record(self.persistence.track(id)?, true)
+        let track = self.persistence.track(id)?;
+        if is_hidden_workspace_path(Path::new(&track.relative_path)) {
+            return Err(AppError::TrackNotFound(id.to_owned()));
+        }
+        self.detail_from_record(track, true)
     }
 
     pub fn update_track(&self, id: &str, patch: TrackPatch) -> Result<TrackDetail> {
@@ -835,10 +857,11 @@ impl WorkspaceApp {
         }
 
         for track in self.persistence.tracks()?.into_iter().filter(|track| {
-            !matches!(
-                track.status,
-                TrackStatus::Finalized | TrackStatus::Superseded
-            )
+            !is_hidden_workspace_path(Path::new(&track.relative_path))
+                && !matches!(
+                    track.status,
+                    TrackStatus::Finalized | TrackStatus::Superseded
+                )
         }) {
             self.attach_global_evidence(&track.id, &item.evidence.id)?;
         }
@@ -2330,6 +2353,9 @@ impl WorkspaceApp {
             });
         }
         for track in self.persistence.tracks()? {
+            if is_hidden_workspace_path(Path::new(&track.relative_path)) {
+                continue;
+            }
             let Some(existing) = track.library.album_title.as_deref() else {
                 continue;
             };
@@ -2415,7 +2441,12 @@ impl WorkspaceApp {
 
     fn reconcile_physical_library(&self) -> Result<()> {
         let identities = discover_track_identities(&self.root)?;
-        let tracks = self.persistence.tracks()?;
+        let tracks = self
+            .persistence
+            .tracks()?
+            .into_iter()
+            .filter(|track| !is_hidden_workspace_path(Path::new(&track.relative_path)))
+            .collect::<Vec<_>>();
         let mut claimed = tracks
             .iter()
             .filter(|track| self.root.join(&track.relative_path).is_dir())
@@ -3757,9 +3788,8 @@ fn normalize_track_library(input: TrackLibraryPlacement) -> Result<TrackLibraryP
 fn safe_album_directory(title: &str) -> Result<String> {
     let title = title.trim();
     if title.is_empty()
-        || matches!(title, "." | "..")
+        || title.starts_with('.')
         || title.eq_ignore_ascii_case(SINGLES_DIRECTORY)
-        || title.eq_ignore_ascii_case(".suno-doc")
         || title.contains(['/', '\\'])
         || title.chars().any(char::is_control)
     {
@@ -3788,7 +3818,8 @@ fn physical_track_relative(library: &TrackLibraryPlacement, title: &str) -> Resu
 fn safe_track_directory(title: &str) -> Result<String> {
     let title = title.trim();
     slugify(title)?;
-    if title.contains(['/', '\\']) || title.chars().any(char::is_control) {
+    if title.starts_with('.') || title.contains(['/', '\\']) || title.chars().any(char::is_control)
+    {
         return Err(AppError::Validation(
             "Track title does not form a safe folder name.".into(),
         ));
@@ -3816,6 +3847,11 @@ fn physical_library_from_relative(relative: &str) -> Result<Option<TrackLibraryP
     })?))
 }
 
+fn is_hidden_workspace_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str().to_string_lossy().starts_with('.'))
+}
+
 fn discover_track_identities(root: &Path) -> Result<HashMap<String, String>> {
     let mut identities = HashMap::new();
     for entry in WalkDir::new(root)
@@ -3823,6 +3859,11 @@ fn discover_track_identities(root: &Path) -> Result<HashMap<String, String>> {
         .max_depth(4)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || entry.depth() > 2
+                || !entry.file_name().to_string_lossy().starts_with('.')
+        })
     {
         let entry = entry.map_err(|error| {
             AppError::io(
@@ -3915,7 +3956,7 @@ fn discover_workspace_tracks(
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if name == ".suno-doc" {
+        if name.starts_with('.') {
             continue;
         }
         let metadata = fs::symlink_metadata(entry.path())
@@ -5066,6 +5107,92 @@ mod tests {
     }
 
     #[test]
+    fn hidden_workspace_folders_are_pruned_from_album_and_track_discovery() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+
+        fs::create_dir_all(workspace.join(".archive/Archived Track/01_RELEASE"))
+            .expect("hidden archive fixture");
+        fs::create_dir_all(workspace.join(".draft/01_RELEASE"))
+            .expect("hidden direct-track fixture");
+        fs::create_dir_all(workspace.join("Visible Album/Visible Track/01_RELEASE"))
+            .expect("visible album fixture");
+
+        assert_eq!(
+            app.list_albums().expect("album list"),
+            vec!["Visible Album"]
+        );
+        let scan = app.scan_workspace().expect("workspace scan");
+        assert_eq!(scan.discovered, 1);
+        assert_eq!(scan.indexed, 1);
+        assert!(scan.warnings.is_empty());
+        assert_eq!(
+            scan.candidates[0].relative_path,
+            "Visible Album/Visible Track"
+        );
+        assert!(app
+            .persistence
+            .track_by_relative_path(".archive/Archived Track")
+            .expect("hidden archive lookup")
+            .is_none());
+        assert!(app
+            .persistence
+            .track_by_relative_path(".draft")
+            .expect("hidden direct-track lookup")
+            .is_none());
+    }
+
+    #[test]
+    fn previously_indexed_hidden_paths_remain_unloaded_after_reopen() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Archived Track".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let source = workspace.join(&created.relative_path);
+        let hidden_parent = workspace.join(".archive");
+        let target = hidden_parent.join("Archived Track");
+        fs::create_dir(&hidden_parent).expect("hidden parent");
+        fs::rename(&source, &target).expect("move fixture into hidden parent");
+
+        let mut record = app.persistence.track(&created.id).expect("stored track");
+        record.relative_path = ".archive/Archived Track".into();
+        record.library = TrackLibraryPlacement {
+            section: TrackLibrarySection::Album,
+            album_title: Some(".archive".into()),
+        };
+        app.persistence
+            .save_track(&record)
+            .expect("persist pre-fix hidden path fixture");
+
+        assert!(app.list_tracks().expect("visible tracks").is_empty());
+        assert_eq!(app.summary().expect("visible summary").track_count, 0);
+        assert!(matches!(
+            app.load_track(&created.id),
+            Err(AppError::TrackNotFound(id)) if id == created.id
+        ));
+        assert!(target.join(TRACK_IDENTITY_FILE).is_file());
+        drop(app);
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("reopen workspace");
+        assert!(reopened.list_tracks().expect("reopened tracks").is_empty());
+        assert!(reopened.list_albums().expect("reopened albums").is_empty());
+        assert_eq!(
+            reopened.scan_workspace().expect("reopened scan").discovered,
+            0
+        );
+        assert!(target.join(TRACK_IDENTITY_FILE).is_file());
+    }
+
+    #[test]
     fn track_creation_builds_exact_folders() {
         let directory = tempdir().expect("tempdir");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
@@ -5349,6 +5476,8 @@ mod tests {
             None,
             Some(String::new()),
             Some("   ".into()),
+            Some(".archive".into()),
+            Some("  .private  ".into()),
             Some("invalid\ncontrol".into()),
             Some("x".repeat(201)),
         ] {
@@ -6236,7 +6365,7 @@ mod tests {
         let workspace = directory.path().join("workspace");
         let app = WorkspaceApp::open(&workspace, true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
-        for title in ["../escape", "/absolute", r"..\\escape"] {
+        for title in ["../escape", "/absolute", r"..\\escape", ".draft"] {
             assert!(app
                 .create_track(CreateTrackInput {
                     title: title.into(),
@@ -6263,7 +6392,7 @@ mod tests {
                 library: TrackLibraryPlacement::default(),
             })
             .expect("track creation");
-        for title in ["../x", r"a\b", "...", "🚀"] {
+        for title in ["../x", r"a\b", "...", ".draft", "🚀"] {
             assert!(matches!(
                 app.update_track(
                     &track.id,
