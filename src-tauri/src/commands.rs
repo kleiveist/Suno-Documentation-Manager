@@ -112,19 +112,17 @@ pub fn import_global_evidence(
 #[tauri::command]
 pub fn import_global_terms_evidence(
     state: State<'_, AppState>,
-    metadata: EvidenceMetadata,
 ) -> Result<Option<GlobalEvidenceItem>> {
     let role = EvidenceRole::SunoTermsRights;
     let Some(source) = rfd::FileDialog::new()
-        .set_title("Globale Suno-Nutzungsbedingungen registrieren")
-        .add_filter("Suno-Nutzungsbedingungen", role.allowed_extensions())
+        .set_title("Suno-Nutzungsbedingungen als PDF auswählen")
+        .add_filter("PDF", role.allowed_extensions())
         .pick_file()
     else {
         return Ok(None);
     };
     with_workspace(&state, |app| {
-        app.register_global_terms_evidence(&source, metadata)
-            .map(Some)
+        app.register_global_terms_evidence(&source).map(Some)
     })
 }
 

@@ -47,7 +47,7 @@ The gate requires:
 - the concrete final-generation date of a commercial track to fall inside selected subscription coverage; and
 - commercial tracks to include archived Suno terms/rights evidence or the explicit status `Terms evidence not available`.
 
-Register archived Suno terms once under `Einstellungen`. The native importer accepts PDF, TXT, Markdown, HTML, PNG, and JPEG, retains the entered factual metadata, and places a portable global-evidence copy into every editable project. If a finalized project needs newer terms, create a revision first; finalized snapshots are never rewritten.
+Register an archived Suno terms PDF once under `Einstellungen`. `PDF auswählen` opens the native file dialog directly, accepts only a signature-checked PDF, and places a portable global-evidence copy into every editable project without asking for manual metadata. If a finalized project needs newer terms, create a revision first; finalized snapshots are never rewritten.
 - all generated documents to match current facts, evidence metadata, and template versions;
 - SHA-256 generation to cover the complete required set;
 - native verification to pass for every listed file; and
@@ -137,7 +137,7 @@ After the verified native result is committed, a certificate summary opens autom
 
 Review the certificate ID, track, artist, workflow and application versions, timestamp, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, earlier revision references, and final status. Expected success status is `DOCUMENTATION COMPLETE`.
 
-Review manifest schema 2 and confirm that paths are track-root-relative. `documentedFacts` contains the full final-generation and consistency snapshot; each evidence item includes the original import filename, path, size, full hash, timestamp, provenance, lineage, and role-specific local metadata. Terms documents include title/provider/source URL/retrieval date; external timestamps include issuer, timestamp, referenced hash and artifact. No field is fetched from a network or inferred from a filename.
+Review manifest schema 2 and confirm that paths are track-root-relative. `documentedFacts` contains the full final-generation and consistency snapshot; each evidence item includes the original import filename, path, size, full hash, timestamp, provenance, and lineage. The current terms importer records the selected PDF and system-derived file facts only; external timestamps still include issuer, timestamp, referenced hash, and artifact. No field is fetched from a network or inferred from a filename.
 
 Project/version ID, final generation ID/project version, and a final-generation time are not requested and are not finalization requirements. Compatibility fields from older local records are ignored by the current workflow and are not emitted into newly generated human-readable documents or certificates.
 

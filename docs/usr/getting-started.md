@@ -101,9 +101,9 @@ The cadence is a calculation rule for this one document, not permission to extra
 
 ## Register global Suno terms evidence
 
-Open `Einstellungen` and use `Nutzungsbedingungen auswählen` under `Archivierte Suno-Nutzungsbedingungen`. Enter only the factual document title, provider/source, source URL, retrieval date, and optional effective date or note, then select one local PDF, TXT, Markdown, HTML, PNG, or JPEG file.
+Open `Einstellungen` and use `PDF auswählen` under `Archivierte Suno-Nutzungsbedingungen`. The button immediately opens the native file dialog; there is no metadata form. Select exactly one local PDF.
 
-The selected source remains untouched. SunoDM registers a hashed copy under `.suno-doc/global-evidence/` and automatically places a portable `global_copy` under `04_LICENSES/` for every new or still editable project. A finalized project is deliberately not changed; create a revision before assigning newer terms. The evidence records only the archived document and its provenance and does not determine rights or validity.
+The selected source remains untouched. SunoDM verifies the PDF file signature, registers a hashed copy under `.suno-doc/global-evidence/`, records system-derived file facts, and automatically places a portable `global_copy` under `04_LICENSES/` for every new or still editable project. A finalized project is deliberately not changed; create a revision before assigning newer terms. The evidence records only the archived PDF and its provenance and does not determine rights or validity.
 
 When documenting a track, select only evidence whose materialized start and end dates actually cover its production period. Before finalization, the application copies the selected file into the track evidence structure, calculates its hash, records `global_copy` provenance and the workspace source record ID, and includes those fields, the exact coverage dates, and the relative path in the manifest. Portability therefore does not depend on rerunning the cadence calculation: the track retains the concrete interval and remains self-contained if the workspace index is later unavailable.
 

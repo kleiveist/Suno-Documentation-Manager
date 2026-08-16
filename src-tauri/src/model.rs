@@ -147,7 +147,7 @@ impl EvidenceRole {
             Self::SubscriptionPayment
             | Self::ExternalAudioLicense
             | Self::ThirdPartySampleLicense => &["pdf", "png", "jpg", "jpeg", "txt", "md"],
-            Self::SunoTermsRights => &["pdf", "txt", "md", "html", "htm", "png", "jpg", "jpeg"],
+            Self::SunoTermsRights => &["pdf"],
             Self::ExternalTimestamp => &[
                 "pdf", "txt", "md", "json", "html", "htm", "png", "jpg", "jpeg",
             ],
@@ -560,8 +560,9 @@ pub struct EvidenceItem {
     pub metadata: EvidenceMetadata,
 }
 
-/// User-supplied factual metadata for locally archived service-terms or timestamp evidence.
-/// Empty values mean "not recorded"; SunoDM never fetches or infers these fields.
+/// Role-specific evidence metadata and compatibility fields. The current terms-PDF
+/// importer fills only the system-derived original filename; timestamp evidence
+/// still accepts its explicit factual fields. Empty values mean "not recorded".
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EvidenceMetadata {

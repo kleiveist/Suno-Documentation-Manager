@@ -456,7 +456,7 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     code_generated_audio_file: "WAV oder MP3",
     third_party_sample_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     third_party_sample_license: "PDF, PNG, JPG, TXT oder Markdown",
-    suno_terms_rights: "PDF, TXT, Markdown, HTML, PNG oder JPG",
+    suno_terms_rights: "PDF",
     external_timestamp: "PDF, TXT, Markdown, JSON, HTML, PNG oder JPG",
     other: "PDF, Bild, Text, ZIP, WAV, MP3 oder MP4"
   };

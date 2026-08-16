@@ -799,8 +799,7 @@ impl WorkspaceApp {
     ) -> Result<GlobalEvidenceItem> {
         if role == EvidenceRole::SunoTermsRights {
             return Err(AppError::Validation(
-                "Register Suno terms/rights evidence globally with its factual document metadata."
-                    .into(),
+                "Register the Suno terms PDF with the dedicated global importer.".into(),
             ));
         }
         if role == EvidenceRole::SubscriptionPayment {
@@ -833,20 +832,15 @@ impl WorkspaceApp {
         Ok(item)
     }
 
-    pub fn register_global_terms_evidence(
-        &self,
-        source: &Path,
-        mut metadata: EvidenceMetadata,
-    ) -> Result<GlobalEvidenceItem> {
-        metadata.original_file_name = source
+    pub fn register_global_terms_evidence(&self, source: &Path) -> Result<GlobalEvidenceItem> {
+        let original_file_name = source
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_owned();
-        validate_evidence_metadata(&EvidenceRole::SunoTermsRights, &metadata)?;
         let mut item =
             evidence::register_global(&self.root, EvidenceRole::SunoTermsRights, source)?;
-        item.evidence.metadata = metadata;
+        item.evidence.metadata.original_file_name = original_file_name;
         if let Err(error) = self.persistence.save_global_evidence(&item) {
             if let Ok(path) =
                 contained_path(&self.root, Path::new(&item.evidence.relative_path), true)
@@ -3727,17 +3721,7 @@ fn validate_evidence_metadata(role: &EvidenceRole, metadata: &EvidenceMetadata) 
         }
     }
     match role {
-        EvidenceRole::SunoTermsRights => {
-            if metadata.document_title.trim().is_empty()
-                || metadata.provider.trim().is_empty()
-                || metadata.source_url.trim().is_empty()
-                || metadata.retrieval_date.trim().is_empty()
-            {
-                return Err(AppError::Validation(
-                    "Suno terms evidence requires document title, provider/source, source URL, and retrieval date.".into(),
-                ));
-            }
-        }
+        EvidenceRole::SunoTermsRights => {}
         EvidenceRole::ExternalTimestamp => {
             if metadata.provider.trim().is_empty()
                 || metadata.external_timestamp.trim().is_empty()
@@ -4648,7 +4632,7 @@ mod tests {
     }
 
     #[test]
-    fn global_terms_and_track_timestamp_imports_persist_factual_metadata() {
+    fn global_terms_pdf_import_requires_no_manual_metadata_and_propagates_to_tracks() {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory.path().join("workspace");
         let app = WorkspaceApp::open(&workspace, true).expect("workspace");
@@ -4686,24 +4670,39 @@ mod tests {
             .save_track(&immutable_record)
             .expect("mark immutable fixture finalized");
 
-        let terms_source = directory.path().join("suno-terms-2026-08-01.md");
-        fs::write(&terms_source, b"# Archived local terms fixture\n").expect("terms fixture");
+        let invalid_terms_source = directory.path().join("suno-terms.txt");
+        fs::write(&invalid_terms_source, b"not an accepted terms PDF\n")
+            .expect("invalid terms fixture");
+        assert!(matches!(
+            app.register_global_terms_evidence(&invalid_terms_source),
+            Err(AppError::FileType { .. })
+        ));
+        let disguised_pdf = directory.path().join("disguised-terms.pdf");
+        fs::write(&disguised_pdf, b"plain text with a PDF extension\n")
+            .expect("disguised terms fixture");
+        assert!(matches!(
+            app.register_global_terms_evidence(&disguised_pdf),
+            Err(AppError::Validation(_))
+        ));
+
+        let terms_source = directory.path().join("suno-terms-2026-08-01.pdf");
+        fs::write(
+            &terms_source,
+            b"%PDF-1.7\n1 0 obj\n<</Type /Terms>>\nendobj\n%%EOF\n",
+        )
+        .expect("terms PDF fixture");
         let global_terms = app
-            .register_global_terms_evidence(
-                &terms_source,
-                EvidenceMetadata {
-                    document_title: "Suno Terms of Service".into(),
-                    provider: "Suno".into(),
-                    source_url: "https://suno.example/terms".into(),
-                    retrieval_date: "2026-08-01".into(),
-                    effective_date: "2026-07-15".into(),
-                    factual_note: "Archived locally for the recorded production period.".into(),
-                    ..EvidenceMetadata::default()
-                },
-            )
+            .register_global_terms_evidence(&terms_source)
             .expect("global terms import");
         assert_eq!(global_terms.evidence.role, EvidenceRole::SunoTermsRights);
-        assert_eq!(global_terms.evidence.metadata.provider, "Suno");
+        assert_eq!(
+            global_terms.evidence.metadata.original_file_name,
+            "suno-terms-2026-08-01.pdf"
+        );
+        assert!(global_terms.evidence.metadata.document_title.is_empty());
+        assert!(global_terms.evidence.metadata.provider.is_empty());
+        assert!(global_terms.evidence.metadata.source_url.is_empty());
+        assert!(global_terms.evidence.metadata.retrieval_date.is_empty());
         let terms = app.load_track(&track.id).expect("track with global terms");
         assert_eq!(terms.fields.suno_terms_evidence_not_available, Some(false));
         let terms_item = terms
@@ -4713,9 +4712,9 @@ mod tests {
             .expect("terms evidence");
         assert_eq!(
             terms_item.metadata.original_file_name,
-            "suno-terms-2026-08-01.md"
+            "suno-terms-2026-08-01.pdf"
         );
-        assert_eq!(terms_item.metadata.provider, "Suno");
+        assert!(terms_item.metadata.provider.is_empty());
         assert_eq!(
             terms_item.source_global_evidence_id.as_deref(),
             Some(global_terms.evidence.id.as_str())
@@ -4789,7 +4788,7 @@ mod tests {
         let stored_global = reopened.global_evidence().expect("global evidence");
         assert!(stored_global.iter().any(|item| {
             item.evidence.id == global_terms.evidence.id
-                && item.evidence.metadata.document_title == "Suno Terms of Service"
+                && item.evidence.metadata.original_file_name == "suno-terms-2026-08-01.pdf"
         }));
         let evidence = reopened
             .load_track(&track.id)
@@ -4797,7 +4796,8 @@ mod tests {
             .evidence;
         assert!(evidence.iter().any(|item| {
             item.role == EvidenceRole::SunoTermsRights
-                && item.metadata.document_title == "Suno Terms of Service"
+                && item.metadata.original_file_name == "suno-terms-2026-08-01.pdf"
+                && item.metadata.document_title.is_empty()
         }));
         assert!(evidence.iter().any(|item| {
             item.role == EvidenceRole::ExternalTimestamp

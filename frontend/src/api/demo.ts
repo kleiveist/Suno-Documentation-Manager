@@ -289,13 +289,13 @@ export function createDemoApi(): DesktopApi {
       globalEvidence.push(item);
       return clone(item);
     },
-    async importGlobalTermsEvidence(metadata) {
+    async importGlobalTermsEvidence() {
       await wait();
       const item: GlobalEvidenceItem = {
-        ...evidence("suno_terms_rights", "suno_terms.html"),
-        relativePath: ".suno-doc/global-evidence/suno_terms.html",
+        ...evidence("suno_terms_rights", "suno_terms.pdf"),
+        relativePath: ".suno-doc/global-evidence/suno_terms.pdf",
         metadata: {
-          originalFileName: "suno_terms.html",
+          originalFileName: "suno_terms.pdf",
           documentTitle: "",
           provider: "",
           sourceUrl: "",
@@ -304,8 +304,7 @@ export function createDemoApi(): DesktopApi {
           factualNote: "",
           externalTimestamp: "",
           referencedHash: "",
-          referencedArtifact: "",
-          ...metadata
+          referencedArtifact: ""
         }
       };
       globalEvidence.push(item);

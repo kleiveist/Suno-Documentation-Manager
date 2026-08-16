@@ -45,7 +45,7 @@ The product uses bounded authority rather than treating every copy as equally au
 | Imported evidence and release assets | Track folder | Database references store role and root-relative path; file contents are not database blobs |
 | Generated documentation | Track folder | Regenerated only through explicit managed-document rules |
 | Final hashes, manifest, certificate, and archived revisions | Track folder | Treated as the authoritative finalized snapshot |
-| Registered reusable subscription and Suno terms evidence | `.suno-doc/global-evidence/` plus SQLite coverage or factual document metadata | Evidence is copied into each applicable track before finalization so the track remains self-contained |
+| Registered reusable subscription and Suno terms evidence | `.suno-doc/global-evidence/` plus SQLite coverage or system-derived PDF file facts | Evidence is copied into each applicable track before finalization so the track remains self-contained |
 
 Deleting the database can lose unfinished form state or reusable global defaults. It must not make a complete finalized track folder impossible to inspect and verify.
 
@@ -71,7 +71,7 @@ After the user creates or opens a workspace, native code may create this reserve
 The database indexes at least these logical data sets:
 
 - workspace metadata and global profile values;
-- global-evidence records with materialized per-invoice coverage dates or factual Suno terms metadata;
+- global-evidence records with materialized per-invoice coverage dates or system-derived Suno terms PDF facts;
 - known tracks and their lifecycle status;
 - each track's `single` or named-album library placement;
 - workflow ID, workflow version, step states, applicability, and N/A reasons;
@@ -83,7 +83,7 @@ Large media, PDFs, archives, and generated portable artifacts remain files. SQLi
 
 ## Schema and migrations
 
-The current SQLite schema version is `4`, stored in `PRAGMA user_version`. Schema version 2 added evidence provenance and disclosure-lineage columns. Schema version 3 added `metadata_json` to each track-evidence record for original import filename and role-specific local terms/timestamp metadata. Schema version 4 adds the same conservative `metadata_json` field to workspace-global evidence so archived Suno terms retain their title, provider, source URL, retrieval/effective dates, note, and original filename. Existing rows receive an empty object; no historical value is invented.
+The current SQLite schema version is `4`, stored in `PRAGMA user_version`. Schema version 2 added evidence provenance and disclosure-lineage columns. Schema version 3 added `metadata_json` to each track-evidence record for original import filename and role-specific metadata. Schema version 4 added the same conservative field to workspace-global evidence. Existing values remain readable for compatibility, but the current Suno terms importer asks for no manual metadata and records only the original PDF filename in that object. Existing rows receive an empty object; no historical value is invented.
 
 | Column | Purpose |
 | --- | --- |
@@ -198,7 +198,7 @@ Files already moved into `.archive/removals/` by an explicit legacy-evidence rem
 
 ## Global evidence
 
-Reusable Suno subscription/payment evidence and archived Suno terms/rights evidence can be registered under `.suno-doc/global-evidence/`. Each registration represents exactly one selected file; a folder or multi-file selection does not become one combined record. Subscription records retain one evidenced billing period. Terms records accept PDF, TXT, Markdown, HTML, PNG, or JPEG and retain factual title/provider/source/retrieval metadata. The source is copied without being moved or deleted.
+Reusable Suno subscription/payment evidence and archived Suno terms/rights evidence can be registered under `.suno-doc/global-evidence/`. Each registration represents exactly one selected file; a folder or multi-file selection does not become one combined record. Subscription records retain one evidenced billing period. The terms action opens the native picker immediately, accepts only a PDF whose bytes carry the PDF signature, and asks for no title, provider, URL, date, or note. The source is copied without being moved or deleted.
 
 Global terms are automatically copied into every newly created or currently editable track with `global_copy` provenance and `sourceGlobalEvidenceId`. Existing finalized snapshots are not mutated; a subsequent revision can receive newer global terms. A manual per-track attach remains available as an idempotent recovery path.
 
@@ -243,7 +243,7 @@ Album membership is another workspace-index-only value. A track-only copy retain
 | `REQ-PER-006` | All durable portable references are track-root-relative and contain no local absolute path. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
 | `REQ-PER-007` | Evidence provenance and local disclosure lineage survive SQLite persistence and portable-manifest generation without being inferred from a role alone. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
 | `REQ-PER-008` | Each global subscription registration selects exactly one source file and materializes one inclusive coverage interval from its factual start and monthly/annual cadence; cadence is not recurring evidence. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
-| `REQ-PER-009` | Global Suno terms registration retains factual metadata and places a portable hashed copy into each new or editable project without mutating finalized snapshots. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
+| `REQ-PER-009` | Global Suno terms registration accepts one signature-checked PDF without manual metadata and places a portable hashed copy into each new or editable project without mutating finalized snapshots. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
 
 ## Verification
 
@@ -285,6 +285,6 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 | 2026-08-14 | Defined per-invoice cadence, single-file registration, materialized coverage dates, portability, and the no-extrapolation boundary. | Project team |
 | 2026-08-13 | Documented schema version 2, evidence provenance and disclosure lineage, recoverable legacy removal, and marker-based finalization recovery. | Project team |
 | 2026-08-16 | Documented schema version 3 and conservative empty metadata migration for terms/timestamp and original-filename facts. | Project team |
-| 2026-08-16 | Raised the schema to version 4 for metadata-bearing workspace-global Suno terms and documented automatic portable project copies. | Project team |
+| 2026-08-16 | Raised the schema to version 4 for workspace-global Suno terms compatibility data and documented automatic portable project copies. | Project team |
 | 2026-08-13 | Aligned scan, revision archive, and interrupted-operation recovery behavior with version 0.1. | Project team |
 | 2026-08-13 | Defined SQLite ownership, portable-file authority, and recovery behavior. | Project team |

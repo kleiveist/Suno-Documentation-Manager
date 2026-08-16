@@ -87,12 +87,7 @@ describe("demo evidence controls", () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
-    const global = await settle(api.importGlobalTermsEvidence({
-      documentTitle: "Suno Terms of Service",
-      provider: "Suno",
-      sourceUrl: "https://suno.example/terms",
-      retrievalDate: "2026-08-16"
-    }));
+    const global = await settle(api.importGlobalTermsEvidence());
     const existing = await settle(api.loadTrack("gravity"));
     const created = await settle(api.createTrack({
       title: "Later Project",
@@ -107,7 +102,7 @@ describe("demo evidence controls", () => {
           role: "suno_terms_rights",
           sourceGlobalEvidenceId: global!.id,
           provenance: "global_copy",
-          metadata: expect.objectContaining({ documentTitle: "Suno Terms of Service" })
+          metadata: expect.objectContaining({ originalFileName: "suno_terms.pdf" })
         })
       ]));
     }
