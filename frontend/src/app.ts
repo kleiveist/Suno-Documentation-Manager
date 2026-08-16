@@ -222,6 +222,57 @@ export function operationStageLabel(stage: string): string {
   } as Record<string, string>)[stage] ?? "Lokaler Vorgang läuft";
 }
 
+const OPERATION_PROGRESS_CONFIGURATION = {
+  documents: {
+    eyebrow: "Dokument-Manufaktur",
+    title: "Dein Dokumentsatz entsteht",
+    iconName: "file" as const,
+    steps: ["Daten sammeln", "Inhalte rendern", "Dateien schreiben", "Sicher abschließen"],
+    thresholds: [0, 18, 22, 94],
+    tips: [
+      "Jede Datei wird zuerst vollständig aufgebaut und anschließend atomar veröffentlicht.",
+      "Lyrics und Style-Prompt werden im Suno-Ordner als portable Markdown-Dateien abgelegt.",
+      "Vorhandene verwaltete Dokumente werden nicht mit halbfertigen Inhalten überschrieben."
+    ]
+  },
+  hashes: {
+    eyebrow: "SHA-256-Werkstatt",
+    title: "Digitale Fingerabdrücke entstehen",
+    iconName: "hash" as const,
+    steps: ["Dateien finden", "Bytes hashen", "Hashliste schreiben", "Gegenprüfung"],
+    thresholds: [0, 7, 53, 57],
+    tips: [
+      "Große Dateien werden blockweise gelesen – sie müssen dafür nicht komplett in den Arbeitsspeicher.",
+      "Schon ein einziges geändertes Byte erzeugt einen anderen SHA-256-Fingerabdruck.",
+      "Nach dem Schreiben liest die App alle Dateien erneut und prüft die neue Hashliste."
+    ]
+  },
+  verification: {
+    eyebrow: "Integritätsradar",
+    title: "Prüfsummen werden verifiziert",
+    iconName: "shield" as const,
+    steps: ["Hashliste lesen", "Dateien prüfen", "Werte vergleichen", "Ergebnis sichern"],
+    thresholds: [0, 10, 96, 98],
+    tips: [
+      "Die Prüfung berechnet jeden Fingerabdruck erneut und vertraut keinem gespeicherten Dateistatus.",
+      "Zusätzliche, fehlende und veränderte Dateien werden getrennt als Abweichung erkannt.",
+      "Die Verifikation bleibt lokal; keine Datei und kein Hash verlässt den Workspace."
+    ]
+  },
+  finalization: {
+    eyebrow: "Zertifikats-Tresor",
+    title: "Dein finaler Snapshot wird versiegelt",
+    iconName: "certificate" as const,
+    steps: ["Gate bestätigen", "Zertifikat erzeugen", "Snapshot gegenprüfen", "Sicher versiegeln"],
+    thresholds: [0, 13, 58, 92],
+    tips: [
+      "Zertifikat, Evidence-Manifest und Zertifikats-Hashliste werden als zusammengehöriger Satz veröffentlicht.",
+      "Vor dem Abschluss prüft die App die komplette SHA-256-Liste noch einmal von der Festplatte.",
+      "Der finalisierte Snapshot bleibt unverändert; spätere Änderungen beginnen als ausdrücklich angelegte Revision."
+    ]
+  }
+} as const;
+
 export function parseMultiChoiceValue(value: string): string[] {
   return value.split(" | ").map((item) => item.trim()).filter(Boolean);
 }
@@ -596,12 +647,70 @@ export class SunoDocumentationApp {
   }
 
   private syncBusyLayer(): void {
-    const current = this.root.querySelector<HTMLElement>(".busy-layer");
-    if (!current) {
+    const operation = this.state.operationProgress;
+    const current = this.root.querySelector<HTMLElement>(".busy-layer--operation");
+    if (!operation || !current || current.dataset.operationKind !== operation.kind) {
       this.render();
       return;
     }
-    current.outerHTML = this.renderBusyLayer();
+
+    // Keep the layer alive while progress changes. Replacing the complete
+    // element here restarts every CSS keyframe and makes the artwork jump.
+    const progress = operation.progress;
+    const configuration = OPERATION_PROGRESS_CONFIGURATION[operation.kind];
+    const percent = operationProgressPercent(operation.kind, progress);
+    const detail = progress.totalBytes > 0
+      ? `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
+      : progress.totalFiles > 0
+        ? `${progress.processedFiles} von ${progress.totalFiles} Dateien`
+        : "Dateisatz wird vorbereitet";
+    const minutes = Math.floor(operation.elapsedSeconds / 60);
+    const seconds = String(operation.elapsedSeconds % 60).padStart(2, "0");
+    const activeStep = configuration.thresholds.reduce<number>(
+      (result, threshold, index) => percent >= threshold ? index : result,
+      0
+    );
+    const tip = configuration.tips[Math.floor(operation.elapsedSeconds / 5) % configuration.tips.length];
+
+    const elapsed = current.querySelector<HTMLTimeElement>('[data-operation-value="elapsed"]');
+    if (elapsed) {
+      elapsed.textContent = `${minutes}:${seconds}`;
+      elapsed.dateTime = `PT${operation.elapsedSeconds}S`;
+    }
+    const percentLabel = current.querySelector<HTMLElement>('[data-operation-value="percent"]');
+    if (percentLabel) percentLabel.textContent = `${percent}%`;
+    const stageLabel = current.querySelector<HTMLElement>('[data-operation-value="stage"]');
+    if (stageLabel) stageLabel.textContent = operationStageLabel(progress.stage);
+    const detailLabel = current.querySelector<HTMLElement>('[data-operation-value="detail"]');
+    if (detailLabel) detailLabel.textContent = detail;
+
+    const currentFile = current.querySelector<HTMLElement>('[data-operation-value="file"]');
+    if (currentFile) {
+      const fileName = progress.currentFile ?? "";
+      currentFile.textContent = fileName;
+      currentFile.title = fileName;
+      currentFile.hidden = fileName.length === 0;
+    }
+
+    const meter = current.querySelector<HTMLElement>('[data-operation-value="meter"]');
+    meter?.setAttribute("aria-valuenow", String(percent));
+    const meterBar = current.querySelector<HTMLElement>('[data-operation-value="meter-bar"]');
+    if (meterBar) meterBar.style.width = `${percent}%`;
+
+    current.querySelectorAll<HTMLElement>("[data-operation-step]").forEach((step, index) => {
+      const complete = index < activeStep;
+      step.classList.toggle("is-complete", complete);
+      step.classList.toggle("is-active", index === activeStep);
+      const badge = step.querySelector<HTMLElement>("[data-operation-step-badge]");
+      const nextState = complete ? "complete" : "pending";
+      if (badge && badge.dataset.operationStepBadge !== nextState) {
+        badge.dataset.operationStepBadge = nextState;
+        badge.innerHTML = complete ? icon("check") : String(index + 1);
+      }
+    });
+
+    const tipLabel = current.querySelector<HTMLElement>('[data-operation-value="tip"]');
+    if (tipLabel) tipLabel.textContent = tip;
   }
 
   private renderBusyLayer(): string {
@@ -612,56 +721,7 @@ export class SunoDocumentationApp {
     }
     const progress = operation.progress;
     const percent = operationProgressPercent(operation.kind, progress);
-    const configuration = ({
-      documents: {
-        eyebrow: "Dokument-Manufaktur",
-        title: "Dein Dokumentsatz entsteht",
-        iconName: "file" as const,
-        steps: ["Daten sammeln", "Inhalte rendern", "Dateien schreiben", "Sicher abschließen"],
-        thresholds: [0, 18, 22, 94],
-        tips: [
-          "Jede Datei wird zuerst vollständig aufgebaut und anschließend atomar veröffentlicht.",
-          "Lyrics und Style-Prompt werden im Suno-Ordner als portable Markdown-Dateien abgelegt.",
-          "Vorhandene verwaltete Dokumente werden nicht mit halbfertigen Inhalten überschrieben."
-        ]
-      },
-      hashes: {
-        eyebrow: "SHA-256-Werkstatt",
-        title: "Digitale Fingerabdrücke entstehen",
-        iconName: "hash" as const,
-        steps: ["Dateien finden", "Bytes hashen", "Hashliste schreiben", "Gegenprüfung"],
-        thresholds: [0, 7, 53, 57],
-        tips: [
-          "Große Dateien werden blockweise gelesen – sie müssen dafür nicht komplett in den Arbeitsspeicher.",
-          "Schon ein einziges geändertes Byte erzeugt einen anderen SHA-256-Fingerabdruck.",
-          "Nach dem Schreiben liest die App alle Dateien erneut und prüft die neue Hashliste."
-        ]
-      },
-      verification: {
-        eyebrow: "Integritätsradar",
-        title: "Prüfsummen werden verifiziert",
-        iconName: "shield" as const,
-        steps: ["Hashliste lesen", "Dateien prüfen", "Werte vergleichen", "Ergebnis sichern"],
-        thresholds: [0, 10, 96, 98],
-        tips: [
-          "Die Prüfung berechnet jeden Fingerabdruck erneut und vertraut keinem gespeicherten Dateistatus.",
-          "Zusätzliche, fehlende und veränderte Dateien werden getrennt als Abweichung erkannt.",
-          "Die Verifikation bleibt lokal; keine Datei und kein Hash verlässt den Workspace."
-        ]
-      },
-      finalization: {
-        eyebrow: "Zertifikats-Tresor",
-        title: "Dein finaler Snapshot wird versiegelt",
-        iconName: "certificate" as const,
-        steps: ["Gate bestätigen", "Zertifikat erzeugen", "Snapshot gegenprüfen", "Sicher versiegeln"],
-        thresholds: [0, 13, 58, 92],
-        tips: [
-          "Zertifikat, Evidence-Manifest und Zertifikats-Hashliste werden als zusammengehöriger Satz veröffentlicht.",
-          "Vor dem Abschluss prüft die App die komplette SHA-256-Liste noch einmal von der Festplatte.",
-          "Der finalisierte Snapshot bleibt unverändert; spätere Änderungen beginnen als ausdrücklich angelegte Revision."
-        ]
-      }
-    } as const)[operation.kind];
+    const configuration = OPERATION_PROGRESS_CONFIGURATION[operation.kind];
     const detail = progress.totalBytes > 0
       ? `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
       : progress.totalFiles > 0
@@ -671,17 +731,17 @@ export class SunoDocumentationApp {
     const seconds = String(operation.elapsedSeconds % 60).padStart(2, "0");
     const activeStep = configuration.thresholds.reduce<number>((result, threshold, index) => percent >= threshold ? index : result, 0);
     const tip = configuration.tips[Math.floor(operation.elapsedSeconds / 5) % configuration.tips.length];
-    return `<div class="busy-layer busy-layer--operation" role="status" aria-live="polite" aria-busy="true">
+    return `<div class="busy-layer busy-layer--operation" data-operation-kind="${operation.kind}" role="status" aria-live="polite" aria-busy="true">
       <section class="operation-progress operation-progress--${operation.kind}" aria-label="${escapeHtml(configuration.title)}">
-        <header><div><p class="overline">${escapeHtml(configuration.eyebrow)}</p><h2>${escapeHtml(configuration.title)}</h2></div><time datetime="PT${operation.elapsedSeconds}S">${minutes}:${seconds}</time></header>
+        <header><div><p class="overline">${escapeHtml(configuration.eyebrow)}</p><h2>${escapeHtml(configuration.title)}</h2></div><time data-operation-value="elapsed" datetime="PT${operation.elapsedSeconds}S">${minutes}:${seconds}</time></header>
         <div class="operation-stage">
-          <div class="operation-orbit" aria-hidden="true"><i></i><i></i><i></i><span>${icon(configuration.iconName)}</span><b>${percent}%</b></div>
+          <div class="operation-orbit" aria-hidden="true"><i></i><i></i><i></i><span>${icon(configuration.iconName)}</span><b data-operation-value="percent">${percent}%</b></div>
           <div class="operation-stream" aria-hidden="true"><i>01</i><i>a7</i><i>f3</i><i>9c</i><i>42</i><i>e8</i></div>
         </div>
-        <div class="operation-status"><strong>${escapeHtml(operationStageLabel(progress.stage))}</strong><span>${escapeHtml(detail)}</span>${progress.currentFile ? `<code title="${escapeHtml(progress.currentFile)}">${escapeHtml(progress.currentFile)}</code>` : ""}</div>
-        <div class="operation-meter" role="progressbar" aria-label="Fortschritt" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><i style="width:${percent}%"></i></div>
-        <ol class="operation-steps">${configuration.steps.map((step, index) => `<li class="${index < activeStep ? "is-complete" : index === activeStep ? "is-active" : ""}"><span>${index < activeStep ? icon("check") : index + 1}</span><strong>${escapeHtml(step)}</strong></li>`).join("")}</ol>
-        <div class="operation-tip">${icon("info")}<p><strong>Währenddessen</strong><span>${escapeHtml(tip)}</span></p></div>
+        <div class="operation-status"><strong data-operation-value="stage">${escapeHtml(operationStageLabel(progress.stage))}</strong><span data-operation-value="detail">${escapeHtml(detail)}</span><code data-operation-value="file" title="${escapeHtml(progress.currentFile ?? "")}"${progress.currentFile ? "" : " hidden"}>${escapeHtml(progress.currentFile ?? "")}</code></div>
+        <div class="operation-meter" data-operation-value="meter" role="progressbar" aria-label="Fortschritt" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><i data-operation-value="meter-bar" style="width:${percent}%"></i></div>
+        <ol class="operation-steps">${configuration.steps.map((step, index) => `<li data-operation-step class="${index < activeStep ? "is-complete" : index === activeStep ? "is-active" : ""}"><span data-operation-step-badge="${index < activeStep ? "complete" : "pending"}">${index < activeStep ? icon("check") : index + 1}</span><strong>${escapeHtml(step)}</strong></li>`).join("")}</ol>
+        <div class="operation-tip">${icon("info")}<p><strong>Währenddessen</strong><span data-operation-value="tip">${escapeHtml(tip)}</span></p></div>
         <p class="operation-footnote">${icon("lock")} Lokal und nachvollziehbar · Bitte Workspace und Datenträger verbunden lassen.</p>
       </section>
     </div>`;
