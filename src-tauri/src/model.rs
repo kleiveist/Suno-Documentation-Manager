@@ -50,7 +50,7 @@ pub enum StepStatus {
     NotVerified,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceRole {
     SunoFinalExport,
@@ -72,6 +72,8 @@ pub enum EvidenceRole {
     CodeGeneratedAudioFile,
     ThirdPartySampleFile,
     ThirdPartySampleLicense,
+    SunoTermsRights,
+    ExternalTimestamp,
     Other,
 }
 
@@ -104,6 +106,8 @@ impl EvidenceRole {
             Self::CodeGeneratedAudioFile => "code_generated_audio_file",
             Self::ThirdPartySampleFile => "third_party_sample_file",
             Self::ThirdPartySampleLicense => "third_party_sample_license",
+            Self::SunoTermsRights => "suno_terms_rights",
+            Self::ExternalTimestamp => "external_timestamp",
             Self::Other => "other",
         }
     }
@@ -114,7 +118,8 @@ impl EvidenceRole {
             Self::SunoFinalExport | Self::SunoProjectZip | Self::SunoScreenshot => "02_SUNO",
             Self::SubscriptionPayment
             | Self::ExternalAudioLicense
-            | Self::ThirdPartySampleLicense => "04_LICENSES",
+            | Self::ThirdPartySampleLicense
+            | Self::SunoTermsRights => "04_LICENSES",
             Self::ReleaseArtwork
             | Self::AiArtworkOriginal
             | Self::AiArtworkEdited
@@ -125,7 +130,7 @@ impl EvidenceRole {
             | Self::SourceCodeFile
             | Self::CodeGeneratedAudioFile
             | Self::ThirdPartySampleFile => "02_SUNO",
-            Self::Other => "03_DOCUMENTATION",
+            Self::ExternalTimestamp | Self::Other => "03_DOCUMENTATION",
         }
     }
 
@@ -142,6 +147,10 @@ impl EvidenceRole {
             Self::SubscriptionPayment
             | Self::ExternalAudioLicense
             | Self::ThirdPartySampleLicense => &["pdf", "png", "jpg", "jpeg", "txt", "md"],
+            Self::SunoTermsRights => &["pdf", "txt", "md", "html", "htm", "png", "jpg", "jpeg"],
+            Self::ExternalTimestamp => &[
+                "pdf", "txt", "md", "json", "html", "htm", "png", "jpg", "jpeg",
+            ],
             Self::ReleaseArtwork
             | Self::AiArtworkOriginal
             | Self::AiArtworkEdited
@@ -246,8 +255,14 @@ pub struct TrackFields {
     pub production_end_date: String,
     pub suno_model: String,
     pub suno_project_url: String,
+    pub suno_project_version_id: String,
+    pub suno_final_generation_id: String,
+    pub suno_final_generation_date: String,
+    pub suno_final_generation_time: String,
+    pub suno_download_export_date: String,
     pub suno_plan_at_creation: String,
     pub final_export_date: String,
+    pub instrumental_track: Option<bool>,
     pub lyrics_source: String,
     pub lyrics_text: String,
     pub suno_style_prompt: String,
@@ -270,6 +285,9 @@ pub struct TrackFields {
     pub post_export_editing_performed: Option<bool>,
     pub post_export_editing_details: String,
     pub commercial_use_intended: bool,
+    pub release_filename_difference_confirmed: Option<bool>,
+    pub suno_export_filename_difference_confirmed: Option<bool>,
+    pub suno_terms_evidence_not_available: Option<bool>,
     pub artwork_origin: String,
     pub ai_image_service: String,
     #[serde(default, deserialize_with = "deserialize_string_or_vec")]
@@ -297,8 +315,14 @@ impl Default for TrackFields {
             production_end_date: String::new(),
             suno_model: String::new(),
             suno_project_url: String::new(),
+            suno_project_version_id: String::new(),
+            suno_final_generation_id: String::new(),
+            suno_final_generation_date: String::new(),
+            suno_final_generation_time: String::new(),
+            suno_download_export_date: String::new(),
             suno_plan_at_creation: String::new(),
             final_export_date: String::new(),
+            instrumental_track: None,
             lyrics_source: String::new(),
             lyrics_text: String::new(),
             suno_style_prompt: String::new(),
@@ -320,6 +344,9 @@ impl Default for TrackFields {
             post_export_editing_performed: None,
             post_export_editing_details: String::new(),
             commercial_use_intended: true,
+            release_filename_difference_confirmed: None,
+            suno_export_filename_difference_confirmed: None,
+            suno_terms_evidence_not_available: None,
             artwork_origin: String::new(),
             ai_image_service: String::new(),
             human_artwork_process_operations: Vec::new(),
@@ -451,8 +478,14 @@ pub struct TrackPatch {
     pub production_end_date: Option<String>,
     pub suno_model: Option<String>,
     pub suno_project_url: Option<String>,
+    pub suno_project_version_id: Option<String>,
+    pub suno_final_generation_id: Option<String>,
+    pub suno_final_generation_date: Option<String>,
+    pub suno_final_generation_time: Option<String>,
+    pub suno_download_export_date: Option<String>,
     pub suno_plan_at_creation: Option<String>,
     pub final_export_date: Option<String>,
+    pub instrumental_track: Option<bool>,
     pub lyrics_source: Option<String>,
     pub lyrics_text: Option<String>,
     pub suno_style_prompt: Option<String>,
@@ -475,6 +508,9 @@ pub struct TrackPatch {
     pub post_export_editing_performed: Option<bool>,
     pub post_export_editing_details: Option<String>,
     pub commercial_use_intended: Option<bool>,
+    pub release_filename_difference_confirmed: Option<bool>,
+    pub suno_export_filename_difference_confirmed: Option<bool>,
+    pub suno_terms_evidence_not_available: Option<bool>,
     pub artwork_origin: Option<String>,
     pub ai_image_service: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_string_or_vec")]
@@ -520,6 +556,26 @@ pub struct EvidenceItem {
     pub generator_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_disclosure_text: Option<String>,
+    #[serde(default)]
+    pub metadata: EvidenceMetadata,
+}
+
+/// User-supplied factual metadata for locally archived service-terms or timestamp evidence.
+/// Empty values mean "not recorded"; SunoDM never fetches or infers these fields.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EvidenceMetadata {
+    /// Original local source name captured during import (system-derived metadata).
+    pub original_file_name: String,
+    pub document_title: String,
+    pub provider: String,
+    pub source_url: String,
+    pub retrieval_date: String,
+    pub effective_date: String,
+    pub factual_note: String,
+    pub external_timestamp: String,
+    pub referenced_hash: String,
+    pub referenced_artifact: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

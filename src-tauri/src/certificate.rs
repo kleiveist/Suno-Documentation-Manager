@@ -2,8 +2,8 @@ use crate::certificate_pdf::{self, CertificatePdfSnapshot};
 use crate::error::{AppError, Result};
 use crate::integrity::HASH_FILE;
 use crate::model::{
-    BlockingDeviation, EvidenceItem, EvidenceProvenance, Profile, StepState, StepStatus,
-    TrackRecord,
+    BlockingDeviation, EvidenceItem, EvidenceMetadata, EvidenceProvenance, EvidenceRole, Profile,
+    StepState, StepStatus, TrackRecord,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
@@ -20,7 +20,7 @@ pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md"
 pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "2.0";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "3.0";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +39,7 @@ struct ManifestEvidence<'a> {
     derived_from_evidence_id: Option<&'a str>,
     generator_version: Option<&'a str>,
     generated_disclosure_text: Option<&'a str>,
+    metadata: &'a EvidenceMetadata,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -126,6 +127,7 @@ fn generate_impl(
         .filter(|item| item.verified && item.sha256.is_some() && item.verification_error.is_none())
         .collect::<Vec<_>>();
     evidence_values.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let archived_revisions = archived_revision_references(track_root)?;
     let evidence_manifest = evidence_values
         .iter()
         .map(|item| ManifestEvidence {
@@ -143,10 +145,11 @@ fn generate_impl(
             derived_from_evidence_id: item.derived_from_evidence_id.as_deref(),
             generator_version: item.generator_version.as_deref(),
             generated_disclosure_text: item.generated_disclosure_text.as_deref(),
+            metadata: &item.metadata,
         })
         .collect::<Vec<_>>();
     let manifest = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "track": {
             "id": track.id,
             "title": track.fields.title,
@@ -160,6 +163,8 @@ fn generate_impl(
             "suno_profile_name": profile.suno_profile_name,
             "suno_handle": profile.suno_handle,
         },
+        "documented_facts": track.fields,
+        "profile_snapshot": profile,
         "workflow": {
             "id": track.workflow_id,
             "version": track.workflow_version,
@@ -177,8 +182,31 @@ fn generate_impl(
             "format_version": CERTIFICATE_FORMAT_VERSION,
             "status": "DOCUMENTATION COMPLETE",
             "sha256sums_sha256": hash_manifest_sha,
+            "statement_scope": {
+                "confirms": [
+                    "recorded user inputs", "finalized snapshot", "registered local evidence",
+                    "recorded provenance", "SHA-256 values", "configured workflow checks"
+                ],
+                "does_not_confirm": [
+                    "authorship", "rights ownership", "non-infringement", "legality",
+                    "license validity", "judicial evidentiary weight", "statutory compliance",
+                    "governmental certification"
+                ]
+            },
+        },
+        "origin_labels": {
+            "user_confirmed_fact": "Values explicitly entered or confirmed by the user",
+            "evidence_derived_metadata": "Metadata read from or captured with a local evidence import",
+            "system_verification": "Local structural, hash, consistency, and configured workflow checks"
+        },
+        "system_verification": {
+            "subscription_final_generation_coverage": crate::workflow::subscription_generation_coverage(track, evidence),
+            "release_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav),
+            "suno_export_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport),
+            "external_timestamp_evidence_exists": evidence.iter().any(|item| item.role == EvidenceRole::ExternalTimestamp && item.verified),
         },
         "deviations": deviations,
+        "revision_archives": &archived_revisions,
     });
     let mut manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
     manifest_bytes.push(b'\n');
@@ -214,13 +242,93 @@ fn generate_impl(
         .iter()
         .filter(|d| d.blocking && !d.resolved)
         .count();
+    let release_file_name =
+        crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav)
+            .unwrap_or("Not recorded");
+    let suno_export_file_name =
+        crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport)
+            .unwrap_or("Not recorded");
+    let generation_coverage =
+        match crate::workflow::subscription_generation_coverage(track, evidence) {
+            crate::workflow::CoverageStatus::Yes => "YES",
+            crate::workflow::CoverageStatus::No => "NO",
+            crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
+        };
+    let lyrics = if track.fields.instrumental_track == Some(true) {
+        "N/A – instrumental track"
+    } else if track.fields.lyrics_text.trim().is_empty() {
+        "Not recorded"
+    } else {
+        track.fields.lyrics_text.as_str()
+    };
+    let evidence_register_md = evidence_values
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            format!(
+                "### {}. {}\n\n- Evidence ID: `{}`\n- Original filename [Evidence-derived metadata]: `{}`\n- Managed filename: `{}`\n- Role: `{}`\n- Provenance: `{}`\n- Relative path: `{}`\n- Size: {} bytes\n- SHA-256: `{}`\n- Imported at: `{}`\n- Document title: {}\n- Provider/source: {}\n- Source URL: {}\n- Retrieval date: {}\n- Effective date: {}\n- Factual note: {}\n- External timestamp: {}\n- Referenced hash: `{}`\n- Referenced artifact: {}\n- Source global evidence ID: `{}`\n- Derived from evidence ID: `{}`\n- Generator version: `{}`\n\n",
+                index + 1,
+                item.role.as_str(),
+                item.id,
+                documented(&item.metadata.original_file_name),
+                item.file_name,
+                item.role.as_str(),
+                item.provenance.as_str(),
+                item.relative_path,
+                item.size_bytes,
+                item.sha256.as_deref().unwrap_or("Not recorded"),
+                item.imported_at,
+                documented(&item.metadata.document_title),
+                documented(&item.metadata.provider),
+                documented(&item.metadata.source_url),
+                documented(&item.metadata.retrieval_date),
+                documented(&item.metadata.effective_date),
+                documented(&item.metadata.factual_note),
+                documented(&item.metadata.external_timestamp),
+                documented(&item.metadata.referenced_hash),
+                documented(&item.metadata.referenced_artifact),
+                item.source_global_evidence_id.as_deref().unwrap_or("N/A"),
+                item.derived_from_evidence_id.as_deref().unwrap_or("N/A"),
+                item.generator_version.as_deref().unwrap_or("N/A"),
+            )
+        })
+        .collect::<String>();
+    let revision_archives = if archived_revisions.is_empty() {
+        "None recorded".to_owned()
+    } else {
+        archived_revisions.join(", ")
+    };
     let certificate = format!(
-        "# Track Documentation Completion Certificate\n\n- Certificate ID: `{certificate_id}`\n- Certificate format version: `{CERTIFICATE_FORMAT_VERSION}`\n- Track: {}\n- Artist: {}\n- Workflow ID: `{}`\n- Workflow version: `{}`\n- Application version: `{}`\n- Finalization timestamp: `{finalized_at}`\n- Evidence file count: {}\n- Release WAV SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Final result: **DOCUMENTATION COMPLETE**\n\n## Mandatory steps completed\n\n{completed_steps}\n## N/A steps with reasons\n\n{}\n## Scope and disclaimer\n\nThis certificate confirms completion of the configured\ndocumentation workflow and integrity checks.\n\nIt does not constitute governmental certification,\nlegal advice, or an independent determination of\ncopyright ownership or legal compliance.\n",
-        track.fields.title,
-        profile.artist_name,
+        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Status: **DOCUMENTATION COMPLETE**\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n\n## C. Final Suno Generation\n\n- Project URL [User-confirmed fact]: {}\n- Project/version ID [User-confirmed fact]: {}\n- Final generation ID / project version [User-confirmed fact]: {}\n- Final generation date [User-confirmed fact]: {}\n- Final generation time [User-confirmed fact]: {}\n- Download/export date [User-confirmed fact]: {}\n- Model [User-confirmed fact]: {}\n- Plan [User-confirmed fact]: {}\n\n## D. Source provenance\n\n- External audio uploaded: {}\n- Own audio uploaded: {}\n- Code-based generation: {}\n- Third-party samples uploaded: {}\n\n## E. Human contribution\n\n- Lyrics: {lyrics}\n- Lyrics source: {}\n- Confirmed human editing: {}\n- Confirmed post-export editing: {}\n\n## F. AI Usage\n\n- Suno style prompt: {}\n- Artwork origin: {}\n- AI image service: {}\n\n## G. Artwork content checks\n\n- Real person: {}\n- Real event: {}\n- Trademark/logo: {}\n\n## H. License and rights evidence\n\n- Selected subscription evidence covers the recorded final-generation date: **{generation_coverage}**\n- Terms evidence: {}\n- Terms evidence not available [User-confirmed fact]: {}\n- External timestamp evidence: {}\n\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## J. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## Certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, and **System verification**.\n",
+        env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
-        env!("CARGO_PKG_VERSION"),
+        track.fields.title,
+        profile.artist_name,
+        documented(&track.fields.suno_project_url),
+        documented(&track.fields.suno_project_version_id),
+        documented(&track.fields.suno_final_generation_id),
+        documented(&track.fields.suno_final_generation_date),
+        documented(&track.fields.suno_final_generation_time),
+        documented(&track.fields.suno_download_export_date),
+        documented(&track.fields.suno_model),
+        documented(&track.fields.suno_plan_at_creation),
+        recorded_bool(track.fields.external_audio_uploaded),
+        recorded_bool(track.fields.own_audio_uploaded),
+        recorded_bool(track.fields.code_based_generation),
+        recorded_bool(track.fields.third_party_samples_uploaded),
+        documented(&track.fields.lyrics_source),
+        documented(&track.fields.human_editing_details),
+        documented(&track.fields.post_export_editing_details),
+        documented(&track.fields.suno_style_prompt),
+        documented(&track.fields.artwork_origin),
+        documented(&track.fields.ai_image_service),
+        recorded_bool(track.fields.depicts_real_person),
+        recorded_bool(track.fields.depicts_real_event),
+        recorded_bool(track.fields.contains_trademark),
+        if evidence.iter().any(|item| item.role == EvidenceRole::SunoTermsRights && item.verified) { "Exists" } else { "Does not exist" },
+        recorded_bool(track.fields.suno_terms_evidence_not_available),
+        if evidence.iter().any(|item| item.role == EvidenceRole::ExternalTimestamp && item.verified) { "Exists" } else { "Does not exist" },
         evidence_values.len(),
         if na_steps.is_empty() { "- None\n" } else { &na_steps }
     );
@@ -238,6 +346,7 @@ fn generate_impl(
         steps,
         evidence: &evidence_values,
         deviations,
+        revision_references: &archived_revisions,
         certificate_id,
         finalized_at,
         certificate_version: CERTIFICATE_FORMAT_VERSION,
@@ -268,6 +377,46 @@ fn generate_impl(
         failure.and_then(CertificateGenerationFailure::publication_failure),
     )?;
     Ok(())
+}
+
+fn archived_revision_references(track_root: &Path) -> Result<Vec<String>> {
+    let relative_root = Path::new(".archive/revisions");
+    let revisions_root = contained_path(track_root, relative_root, false)?;
+    if !revisions_root.exists() {
+        return Ok(Vec::new());
+    }
+    if !revisions_root.is_dir() {
+        return Err(AppError::Data(
+            "The managed revision archive path is not a directory.".into(),
+        ));
+    }
+
+    let mut references = Vec::new();
+    for entry in
+        fs::read_dir(&revisions_root).map_err(|error| AppError::io(&revisions_root, error))?
+    {
+        let entry = entry.map_err(|error| AppError::io(&revisions_root, error))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| AppError::io(entry.path(), error))?;
+        if file_type.is_symlink() {
+            return Err(AppError::Symlink(entry.path().display().to_string()));
+        }
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| AppError::Data("A revision archive ID is not valid UTF-8.".into()))?;
+        let relative = relative_root.join(&name);
+        let metadata = contained_path(track_root, &relative.join("revision.json"), false)?;
+        if metadata.is_file() {
+            references.push(portable_relative(&relative));
+        }
+    }
+    references.sort();
+    Ok(references)
 }
 
 pub fn verify(track_root: &Path) -> Result<()> {
@@ -601,6 +750,22 @@ fn parse_certificate_hashes(content: &str) -> Result<BTreeMap<String, String>> {
     Ok(result)
 }
 
+fn documented(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "Not recorded"
+    } else {
+        value
+    }
+}
+
+fn recorded_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "Yes",
+        Some(false) => "No",
+        None => "Not recorded",
+    }
+}
+
 fn certificate_format_requires_pdf(
     manifest_path: &Path,
     hashes: &BTreeMap<String, String>,
@@ -612,10 +777,10 @@ fn certificate_format_requires_pdf(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(CERTIFICATE_FORMAT_VERSION) => {
+        Some(CERTIFICATE_FORMAT_VERSION | "2.0") => {
             if !hashes.contains_key(PDF_FILE) {
                 return Err(AppError::Validation(
-                    "Certificate format 2.0 requires the root-level technical PDF hash.".into(),
+                    "This certificate format requires the root-level technical PDF hash.".into(),
                 ));
             }
             Ok(true)

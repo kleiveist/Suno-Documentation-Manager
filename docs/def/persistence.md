@@ -83,7 +83,7 @@ Large media, PDFs, archives, and generated portable artifacts remain files. SQLi
 
 ## Schema and migrations
 
-The current SQLite schema version is `2`, stored in `PRAGMA user_version`. Schema version 2 adds these columns to each track-evidence record:
+The current SQLite schema version is `3`, stored in `PRAGMA user_version`. Schema version 2 added evidence provenance and disclosure-lineage columns. Schema version 3 adds `metadata_json` to each track-evidence record for original import filename and role-specific local terms/timestamp metadata. Existing rows receive an empty object; no historical value is invented.
 
 | Column | Purpose |
 | --- | --- |
@@ -281,5 +281,6 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 | 2026-08-14 | Defined workspace-index ownership, additive JSON compatibility, and index-loss behavior for track library placement. | Project team |
 | 2026-08-14 | Defined per-invoice cadence, single-file registration, materialized coverage dates, portability, and the no-extrapolation boundary. | Project team |
 | 2026-08-13 | Documented schema version 2, evidence provenance and disclosure lineage, recoverable legacy removal, and marker-based finalization recovery. | Project team |
+| 2026-08-16 | Documented schema version 3 and conservative empty metadata migration for terms/timestamp and original-filename facts. | Project team |
 | 2026-08-13 | Aligned scan, revision archive, and interrupted-operation recovery behavior with version 0.1. | Project team |
 | 2026-08-13 | Defined SQLite ownership, portable-file authority, and recovery behavior. | Project team |

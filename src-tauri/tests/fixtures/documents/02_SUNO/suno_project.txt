@@ -1,12 +1,18 @@
 # suno-documentation-manager:template-v1
-Template version: 1.4
+Template version: 1.5
 Track: Golden Signal
 Suno project URL: https://suno.example/projects/golden-signal
+Suno project/version ID: project-version-golden
+Final generation ID / project version: generation-golden
+Final generation date: 2026-02-05
+Final generation time: 14:35
+Download/export date: 2026-02-06
 Suno model: v4.5
 Suno plan at creation: Pro
 Production start: 2026-02-03
 Production end: 2026-02-05
 Final export date: 2026-02-06
+Actual Suno export filename: Not recorded
 External audio uploaded: No
 Own audio uploaded: Yes
 Code-based generation: No

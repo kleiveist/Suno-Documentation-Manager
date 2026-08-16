@@ -1,5 +1,5 @@
 <!-- suno-documentation-manager:template-v1 -->
-# Suno account and plan snapshot
+# Suno account, subscription, and archived terms evidence
 
 - Artist: Fixture Artist
 - Suno profile: Fixture Profile
@@ -7,5 +7,12 @@
 - Plan at creation: Pro
 - Workspace subscription start date: 2026-01-15
 - Commercial use intended: Yes
+- Final generation date: 2026-02-05
+- Selected subscription evidence covers the recorded final-generation date: NOT VERIFIED
+- Terms evidence not available: Yes
 
-This page records the supplied account and plan facts. It makes no legal determination.
+## Archived service-terms evidence
+
+- No evidence files registered
+
+This page records supplied account facts and locally archived evidence only. It does not confirm rights ownership, license validity, legality, or non-infringement.

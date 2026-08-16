@@ -145,7 +145,7 @@ The two top-level sections remain visible when their filtered result is empty.
 
 The typed library placement and workspace-relative track path are stored in `.suno-doc/workspace.sqlite`. Existing track records whose JSON predates the placement field deserialize as `single`. The physical parent is authoritative when a managed track is found below `Singles/` or a named album folder.
 
-This additive JSON field does not change the relational SQLite layout, so the schema remains version `2` and no relational migration runs. Loading and subsequently saving an older record materializes the default in its JSON.
+This additive JSON field did not change the relational SQLite layout or require its own migration. The current workspace schema is version `3` because the later evidence-metadata extension added a relational column; loading and subsequently saving an older track record still materializes the library default in its JSON.
 
 New managed tracks contain `.summary/track.json`, which stores only the stable track ID. `.summary/` is already excluded from the track integrity set and certificate file set. The marker lets reopening or scanning reconnect a managed track after its track folder or album parent was renamed outside the application. It does not alter evidence, generated documentation, hashes, or certificate bytes.
 

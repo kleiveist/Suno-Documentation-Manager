@@ -9,7 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 pub const DATABASE_RELATIVE_PATH: &str = ".suno-doc/workspace.sqlite";
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone)]
 pub struct Persistence {
@@ -233,15 +233,16 @@ impl Persistence {
 
     pub fn save_evidence(&self, track_id: &str, evidence: &EvidenceItem) -> Result<()> {
         let result = self.open()?.execute(
-            "INSERT INTO evidence(id,track_id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+            "INSERT INTO evidence(id,track_id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text,metadata_json)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(id) DO UPDATE SET role=excluded.role,file_name=excluded.file_name,
              relative_path=excluded.relative_path,sha256=excluded.sha256,size_bytes=excluded.size_bytes,
              imported_at=excluded.imported_at,
              verified=excluded.verified,verification_error=excluded.verification_error,
              source_global_evidence_id=excluded.source_global_evidence_id,coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,
              provenance=excluded.provenance,derived_from_evidence_id=excluded.derived_from_evidence_id,
-             generator_version=excluded.generator_version,generated_disclosure_text=excluded.generated_disclosure_text",
+             generator_version=excluded.generator_version,generated_disclosure_text=excluded.generated_disclosure_text,
+             metadata_json=excluded.metadata_json",
             params![
                 evidence.id,
                 track_id,
@@ -259,7 +260,8 @@ impl Persistence {
                 evidence.provenance.as_str(),
                 evidence.derived_from_evidence_id,
                 evidence.generator_version,
-                evidence.generated_disclosure_text
+                evidence.generated_disclosure_text,
+                serde_json::to_string(&evidence.metadata)?
             ],
         );
         if let Err(error) = result {
@@ -285,7 +287,7 @@ impl Persistence {
     ) -> Result<Option<EvidenceItem>> {
         self.open()?
             .query_row(
-                "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text
+                "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text,metadata_json
                  FROM evidence WHERE track_id=?1 AND relative_path=?2",
                 params![track_id, relative_path],
                 evidence_from_row,
@@ -297,7 +299,7 @@ impl Persistence {
     pub fn evidence(&self, track_id: &str) -> Result<Vec<EvidenceItem>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text
+            "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text,metadata_json
              FROM evidence WHERE track_id=?1 ORDER BY imported_at,id",
         )?;
         let rows = statement.query_map([track_id], evidence_from_row)?;
@@ -311,7 +313,7 @@ impl Persistence {
     pub fn evidence_item(&self, track_id: &str, id: &str) -> Result<EvidenceItem> {
         self.open()?
             .query_row(
-                "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text
+                "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,source_global_evidence_id,coverage_start,coverage_end,provenance,derived_from_evidence_id,generator_version,generated_disclosure_text,metadata_json
                  FROM evidence WHERE track_id=?1 AND id=?2",
                 params![track_id, id],
                 evidence_from_row,
@@ -464,6 +466,7 @@ impl Persistence {
                     derived_from_evidence_id: None,
                     generator_version: None,
                     generated_disclosure_text: None,
+                    metadata: Default::default(),
                 },
                 notes: row.get(11)?,
             })
@@ -553,6 +556,12 @@ pub fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version=2;",
         )?;
     }
+    if version < 3 {
+        transaction.execute_batch(
+            "ALTER TABLE evidence ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+             PRAGMA user_version=3;",
+        )?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -575,6 +584,13 @@ fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceItem> 
         derived_from_evidence_id: row.get(13)?,
         generator_version: row.get(14)?,
         generated_disclosure_text: row.get(15)?,
+        metadata: serde_json::from_str(&row.get::<_, String>(16)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                16,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
     })
 }
 
@@ -727,7 +743,12 @@ mod tests {
             derived_from_evidence_id: Some("original-artwork".into()),
             generator_version: Some("local-disclosure-v1".into()),
             generated_disclosure_text: Some("AI-assisted".into()),
+            metadata: Default::default(),
         };
+        evidence.metadata.document_title = "Archived Suno Terms".into();
+        evidence.metadata.provider = "Suno".into();
+        evidence.metadata.source_url = "https://suno.example/terms".into();
+        evidence.metadata.retrieval_date = "2026-08-01".into();
 
         persistence
             .save_evidence("track-1", &evidence)
@@ -748,6 +769,7 @@ mod tests {
             loaded.generated_disclosure_text.as_deref(),
             Some("AI-assisted")
         );
+        assert_eq!(loaded.metadata, evidence.metadata);
 
         evidence.provenance = EvidenceProvenance::GlobalCopy;
         evidence.derived_from_evidence_id = None;
@@ -778,6 +800,45 @@ mod tests {
             .expect_err("duplicate relative path must be controlled");
         assert!(
             matches!(error, AppError::Validation(message) if message.contains("Upload-Button"))
+        );
+    }
+
+    #[test]
+    fn sqlite_v2_migration_adds_empty_evidence_metadata_without_inventing_values() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE tracks(id TEXT PRIMARY KEY,legacy INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE evidence(
+                   id TEXT PRIMARY KEY,track_id TEXT NOT NULL,role TEXT NOT NULL,file_name TEXT NOT NULL,
+                   relative_path TEXT NOT NULL,sha256 TEXT,size_bytes INTEGER NOT NULL,imported_at TEXT NOT NULL,
+                   verified INTEGER NOT NULL,verification_error TEXT,source_global_evidence_id TEXT,
+                   coverage_start TEXT,coverage_end TEXT,provenance TEXT NOT NULL DEFAULT 'managed_copy',
+                   derived_from_evidence_id TEXT,generator_version TEXT,generated_disclosure_text TEXT,
+                   UNIQUE(track_id,relative_path)
+                 );
+                 INSERT INTO tracks(id,legacy) VALUES('track-1',0);
+                 INSERT INTO evidence(id,track_id,role,file_name,relative_path,size_bytes,imported_at,verified)
+                 VALUES('evidence-1','track-1','other','old.txt','03_DOCUMENTATION/old.txt',3,'2026-01-01T00:00:00Z',1);
+                 PRAGMA user_version=2;",
+            )
+            .expect("v2 fixture");
+        migrate(&mut connection).expect("v2 to v3 migration");
+        let value: String = connection
+            .query_row(
+                "SELECT metadata_json FROM evidence WHERE id='evidence-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata JSON");
+        let metadata: crate::model::EvidenceMetadata =
+            serde_json::from_str(&value).expect("metadata object");
+        assert_eq!(metadata, crate::model::EvidenceMetadata::default());
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
         );
     }
 

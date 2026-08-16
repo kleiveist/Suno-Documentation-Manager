@@ -38,9 +38,9 @@ This document defines the facts, evidence roles, generated documents, folder str
 | Entity | Meaning | Authority after finalization |
 | --- | --- | --- |
 | Workspace profile | Reusable artist, Suno, subscription, commercial-intent, and artwork-policy defaults | Workspace SQLite database |
-| Track | Identity, dates, Suno facts, human-work declarations, release intent, and overall lifecycle status | Track snapshot documents plus index metadata |
+| Track | Identity, dates, concrete final Suno generation, human-work declarations, release intent, filename confirmations, and overall lifecycle status | Track snapshot documents plus index metadata |
 | Workflow evaluation | Ten step states, applicability, reasons, missing requirements, and blocking deviations | Manifest and certificate for the finalized revision |
-| Evidence record | Role, relative destination, media type, size, SHA-256, import time, and provenance note | Evidence file plus manifest entry |
+| Evidence record | Role, original and managed names, relative destination, media type, size, SHA-256, import time, provenance, lineage, and role-specific factual metadata | Evidence file plus manifest entry |
 | Generated document | A versioned deterministic rendering of confirmed values and evidence references | Generated file in the track folder |
 | Integrity snapshot | Root-relative file set and SHA-256 digest for each included file | `03_DOCUMENTATION/SHA256SUMS.txt` |
 | Certificate snapshot | Final gate result, workflow/app versions, selected hashes, and disclaimer | Files below `06_CERTIFICATE/` |
@@ -71,7 +71,7 @@ At minimum, the workflow can record the following confirmed facts:
 
 - track title;
 - production start and production end dates;
-- Suno model and project URL, with the model retained as unrestricted text;
+- Suno model, project URL, project/version ID, final generation ID, final-generation date and optional time, and download/export date; all are user-confirmed local facts and are never fetched;
 - Suno plan at creation, retained as unrestricted historical text;
 - final export date;
 - lyrics source;
@@ -84,6 +84,10 @@ At minimum, the workflow can record the following confirmed facts:
 - the specific confirmed human editing operations;
 - applicable human artwork process operations, editable process notes, and selected human changes to AI-assisted artwork; and
 - whether commercial use is intended.
+
+`instrumentalTrack` is an explicit answer. A positive answer is inconsistent with a non-instrumental lyrics source, retained lyrics text, or selected human work `Lyrics`; native finalization blocks until the user corrects the facts. It never silently changes them. A confirmed clean instrumental renders `Lyrics: N/A – instrumental track`.
+
+The original local filenames captured at release-audio and Suno-export import are evidence-derived metadata. A normalized mismatch against the documented title is shown before finalization and needs explicit confirmation; the title is never derived from either filename.
 
 Confirmed human-work labels are selected from the guided choices for arrangement, lyrics, timing/cuts, sound design, EQ, mixing, mastering, and loudness adjustment. Post-export work uses its own guided set for editing/cuts, arrangement, timing correction, sound design, EQ, mixing, mastering, loudness adjustment, noise reduction, and dynamics processing. Release notes likewise use guided release-version choices. A label appears only when the user selects it; the generator does not add generic arrangement, mixing, mastering, or release claims by default.
 
@@ -154,6 +158,8 @@ Folder generation creates directories and managed text documents only when appro
 | AI artwork edited | `05_ARTWORK/` | Required only when that production stage occurred |
 | Human-edited artwork | `05_ARTWORK/` | Required only when that production stage occurred |
 | Final artwork | `05_ARTWORK/` | The authoritative JPG/PNG downloaded from Suno, or the required locally disclosed derivative |
+| Archived Suno terms/rights | `04_LICENSES/` | Local PDF/TXT/Markdown/HTML/PNG/JPEG plus title, provider, source URL, retrieval date, optional effective date and factual note |
+| External timestamp evidence | `03_DOCUMENTATION/` | Optional local evidence plus provider/issuer, timestamp, referenced hash, and referenced artifact; no claim of legal qualification |
 | Other evidence | Role-selected contained destination | Optional; must have a factual description |
 
 `release_wav` and `final_artwork` are singular authoritative roles in version 0.1. To replace either asset, use the explicit upload control attached to the current evidence. The app reuses that evidence record, archives the previous managed bytes, and never chooses silently between competing final assets.
@@ -202,7 +208,7 @@ This is a project transparency policy. The product does not label it as a univer
 
 ## Generated documents
 
-Template version `1.4` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and evidence metadata. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
+Template version `1.5` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and complete evidence metadata. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
 
 Generated headings, explanatory prose, and guided-choice values are always English. German UI labels are mapped to their stable English values before rendering. An unknown legacy selection is represented by an English reclassification notice rather than copying potentially non-English unrestricted text into a generated choice field. User-authored factual content that must remain exact—such as lyrics, the Suno style prompt, a disclosure text, or an individually required factual note—is preserved verbatim and is not treated as generated prose.
 
@@ -242,14 +248,14 @@ Calculation and verification publish the actual processed byte and file counts f
 
 After the finalization gate passes, the product writes:
 
-- root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, a human-readable A4 technical rendering of the finalized structured snapshot with track/source data, authoritative workflow results, evidence provenance and full hashes, and integrity anchors;
-- `DOCUMENTATION_CERTIFICATE.md` with the certificate ID, track, artist, workflow ID and version, application version, finalization timestamp, mandatory-step result, justified N/A steps, evidence count, selected hashes, blocking-deviation result, and `DOCUMENTATION COMPLETE` status;
-- `EVIDENCE_MANIFEST.json` with `schema_version`, track, artist, workflow, finalization, steps, evidence, hashes, and certificate objects; each verified evidence object includes provenance plus applicable source, coverage, and generated-disclosure lineage fields; and
+- root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, certificate format `3.0`, with A–J sections for identity, final Suno generation, all source branches, selected human contribution, AI usage, artwork checks, license/terms/coverage facts, the full evidence register, integrity anchors, and any locally recorded earlier revision-archive references;
+- `DOCUMENTATION_CERTIFICATE.md` with the same factual scope, evidence register, origin labels, and explicit non-legal boundary;
+- `EVIDENCE_MANIFEST.json` schema `2`, including the complete `documentedFacts` and `profileSnapshot`, origin-label definitions, system verification results, statement scope, and full evidence metadata/lineage; and
 - `CERTIFICATE_SHA256.txt` covering the main hash list, evidence manifest, certificate document, and root-level PDF, but never itself.
 
-All four outputs are staged and verified as one finalization transaction. The PDF hash is external to the PDF to avoid a circular self-hash. Publication, rollback, crash recovery, and revision archival carry the root PDF together with the certificate directory, and an occupied root-PDF destination is never silently replaced.
+All four outputs are staged and verified as one finalization transaction. The PDF hash is external to the PDF to avoid a circular self-hash. Its trailer identifiers are derived deterministically from the certificate ID, so identical normalized certificate snapshots serialize to identical bytes. Publication, rollback, crash recovery, and revision archival carry the root PDF together with the certificate directory, and an occupied root-PDF destination is never silently replaced.
 
-The certificate ends with this meaning: it confirms completion of the configured documentation workflow and integrity checks, but is not governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.
+The manifest, Markdown, and PDF share the sorted relative references of any earlier `.archive/revisions/<revision-id>/` entries that contain managed `revision.json` metadata. The certificate confirms recorded inputs, the finalized snapshot, local evidence and provenance, calculated hashes, and configured workflow checks. It expressly does not confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification. Facts are labeled where useful as `User-confirmed fact`, `Evidence-derived metadata`, or `System verification`.
 
 After authoritative native commit, the UI may present a reusable certificate summary from the returned finalized `TrackDetail`. The summary does not create or reinterpret certificate data. It remains available in Finalize and the Certificate section only while the snapshot has a valid certificate ID, and links to the complete in-app certificate presentation.
 
@@ -302,6 +308,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 | 2026-08-16 | Replaced Source/right and lyrics-source dropdowns with mutually exclusive guided buttons without changing stored canonical values. | Project team |
 | 2026-08-16 | Required the generated WAV/MP3 alongside source code for code-based generation and advanced generated documents to template version 1.3. | Project team |
 | 2026-08-15 | Defined the post-commit reusable certificate summary as a presentation of authoritative finalized track data. | Project team |
+| 2026-08-16 | Added final-generation identity, instrumental and filename consistency, subscription-date coverage, local terms/timestamp evidence, document template 1.5, manifest schema 2, and certificate format 3.0. | Project team |
 | 2026-08-15 | Defined non-persistent live progress for deterministic document writes and native integrity reads. | Project team |
 | 2026-08-15 | Added guided Source classifications, conditional source-code evidence, English choice rendering, legacy reclassification, and template version 1.2. | Project team |
 | 2026-08-14 | Defined new-track dialog retention/dismissal behavior and clarified supported subscription-evidence formats. | Project team |

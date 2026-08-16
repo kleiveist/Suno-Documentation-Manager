@@ -105,6 +105,7 @@ pub fn generate_disclosure(
         derived_from_evidence_id: Some(source.id.clone()),
         generator_version: Some(DISCLOSURE_GENERATOR_VERSION.into()),
         generated_disclosure_text: Some(text.to_owned()),
+        metadata: Default::default(),
     })
 }
 
@@ -216,6 +217,7 @@ mod tests {
             derived_from_evidence_id: None,
             generator_version: None,
             generated_disclosure_text: None,
+            metadata: Default::default(),
         };
 
         let generated = generate_disclosure(&track_root, "Test Track", &source, "AI-assisted")

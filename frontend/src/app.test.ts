@@ -261,21 +261,21 @@ describe("navigation", () => {
         workflowVersion: "1.0",
         certificate: { valid: true, workflowVersion: "1.0" }
       },
-      { id: "suno-track", version: "1.2" }
+      { id: "suno-track", version: "1.3" }
     );
 
     expect(presentation).toEqual({
-      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.2",
+      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.3",
       action: "re-evaluate-track"
     });
     expect(workflowUpgradePresentation(
       {
         status: "FINALIZED",
         workflowId: "suno-track",
-        workflowVersion: "1.2",
-        certificate: { valid: true, workflowVersion: "1.2" }
+        workflowVersion: "1.3",
+        certificate: { valid: true, workflowVersion: "1.3" }
       },
-      { id: "suno-track", version: "1.2" }
+      { id: "suno-track", version: "1.3" }
     )).toBeNull();
   });
 });

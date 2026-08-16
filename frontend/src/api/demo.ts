@@ -82,9 +82,14 @@ function makeTrack(
     productionEndDate: complete ? "2026-07-24" : "",
     sunoModel: complete ? "v4.5" : "",
     sunoProjectUrl: complete ? "https://suno.com/song/demo-project" : "",
+    sunoProjectVersionId: complete ? "demo-project-version" : "",
+    sunoFinalGenerationId: complete ? "demo-generation" : "",
+    sunoFinalGenerationDate: complete ? "2026-07-24" : "",
+    sunoDownloadExportDate: complete ? "2026-07-24" : "",
     sunoPlanAtCreation: "Premier",
     finalExportDate: complete ? "2026-07-24" : "",
     lyricsSource: complete ? ("human" as const) : ("" as const),
+    instrumentalTrack: complete ? false : null,
     lyricsText: complete ? "Eigene Lyrics – im Track-Dokument vollständig gespeichert." : "",
     sunoStylePrompt: complete ? "cinematic synthwave, driving bass, wide vocal" : "",
     externalAudioUploaded: false,
@@ -140,7 +145,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.4",
+      templateVersion: "1.5",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -512,7 +517,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.4",
+        templateVersion: "1.5",
         files: documentFiles
       };
       track.integrity.generated = false;

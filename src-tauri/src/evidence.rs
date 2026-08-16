@@ -417,6 +417,7 @@ fn build_item_from_copy(
         derived_from_evidence_id: None,
         generator_version: None,
         generated_disclosure_text: None,
+        metadata: Default::default(),
     }
 }
 

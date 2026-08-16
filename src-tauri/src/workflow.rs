@@ -38,6 +38,7 @@ pub struct WorkflowRequirement {
     pub when: String,
     pub missing_message: String,
     pub evidence_role: Option<String>,
+    pub allow_explicit_unavailable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -202,6 +203,14 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         } else if requirement.evidence_role.is_some() {
             return Err(AppError::Data(format!(
                 "Non-evidence requirement {} declares an evidence role.",
+                requirement.key
+            )));
+        }
+        if requirement.allow_explicit_unavailable.is_some()
+            && requirement.key != "evidence_licenses.terms_or_unavailable"
+        {
+            return Err(AppError::Data(format!(
+                "Requirement {} cannot configure the terms-unavailable alternative.",
                 requirement.key
             )));
         }
@@ -533,6 +542,34 @@ fn requirement_met(
                 _ => false,
             }
         }
+        "field" if requirement.key == "release.filename_consistency" => filename_requirement_met(
+            track,
+            evidence,
+            EvidenceRole::ReleaseWav,
+            track.fields.release_filename_difference_confirmed,
+        ),
+        "field" if requirement.key == "suno.export_filename_consistency" => {
+            filename_requirement_met(
+                track,
+                evidence,
+                EvidenceRole::SunoFinalExport,
+                track.fields.suno_export_filename_difference_confirmed,
+            )
+        }
+        "field" if requirement.key == "evidence_licenses.subscription_generation_coverage" => {
+            subscription_generation_coverage(track, evidence) == CoverageStatus::Yes
+        }
+        "field" if requirement.key == "evidence_licenses.terms_or_unavailable" => {
+            let has_terms = evidence
+                .iter()
+                .any(|item| verified_role(item, EvidenceRole::SunoTermsRights));
+            if has_terms {
+                track.fields.suno_terms_evidence_not_available != Some(true)
+            } else {
+                requirement.allow_explicit_unavailable == Some(true)
+                    && track.fields.suno_terms_evidence_not_available == Some(true)
+            }
+        }
         "field" => field_requirement_met(&requirement.key, track, profile, deviations),
         _ => false,
     }
@@ -583,6 +620,89 @@ fn present(value: &str) -> bool {
     !value.trim().is_empty()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CoverageStatus {
+    Yes,
+    No,
+    NotVerified,
+}
+
+pub fn subscription_generation_coverage(
+    track: &TrackRecord,
+    evidence: &[EvidenceItem],
+) -> CoverageStatus {
+    let generation_date = track.fields.suno_final_generation_date.trim();
+    if generation_date.is_empty() {
+        return CoverageStatus::NotVerified;
+    }
+    let subscriptions = evidence
+        .iter()
+        .filter(|item| verified_role(item, EvidenceRole::SubscriptionPayment))
+        .collect::<Vec<_>>();
+    if subscriptions.is_empty()
+        || subscriptions.iter().any(|item| {
+            item.coverage_start.as_deref().is_none_or(str::is_empty)
+                || item.coverage_end.as_deref().is_none_or(str::is_empty)
+        })
+    {
+        return CoverageStatus::NotVerified;
+    }
+    if subscriptions.iter().any(|item| {
+        item.coverage_start
+            .as_deref()
+            .is_some_and(|start| start <= generation_date)
+            && item
+                .coverage_end
+                .as_deref()
+                .is_some_and(|end| end >= generation_date)
+    }) {
+        CoverageStatus::Yes
+    } else {
+        CoverageStatus::No
+    }
+}
+
+pub fn original_evidence_file_name<'a>(
+    evidence: &'a [EvidenceItem],
+    role: EvidenceRole,
+) -> Option<&'a str> {
+    evidence
+        .iter()
+        .find(|item| verified_role(item, role))
+        .and_then(|item| {
+            let value = item.metadata.original_file_name.trim();
+            (!value.is_empty()).then_some(value)
+        })
+}
+
+pub fn filename_matches_documented_title(title: &str, file_name: &str) -> bool {
+    let stem = std::path::Path::new(file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(file_name);
+    normalize_filename_identity(title) == normalize_filename_identity(stem)
+}
+
+fn normalize_filename_identity(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn filename_requirement_met(
+    track: &TrackRecord,
+    evidence: &[EvidenceItem],
+    role: EvidenceRole,
+    confirmed: Option<bool>,
+) -> bool {
+    original_evidence_file_name(evidence, role).is_some_and(|file_name| {
+        filename_matches_documented_title(&track.fields.title, file_name) || confirmed == Some(true)
+    })
+}
+
 fn field_requirement_met(
     key: &str,
     track: &TrackRecord,
@@ -625,9 +745,27 @@ fn field_requirement_met(
         }
         "suno.model" => present(&f.suno_model),
         "suno.project_url" => present(&f.suno_project_url),
+        "suno.project_or_version_id" => {
+            present(&f.suno_project_version_id) || present(&f.suno_final_generation_id)
+        }
+        "suno.final_generation_date" => present(&f.suno_final_generation_date),
+        "suno.download_export_date" => present(&f.suno_download_export_date),
         "suno.plan_at_creation" => present(&f.suno_plan_at_creation),
         "suno.final_export_date" => present(&f.final_export_date),
         "human_work.lyrics_source" => present(&f.lyrics_source),
+        "human_work.instrumental_answer" => f.instrumental_track.is_some(),
+        "human_work.instrumental_consistency" => match f.instrumental_track {
+            Some(true) => {
+                f.lyrics_source == "instrumental"
+                    && f.lyrics_text.trim().is_empty()
+                    && !(f.human_editing_performed == Some(true)
+                        && f.human_editing_details
+                            .split(',')
+                            .any(|value| value.trim() == "Lyrics"))
+            }
+            Some(false) => f.lyrics_source != "instrumental",
+            None => false,
+        },
         "human_work.human_lyrics_details" => present(&f.lyrics_text),
         "human_work.suno_style_prompt" => present(&f.suno_style_prompt),
         "human_work.human_editing_performed" => f.human_editing_performed.is_some(),
@@ -704,7 +842,148 @@ mod tests {
             derived_from_evidence_id: None,
             generator_version: None,
             generated_disclosure_text: None,
+            metadata: Default::default(),
         }
+    }
+
+    #[test]
+    fn instrumental_contradictions_block_until_explicitly_corrected() {
+        let mut track = disclosure_track("none", None);
+        track.fields.instrumental_track = Some(true);
+        track.fields.lyrics_source = "mixed".into();
+        track.fields.lyrics_text = "Used lyric text".into();
+        track.fields.human_editing_performed = Some(true);
+        track.fields.human_editing_details = "Arrangement, Lyrics".into();
+        assert!(!field_requirement_met(
+            "human_work.instrumental_consistency",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+
+        track.fields.lyrics_source = "instrumental".into();
+        track.fields.lyrics_text.clear();
+        track.fields.human_editing_details = "Arrangement".into();
+        assert!(field_requirement_met(
+            "human_work.instrumental_consistency",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn commercial_generation_must_be_inside_verified_subscription_coverage() {
+        let mut track = disclosure_track("none", None);
+        track.fields.suno_final_generation_date = "2026-08-15".into();
+        let mut subscription = verified_evidence(EvidenceRole::SubscriptionPayment);
+        subscription.coverage_start = Some("2026-08-01".into());
+        subscription.coverage_end = Some("2026-08-31".into());
+        assert_eq!(
+            subscription_generation_coverage(&track, &[subscription.clone()]),
+            CoverageStatus::Yes
+        );
+        subscription.coverage_end = Some("2026-08-14".into());
+        assert_eq!(
+            subscription_generation_coverage(&track, &[subscription]),
+            CoverageStatus::No
+        );
+        assert_eq!(
+            subscription_generation_coverage(&track, &[]),
+            CoverageStatus::NotVerified
+        );
+    }
+
+    #[test]
+    fn mismatching_evidence_filename_requires_explicit_confirmation() {
+        let mut track = disclosure_track("none", None);
+        track.fields.title = "Gravaty".into();
+        let mut release = verified_evidence(EvidenceRole::ReleaseWav);
+        release.metadata.original_file_name = "GRAVITY.wav".into();
+        let evidence = vec![release];
+        assert!(!filename_requirement_met(
+            &track,
+            &evidence,
+            EvidenceRole::ReleaseWav,
+            None
+        ));
+        assert!(filename_requirement_met(
+            &track,
+            &evidence,
+            EvidenceRole::ReleaseWav,
+            Some(true)
+        ));
+        assert_eq!(track.fields.title, "Gravaty");
+    }
+
+    #[test]
+    fn commercial_terms_status_requires_real_evidence_or_explicit_unavailable_answer() {
+        let mut track = disclosure_track("none", None);
+        let requirement = WorkflowRequirement {
+            key: "evidence_licenses.terms_or_unavailable".into(),
+            step_id: "evidence_licenses".into(),
+            kind: "field".into(),
+            required: true,
+            when: "commercial_use".into(),
+            missing_message: "missing".into(),
+            evidence_role: None,
+            allow_explicit_unavailable: Some(true),
+        };
+        assert!(!requirement_met(
+            &requirement,
+            &track,
+            &Profile::default(),
+            &[],
+            &HashSet::new(),
+            &[]
+        ));
+        track.fields.suno_terms_evidence_not_available = Some(true);
+        assert!(requirement_met(
+            &requirement,
+            &track,
+            &Profile::default(),
+            &[],
+            &HashSet::new(),
+            &[]
+        ));
+        let mut strict_requirement = requirement.clone();
+        strict_requirement.allow_explicit_unavailable = Some(false);
+        assert!(!requirement_met(
+            &strict_requirement,
+            &track,
+            &Profile::default(),
+            &[],
+            &HashSet::new(),
+            &[]
+        ));
+        track.fields.suno_terms_evidence_not_available = None;
+        let terms = vec![verified_evidence(EvidenceRole::SunoTermsRights)];
+        assert!(requirement_met(
+            &requirement,
+            &track,
+            &Profile::default(),
+            &terms,
+            &HashSet::from(["suno_terms_rights"]),
+            &[]
+        ));
+        track.fields.suno_terms_evidence_not_available = Some(true);
+        assert!(!requirement_met(
+            &requirement,
+            &track,
+            &Profile::default(),
+            &terms,
+            &HashSet::from(["suno_terms_rights"]),
+            &[]
+        ));
+        track.fields.suno_terms_evidence_not_available = Some(false);
+        assert!(requirement_met(
+            &strict_requirement,
+            &track,
+            &Profile::default(),
+            &terms,
+            &HashSet::from(["suno_terms_rights"]),
+            &[]
+        ));
     }
 
     #[test]
@@ -780,14 +1059,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_2_configuration_is_accepted() {
+    fn valid_version_1_3_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.2");
+        validate_config(&config).expect("valid workflow 1.3");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.2");
+        assert_eq!(config.version, "1.3");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));

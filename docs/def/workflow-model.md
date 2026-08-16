@@ -41,7 +41,7 @@ The repository file [workflows/suno-track.toml](../../workflows/suno-track.toml)
 ```toml
 schema_version = 1
 id = "suno-track"
-version = "1.2"
+version = "1.3"
 name = "Suno Track Documentation"
 ```
 
@@ -89,12 +89,12 @@ An empty N/A reason is invalid. A conditional child requirement can become N/A a
 | --- | --- | --- | --- |
 | 01 | `track` | Track | Title, production dates, commercial intent, and workflow identity |
 | 02 | `source` | Source | Guided external, own, code-based, and third-party source branches plus applicable rights and evidence |
-| 03 | `suno` | Suno | Model, project URL, plan at creation, export date, and Suno evidence |
+| 03 | `suno` | Suno | Model, project URL/IDs, concrete final-generation date/time, download date, plan, export evidence, and filename confirmation |
 | 04 | `human-work` | Human Work | Lyrics source/text, Suno style prompt, and guided human or post-export edits that actually occurred |
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
 | 06 | `ai-transparency` | AI Transparency | AI service and visible-disclosure policy/result unless all three content checks are explicitly `No` |
 | 07 | `release` | Release | Final release audio, guided release-note choices, and export facts |
-| 08 | `evidence-licenses` | Evidence & Licenses | Required evidence coverage, including selected subscription evidence |
+| 08 | `evidence-licenses` | Evidence & Licenses | Subscription evidence covering the concrete final-generation date plus local terms evidence or an explicit unavailable status |
 | 09 | `integrity` | Integrity | Current generated documents, SHA-256 list, complete native re-verification, and no mismatch |
 | 10 | `finalize` | Finalize | Blocking-deviation check and native certificate transaction |
 
@@ -166,6 +166,10 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 - every applicable mandatory step is `PASS` or justified `N/A`;
 - no blocking deviation is open;
 - every required evidence role has a present, contained, readable file;
+- instrumental, lyrics source/text, and selected `Lyrics` human work are mutually consistent;
+- original release and Suno-export filenames either match the documented title or have an explicit intentional-deviation confirmation;
+- a commercial track's recorded final-generation date is inside verified selected subscription coverage;
+- commercial intent has both subscription evidence and archived terms/rights evidence or the explicit `Terms evidence not available` status;
 - every policy-required artwork disclosure has `generated_disclosure` provenance, the supported generator version, the exact configured text, a verified AI-original source ID, and bytes identical to final artwork;
 - generated documents match their normalized inputs and template versions;
 - `SHA256SUMS.txt` exists and covers the required current set;
@@ -188,7 +192,7 @@ Every track and certificate stores both `workflow_id` and `workflow_version`. A 
 
 ```text
 Finalized with workflow 1.0
-Current workflow version: 1.2
+Current workflow version: 1.3
 ```
 
 Re-evaluation is explicit. It creates new working state and, after successful acceptance, a new revision; it never rewrites the meaning of an archived `1.0` result.
@@ -203,6 +207,7 @@ Re-evaluation is explicit. It creates new working state and, after successful ac
 | `REQ-WFL-004` | `FAIL`, `BLOCKED`, `NOT VERIFIED`, missing evidence, stale documents, and hash failure block finalization. | [ATP-0008](../atp/active/ATP-0008-finalization-gate.md) |
 | `REQ-WFL-005` | A workflow version change never retroactively mutates a finalized certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
 | `REQ-WFL-006` | A finalized snapshot remains read-only and navigable; an explicit archived revision is required before editing or refinalization, and a post-finalization mismatch invalidates the current certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
+| `REQ-WFL-007` | Native finalization blocks contradictory instrumental facts, unconfirmed filename deviations, uncovered commercial generation dates, and missing commercial terms status. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
 
 ## Verification
 
@@ -239,6 +244,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 | 2026-08-16 | Advanced the workflow to 1.2 for conditional code-audio post-processing and the required human-change selection on AI-assisted artwork; retained unrestricted Suno model and plan strings. | Project team |
 | 2026-08-16 | Advanced the workflow to 1.1 and required generated WAV/MP3 evidence together with source code for a positive code-based-generation answer. | Project team |
 | 2026-08-15 | Defined read-only finalized navigation, stale-draft disposal, and direct revision access. | Project team |
+| 2026-08-16 | Raised workflow to 1.3 and added final-generation, consistency, filename, coverage, and commercial terms gates. | Project team |
 | 2026-08-15 | Added the conditional code-based Source branch, guided Source classifications, and English canonical values for localized choice controls. | Project team |
 | 2026-08-15 | Added the Suno style prompt, guided work/release choices, three-negative AI Transparency deactivation, one final-artwork requirement, and prerequisite-aware Finalize status. | Project team |
 | 2026-08-13 | Added provenance and source-lineage checks to the AI artwork finalization gate. | Project team |

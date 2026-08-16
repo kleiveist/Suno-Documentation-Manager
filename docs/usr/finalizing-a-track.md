@@ -42,6 +42,10 @@ The gate requires:
 - every applicable mandatory step to be `PASS` or justified `N/A`;
 - no open blocking deviation;
 - every required evidence role to contain a real readable file;
+- the explicit instrumental answer to agree with lyrics source/text and selected human work;
+- the actual release and Suno-export filenames to match the title or have an explicit intentional-deviation confirmation;
+- the concrete final-generation date of a commercial track to fall inside selected subscription coverage; and
+- commercial tracks to include archived Suno terms/rights evidence or the explicit status `Terms evidence not available`.
 - all generated documents to match current facts, evidence metadata, and template versions;
 - SHA-256 generation to cover the complete required set;
 - native verification to pass for every listed file; and
@@ -123,19 +127,19 @@ SunoDM_DOCUMENTATION_CERTIFICATE.pdf
 └── CERTIFICATE_SHA256.txt
 ```
 
-`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` is a compact, human-readable technical representation of the same finalized snapshot. It records documented track and Suno data, confirmed source and human-work facts, authoritative workflow results, the complete evidence register with provenance and full SHA-256 values, and the final integrity anchors. It is a technical documentation, evidence, and integrity record; it does not perform a legal assessment.
+`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` format 3.0 is an A4, A–J technical representation of the same finalized snapshot. It separates the documented title from both original filenames; identifies the concrete Suno generation; renders every source branch with N/A where appropriate; records only selected human work; exposes artwork answers; and lists subscription coverage, archived terms, optional external timestamp evidence, provenance, lineage, and full SHA-256 values. The Certificate ID and `Seite X / Y` appear on every page. It is technical documentation, not legal or governmental certification.
 
 During finalization, the progress view distinguishes native gate validation, snapshot collection, transaction protection, certificate/manifest generation, certificate verification, the complete SHA-256 reread, and the final database commit. File names, byte counts, file counts, and elapsed time remain visible while the filesystem work runs outside the Tauri main thread.
 
 After the verified native result is committed, a certificate summary opens automatically. It shows the certificate ID, track, artist, finalization time, workflow, verified integrity count, evidence count, blocking-deviation count, and final result. Close it to continue, or open the complete certificate view. For a still-valid finalized track, the same summary remains available through `Show certificate` in Finalize and `Open certificate summary` in the Certificate section.
 
-Review the certificate ID, track, artist, workflow and application versions, timestamp, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, and final status. Expected success status is `DOCUMENTATION COMPLETE`.
+Review the certificate ID, track, artist, workflow and application versions, timestamp, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, earlier revision references, and final status. Expected success status is `DOCUMENTATION COMPLETE`.
 
-Review `EVIDENCE_MANIFEST.json` and confirm that file paths are relative to the track root. The manifest contains no local absolute workspace path. Each verified evidence object includes `provenance`; global copies retain their source record and coverage, while a local generated disclosure retains `derivedFromEvidenceId`, `generatorVersion`, and `generatedDisclosureText`. These fields are the portable lineage record and should agree with the evidence role and current artwork policy.
+Review manifest schema 2 and confirm that paths are track-root-relative. `documentedFacts` contains the full final-generation and consistency snapshot; each evidence item includes the original import filename, path, size, full hash, timestamp, provenance, lineage, and role-specific local metadata. Terms documents include title/provider/source URL/retrieval date; external timestamps include issuer, timestamp, referenced hash and artifact. No field is fetched from a network or inferred from a filename.
 
 The certificate includes this mandatory meaning:
 
-> This certificate confirms completion of the configured documentation workflow and integrity checks. It does not constitute governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.
+> This certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks. It does not confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.
 
 ## Verify certificate artifacts
 
@@ -161,7 +165,7 @@ Use `Create new revision and edit` from the overview, any workflow step (includi
 
 When the application reports `Documentation changed after finalization`, review the mismatch before proceeding. Then create the revision explicitly.
 
-The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, the complete former certificate directory, and the former root-level technical PDF below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
+The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, the complete former certificate directory, and the former root-level technical PDF below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. After the next successful finalization, the current manifest, Markdown certificate, and PDF list the relative paths of these managed earlier revision archives. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
 
 Tracks created by an older application version or recovered from an imported folder may not yet contain `.archive/revisions/`. Revision creation safely creates this managed parent before moving any live certificate artifact; users do not need to create the folder manually.
 
@@ -194,6 +198,7 @@ Executed results and remaining manual checks are recorded in [ATP-0007](../atp/a
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-08-15 | Added finalization progress and the automatic, reusable certificate-summary dialog. | Project team |
+| 2026-08-16 | Documented workflow 1.3 gates and certificate 3.0 final-generation, terms, timestamp, origin-label, and disclaimer content. | Project team |
 | 2026-08-15 | Documented live document, SHA-256, and verification progress, including the immediate second hash pass and reduced-motion behavior. | Project team |
 | 2026-08-15 | Documented automatic revision-parent repair for older and imported tracks. | Project team |
 | 2026-08-15 | Clarified read-only finalized navigation and the directly available revision action. | Project team |

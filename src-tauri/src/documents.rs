@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.4";
+pub const TEMPLATE_VERSION: &str = "1.5";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -34,7 +34,12 @@ struct Fingerprint<'a> {
     workflow_version: &'a str,
     profile: &'a Profile,
     fields: &'a crate::model::TrackFields,
-    evidence: Vec<(&'a str, &'a str, Option<&'a str>)>,
+    evidence: Vec<(
+        &'a str,
+        &'a str,
+        Option<&'a str>,
+        &'a crate::model::EvidenceMetadata,
+    )>,
 }
 
 pub fn input_fingerprint(
@@ -43,17 +48,19 @@ pub fn input_fingerprint(
     evidence: &[EvidenceItem],
 ) -> Result<String> {
     let normalized_fields = track.fields.normalized_conditionals();
-    let mut evidence_values = evidence
-        .iter()
+    let mut sorted_evidence = evidence.iter().collect::<Vec<_>>();
+    sorted_evidence.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let evidence_values = sorted_evidence
+        .into_iter()
         .map(|item| {
             (
                 item.role.as_str(),
                 item.relative_path.as_str(),
                 item.sha256.as_deref(),
+                &item.metadata,
             )
         })
         .collect::<Vec<_>>();
-    evidence_values.sort_unstable();
     let value = serde_json::to_vec(&Fingerprint {
         template_version: TEMPLATE_VERSION,
         workflow_id: &track.workflow_id,
@@ -448,10 +455,27 @@ fn evidence_list(evidence: &[EvidenceItem]) -> String {
         .iter()
         .map(|item| {
             format!(
-                "- `{}` — role `{}` — SHA-256 `{}`\n",
+                "- `{}` — role `{}` — original `{}` — {} bytes — SHA-256 `{}` — imported `{}` — provenance `{}` — document `{}` — provider `{}` — source URL `{}` — retrieval `{}` — effective `{}` — note `{}` — external timestamp `{}` — referenced hash `{}` — referenced artifact `{}` — source global `{}` — derived from `{}` — generator `{}` — generated disclosure `{}`\n",
                 item.relative_path,
                 item.role.as_str(),
-                item.sha256.as_deref().unwrap_or("not calculated")
+                value_or_missing(&item.metadata.original_file_name),
+                item.size_bytes,
+                item.sha256.as_deref().unwrap_or("not calculated"),
+                item.imported_at,
+                item.provenance.as_str(),
+                value_or_missing(&item.metadata.document_title),
+                value_or_missing(&item.metadata.provider),
+                value_or_missing(&item.metadata.source_url),
+                value_or_missing(&item.metadata.retrieval_date),
+                value_or_missing(&item.metadata.effective_date),
+                value_or_missing(&item.metadata.factual_note),
+                value_or_missing(&item.metadata.external_timestamp),
+                value_or_missing(&item.metadata.referenced_hash),
+                value_or_missing(&item.metadata.referenced_artifact),
+                item.source_global_evidence_id.as_deref().unwrap_or("N/A"),
+                item.derived_from_evidence_id.as_deref().unwrap_or("N/A"),
+                item.generator_version.as_deref().unwrap_or("N/A"),
+                item.generated_disclosure_text.as_deref().unwrap_or("N/A"),
             )
         })
         .collect()
@@ -545,12 +569,15 @@ fn render(
             english_guided_value(&f.third_party_sample_ownership, RIGHTS_CHOICES)
         ));
     }
-    let mut lyrics_document = format!(
-        "{}# Lyrics\n\nSource: {}\n",
-        marker(),
-        value_or_missing(&f.lyrics_source)
-    );
-    if !matches!(f.lyrics_source.as_str(), "" | "instrumental") {
+    let mut lyrics_document = format!("{}# Lyrics\n\n", marker());
+    if f.instrumental_track == Some(true) {
+        lyrics_document.push_str("Lyrics: N/A – instrumental track\n");
+    } else {
+        lyrics_document.push_str(&format!("Source: {}\n", value_or_missing(&f.lyrics_source)));
+    }
+    if f.instrumental_track != Some(true)
+        && !matches!(f.lyrics_source.as_str(), "" | "instrumental")
+    {
         lyrics_document.push_str(&format!(
             "\n## Text\n\n{}\n",
             value_or_missing(&f.lyrics_text)
@@ -773,14 +800,20 @@ fn render(
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno project/version ID: {}\nFinal generation ID / project version: {}\nFinal generation date: {}\nFinal generation time: {}\nDownload/export date: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nActual Suno export filename: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
             value_or_missing(&f.suno_project_url),
+            value_or_missing(&f.suno_project_version_id),
+            value_or_missing(&f.suno_final_generation_id),
+            value_or_missing(&f.suno_final_generation_date),
+            value_or_missing(&f.suno_final_generation_time),
+            value_or_missing(&f.suno_download_export_date),
             value_or_missing(&f.suno_model),
             value_or_missing(&f.suno_plan_at_creation),
             value_or_missing(&f.production_start_date),
             value_or_missing(&f.production_end_date),
             value_or_missing(&f.final_export_date),
+            crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::SunoFinalExport).unwrap_or("Not recorded"),
             yes_no(f.external_audio_uploaded),
             yes_no(f.own_audio_uploaded),
             yes_no(f.code_based_generation),
@@ -794,13 +827,17 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n- Final generation date: {}\n- Final generation time: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
             if f.commercial_use_intended { "Yes" } else { "No" },
             value_or_missing(&f.production_start_date), value_or_missing(&f.production_end_date),
             value_or_missing(&f.final_export_date),
+            value_or_missing(&f.suno_final_generation_date),
+            value_or_missing(&f.suno_final_generation_time),
+            crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::ReleaseWav).unwrap_or("Not recorded"),
+            crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::SunoFinalExport).unwrap_or("Not recorded"),
             source_declarations,
             confirmed_work,
             "- The authoritative evaluated step results are stored in the completion certificate after finalization.\n",
@@ -810,9 +847,11 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/AI_USAGE.md".into(),
         format!(
-            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Lyrics source: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
+            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Project/version ID: {}\n- Final generation ID: {}\n- Final generation date: {}\n- Lyrics source: {}\n- Instrumental track: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
             marker(), value_or_missing(&f.suno_model), value_or_missing(&f.suno_project_url),
-            value_or_missing(&f.lyrics_source), yes_no(f.external_audio_uploaded),
+            value_or_missing(&f.suno_project_version_id), value_or_missing(&f.suno_final_generation_id),
+            value_or_missing(&f.suno_final_generation_date), value_or_missing(&f.lyrics_source),
+            yes_no(f.instrumental_track), yes_no(f.external_audio_uploaded),
             yes_no(f.code_based_generation),
             if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
             if f.code_based_generation == Some(true) { yes_no(f.code_audio_post_processed) } else { "Not applicable" },
@@ -826,10 +865,18 @@ fn render(
     values.insert(
         "04_LICENSES/suno_account_and_license.md".into(),
         format!(
-            "{}# Suno account and plan snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Plan at creation: {}\n- Workspace subscription start date: {}\n- Commercial use intended: {}\n\nThis page records the supplied account and plan facts. It makes no legal determination.\n",
+            "{}# Suno account, subscription, and archived terms evidence\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Plan at creation: {}\n- Workspace subscription start date: {}\n- Commercial use intended: {}\n- Final generation date: {}\n- Selected subscription evidence covers the recorded final-generation date: {}\n- Terms evidence not available: {}\n\n## Archived service-terms evidence\n\n{}\nThis page records supplied account facts and locally archived evidence only. It does not confirm rights ownership, license validity, legality, or non-infringement.\n",
             marker(), value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
-            value_or_missing(&profile.subscription_start_date), if f.commercial_use_intended { "Yes" } else { "No" }
+            value_or_missing(&profile.subscription_start_date), if f.commercial_use_intended { "Yes" } else { "No" },
+            value_or_missing(&f.suno_final_generation_date),
+            match crate::workflow::subscription_generation_coverage(track, evidence) {
+                crate::workflow::CoverageStatus::Yes => "YES",
+                crate::workflow::CoverageStatus::No => "NO",
+                crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
+            },
+            yes_no(f.suno_terms_evidence_not_available),
+            evidence_list(&evidence.iter().filter(|item| item.role == crate::model::EvidenceRole::SunoTermsRights).cloned().collect::<Vec<_>>())
         ),
     );
     values.insert(
@@ -882,7 +929,7 @@ mod tests {
             relative_path: "conditional-render-test".into(),
             status: crate::model::TrackStatus::Active,
             workflow_id: "suno-track-documentation".into(),
-            workflow_version: "1.0".into(),
+            workflow_version: "1.3".into(),
             profile_snapshot: Profile::default(),
             library: Default::default(),
             fields,
@@ -902,8 +949,14 @@ mod tests {
             production_end_date: "2026-02-05".into(),
             suno_model: "v4.5".into(),
             suno_project_url: "https://suno.example/projects/golden-signal".into(),
+            suno_project_version_id: "project-version-golden".into(),
+            suno_final_generation_id: "generation-golden".into(),
+            suno_final_generation_date: "2026-02-05".into(),
+            suno_final_generation_time: "14:35".into(),
+            suno_download_export_date: "2026-02-06".into(),
             suno_plan_at_creation: "Pro".into(),
             final_export_date: "2026-02-06".into(),
+            instrumental_track: Some(true),
             lyrics_source: "instrumental".into(),
             lyrics_text: INACTIVE_FIXTURE_VALUES[0].into(),
             suno_style_prompt: "dark synthwave, driving bass, cinematic".into(),
@@ -925,6 +978,7 @@ mod tests {
             post_export_editing_performed: Some(false),
             post_export_editing_details: INACTIVE_FIXTURE_VALUES[5].into(),
             commercial_use_intended: true,
+            suno_terms_evidence_not_available: Some(true),
             artwork_origin: "ai_assisted".into(),
             ai_image_service: "Example Image Service".into(),
             human_artwork_process_operations: Vec::new(),
@@ -943,6 +997,7 @@ mod tests {
             disclosure_applied: Some(false),
             disclosure_text: String::new(),
             release_notes: "Streaming master".into(),
+            ..Default::default()
         };
         fields.normalize_conditionals();
 
@@ -1005,6 +1060,14 @@ mod tests {
             derived_from_evidence_id: None,
             generator_version: None,
             generated_disclosure_text: None,
+            metadata: crate::model::EvidenceMetadata {
+                original_file_name: Path::new(relative_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("portable fixture file name")
+                    .into(),
+                ..Default::default()
+            },
         }
     }
 

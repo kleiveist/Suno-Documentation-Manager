@@ -6,6 +6,7 @@ import {
   evaluateRequirements,
   evidenceRoleFileTypes,
   evidenceRoleLabel,
+  filenameMatchesDocumentedTitle,
   finalizationGate,
   statusLabel,
   stepStatuses,
@@ -15,6 +16,7 @@ import {
 import {
   emptyProfile,
   type EvidencePreview,
+  type EvidenceMetadata,
   type GlobalEvidenceItem,
   type EvidenceRole,
   type GlobalProfile,
@@ -374,7 +376,7 @@ const evidenceRoles: EvidenceRole[] = [
   "release_wav", "release_mp3", "release_mp4", "release_artwork", "ai_artwork_original",
   "ai_artwork_edited", "human_edited_artwork", "final_artwork", "external_audio_file",
   "external_audio_license", "own_audio_file", "source_code_file", "code_generated_audio_file", "third_party_sample_file",
-  "third_party_sample_license", "other"
+  "third_party_sample_license", "suno_terms_rights", "external_timestamp", "other"
 ];
 
 const externalAudioSourceChoices: readonly GuidedChoice[] = [
@@ -1448,11 +1450,12 @@ export class SunoDocumentationApp {
           ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("thirdPartySampleSource", "Sample-Quelle", draft.thirdPartySampleSource, sampleSourceChoices, true)}${this.guidedSingleChoiceField("thirdPartySampleOwnership", "Lizenz / Rechte", draft.thirdPartySampleOwnership, sampleRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
         break;
       case "suno":
-        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtCreation, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}</div>
+        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtCreation, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.textField("sunoProjectVersionId", "Projekt-/Versions-ID", "Lokale, vom Nutzer erfasste ID", draft.sunoProjectVersionId)}${this.textField("sunoFinalGenerationId", "Finale Generation-ID / Projektversion", "Lokale, vom Nutzer erfasste ID", draft.sunoFinalGenerationId)}${this.dateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, true)}${this.textField("sunoFinalGenerationTime", "Uhrzeit (optional)", "HH:MM", draft.sunoFinalGenerationTime, false, "time")}${this.dateField("sunoDownloadExportDate", "Download-/Exportdatum", draft.sunoDownloadExportDate, true)}${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}</div>
           <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
+        body += this.filenameConfirmation(track, "suno_final_export", "sunoExportFilenameDifferenceConfirmed", draft.sunoExportFilenameDifferenceConfirmed, "Suno-Export");
         break;
       case "human_work":
-        body = `<div class="field-grid two-col">${singleChoiceFieldMarkup("lyricsSource", "Lyrics-Quelle", draft.lyricsSource, [["instrumental", "Instrumental – keine Lyrics"], ["human", "Menschlich geschrieben"], ["suno", "Von Suno erzeugt"], ["mixed", "Gemischt"]], true)}</div>
+        body = `${this.boolQuestion("instrumentalTrack", "Ist dies ein Instrumentaltrack?", "Diese ausdrückliche Angabe wird gegen Lyrics-Quelle, Lyrics-Text und Human Work geprüft; Widersprüche werden nicht automatisch korrigiert.", draft.instrumentalTrack)}<div class="field-grid two-col">${singleChoiceFieldMarkup("lyricsSource", "Lyrics-Quelle", draft.lyricsSource, [["instrumental", "Instrumental – keine Lyrics"], ["human", "Menschlich geschrieben"], ["suno", "Von Suno erzeugt"], ["mixed", "Gemischt"]], true)}</div>
           ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Verwendeter Lyrics-Text", "Nur die tatsächlich in Suno verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
           ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat.", draft.humanEditingPerformed)}
@@ -1473,7 +1476,8 @@ export class SunoDocumentationApp {
         break;
       case "release":
         body = `<div class="field-grid two-col">${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, releaseNoteChoices)}</div>
-          <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Die primäre Audiodatei behält ihre Endung und wird im verwalteten Ordner sicher nach dem Tracktitel benannt. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Finale Release-Audiodatei importieren"], ["release_mp3", "Zusätzliche MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
+          <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Der ursprüngliche Quelldateiname wird getrennt vom verwalteten Pfad dokumentiert. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Finale Release-Audiodatei importieren"], ["release_mp3", "Zusätzliche MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
+        body += this.filenameConfirmation(track, "release_wav", "releaseFilenameDifferenceConfirmed", draft.releaseFilenameDifferenceConfirmed, "Release-Datei");
         break;
     }
     const locked = track.status === "FINALIZED";
@@ -1482,6 +1486,7 @@ export class SunoDocumentationApp {
 
   private renderEvidence(track: TrackDetail, embedded = false): string {
     const locked = track.status === "FINALIZED";
+    const hasTermsEvidence = track.evidence.some((item) => item.role === "suno_terms_rights" && item.verified);
     const missing = calculateMissingRequirements(track, track.profileSnapshot).filter((item) => item.evidenceRole);
     return `<div class="${embedded ? "embedded-content" : "evidence-page"}">
       <div class="section-intro"><div><p class="overline">Lokale Nachweise</p><h3>Evidence & Lizenzen</h3><p>Originale bleiben am Quellort. Importierte Kopien werden gehasht und niemals still überschrieben.</p></div><button class="button button--primary" data-action="import-evidence" ${locked ? "disabled" : ""}>${icon("upload")} Evidence importieren</button></div>
@@ -1491,8 +1496,10 @@ export class SunoDocumentationApp {
         return `<button data-import-role="${item.evidenceRole}" ${current ? `data-replace-evidence="${escapeHtml(current.id)}"` : ""} ${locked ? "disabled" : ""}>${icon(current ? "upload" : "plus")}<span><strong>${escapeHtml(item.label)}</strong><small>${current ? "Vorhandene Datei sicher ersetzen" : escapeHtml(evidenceRoleLabel(item.evidenceRole!))}</small><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`;
       }).join("")}</div></div>` : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track, locked) : ""}
+      ${track.fields.commercialUseIntended ? `<div class="form-section"><p class="field-label">Archivierte Suno-Nutzungsbedingungen</p><p class="field-help">Nur lokal importierte Service-Terms-Evidence; SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p>${this.inlineEvidenceActions(track, [["suno_terms_rights", "Nutzungsbedingungen importieren"]])}<button class="button button--secondary" data-action="terms-unavailable" ${locked || (hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable !== true) ? "disabled" : ""}>${hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable === true ? "Widerspruch: unavailable-Status zurücknehmen" : hasTermsEvidence ? icon("check") + " Lokaler Terms-Nachweis vorhanden" : track.fields.sunoTermsEvidenceNotAvailable === true ? icon("check") + " Terms evidence not available – Status zurücknehmen" : "Terms evidence not available dokumentieren"}</button></div>` : ""}
+      <div class="form-section"><p class="field-label">Optionaler externer Zeitstempel</p>${this.inlineEvidenceActions(track, [["external_timestamp", "Zeitstempelnachweis importieren"]])}</div>
       <div class="panel evidence-table-panel"><div class="evidence-table-head"><span>Datei</span><span>Rolle</span><span>Integrität</span><span>Größe</span><span></span></div>
-        ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><button class="evidence-name" data-preview-evidence="${item.id}" title="Evidence-Vorschau öffnen"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small></button><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${item.id}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${item.id}" aria-label="Evidence entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></span></div>`).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
+        ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><button class="evidence-name" data-preview-evidence="${item.id}" title="Evidence-Vorschau öffnen"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small>${item.metadata?.documentTitle ? `<small>${escapeHtml(item.metadata.documentTitle)} · ${escapeHtml(item.metadata.provider)}</small>` : ""}</button><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${item.id}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${item.id}" aria-label="Evidence entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></span></div>`).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
       </div>
       <div class="deviation-section"><div class="section-intro compact"><div><p class="overline">Abweichungen</p><h3>Offene Hinweise & Blocker</h3></div><button class="button button--secondary" data-action="add-deviation" ${locked ? "disabled" : ""}>${icon("plus")} Abweichung erfassen</button></div>${this.renderDeviations(track, locked)}</div>
     </div>`;
@@ -1507,13 +1514,25 @@ export class SunoDocumentationApp {
   private renderGlobalEvidencePicker(track: TrackDetail, locked = false): string {
     const attached = track.evidence.some((item) => item.role === "subscription_payment" && item.verified && Boolean(item.sha256)
       && Boolean(item.coverageStart) && Boolean(item.coverageEnd)
-      && item.coverageStart! <= track.fields.productionStartDate && item.coverageEnd! >= track.fields.productionEndDate);
-    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum</h4><p>Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner, damit der finale Ordner eigenständig bleibt.</p></div>${this.state.globalEvidence.length ? `<div>${this.state.globalEvidence.map((item) => {
-      const covers = Boolean(item.coverageStart) && Boolean(item.coverageEnd)
+      && item.coverageStart! <= track.fields.productionStartDate && item.coverageEnd! >= track.fields.productionEndDate
+      && Boolean(track.fields.sunoFinalGenerationDate)
+      && item.coverageStart! <= track.fields.sunoFinalGenerationDate && item.coverageEnd! >= track.fields.sunoFinalGenerationDate);
+    const recordedCoverage = track.evidence.find((item) => item.role === "subscription_payment" && item.verified);
+    const coverageStatus = !track.fields.sunoFinalGenerationDate || !recordedCoverage?.coverageStart || !recordedCoverage.coverageEnd
+      ? "NOT VERIFIED"
+      : recordedCoverage.coverageStart <= track.fields.sunoFinalGenerationDate && recordedCoverage.coverageEnd >= track.fields.sunoFinalGenerationDate
+        ? "YES"
+        : "NO";
+    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum und Finalgeneration</h4><p>Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner. Final-generation coverage: <strong>${coverageStatus}</strong>. Dies ist ausschließlich ein Datumsabgleich, keine Rechteaussage.</p></div>${this.state.globalEvidence.length ? `<div>${this.state.globalEvidence.map((item) => {
+      const coversProduction = Boolean(item.coverageStart) && Boolean(item.coverageEnd)
         && Boolean(track.fields.productionStartDate) && Boolean(track.fields.productionEndDate)
         && item.coverageStart! <= track.fields.productionStartDate
         && item.coverageEnd! >= track.fields.productionEndDate;
-      return `<article class="${covers ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · ${covers ? "Zeitraum passend" : "Deckt den Track-Zeitraum nicht ab"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !covers ? "disabled" : ""}>${attached ? "Zugeordnet" : covers ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
+      const coversGeneration = Boolean(track.fields.sunoFinalGenerationDate)
+        && item.coverageStart! <= track.fields.sunoFinalGenerationDate
+        && item.coverageEnd! >= track.fields.sunoFinalGenerationDate;
+      const covers = coversProduction && coversGeneration;
+      return `<article class="${covers ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · Produktion: ${coversProduction ? "YES" : "NO"} · Finalgeneration: ${coversGeneration ? "YES" : track.fields.sunoFinalGenerationDate ? "NO" : "NOT VERIFIED"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !covers ? "disabled" : ""}>${attached ? "Zugeordnet" : covers ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
     }).join("")}</div>` : `<p class="empty-inline">Noch keine globale Abo-Evidence. Registriere sie unter Einstellungen.</p>`}</section>`;
   }
 
@@ -1605,6 +1624,22 @@ export class SunoDocumentationApp {
         ${present ? `<button type="button" class="evidence-reupload" data-import-role="${role}" data-replace-evidence="${escapeHtml(present.id)}" aria-label="${escapeHtml(label)} ersetzen" title="Datei ersetzen">${icon("upload")}</button>` : ""}
       </div>`;
     }).join("")}</div>`;
+  }
+
+  private filenameConfirmation(
+    track: TrackDetail,
+    role: EvidenceRole,
+    field: "releaseFilenameDifferenceConfirmed" | "sunoExportFilenameDifferenceConfirmed",
+    confirmed: boolean | null,
+    label: string
+  ): string {
+    const item = [...track.evidence].reverse().find((entry) => entry.role === role && entry.verified);
+    const actual = item?.metadata?.originalFileName?.trim() ?? "";
+    if (!actual) return `<div class="neutral-message">${icon("info")}<div><strong>${escapeHtml(label)}: tatsächlicher Quelldateiname nicht erfasst</strong><span>Importiere oder ersetze die Datei, damit der Name als Evidence-derived metadata gespeichert wird.</span></div></div>`;
+    if (filenameMatchesDocumentedTitle(this.state.trackDraft?.title ?? track.fields.title, actual)) {
+      return `<div class="neutral-message">${icon("check")}<div><strong>${escapeHtml(label)} passt zum dokumentierten Titel</strong><span>${escapeHtml(actual)}</span></div></div>`;
+    }
+    return `<div class="conditional-panel"><div class="conditional-line"></div><p><strong>Dateinamenabweichung erkannt</strong><br>Dokumentierter Titel: ${escapeHtml(this.state.trackDraft?.title ?? track.fields.title)}<br>Tatsächlicher Dateiname: ${escapeHtml(actual)}</p>${this.boolQuestion(field, "Ist diese Abweichung beabsichtigt?", "Bestätige ausdrücklich oder korrigiere den dokumentierten Titel. Der Titel wird niemals aus dem Dateinamen abgeleitet.", confirmed)}</div>`;
   }
 
   private textField(name: string, label: string, placeholder: string, value: string, required = false, type = "text"): string {
@@ -1908,6 +1943,20 @@ export class SunoDocumentationApp {
       case "re-evaluate-track":
         if (window.confirm("Track mit dem aktuellen Workflow neu bewerten? Ein finalisierter Snapshot wird zuerst unverändert als Revision archiviert; Dokumente, Prüfsummen und Zertifikat müssen danach neu erzeugt werden.")) await this.runAction("Workflow wird aktualisiert und neu bewertet …", () => this.api.reEvaluateTrack(this.requireTrack().id));
         break;
+      case "terms-unavailable":
+        {
+          const next = this.requireTrack().fields.sunoTermsEvidenceNotAvailable !== true;
+          const prompt = next
+            ? "Ausdrücklich dokumentieren, dass kein lokaler Terms-Nachweis verfügbar ist? Dies ist keine Aussage über Rechte oder Gültigkeit."
+            : "Den dokumentierten Status 'Terms evidence not available' zurücknehmen?";
+          if (!window.confirm(prompt)) break;
+          await this.trackMutation(
+            "Status wird dokumentiert …",
+            () => this.api.updateTrack(this.requireTrack().id, { sunoTermsEvidenceNotAvailable: next }),
+            next ? "Terms-Status dokumentiert" : "Terms-Status zurückgenommen"
+          );
+        }
+        break;
     }
   }
 
@@ -2154,9 +2203,11 @@ export class SunoDocumentationApp {
     if (!(await this.flushDraft())) return;
     if (replaceEvidenceId && !window.confirm("Vorhandene Evidence durch die neu ausgewählte Datei ersetzen? Die bisherige verwaltete Kopie wird lokal archiviert.")) return;
     const track = this.requireTrack();
+    const metadata = this.collectEvidenceMetadata(role);
+    if (metadata === null) return;
     const imported = await this.withBusy(
       "Datei auswählen; große Dateien werden im Hintergrund kopiert und gehasht …",
-      () => this.api.importEvidence(track.id, role, replaceEvidenceId)
+      () => this.api.importEvidence(track.id, role, replaceEvidenceId, metadata)
     );
     if (imported) {
       if (role === "final_artwork") this.trackCoverCache.delete(track.id);
@@ -2167,6 +2218,39 @@ export class SunoDocumentationApp {
         `${evidenceRoleLabel(role)} wurde kopiert, gehasht und dem Track zugeordnet.${replaceEvidenceId ? " Die vorherige Kopie wurde archiviert." : ""}`
       );
     }
+  }
+
+  private collectEvidenceMetadata(role: EvidenceRole): Partial<EvidenceMetadata> | null | undefined {
+    if (role === "suno_terms_rights") {
+      const documentTitle = window.prompt("Dokumenttitel der archivierten Suno-Nutzungsbedingungen:")?.trim();
+      if (!documentTitle) return null;
+      const provider = window.prompt("Provider / Quelle (z. B. Suno):")?.trim();
+      if (!provider) return null;
+      const sourceUrl = window.prompt("Quell-URL (HTTP/HTTPS):")?.trim();
+      if (!sourceUrl) return null;
+      const retrievalDate = window.prompt("Abrufdatum (YYYY-MM-DD):")?.trim();
+      if (!retrievalDate) return null;
+      return {
+        documentTitle,
+        provider,
+        sourceUrl,
+        retrievalDate,
+        effectiveDate: window.prompt("Wirksamkeitsdatum (optional, YYYY-MM-DD):")?.trim() ?? "",
+        factualNote: window.prompt("Sachliche Notiz (optional):")?.trim() ?? ""
+      };
+    }
+    if (role === "external_timestamp") {
+      const provider = window.prompt("Zeitstempel-Provider / Aussteller:")?.trim();
+      if (!provider) return null;
+      const externalTimestamp = window.prompt("Zeitstempel (mit Zeitzone, soweit dokumentiert):")?.trim();
+      if (!externalTimestamp) return null;
+      const referencedHash = window.prompt("Referenzierter Hash:")?.trim();
+      if (!referencedHash) return null;
+      const referencedArtifact = window.prompt("Referenziertes Artefakt (z. B. Manifest oder Zertifikat):")?.trim();
+      if (!referencedArtifact) return null;
+      return { provider, externalTimestamp, referencedHash, referencedArtifact };
+    }
+    return undefined;
   }
 
   private async previewEvidence(evidenceId: string): Promise<void> {
@@ -2186,7 +2270,7 @@ export class SunoDocumentationApp {
     if (!choice) return;
     const role = evidenceRoles[Number(choice) - 1];
     if (!role) { this.showToast("error", "Ungültige Rolle", "Wähle eine Nummer aus der angezeigten Liste."); return; }
-    const existing = ["release_wav", "final_artwork"].includes(role)
+    const existing = ["release_wav", "suno_final_export", "final_artwork"].includes(role)
       ? [...this.requireTrack().evidence].reverse().find((item) => item.role === role)
       : undefined;
     await this.importEvidence(role, existing?.id);

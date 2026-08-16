@@ -21,7 +21,7 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.2";
+export const WORKFLOW_VERSION = "1.3";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
@@ -51,6 +51,32 @@ const hasText = (value: string): boolean => value.trim().length > 0;
 const hasSelections = (value: readonly string[]): boolean => value.some((item) => item.trim().length > 0);
 const hasEvidence = (evidence: EvidenceItem[], role: EvidenceRole): boolean =>
   evidence.some((item) => item.role === role && item.verified && Boolean(item.sha256) && !item.verificationError);
+const originalFileName = (evidence: EvidenceItem[], role: EvidenceRole): string =>
+  evidence.find((item) => item.role === role && item.verified && Boolean(item.sha256) && !item.verificationError)
+    ?.metadata?.originalFileName?.trim() ?? "";
+const filenameIdentity = (value: string): string => value
+  .normalize("NFKD")
+  .replace(/[^\p{L}\p{N}]/gu, "")
+  .toLocaleLowerCase();
+export const filenameMatchesDocumentedTitle = (title: string, fileName: string): boolean =>
+  Boolean(fileName.trim()) && filenameIdentity(title) === filenameIdentity(fileName.replace(/\.[^.]+$/, ""));
+const filenameRequirementMet = (
+  evidence: EvidenceItem[],
+  role: EvidenceRole,
+  title: string,
+  confirmed: boolean | null
+): boolean => {
+  const fileName = originalFileName(evidence, role);
+  return Boolean(fileName) && (filenameMatchesDocumentedTitle(title, fileName) || confirmed === true);
+};
+const generationCoverageStatus = (evidence: EvidenceItem[], fields: TrackFields): "YES" | "NO" | "NOT_VERIFIED" => {
+  if (!fields.sunoFinalGenerationDate) return "NOT_VERIFIED";
+  const items = evidence.filter((item) => hasEvidence([item], "subscription_payment"));
+  if (!items.length || items.some((item) => !item.coverageStart || !item.coverageEnd)) return "NOT_VERIFIED";
+  return items.some((item) => item.coverageStart! <= fields.sunoFinalGenerationDate && item.coverageEnd! >= fields.sunoFinalGenerationDate)
+    ? "YES"
+    : "NO";
+};
 const localDisclosureArtifacts = (evidence: EvidenceItem[], fields: TrackFields): EvidenceItem[] =>
   evidence.filter((item) =>
     item.role === "ai_artwork_edited"
@@ -208,11 +234,22 @@ export function evaluateRequirements(
   add("profile-suno-plan", "suno", "Globaler Suno-Tarif", hasText(profile.sunoPlan));
   add("profile-subscription-start", "suno", "Startdatum des globalen Suno-Abonnements", hasText(profile.subscriptionStartDate));
   add("suno-url", "suno", "Suno-Projekt-URL", hasText(fields.sunoProjectUrl));
+  add("suno-project-version", "suno", "Suno-Projekt-/Versions-ID oder finale Generation-ID", hasText(fields.sunoProjectVersionId) || hasText(fields.sunoFinalGenerationId));
+  add("suno-generation-date", "suno", "Datum der finalen Suno-Generation", hasText(fields.sunoFinalGenerationDate));
+  add("suno-download-date", "suno", "Download-/Exportdatum", hasText(fields.sunoDownloadExportDate));
   add("suno-plan", "suno", "Suno-Tarif bei Erstellung", hasText(fields.sunoPlanAtCreation));
   add("export-date", "suno", "Datum des finalen Exports", hasText(fields.finalExportDate));
   add("suno-final-export", "suno", "Finaler Suno-Export", hasEvidence(evidence, "suno_final_export"), "suno_final_export");
+  add("suno-filename", "suno", "Suno-Exportdateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "suno_final_export", fields.title, fields.sunoExportFilenameDifferenceConfirmed), "suno_final_export");
 
   add("lyrics-source", "human_work", "Quelle der Lyrics", Boolean(fields.lyricsSource));
+  add("instrumental-answer", "human_work", "Angabe: Instrumentaltrack", fields.instrumentalTrack !== null);
+  const lyricsWorkSelected = fields.humanEditingPerformed === true
+    && fields.humanEditingDetails.split(",").some((value) => value.trim() === "Lyrics");
+  const instrumentalConsistent = fields.instrumentalTrack === true
+    ? fields.lyricsSource === "instrumental" && !hasText(fields.lyricsText) && !lyricsWorkSelected
+    : fields.instrumentalTrack === false && fields.lyricsSource !== "instrumental";
+  add("instrumental-consistency", "human_work", "Instrumental-, Lyrics- und Human-Work-Angaben sind widerspruchsfrei", instrumentalConsistent);
   if (fields.lyricsSource !== "" && fields.lyricsSource !== "instrumental") add("lyrics-text", "human_work", "Verwendeter Lyrics-Text", hasText(fields.lyricsText));
   add("suno-style-prompt", "human_work", "In Suno verwendeter Style-Prompt", hasText(fields.sunoStylePrompt));
   add("human-editing-answer", "human_work", "Angabe zu menschlicher Bearbeitung", fields.humanEditingPerformed !== null);
@@ -266,7 +303,13 @@ export function evaluateRequirements(
   }
 
   add("release-wav", "release", "Finale Release-Audiodatei", hasEvidence(evidence, "release_wav"), "release_wav");
-  if (fields.commercialUseIntended) add("subscription-evidence", "evidence_licenses", "Abo-/Zahlungsnachweis für den Produktionszeitraum", hasCoveringSubscriptionEvidence(evidence, fields), "subscription_payment");
+  add("release-filename", "release", "Release-Dateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "release_wav", fields.title, fields.releaseFilenameDifferenceConfirmed), "release_wav");
+  if (fields.commercialUseIntended) {
+    add("subscription-evidence", "evidence_licenses", "Abo-/Zahlungsnachweis für den Produktionszeitraum", hasCoveringSubscriptionEvidence(evidence, fields), "subscription_payment");
+    add("subscription-generation-coverage", "evidence_licenses", "Abo-Nachweis deckt das Datum der finalen Generation ab", generationCoverageStatus(evidence, fields) === "YES", "subscription_payment");
+    const hasTermsEvidence = hasEvidence(evidence, "suno_terms_rights");
+    add("terms-evidence", "evidence_licenses", "Suno-Nutzungsbedingungen oder ausdrücklich 'Terms evidence not available' (nicht beides)", hasTermsEvidence ? fields.sunoTermsEvidenceNotAvailable !== true : fields.sunoTermsEvidenceNotAvailable === true, hasTermsEvidence ? undefined : "suno_terms_rights");
+  }
   add("documents-current", "integrity", "Aktuelle generierte Dokumente", documents.generated && documents.current);
   add("hashes-verified", "integrity", "Vollständige SHA-256-Verifikation", integrity.verified && integrity.mismatchFiles.length === 0);
   add("blocking-deviations", "finalize", "Alle blockierenden Abweichungen gelöst", (track.blockingDeviations ?? []).every((item) => !item.blocking || item.resolved));
@@ -386,6 +429,8 @@ export function evidenceRoleLabel(role: EvidenceRole): string {
     code_generated_audio_file: "Codebasiert erzeugte Audiodatei",
     third_party_sample_file: "Fremde Sample-Datei",
     third_party_sample_license: "Lizenz für fremde Samples",
+    suno_terms_rights: "Suno-Nutzungsbedingungen / Rechteinformationen",
+    external_timestamp: "Externer Zeitstempelnachweis",
     other: "Sonstiger Nachweis"
   };
   return labels[role];
@@ -412,6 +457,8 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     code_generated_audio_file: "WAV oder MP3",
     third_party_sample_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     third_party_sample_license: "PDF, PNG, JPG, TXT oder Markdown",
+    suno_terms_rights: "PDF, TXT, Markdown, HTML, PNG oder JPG",
+    external_timestamp: "PDF, TXT, Markdown, JSON, HTML, PNG oder JPG",
     other: "PDF, Bild, Text, ZIP, WAV, MP3 oder MP4"
   };
   return types[role];

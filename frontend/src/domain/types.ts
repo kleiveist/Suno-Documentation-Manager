@@ -34,6 +34,8 @@ export type EvidenceRole =
   | "code_generated_audio_file"
   | "third_party_sample_file"
   | "third_party_sample_license"
+  | "suno_terms_rights"
+  | "external_timestamp"
   | "other";
 
 export type ArtworkOrigin = "none" | "human" | "ai_generated" | "ai_assisted";
@@ -84,6 +86,20 @@ export interface EvidenceItem {
   derivedFromEvidenceId?: string;
   generatorVersion?: string;
   generatedDisclosureText?: string;
+  metadata?: EvidenceMetadata;
+}
+
+export interface EvidenceMetadata {
+  originalFileName: string;
+  documentTitle: string;
+  provider: string;
+  sourceUrl: string;
+  retrievalDate: string;
+  effectiveDate: string;
+  factualNote: string;
+  externalTimestamp: string;
+  referencedHash: string;
+  referencedArtifact: string;
 }
 
 export interface EvidencePreview {
@@ -147,8 +163,14 @@ export interface TrackFields {
   productionEndDate: string;
   sunoModel: string;
   sunoProjectUrl: string;
+  sunoProjectVersionId: string;
+  sunoFinalGenerationId: string;
+  sunoFinalGenerationDate: string;
+  sunoFinalGenerationTime: string;
+  sunoDownloadExportDate: string;
   sunoPlanAtCreation: string;
   finalExportDate: string;
+  instrumentalTrack: boolean | null;
   lyricsSource: LyricsSource | "";
   lyricsText: string;
   sunoStylePrompt: string;
@@ -170,6 +192,9 @@ export interface TrackFields {
   postExportEditingPerformed: boolean | null;
   postExportEditingDetails: string;
   commercialUseIntended: boolean;
+  releaseFilenameDifferenceConfirmed: boolean | null;
+  sunoExportFilenameDifferenceConfirmed: boolean | null;
+  sunoTermsEvidenceNotAvailable: boolean | null;
   artworkOrigin: ArtworkOrigin | "";
   aiImageService: string;
   humanArtworkProcessOperations: string[];
@@ -306,8 +331,14 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     productionEndDate: "",
     sunoModel: "",
     sunoProjectUrl: "",
+    sunoProjectVersionId: "",
+    sunoFinalGenerationId: "",
+    sunoFinalGenerationDate: "",
+    sunoFinalGenerationTime: "",
+    sunoDownloadExportDate: "",
     sunoPlanAtCreation: profile.sunoPlan,
     finalExportDate: "",
+    instrumentalTrack: null,
     lyricsSource: "",
     lyricsText: "",
     sunoStylePrompt: "",
@@ -329,6 +360,9 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     postExportEditingPerformed: null,
     postExportEditingDetails: "",
     commercialUseIntended: profile.defaultCommercialUse,
+    releaseFilenameDifferenceConfirmed: null,
+    sunoExportFilenameDifferenceConfirmed: null,
+    sunoTermsEvidenceNotAvailable: null,
     artworkOrigin: "",
     aiImageService: profile.defaultAiImageService,
     humanArtworkProcessOperations: [],

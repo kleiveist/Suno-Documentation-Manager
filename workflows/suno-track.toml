@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.2"
+version = "1.3"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -324,6 +324,30 @@ when = "always"
 missing_message = "Die Suno-Projekt-URL fehlt."
 
 [[requirements]]
+key = "suno.project_or_version_id"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Suno-Projekt-/Versions-ID oder finale Generation-ID fehlt."
+
+[[requirements]]
+key = "suno.final_generation_date"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Das Datum der finalen Suno-Generation fehlt."
+
+[[requirements]]
+key = "suno.download_export_date"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Das Download-/Exportdatum der finalen Suno-Datei fehlt."
+
+[[requirements]]
 key = "suno.plan_at_creation"
 step_id = "suno"
 kind = "field"
@@ -349,12 +373,36 @@ missing_message = "Der finale Suno-Export fehlt."
 evidence_role = "suno_final_export"
 
 [[requirements]]
+key = "suno.export_filename_consistency"
+step_id = "suno"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der tatsächliche Suno-Exportdateiname fehlt, stimmt nicht mit dem dokumentierten Titel überein oder die Abweichung wurde nicht ausdrücklich bestätigt."
+
+[[requirements]]
 key = "human_work.lyrics_source"
 step_id = "human_work"
 kind = "field"
 required = true
 when = "always"
 missing_message = "Die Herkunft der Lyrics fehlt."
+
+[[requirements]]
+key = "human_work.instrumental_answer"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die ausdrückliche Angabe, ob der Track instrumental ist, fehlt."
+
+[[requirements]]
+key = "human_work.instrumental_consistency"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Instrumental-Angabe widerspricht der Lyrics-Quelle, dem Lyrics-Text oder der bestätigten menschlichen Arbeit 'Lyrics'. Bitte Angaben ausdrücklich korrigieren."
 
 [[requirements]]
 key = "human_work.human_lyrics_details"
@@ -520,6 +568,14 @@ missing_message = "Die finale Release-Audiodatei fehlt."
 evidence_role = "release_wav"
 
 [[requirements]]
+key = "release.filename_consistency"
+step_id = "release"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Der tatsächliche Release-Dateiname fehlt, stimmt nicht mit dem dokumentierten Titel überein oder die Abweichung wurde nicht ausdrücklich bestätigt."
+
+[[requirements]]
 key = "evidence_licenses.portable_copy"
 step_id = "evidence_licenses"
 kind = "evidence"
@@ -527,6 +583,23 @@ required = true
 when = "commercial_use"
 missing_message = "Die portable Kopie des ausgewählten Abo-Nachweises fehlt im Track."
 evidence_role = "subscription_payment"
+
+[[requirements]]
+key = "evidence_licenses.subscription_generation_coverage"
+step_id = "evidence_licenses"
+kind = "field"
+required = true
+when = "commercial_use"
+missing_message = "Der ausgewählte Abo-Nachweis deckt das Datum der finalen Suno-Generation nicht nachweisbar ab."
+
+[[requirements]]
+key = "evidence_licenses.terms_or_unavailable"
+step_id = "evidence_licenses"
+kind = "field"
+required = true
+when = "commercial_use"
+missing_message = "Lokale Suno-Nutzungsbedingungen fehlen; alternativ muss 'Terms evidence not available' ausdrücklich dokumentiert werden."
+allow_explicit_unavailable = true
 
 [[requirements]]
 key = "integrity.documents_current"

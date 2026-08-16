@@ -1,10 +1,10 @@
 use crate::application::WorkspaceApp;
 use crate::error::{AppError, Result};
 use crate::model::{
-    ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidencePreview, EvidenceRole,
-    GlobalEvidenceItem, OperationProgress, Profile, StepStatus, SubscriptionBillingCycle,
-    TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackPatch, TrackSummary,
-    ValidationResult, WorkspaceScan, WorkspaceSummary,
+    ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
+    EvidencePreview, EvidenceRole, GlobalEvidenceItem, OperationProgress, Profile, StepStatus,
+    SubscriptionBillingCycle, TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackPatch,
+    TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
@@ -245,6 +245,7 @@ pub async fn import_evidence(
     track_id: String,
     role: EvidenceRole,
     replace_evidence_id: Option<String>,
+    metadata: Option<EvidenceMetadata>,
 ) -> Result<Option<TrackDetail>> {
     let Some(source) = rfd::FileDialog::new()
         .set_title("Evidence importieren")
@@ -259,10 +260,21 @@ pub async fn import_evidence(
         .ok_or(AppError::NoWorkspace)?;
     tauri::async_runtime::spawn_blocking(move || match replace_evidence_id {
         Some(evidence_id) => workspace
-            .replace_evidence_from(&track_id, &evidence_id, role, &source)
+            .replace_evidence_with_metadata_from(
+                &track_id,
+                &evidence_id,
+                role,
+                &source,
+                metadata.unwrap_or_default(),
+            )
             .map(Some),
         None => workspace
-            .import_evidence_from(&track_id, role, &source)
+            .import_evidence_with_metadata_from(
+                &track_id,
+                role,
+                &source,
+                metadata.unwrap_or_default(),
+            )
             .map(Some),
     })
     .await

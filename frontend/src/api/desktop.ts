@@ -4,6 +4,7 @@ import { createDemoApi } from "./demo";
 import type {
   ActionResult,
   EvidencePreview,
+  EvidenceMetadata,
   EvidenceRole,
   DocumentPreview,
   GlobalProfile,
@@ -51,7 +52,7 @@ export interface DesktopApi {
   resolveDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   removeDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   setStepStatus(trackId: string, stepId: StepId, status: StepStatus, naReason?: string): Promise<TrackDetail>;
-  importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string): Promise<TrackDetail | null>;
+  importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>): Promise<TrackDetail | null>;
   removeEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
   previewEvidence(trackId: string, evidenceId: string): Promise<EvidencePreview>;
   verifyEvidence(trackId: string, evidenceId?: string): Promise<TrackDetail>;
@@ -207,9 +208,11 @@ class TauriDesktopApi implements DesktopApi {
     return command("set_step_status", { trackId, stepId, status, naReason });
   }
 
-  async importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string): Promise<TrackDetail | null> {
+  async importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>): Promise<TrackDetail | null> {
     try {
-      return await command<TrackDetail | null>("import_evidence", { trackId, role, replaceEvidenceId });
+      const args: Record<string, unknown> = { trackId, role, replaceEvidenceId };
+      if (metadata) args.metadata = metadata;
+      return await command<TrackDetail | null>("import_evidence", args);
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;

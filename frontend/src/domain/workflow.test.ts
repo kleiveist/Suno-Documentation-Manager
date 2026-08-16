@@ -41,7 +41,12 @@ function evidence(role: EvidenceRole): EvidenceItem {
     sizeBytes: 42,
     importedAt: "2026-08-01T10:00:00Z",
     verified: true,
-    provenance: "managed_copy"
+    provenance: "managed_copy",
+    metadata: {
+      originalFileName: ["suno_final_export", "release_wav"].includes(role) ? "Complete Track.wav" : `${role}.dat`,
+      documentTitle: "", provider: "", sourceUrl: "", retrievalDate: "", effectiveDate: "",
+      factualNote: "", externalTimestamp: "", referencedHash: "", referencedArtifact: ""
+    }
   };
 }
 
@@ -53,9 +58,14 @@ function completeTrack(): TrackDetail {
     productionEndDate: "2026-07-03",
     sunoModel: "v4.5",
     sunoProjectUrl: "https://suno.example.test/project",
+    sunoProjectVersionId: "project-version-1",
+    sunoFinalGenerationId: "generation-1",
+    sunoFinalGenerationDate: "2026-07-03",
+    sunoDownloadExportDate: "2026-07-03",
     sunoPlanAtCreation: "Premier",
     finalExportDate: "2026-07-03",
     lyricsSource: "instrumental" as const,
+    instrumentalTrack: true,
     sunoStylePrompt: "cinematic synthwave, driving bass",
     externalAudioUploaded: false,
     ownAudioUploaded: false,
@@ -76,12 +86,12 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.2",
+    workflowVersion: "1.3",
     profileSnapshot: structuredClone(profile),
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.4", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.5", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     blockingDeviations: []
@@ -149,6 +159,50 @@ describe("missing requirements", () => {
     const ids = calculateMissingRequirements(track, profile).map((item) => item.id);
     expect(ids).toEqual(expect.arrayContaining(["external-source", "external-ownership", "external-audio-file", "external-license"]));
     expect(ids).not.toContain("sample-license");
+  });
+
+  it("blocks contradictory instrumental, lyrics and confirmed human-work facts", () => {
+    const track = completeTrack();
+    track.fields.instrumentalTrack = true;
+    track.fields.lyricsSource = "mixed";
+    track.fields.lyricsText = "Contradictory lyrics";
+    track.fields.humanEditingPerformed = true;
+    track.fields.humanEditingDetails = "Arrangement, Lyrics";
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("instrumental-consistency");
+  });
+
+  it("requires explicit confirmation for an intentional filename deviation without changing the title", () => {
+    const track = completeTrack();
+    track.fields.title = "Gravaty";
+    track.evidence.find((item) => item.role === "release_wav")!.metadata!.originalFileName = "GRAVITY.wav";
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("release-filename");
+    track.fields.releaseFilenameDifferenceConfirmed = true;
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("release-filename");
+    expect(track.fields.title).toBe("Gravaty");
+  });
+
+  it("checks commercial final-generation coverage and the explicit terms alternative", () => {
+    const track = completeTrack();
+    track.fields.commercialUseIntended = true;
+    const subscription = evidence("subscription_payment");
+    subscription.sourceGlobalEvidenceId = "global-subscription";
+    subscription.coverageStart = "2026-07-01";
+    subscription.coverageEnd = "2026-07-02";
+    track.evidence.push(subscription);
+    let ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).toContain("subscription-generation-coverage");
+    expect(ids).toContain("terms-evidence");
+    subscription.coverageEnd = "2026-07-31";
+    track.fields.sunoTermsEvidenceNotAvailable = true;
+    ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).not.toContain("subscription-generation-coverage");
+    expect(ids).not.toContain("terms-evidence");
+    track.evidence.push(evidence("suno_terms_rights"));
+    ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).toContain("terms-evidence");
+    track.fields.sunoTermsEvidenceNotAvailable = false;
+    ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).not.toContain("terms-evidence");
   });
 
   it("requires source, ownership, file and license on positive source branches", () => {
