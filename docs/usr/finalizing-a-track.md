@@ -94,7 +94,7 @@ After changing a source answer or evidence selection, regenerate affected docume
 
 ## Generate and verify SHA-256
 
-Use the integrity step to generate `03_DOCUMENTATION/SHA256SUMS.txt`. The application hashes release files, Suno evidence, documentation, licenses, and artwork. It excludes `.archive/`, `.summary/`, the hash list itself, and `06_CERTIFICATE/`. Workspace `.suno-doc/` data sits outside the track root; a nested directory with that name inside a track is normal protected content.
+Use the integrity step to generate `03_DOCUMENTATION/SHA256SUMS.txt`. The application hashes release files, Suno evidence, documentation, licenses, and artwork. It excludes `.archive/`, `.summary/`, the hash list itself, `06_CERTIFICATE/`, and the exact root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` path. The PDF is created later and protected by `CERTIFICATE_SHA256.txt`. Workspace `.suno-doc/` data sits outside the track root; a nested directory with that name inside a track is normal protected content.
 
 Generation is not enough. The native service immediately rereads each listed file. Continue only when the displayed generated and verified counts match and the result is `PASS`.
 
@@ -115,11 +115,15 @@ This external check is optional product-independent verification. The normal app
 Select `FINALIZE DOCUMENTATION`. The native layer reevaluates the complete gate; it does not trust a cached UI percentage. A successful transaction creates:
 
 ```text
+SunoDM_DOCUMENTATION_CERTIFICATE.pdf
+
 06_CERTIFICATE/
 ├── DOCUMENTATION_CERTIFICATE.md
 ├── EVIDENCE_MANIFEST.json
 └── CERTIFICATE_SHA256.txt
 ```
+
+`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` is a compact, human-readable technical representation of the same finalized snapshot. It records documented track and Suno data, confirmed source and human-work facts, authoritative workflow results, the complete evidence register with provenance and full SHA-256 values, and the final integrity anchors. It is a technical documentation, evidence, and integrity record; it does not perform a legal assessment.
 
 During finalization, the progress view distinguishes native gate validation, snapshot collection, transaction protection, certificate/manifest generation, certificate verification, the complete SHA-256 reread, and the final database commit. File names, byte counts, file counts, and elapsed time remain visible while the filesystem work runs outside the Tauri main thread.
 
@@ -141,7 +145,7 @@ From the track root, a system with `sha256sum` can independently check the certi
 sha256sum -c 06_CERTIFICATE/CERTIFICATE_SHA256.txt
 ```
 
-The certificate list covers at least the main SHA-256 list, evidence manifest, and certificate Markdown. It does not hash itself.
+The certificate list covers the main SHA-256 list, evidence manifest, certificate Markdown, and root-level technical PDF. It does not hash itself, and the PDF does not contain a self-hash. Changing one PDF byte therefore makes native certificate verification fail.
 
 ## Preserve the snapshot
 
@@ -157,11 +161,11 @@ Use `Create new revision and edit` from the overview, any workflow step (includi
 
 When the application reports `Documentation changed after finalization`, review the mismatch before proceeding. Then create the revision explicitly.
 
-The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, and the complete former certificate directory below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
+The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, the complete former certificate directory, and the former root-level technical PDF below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
 
 Tracks created by an older application version or recovered from an imported folder may not yet contain `.archive/revisions/`. Revision creation safely creates this managed parent before moving any live certificate artifact; users do not need to create the folder manually.
 
-If the application or machine stops during certificate publication, reopening the workspace uses the matching `.archive/finalization-in-progress.json` marker to identify only that application transaction. A published set beside a non-finalized record is then moved to `.archive/recovery/<transaction-id>/certificate/` with recovery metadata. A stale marker beside an already finalized record is removed. Historical `06_CERTIFICATE/` files without this marker are left untouched and are not assumed to be a failed application finalization.
+If the application or machine stops during certificate publication, reopening the workspace uses the matching `.archive/finalization-in-progress.json` marker to identify only that application transaction. A published certificate directory, root-level PDF, and correlated staging set beside a non-finalized record are then moved to `.archive/recovery/<transaction-id>/` with recovery metadata. A stale marker beside an already finalized record is removed. Historical certificate files without this marker are left untouched and are not assumed to be a failed application finalization.
 
 A new workflow version does not modify an older certificate. The application shows the finalized and current workflow versions and requires explicit reevaluation.
 
@@ -171,7 +175,7 @@ Use a non-sensitive test track and record actual results only in the acceptance 
 
 1. Leave one mandatory evidence role empty and confirm finalization is blocked with the exact missing item.
 2. Complete every mandatory item, regenerate documents, and generate and verify hashes.
-3. Finalize and inspect all three certificate artifacts.
+3. Finalize and inspect the three files under `06_CERTIFICATE/` plus `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` at the track root.
 4. Independently verify both SHA-256 lists where the platform tool is available.
 5. Modify a protected disposable file and confirm certificate invalidation.
 6. Create a revision and confirm that the previous certificate state remains archived.

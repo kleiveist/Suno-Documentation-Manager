@@ -101,9 +101,11 @@ The browser-only Vite preview cannot perform the native workspace, evidence, art
 7. Generate documents and, when applicable, the visible AI artwork disclosure.
 8. Generate and verify `03_DOCUMENTATION/SHA256SUMS.txt`.
 9. Finalize only after the application reports that every gate condition passes.
-10. Preserve the generated certificate and manifest with the track folder.
+10. Preserve the generated certificate set, manifest, and root-level technical PDF with the track folder.
 
 Start with [Getting started](docs/usr/getting-started.md). Before finalization, read [Finalizing a track](docs/usr/finalizing-a-track.md).
+
+Step 10 now creates `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` directly in the track root. The local native renderer uses the same finalized structured snapshot as the Markdown certificate and evidence manifest; the PDF's SHA-256 is the fourth required entry in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`.
 
 ## Local data model
 

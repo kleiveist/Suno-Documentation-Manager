@@ -107,6 +107,7 @@ A negative answer ends the branch. A positive content-check answer can require a
 
 ```text
 <track-folder>/
+├── SunoDM_DOCUMENTATION_CERTIFICATE.pdf
 ├── .archive/
 │   ├── removals/
 │   ├── recovery/
@@ -221,6 +222,7 @@ Generation publishes live phase, current-file, and completed-file counters to th
 - `.archive/`;
 - `.summary/`;
 - `03_DOCUMENTATION/SHA256SUMS.txt` itself;
+- the exact root path `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, which is anchored by the certificate hash set instead;
 - `06_CERTIFICATE/`; and
 - workspace management data under the workspace root `.suno-doc/` (which is outside every track root).
 
@@ -234,9 +236,12 @@ Calculation and verification publish the actual processed byte and file counts f
 
 After the finalization gate passes, the product writes:
 
+- root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, a human-readable A4 technical rendering of the finalized structured snapshot with track/source data, authoritative workflow results, evidence provenance and full hashes, and integrity anchors;
 - `DOCUMENTATION_CERTIFICATE.md` with the certificate ID, track, artist, workflow ID and version, application version, finalization timestamp, mandatory-step result, justified N/A steps, evidence count, selected hashes, blocking-deviation result, and `DOCUMENTATION COMPLETE` status;
 - `EVIDENCE_MANIFEST.json` with `schema_version`, track, artist, workflow, finalization, steps, evidence, hashes, and certificate objects; each verified evidence object includes provenance plus applicable source, coverage, and generated-disclosure lineage fields; and
-- `CERTIFICATE_SHA256.txt` covering at least the main hash list, evidence manifest, and certificate document, but never itself.
+- `CERTIFICATE_SHA256.txt` covering the main hash list, evidence manifest, certificate document, and root-level PDF, but never itself.
+
+All four outputs are staged and verified as one finalization transaction. The PDF hash is external to the PDF to avoid a circular self-hash. Publication, rollback, crash recovery, and revision archival carry the root PDF together with the certificate directory, and an occupied root-PDF destination is never silently replaced.
 
 The certificate ends with this meaning: it confirms completion of the configured documentation workflow and integrity checks, but is not governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.
 

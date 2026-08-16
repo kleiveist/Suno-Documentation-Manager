@@ -258,7 +258,7 @@ fn progress(
 }
 
 fn excluded(relative: &Path) -> bool {
-    if relative == Path::new(HASH_FILE) {
+    if relative == Path::new(HASH_FILE) || relative == Path::new(crate::certificate::PDF_FILE) {
         return true;
     }
     matches!(
@@ -317,13 +317,32 @@ mod tests {
         fs::write(track_root.join(".archive/ignored.txt"), b"ignored").expect("archive fixture");
         fs::write(track_root.join("06_CERTIFICATE/ignored.txt"), b"ignored")
             .expect("certificate fixture");
+        fs::write(
+            track_root.join(crate::certificate::PDF_FILE),
+            b"root certificate PDF",
+        )
+        .expect("root PDF fixture");
+        fs::write(
+            track_root
+                .join("01_RELEASE")
+                .join(crate::certificate::PDF_FILE),
+            b"same name in a hashable directory",
+        )
+        .expect("nested same-name fixture");
 
         let generated = calculate(&track_root).expect("hash generation");
         assert!(generated.verified);
-        assert_eq!(generated.file_count, 2);
+        assert_eq!(generated.file_count, 3);
         let verified = verify(&track_root).expect("hash verification");
         assert!(verified.verified);
-        assert_eq!(verified.verified_count, 2);
+        assert_eq!(verified.verified_count, 3);
+        let entries = hash_entries(&track_root).expect("hash candidates");
+        assert!(!entries
+            .iter()
+            .any(|(path, _)| path == crate::certificate::PDF_FILE));
+        assert!(entries
+            .iter()
+            .any(|(path, _)| { path == &format!("01_RELEASE/{}", crate::certificate::PDF_FILE) }));
 
         fs::write(
             track_root.join("01_RELEASE/unlisted.mp3"),

@@ -50,6 +50,25 @@ pub struct WorkspaceApp {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FinalizationFailure {
     DatabaseCommit,
+    PdfGeneration,
+    PdfStaging,
+    PdfPublication,
+    PostPublishVerification,
+}
+
+#[cfg(test)]
+impl FinalizationFailure {
+    fn certificate_failure(self) -> Option<certificate::CertificateGenerationFailure> {
+        match self {
+            Self::DatabaseCommit => None,
+            Self::PdfGeneration => Some(certificate::CertificateGenerationFailure::PdfGeneration),
+            Self::PdfStaging => Some(certificate::CertificateGenerationFailure::PdfStaging),
+            Self::PdfPublication => Some(certificate::CertificateGenerationFailure::PdfPublication),
+            Self::PostPublishVerification => {
+                Some(certificate::CertificateGenerationFailure::PostPublishVerification)
+            }
+        }
+    }
 }
 
 impl WorkspaceApp {
@@ -102,8 +121,11 @@ impl WorkspaceApp {
             }
             let root = self.track_root(&track)?;
             let live = contained_path(&root, Path::new(certificate::CERTIFICATE_DIR), false)?;
+            let live_pdf = contained_path(&root, Path::new(certificate::PDF_FILE), false)?;
 
-            if track.status == TrackStatus::Finalized && directory_is_empty_or_missing(&live)? {
+            if track.status == TrackStatus::Finalized
+                && finalized_artifacts_need_revision_restore(&root, &live, &live_pdf)?
+            {
                 let staging = contained_path(&root, Path::new(".archive/revision-staging"), false)?;
                 if staging.is_dir() {
                     for entry in
@@ -123,21 +145,19 @@ impl WorkspaceApp {
                         if let Some(candidate) =
                             matching_revision_certificate(&root, &entry_relative, &track)?
                         {
-                            if live.exists() {
-                                fs::remove_dir(&live)
-                                    .map_err(|error| AppError::io(&live, error))?;
+                            if restore_revision_artifacts(&live, &live_pdf, &candidate)? {
+                                let _ = fs::remove_dir_all(&entry_path);
+                                recovered = true;
+                                break;
                             }
-                            fs::rename(&candidate, &live)
-                                .map_err(|error| AppError::io(&live, error))?;
-                            let _ = fs::remove_dir_all(&entry_path);
-                            recovered = true;
-                            break;
                         }
                     }
                 }
             }
 
-            if track.status == TrackStatus::Finalized && directory_is_empty_or_missing(&live)? {
+            if track.status == TrackStatus::Finalized
+                && finalized_artifacts_need_revision_restore(&root, &live, &live_pdf)?
+            {
                 let revisions = contained_path(&root, Path::new(".archive/revisions"), false)?;
                 if revisions.is_dir() {
                     let mut entries = fs::read_dir(&revisions)
@@ -161,14 +181,11 @@ impl WorkspaceApp {
                         else {
                             continue;
                         };
-                        if live.exists() {
-                            fs::remove_dir(&live).map_err(|error| AppError::io(&live, error))?;
+                        if restore_revision_artifacts(&live, &live_pdf, &candidate)? {
+                            let _ = fs::remove_dir_all(&entry_path);
+                            recovered = true;
+                            break;
                         }
-                        fs::rename(&candidate, &live)
-                            .map_err(|error| AppError::io(&live, error))?;
-                        let _ = fs::remove_dir_all(&entry_path);
-                        recovered = true;
-                        break;
                     }
                 }
             }
@@ -209,8 +226,9 @@ impl WorkspaceApp {
                     PathBuf::from(".archive/certificate-staging").join(recovery_id);
                 let staging = contained_path(&root, &staging_relative, false)?;
                 let live_needs_recovery = !directory_is_empty_or_missing(&live)?;
+                let live_pdf_needs_recovery = live_pdf.exists();
                 let staging_needs_recovery = staging.exists();
-                if live_needs_recovery || staging_needs_recovery {
+                if live_needs_recovery || live_pdf_needs_recovery || staging_needs_recovery {
                     let recovery_relative = PathBuf::from(".archive/recovery").join(recovery_id);
                     let recovery = ensure_contained_directory(&root, &recovery_relative)?;
                     let metadata = serde_json::to_vec_pretty(&serde_json::json!({
@@ -219,19 +237,30 @@ impl WorkspaceApp {
                         "recovered_at": now(),
                         "reason": "certificate publication was interrupted before the database committed FINALIZED",
                         "live_certificate_recovered": live_needs_recovery,
+                        "live_pdf_recovered": live_pdf_needs_recovery,
                         "staging_recovered": staging_needs_recovery,
                     }))?;
-                    atomic_write_new(&recovery.join("recovery.json"), &metadata)?;
+                    let recovery_metadata = recovery.join("recovery.json");
+                    if !recovery_metadata.exists() {
+                        atomic_write_new(&recovery_metadata, &metadata)?;
+                    }
                     if live_needs_recovery {
                         fs::rename(&live, recovery.join("certificate"))
                             .map_err(|error| AppError::io(&live, error))?;
+                    }
+                    if live_pdf_needs_recovery {
+                        fs::rename(&live_pdf, recovery.join(certificate::PDF_FILE))
+                            .map_err(|error| AppError::io(&live_pdf, error))?;
                     }
                     if staging_needs_recovery {
                         fs::rename(&staging, recovery.join("certificate-staging"))
                             .map_err(|error| AppError::io(&staging, error))?;
                     }
-                    ensure_contained_directory(&root, Path::new(certificate::CERTIFICATE_DIR))?;
                 }
+                // Recovery is idempotent across process exits between the
+                // individual moves. Recreate the managed empty directory even
+                // when a prior attempt already moved every correlated artifact.
+                ensure_contained_directory(&root, Path::new(certificate::CERTIFICATE_DIR))?;
                 fs::remove_file(&finalization_marker)
                     .map_err(|error| AppError::io(&finalization_marker, error))?;
                 recovered = true;
@@ -1530,12 +1559,24 @@ impl WorkspaceApp {
         let track_root = self.track_root(&track)?;
         let live_certificate =
             contained_path(&track_root, Path::new(certificate::CERTIFICATE_DIR), false)?;
+        let live_pdf = contained_path(&track_root, Path::new(certificate::PDF_FILE), false)?;
         if !directory_is_empty_or_missing(&live_certificate)? {
             return Err(AppError::Collision(
                 "The certificate directory already contains files. Preserve or archive them before finalizing."
                     .into(),
             ));
         }
+        if live_pdf.exists() {
+            return Err(AppError::Collision(format!(
+                "The technical documentation PDF already exists: {}",
+                certificate::PDF_FILE
+            )));
+        }
+        let certificate_staging = contained_path(
+            &track_root,
+            &PathBuf::from(".archive/certificate-staging").join(&transaction_id),
+            false,
+        )?;
         let finalization_marker = contained_path(
             &track_root,
             Path::new(".archive/finalization-in-progress.json"),
@@ -1559,6 +1600,33 @@ impl WorkspaceApp {
             total_files: evidence.len() as u32,
             ..OperationProgress::default()
         });
+        #[cfg(test)]
+        let publication = match failure.and_then(FinalizationFailure::certificate_failure) {
+            Some(certificate_failure) => certificate::generate_with_failure(
+                &track_root,
+                &track,
+                &track.profile_snapshot,
+                &evaluation.steps,
+                &evidence,
+                &deviations,
+                &certificate_id,
+                &finalized_at,
+                &transaction_id,
+                certificate_failure,
+            ),
+            None => certificate::generate(
+                &track_root,
+                &track,
+                &track.profile_snapshot,
+                &evaluation.steps,
+                &evidence,
+                &deviations,
+                &certificate_id,
+                &finalized_at,
+                &transaction_id,
+            ),
+        };
+        #[cfg(not(test))]
         let publication = certificate::generate(
             &track_root,
             &track,
@@ -1571,7 +1639,10 @@ impl WorkspaceApp {
             &transaction_id,
         );
         if let Err(error) = publication {
-            if directory_is_empty_or_missing(&live_certificate).unwrap_or(false) {
+            if directory_is_empty_or_missing(&live_certificate).unwrap_or(false)
+                && !live_pdf.exists()
+                && !certificate_staging.exists()
+            {
                 let _ = fs::remove_file(&finalization_marker);
             }
             return Err(error);
@@ -1662,7 +1733,10 @@ impl WorkspaceApp {
             ..OperationProgress::default()
         });
         Ok(ActionResult {
-            message: "Documentation finalized and certificate set verified.".into(),
+            message: format!(
+                "Documentation finalized and certificate set verified. Technical documentation certificate created: {}",
+                certificate::PDF_FILE
+            ),
             track: Some(detail),
         })
     }
@@ -1705,40 +1779,68 @@ impl WorkspaceApp {
         if archive.exists() {
             return Err(AppError::Collision(archive.display().to_string()));
         }
-        let stage_relative = PathBuf::from(".archive/revision-staging").join(&revision_id);
-        let stage = ensure_contained_directory(&root, &stage_relative)?;
-        let live_hashes = contained_path(&root, Path::new(integrity::HASH_FILE), false)?;
-        if live_hashes.is_file() {
-            let archived_hashes = stage.join(integrity::HASH_FILE);
-            if let Some(parent) = archived_hashes.parent() {
-                fs::create_dir_all(parent).map_err(|error| AppError::io(parent, error))?;
-            }
-            copy_new(&live_hashes, &archived_hashes)?;
-            if sha256_file(&live_hashes)? != sha256_file(&archived_hashes)? {
-                return Err(AppError::Validation(
-                    "The revision SHA256SUMS archive copy could not be verified.".into(),
-                ));
-            }
-        }
-        let metadata = serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "revision_id": revision_id,
-            "track_id": track.id,
-            "archived_at": now(),
-            "previous_certificate": track.certificate,
-            "certificate_integrity_at_archive": certificate_integrity,
-        }))?;
-        atomic_write_new(&stage.join("revision.json"), &metadata)?;
         let live_certificate =
             contained_path(&root, Path::new(certificate::CERTIFICATE_DIR), false)?;
         let certificate_existed = live_certificate.exists();
+        let live_pdf = contained_path(&root, Path::new(certificate::PDF_FILE), false)?;
+        let pdf_existed = regular_file_if_present(&live_pdf, "The technical documentation PDF")?;
+        let stage_relative = PathBuf::from(".archive/revision-staging").join(&revision_id);
+        let stage = ensure_contained_directory(&root, &stage_relative)?;
+        let live_hashes = contained_path(&root, Path::new(integrity::HASH_FILE), false)?;
+        let stage_preparation = (|| -> Result<()> {
+            if live_hashes.is_file() {
+                let archived_hashes = stage.join(integrity::HASH_FILE);
+                if let Some(parent) = archived_hashes.parent() {
+                    fs::create_dir_all(parent).map_err(|error| AppError::io(parent, error))?;
+                }
+                copy_new(&live_hashes, &archived_hashes)?;
+                if sha256_file(&live_hashes)? != sha256_file(&archived_hashes)? {
+                    return Err(AppError::Validation(
+                        "The revision SHA256SUMS archive copy could not be verified.".into(),
+                    ));
+                }
+            }
+            let metadata = serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "revision_id": revision_id,
+                "track_id": track.id,
+                "archived_at": now(),
+                "previous_certificate": track.certificate,
+                "certificate_integrity_at_archive": certificate_integrity,
+            }))?;
+            atomic_write_new(&stage.join("revision.json"), &metadata)?;
+            Ok(())
+        })();
+        if let Err(error) = stage_preparation {
+            return Err(cleanup_revision_staging(&stage, error));
+        }
         let staged_certificate = stage.join("certificate");
-        if certificate_existed {
+        let staged_pdf = stage.join(certificate::PDF_FILE);
+        let certificate_staging = if certificate_existed {
             fs::rename(&live_certificate, &staged_certificate)
-                .map_err(|error| AppError::io(&live_certificate, error))?;
+                .map_err(|error| AppError::io(&live_certificate, error))
         } else {
             fs::create_dir(&staged_certificate)
-                .map_err(|error| AppError::io(&staged_certificate, error))?;
+                .map_err(|error| AppError::io(&staged_certificate, error))
+        };
+        if let Err(error) = certificate_staging {
+            return Err(cleanup_revision_staging(&stage, error));
+        }
+        let mut pdf_moved = false;
+        if pdf_existed {
+            if let Err(error) = fs::rename(&live_pdf, &staged_pdf) {
+                return Err(rollback_revision_state(
+                    &live_certificate,
+                    &staged_certificate,
+                    &live_pdf,
+                    &staged_pdf,
+                    &stage,
+                    certificate_existed,
+                    pdf_moved,
+                    AppError::io(&live_pdf, error),
+                ));
+            }
+            pdf_moved = true;
         }
         if let Err(error) =
             ensure_contained_directory(&root, Path::new(certificate::CERTIFICATE_DIR))
@@ -1746,8 +1848,11 @@ impl WorkspaceApp {
             return Err(rollback_revision_state(
                 &live_certificate,
                 &staged_certificate,
+                &live_pdf,
+                &staged_pdf,
                 &stage,
                 certificate_existed,
+                pdf_moved,
                 error,
             ));
         }
@@ -1755,8 +1860,11 @@ impl WorkspaceApp {
             return Err(rollback_revision_state(
                 &live_certificate,
                 &staged_certificate,
+                &live_pdf,
+                &staged_pdf,
                 &stage,
                 certificate_existed,
+                pdf_moved,
                 AppError::io(&archive, error),
             ));
         }
@@ -1769,8 +1877,11 @@ impl WorkspaceApp {
             return Err(rollback_revision_state(
                 &live_certificate,
                 &archive.join("certificate"),
+                &live_pdf,
+                &archive.join(certificate::PDF_FILE),
                 &archive,
                 certificate_existed,
+                pdf_moved,
                 error,
             ));
         }
@@ -2472,6 +2583,7 @@ fn inspect_legacy(root: &Path) -> Result<LegacyInspection> {
                 has_collision = true;
             }
         } else if portable != integrity::HASH_FILE
+            && portable != certificate::PDF_FILE
             && !portable.starts_with(".archive/")
             && !portable.starts_with(".summary/")
             && !portable.starts_with("06_CERTIFICATE/")
@@ -2606,6 +2718,106 @@ fn matching_revision_certificate(
     Ok(Some(candidate))
 }
 
+fn finalized_artifacts_need_revision_restore(
+    track_root: &Path,
+    live_certificate: &Path,
+    live_pdf: &Path,
+) -> Result<bool> {
+    if directory_is_empty_or_missing(live_certificate)? {
+        return Ok(true);
+    }
+    // A malformed live set is ordinary certificate invalidation, not proof of
+    // an interrupted revision. Only a readable current-format set establishes
+    // that the root PDF belongs to this finalized snapshot and needs recovery.
+    Ok(!live_pdf.is_file() && matches!(certificate::expects_pdf(track_root), Ok(true)))
+}
+
+fn restore_revision_artifacts(
+    live_certificate: &Path,
+    live_pdf: &Path,
+    archived_certificate: &Path,
+) -> Result<bool> {
+    let revision_directory = archived_certificate
+        .parent()
+        .ok_or_else(|| AppError::Data("Revision certificate has no archive directory.".into()))?;
+    let archived_pdf = revision_directory.join(certificate::PDF_FILE);
+    let restore_certificate = directory_is_empty_or_missing(live_certificate)?;
+    let archived_pdf_exists =
+        regular_file_if_present(&archived_pdf, "The archived technical documentation PDF")?;
+    let live_pdf_exists =
+        regular_file_if_present(live_pdf, "The live technical documentation PDF")?;
+    let restore_pdf = archived_pdf_exists && !live_pdf_exists;
+    if archived_pdf_exists
+        && live_pdf_exists
+        && sha256_file(&archived_pdf)? != sha256_file(live_pdf)?
+    {
+        return Err(AppError::Validation(
+            "The live and archived technical documentation PDFs do not match.".into(),
+        ));
+    }
+    if !restore_certificate && !restore_pdf {
+        return Ok(false);
+    }
+
+    if restore_certificate && live_certificate.exists() {
+        fs::remove_dir(live_certificate).map_err(|error| AppError::io(live_certificate, error))?;
+    }
+    let mut certificate_moved = false;
+    let mut pdf_moved = false;
+    let restore_result = (|| -> Result<()> {
+        if restore_certificate {
+            fs::rename(archived_certificate, live_certificate)
+                .map_err(|error| AppError::io(live_certificate, error))?;
+            certificate_moved = true;
+        }
+        if restore_pdf {
+            copy_new(&archived_pdf, live_pdf)?;
+            pdf_moved = true;
+        }
+        Ok(())
+    })();
+    if let Err(cause) = restore_result {
+        let mut rollback_errors = Vec::new();
+        if pdf_moved {
+            if let Err(error) = fs::remove_file(live_pdf) {
+                rollback_errors.push(format!("PDF rollback failed: {error}"));
+            }
+        }
+        if certificate_moved {
+            if let Err(error) = fs::rename(live_certificate, archived_certificate) {
+                rollback_errors.push(format!("certificate rollback failed: {error}"));
+            }
+        }
+        if restore_certificate && !live_certificate.exists() {
+            if let Err(error) = fs::create_dir(live_certificate) {
+                rollback_errors.push(format!("live directory recovery failed: {error}"));
+            }
+        }
+        if rollback_errors.is_empty() {
+            return Err(cause);
+        }
+        return Err(AppError::Data(format!(
+            "Revision recovery failed ({cause}); {}",
+            rollback_errors.join("; ")
+        )));
+    }
+    Ok(true)
+}
+
+fn regular_file_if_present(path: &Path, label: &str) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(AppError::Symlink(path.display().to_string()))
+        }
+        Ok(metadata) if !metadata.is_file() => Err(AppError::Validation(format!(
+            "{label} is not a regular file."
+        ))),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(AppError::io(path, error)),
+    }
+}
+
 fn rollback_removed_file(archived: &Path, original: &Path, cause: AppError) -> AppError {
     match fs::rename(archived, original) {
         Ok(()) => cause,
@@ -2633,9 +2845,30 @@ fn rollback_certificate_set(track_root: &Path, cause: AppError) -> CertificateRo
                         "Finalization failed ({cause}); certificate rollback path failed: {rollback_error}"
                     )),
                     complete: false,
-                };
+            };
         }
     };
+    let pdf = match contained_path(track_root, Path::new(certificate::PDF_FILE), false) {
+        Ok(path) => path,
+        Err(rollback_error) => {
+            return CertificateRollback {
+                error: AppError::Data(format!(
+                    "Finalization failed ({cause}); PDF rollback path failed: {rollback_error}"
+                )),
+                complete: false,
+            };
+        }
+    };
+    if pdf.exists() {
+        if let Err(rollback_error) = fs::remove_file(&pdf) {
+            return CertificateRollback {
+                error: AppError::Data(format!(
+                    "Finalization failed ({cause}); PDF cleanup failed: {rollback_error}"
+                )),
+                complete: false,
+            };
+        }
+    }
     if certificate_dir.exists() {
         if let Err(rollback_error) = fs::remove_dir_all(&certificate_dir) {
             return CertificateRollback {
@@ -2663,34 +2896,106 @@ fn rollback_certificate_set(track_root: &Path, cause: AppError) -> CertificateRo
 fn rollback_revision_state(
     live_certificate: &Path,
     archived_certificate: &Path,
+    live_pdf: &Path,
+    archived_pdf: &Path,
     revision_directory: &Path,
     certificate_existed: bool,
+    pdf_moved: bool,
     cause: AppError,
 ) -> AppError {
-    if live_certificate.exists() {
-        if let Err(rollback_error) = fs::remove_dir_all(live_certificate) {
-            return AppError::Data(format!(
-                "Revision failed ({cause}); live certificate cleanup failed: {rollback_error}"
+    let mut rollback_errors = Vec::new();
+    let mut pdf_restored = !pdf_moved;
+    if pdf_moved {
+        if live_pdf.exists() {
+            rollback_errors.push(format!(
+                "PDF rollback would overwrite {}",
+                live_pdf.display()
             ));
+        } else {
+            match copy_new(archived_pdf, live_pdf) {
+                Ok(()) => pdf_restored = true,
+                Err(error) => rollback_errors.push(format!("PDF rollback failed: {error}")),
+            }
         }
     }
-    if certificate_existed {
-        if let Err(rollback_error) = fs::rename(archived_certificate, live_certificate) {
-            return AppError::Data(format!(
-                "Revision failed ({cause}); certificate rollback failed: {rollback_error}"
-            ));
+
+    let mut certificate_restored = !certificate_existed;
+    if certificate_existed && pdf_restored {
+        let live_can_be_replaced = match directory_is_empty_or_missing(live_certificate) {
+            Ok(true) => {
+                if live_certificate.exists() {
+                    match fs::remove_dir(live_certificate) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            rollback_errors
+                                .push(format!("live certificate cleanup failed: {error}"));
+                            false
+                        }
+                    }
+                } else {
+                    true
+                }
+            }
+            Ok(false) => {
+                rollback_errors.push(format!(
+                    "certificate rollback would overwrite {}",
+                    live_certificate.display()
+                ));
+                false
+            }
+            Err(error) => {
+                rollback_errors.push(format!("live certificate validation failed: {error}"));
+                false
+            }
+        };
+        if live_can_be_replaced {
+            match fs::rename(archived_certificate, live_certificate) {
+                Ok(()) => certificate_restored = true,
+                Err(error) => rollback_errors.push(format!("certificate rollback failed: {error}")),
+            }
         }
-    } else if archived_certificate.exists() {
-        let _ = fs::remove_dir_all(archived_certificate);
+    } else if certificate_existed {
+        certificate_restored = false;
     }
-    if revision_directory.exists() {
-        if let Err(rollback_error) = fs::remove_dir_all(revision_directory) {
-            return AppError::Data(format!(
-                "Revision failed ({cause}); staging cleanup failed: {rollback_error}"
-            ));
+
+    if pdf_restored && certificate_restored {
+        if pdf_moved && archived_pdf.exists() {
+            if let Err(error) = fs::remove_file(archived_pdf) {
+                rollback_errors.push(format!("archived PDF cleanup failed: {error}"));
+            }
+        }
+        if !certificate_existed && archived_certificate.exists() {
+            if let Err(error) = fs::remove_dir_all(archived_certificate) {
+                rollback_errors.push(format!("staged certificate cleanup failed: {error}"));
+            }
+        }
+        if rollback_errors.is_empty() && revision_directory.exists() {
+            if let Err(error) = fs::remove_dir_all(revision_directory) {
+                rollback_errors.push(format!("staging cleanup failed: {error}"));
+            }
         }
     }
-    cause
+
+    if rollback_errors.is_empty() {
+        cause
+    } else {
+        AppError::Data(format!(
+            "Revision failed ({cause}); {}",
+            rollback_errors.join("; ")
+        ))
+    }
+}
+
+fn cleanup_revision_staging(stage: &Path, cause: AppError) -> AppError {
+    if !stage.exists() {
+        return cause;
+    }
+    match fs::remove_dir_all(stage) {
+        Ok(()) => cause,
+        Err(error) => AppError::Data(format!(
+            "Revision staging failed ({cause}); cleanup failed: {error}"
+        )),
+    }
 }
 
 fn validate_short_text(name: &str, value: &str, max: usize, required: bool) -> Result<()> {
@@ -3855,6 +4160,7 @@ mod tests {
             certificate::CERTIFICATE_FILE,
             certificate::MANIFEST_FILE,
             certificate::CERTIFICATE_HASH_FILE,
+            certificate::PDF_FILE,
         ]
         .into_iter()
         .map(|relative| {
@@ -4898,8 +5204,17 @@ mod tests {
         )
         .expect("certificate fixture");
         fs::write(track_root.join(certificate::MANIFEST_FILE), b"{}\n").expect("manifest fixture");
+        let mut pdf_document = printpdf::PdfDocument::new("Revision fixture");
+        let pdf_bytes = pdf_document
+            .with_pages(vec![printpdf::PdfPage::new(
+                printpdf::Mm(210.0),
+                printpdf::Mm(297.0),
+                Vec::new(),
+            )])
+            .save(&printpdf::PdfSaveOptions::default(), &mut Vec::new());
+        fs::write(track_root.join(certificate::PDF_FILE), &pdf_bytes).expect("PDF fixture");
         let certificate_hashes = format!(
-            "{}  {}\n{}  {}\n{}  {}\n",
+            "{}  {}\n{}  {}\n{}  {}\n{}  {}\n",
             sha256_file(&track_root.join(integrity::HASH_FILE)).expect("main hash digest"),
             integrity::HASH_FILE,
             sha256_file(&track_root.join(certificate::MANIFEST_FILE)).expect("manifest digest"),
@@ -4907,6 +5222,8 @@ mod tests {
             sha256_file(&track_root.join(certificate::CERTIFICATE_FILE))
                 .expect("certificate digest"),
             certificate::CERTIFICATE_FILE,
+            sha256_file(&track_root.join(certificate::PDF_FILE)).expect("PDF digest"),
+            certificate::PDF_FILE,
         );
         fs::write(
             track_root.join(certificate::CERTIFICATE_HASH_FILE),
@@ -4948,6 +5265,7 @@ mod tests {
             certificate::CERTIFICATE_FILE,
             certificate::MANIFEST_FILE,
             certificate::CERTIFICATE_HASH_FILE,
+            certificate::PDF_FILE,
         ] {
             assert!(!track_root.join(relative).exists(), "live {relative}");
         }
@@ -4968,6 +5286,7 @@ mod tests {
                 "archived {expected}"
             );
         }
+        assert!(archive.join(certificate::PDF_FILE).is_file());
         assert!(archive.join(integrity::HASH_FILE).is_file());
 
         let mutable = app
@@ -5126,6 +5445,7 @@ mod tests {
             certificate::CERTIFICATE_FILE,
             certificate::MANIFEST_FILE,
             certificate::CERTIFICATE_HASH_FILE,
+            certificate::PDF_FILE,
         ] {
             assert!(track_root.join(relative).is_file(), "generated {relative}");
         }
@@ -5272,6 +5592,29 @@ mod tests {
         let certificate_text = fs::read_to_string(track_root.join(certificate::CERTIFICATE_FILE))
             .expect("certificate document");
         let certificate = parse_certificate_document(&certificate_text);
+        let pdf_bytes =
+            fs::read(track_root.join(certificate::PDF_FILE)).expect("technical PDF bytes");
+        let mut pdf_warnings = Vec::new();
+        let parsed_pdf = printpdf::PdfDocument::parse(
+            &pdf_bytes,
+            &printpdf::PdfParseOptions::default(),
+            &mut pdf_warnings,
+        )
+        .expect("parse technical PDF");
+        let pdf_text = parsed_pdf
+            .extract_text()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact_pdf_text = pdf_text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        let certificate_hashes = parse_sha256sums(
+            &fs::read_to_string(track_root.join(certificate::CERTIFICATE_HASH_FILE))
+                .expect("certificate hash set"),
+        );
 
         let certificate_id = stored_track
             .certificate
@@ -5296,6 +5639,15 @@ mod tests {
             certificate_id
         );
         assert_eq!(certificate.fields["Certificate ID"], certificate_id);
+        assert!(compact_pdf_text.contains(certificate_id));
+        assert_eq!(
+            manifest_string(&manifest, "/certificate/format_version"),
+            certificate::CERTIFICATE_FORMAT_VERSION
+        );
+        assert_eq!(
+            certificate.fields["Certificate format version"],
+            certificate::CERTIFICATE_FORMAT_VERSION
+        );
 
         assert_eq!(finalized.title, stored_track.fields.title);
         assert_eq!(
@@ -5303,6 +5655,7 @@ mod tests {
             stored_track.fields.title
         );
         assert_eq!(certificate.fields["Track"], stored_track.fields.title);
+        assert!(pdf_text.contains(&stored_track.fields.title));
         assert_eq!(
             manifest_string(&manifest, "/artist/name"),
             stored_track.profile_snapshot.artist_name
@@ -5423,6 +5776,14 @@ mod tests {
             certificate.fields["Evidence manifest SHA-256"],
             manifest_sha
         );
+        assert_eq!(certificate_hashes.len(), 4);
+        assert_eq!(
+            certificate_hashes.get(certificate::PDF_FILE),
+            Some(
+                &sha256_file(&track_root.join(certificate::PDF_FILE)).expect("technical PDF hash")
+            )
+        );
+        assert!(compact_pdf_text.contains(release.sha256.as_deref().unwrap()));
         assert_eq!(
             manifest["hashes"],
             serde_json::to_value(&sums).expect("serialize parsed SHA256SUMS")
@@ -6151,6 +6512,51 @@ mod tests {
     }
 
     #[test]
+    fn technical_pdf_mutation_fails_certificate_verification_and_invalidates_state() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let finalized =
+            finalize_acceptance_track(&app, &directory.path().join("fixtures"), "PDF Mutation");
+        let track_root = app.root().join(&finalized.relative_path);
+        let pdf_path = track_root.join(certificate::PDF_FILE);
+        let mut changed = fs::read(&pdf_path).expect("technical PDF");
+        changed.push(b'X');
+        fs::write(&pdf_path, changed).expect("mutate technical PDF");
+
+        let error = certificate::verify(&track_root).expect_err("modified PDF must fail");
+        assert!(error.to_string().contains(certificate::PDF_FILE));
+        let loaded = app
+            .load_track(&finalized.id)
+            .expect("load track with modified PDF");
+        assert_eq!(loaded.status, TrackStatus::Finalized);
+        assert!(!loaded.certificate.valid);
+        assert!(loaded.certificate.invalidated_at.is_some());
+    }
+
+    #[test]
+    fn workspace_scan_does_not_index_the_root_pdf_as_evidence() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let finalized = finalize_acceptance_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "PDF Scan Exclusion",
+        );
+        let evidence_count = finalized.evidence.len();
+
+        app.scan_workspace().expect("workspace scan");
+        let rescanned = app.load_track(&finalized.id).expect("rescanned track");
+        assert_eq!(rescanned.evidence.len(), evidence_count);
+        assert!(!rescanned
+            .evidence
+            .iter()
+            .any(|item| item.relative_path == certificate::PDF_FILE));
+        assert!(rescanned.certificate.valid);
+    }
+
+    #[test]
     fn corrupted_certificate_can_be_preserved_in_a_recovery_revision() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
@@ -6184,6 +6590,7 @@ mod tests {
         assert_eq!(archives.len(), 1);
         let archive = archives[0].path();
         assert!(archive.join("certificate/CERTIFICATE_SHA256.txt").is_file());
+        assert!(archive.join(certificate::PDF_FILE).is_file());
         assert!(archive.join(integrity::HASH_FILE).is_file());
         let metadata =
             fs::read_to_string(archive.join("revision.json")).expect("revision metadata");
@@ -6232,6 +6639,35 @@ mod tests {
     }
 
     #[test]
+    fn finalization_never_overwrites_an_existing_root_pdf() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Historical PDF Collision",
+        );
+        let track_root = app.root().join(&ready.relative_path);
+        let pdf = track_root.join(certificate::PDF_FILE);
+        let sentinel = b"existing technical PDF must not be overwritten";
+        fs::write(&pdf, sentinel).expect("historical PDF sentinel");
+
+        let error = app
+            .finalize_track(&ready.id)
+            .expect_err("existing PDF must block finalization");
+        assert!(matches!(error, AppError::Collision(_)));
+        assert_eq!(fs::read(&pdf).expect("unchanged PDF sentinel"), sentinel);
+        assert!(!track_root
+            .join(".archive/finalization-in-progress.json")
+            .exists());
+        assert!(
+            directory_is_empty_or_missing(&track_root.join(certificate::CERTIFICATE_DIR))
+                .expect("empty certificate directory")
+        );
+    }
+
+    #[test]
     fn finalization_database_commit_failure_rolls_back_publication_and_reopens_cleanly() {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory.path().join("workspace");
@@ -6264,6 +6700,7 @@ mod tests {
             directory_is_empty_or_missing(&track_root.join(certificate::CERTIFICATE_DIR))
                 .expect("empty certificate directory")
         );
+        assert!(!track_root.join(certificate::PDF_FILE).exists());
         assert!(!track_root
             .join(".archive/finalization-in-progress.json")
             .exists());
@@ -6277,6 +6714,61 @@ mod tests {
             directory_is_empty_or_missing(&track_root.join(certificate::CERTIFICATE_DIR))
                 .expect("empty certificate after reopen")
         );
+        assert!(!track_root.join(certificate::PDF_FILE).exists());
+    }
+
+    #[test]
+    fn technical_pdf_failures_leave_no_partial_finalization() {
+        for (failure, label) in [
+            (FinalizationFailure::PdfGeneration, "generation"),
+            (FinalizationFailure::PdfStaging, "staging"),
+            (FinalizationFailure::PdfPublication, "publication"),
+            (
+                FinalizationFailure::PostPublishVerification,
+                "post-publish-verification",
+            ),
+        ] {
+            let directory = tempdir().expect("temporary directory");
+            let workspace = directory.path().join("workspace");
+            let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+            app.update_profile(complete_profile()).expect("profile");
+            let ready = prepare_ready_track(
+                &app,
+                &directory.path().join("fixtures"),
+                &format!("PDF Failure {label}"),
+            );
+            let track_root = workspace.join(&ready.relative_path);
+
+            app.finalize_track_impl(&ready.id, Some(failure), &mut |_| {})
+                .expect_err("injected PDF finalization failure");
+            let stored = app
+                .persistence
+                .track(&ready.id)
+                .expect("stored active track");
+            assert_ne!(stored.status, TrackStatus::Finalized, "{label}");
+            assert!(!stored.certificate.valid, "{label}");
+            assert!(!track_root.join(certificate::PDF_FILE).exists(), "{label}");
+            assert!(
+                directory_is_empty_or_missing(&track_root.join(certificate::CERTIFICATE_DIR))
+                    .expect("empty live certificate"),
+                "{label}"
+            );
+            assert!(
+                !track_root
+                    .join(".archive/finalization-in-progress.json")
+                    .exists(),
+                "{label}"
+            );
+            let staging = track_root.join(".archive/certificate-staging");
+            assert!(
+                !staging.exists()
+                    || fs::read_dir(&staging)
+                        .expect("certificate staging")
+                        .next()
+                        .is_none(),
+                "{label}"
+            );
+        }
     }
 
     #[test]
@@ -6299,6 +6791,11 @@ mod tests {
             b"published before database commit",
         )
         .expect("orphan certificate fixture");
+        fs::write(
+            active_root.join(certificate::PDF_FILE),
+            b"root PDF published before database commit",
+        )
+        .expect("orphan root PDF fixture");
         let interrupted_transaction = "interrupted-finalization-fixture";
         fs::write(
             active_root.join(".archive/finalization-in-progress.json"),
@@ -6344,6 +6841,16 @@ mod tests {
             )
             .expect("marker-selected recovery snapshot"),
             b"published before database commit"
+        );
+        assert_eq!(
+            fs::read(
+                active_root
+                    .join(".archive/recovery")
+                    .join(interrupted_transaction)
+                    .join(certificate::PDF_FILE)
+            )
+            .expect("recovered root PDF"),
+            b"root PDF published before database commit"
         );
         assert_eq!(
             fs::read(
@@ -6403,6 +6910,11 @@ mod tests {
             crash_archive.join("certificate"),
         )
         .expect("simulate revision publish before DB commit");
+        fs::rename(
+            finalized_root.join(certificate::PDF_FILE),
+            crash_archive.join(certificate::PDF_FILE),
+        )
+        .expect("simulate revision PDF archive before DB commit");
         fs::create_dir(finalized_root.join(certificate::CERTIFICATE_DIR))
             .expect("empty live certificate directory");
         drop(reopened);
@@ -6410,6 +6922,8 @@ mod tests {
         let recovered = WorkspaceApp::open(&workspace, false).expect("revision recovery");
         certificate::verify(&finalized_root).expect("certificate restored to live snapshot");
         assert!(!crash_archive.join("certificate").exists());
+        assert!(!crash_archive.join(certificate::PDF_FILE).exists());
+        assert!(finalized_root.join(certificate::PDF_FILE).is_file());
         assert!(wrong_archive.join("certificate").is_dir());
         assert_eq!(
             fs::read(wrong_archive.join("certificate/DOCUMENTATION_CERTIFICATE.md"))
@@ -6716,12 +7230,16 @@ mod tests {
             hashes_before
         );
         for (relative, bytes) in certificate_before {
-            let file_name = Path::new(&relative)
-                .file_name()
-                .expect("certificate file name");
+            let archived = if relative == certificate::PDF_FILE {
+                archive.join(certificate::PDF_FILE)
+            } else {
+                let file_name = Path::new(&relative)
+                    .file_name()
+                    .expect("certificate file name");
+                archive.join("certificate").join(file_name)
+            };
             assert_eq!(
-                fs::read(archive.join("certificate").join(file_name))
-                    .expect("archived certificate byte snapshot"),
+                fs::read(archived).expect("archived certificate byte snapshot"),
                 bytes
             );
         }

@@ -3,6 +3,7 @@
 mod application;
 mod artwork;
 mod certificate;
+mod certificate_pdf;
 mod commands;
 mod documents;
 mod error;

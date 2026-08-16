@@ -1,3 +1,4 @@
+use crate::certificate_pdf::{self, CertificatePdfSnapshot};
 use crate::error::{AppError, Result};
 use crate::integrity::HASH_FILE;
 use crate::model::{
@@ -5,8 +6,8 @@ use crate::model::{
     TrackRecord,
 };
 use crate::security::{
-    atomic_write_new, contained_path, ensure_contained_directory, portable_relative, sha256_bytes,
-    sha256_file,
+    atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
+    sha256_bytes, sha256_file,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -18,6 +19,8 @@ pub const CERTIFICATE_DIR: &str = "06_CERTIFICATE";
 pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md";
 pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
+pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "2.0";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +52,71 @@ pub fn generate(
     certificate_id: &str,
     finalized_at: &str,
     transaction_id: &str,
+) -> Result<()> {
+    generate_impl(
+        track_root,
+        track,
+        profile,
+        steps,
+        evidence,
+        deviations,
+        certificate_id,
+        finalized_at,
+        transaction_id,
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CertificateGenerationFailure {
+    PdfGeneration,
+    PdfStaging,
+    PdfPublication,
+    PostPublishVerification,
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_with_failure(
+    track_root: &Path,
+    track: &TrackRecord,
+    profile: &Profile,
+    steps: &[StepState],
+    evidence: &[EvidenceItem],
+    deviations: &[BlockingDeviation],
+    certificate_id: &str,
+    finalized_at: &str,
+    transaction_id: &str,
+    failure: CertificateGenerationFailure,
+) -> Result<()> {
+    generate_impl(
+        track_root,
+        track,
+        profile,
+        steps,
+        evidence,
+        deviations,
+        certificate_id,
+        finalized_at,
+        transaction_id,
+        Some(failure),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_impl(
+    track_root: &Path,
+    track: &TrackRecord,
+    profile: &Profile,
+    steps: &[StepState],
+    evidence: &[EvidenceItem],
+    deviations: &[BlockingDeviation],
+    certificate_id: &str,
+    finalized_at: &str,
+    transaction_id: &str,
+    #[cfg(test)] failure: Option<CertificateGenerationFailure>,
 ) -> Result<()> {
     let hash_manifest = contained_path(track_root, Path::new(HASH_FILE), true)?;
     let hash_manifest_sha = sha256_file(&hash_manifest)?;
@@ -106,6 +174,7 @@ pub fn generate(
         "hashes": hashes,
         "certificate": {
             "id": certificate_id,
+            "format_version": CERTIFICATE_FORMAT_VERSION,
             "status": "DOCUMENTATION COMPLETE",
             "sha256sums_sha256": hash_manifest_sha,
         },
@@ -146,7 +215,7 @@ pub fn generate(
         .filter(|d| d.blocking && !d.resolved)
         .count();
     let certificate = format!(
-        "# Track Documentation Completion Certificate\n\n- Certificate ID: `{certificate_id}`\n- Track: {}\n- Artist: {}\n- Workflow ID: `{}`\n- Workflow version: `{}`\n- Application version: `{}`\n- Finalization timestamp: `{finalized_at}`\n- Evidence file count: {}\n- Release WAV SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Final result: **DOCUMENTATION COMPLETE**\n\n## Mandatory steps completed\n\n{completed_steps}\n## N/A steps with reasons\n\n{}\n## Scope and disclaimer\n\nThis certificate confirms completion of the configured\ndocumentation workflow and integrity checks.\n\nIt does not constitute governmental certification,\nlegal advice, or an independent determination of\ncopyright ownership or legal compliance.\n",
+        "# Track Documentation Completion Certificate\n\n- Certificate ID: `{certificate_id}`\n- Certificate format version: `{CERTIFICATE_FORMAT_VERSION}`\n- Track: {}\n- Artist: {}\n- Workflow ID: `{}`\n- Workflow version: `{}`\n- Application version: `{}`\n- Finalization timestamp: `{finalized_at}`\n- Evidence file count: {}\n- Release WAV SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Final result: **DOCUMENTATION COMPLETE**\n\n## Mandatory steps completed\n\n{completed_steps}\n## N/A steps with reasons\n\n{}\n## Scope and disclaimer\n\nThis certificate confirms completion of the configured\ndocumentation workflow and integrity checks.\n\nIt does not constitute governmental certification,\nlegal advice, or an independent determination of\ncopyright ownership or legal compliance.\n",
         track.fields.title,
         profile.artist_name,
         track.workflow_id,
@@ -156,21 +225,47 @@ pub fn generate(
         if na_steps.is_empty() { "- None\n" } else { &na_steps }
     );
     let certificate_sha = sha256_bytes(certificate.as_bytes());
+
+    #[cfg(test)]
+    if failure == Some(CertificateGenerationFailure::PdfGeneration) {
+        return Err(AppError::Data(
+            "Injected technical PDF generation failure.".into(),
+        ));
+    }
+    let pdf = certificate_pdf::generate_pdf(&CertificatePdfSnapshot {
+        track,
+        profile,
+        steps,
+        evidence: &evidence_values,
+        deviations,
+        certificate_id,
+        finalized_at,
+        certificate_version: CERTIFICATE_FORMAT_VERSION,
+        sha256sums_sha256: &hash_manifest_sha,
+        evidence_manifest_sha256: &manifest_sha,
+        markdown_certificate_sha256: &certificate_sha,
+    })?;
+    let pdf_sha = sha256_bytes(&pdf);
     let certificate_hashes = format!(
-        "{}  {}\n{}  {}\n{}  {}\n",
+        "{}  {}\n{}  {}\n{}  {}\n{}  {}\n",
         hash_manifest_sha,
         HASH_FILE,
         manifest_sha,
         MANIFEST_FILE,
         certificate_sha,
-        CERTIFICATE_FILE
+        CERTIFICATE_FILE,
+        pdf_sha,
+        PDF_FILE,
     );
-    publish_certificate_set(
+    publish_certificate_set_impl(
         track_root,
         &manifest_bytes,
         certificate.as_bytes(),
+        &pdf,
         certificate_hashes.as_bytes(),
         transaction_id,
+        #[cfg(test)]
+        failure.and_then(CertificateGenerationFailure::publication_failure),
     )?;
     Ok(())
 }
@@ -178,33 +273,47 @@ pub fn generate(
 pub fn verify(track_root: &Path) -> Result<()> {
     let sums = contained_path(track_root, Path::new(CERTIFICATE_HASH_FILE), true)?;
     let content = fs::read_to_string(&sums).map_err(|e| AppError::io(&sums, e))?;
-    for (relative, expected) in parse_certificate_hashes(&content)? {
-        let path = contained_path(track_root, Path::new(&relative), true)?;
-        if sha256_file(&path)? != expected {
+    let hashes = parse_certificate_hashes(&content)?;
+    let mut verified_pdf = None;
+    for (relative, expected) in &hashes {
+        let path = contained_path(track_root, Path::new(relative), true)?;
+        let actual = if relative == PDF_FILE {
+            let bytes = fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+            let digest = sha256_bytes(&bytes);
+            verified_pdf = Some(bytes);
+            digest
+        } else {
+            sha256_file(&path)?
+        };
+        if actual != *expected {
             return Err(AppError::Validation(format!(
                 "Certificate integrity mismatch: {relative}"
             )));
         }
     }
+    if certificate_format_requires_pdf(
+        &contained_path(track_root, Path::new(MANIFEST_FILE), true)?,
+        &hashes,
+    )? {
+        certificate_pdf::validate_pdf_bytes(verified_pdf.as_deref().ok_or_else(|| {
+            AppError::Validation("Certificate PDF hash entry was not verified.".into())
+        })?)?;
+    }
     Ok(())
 }
 
-fn publish_certificate_set(
-    track_root: &Path,
-    manifest: &[u8],
-    certificate: &[u8],
-    certificate_hashes: &[u8],
-    transaction_id: &str,
-) -> Result<()> {
-    publish_certificate_set_impl(
-        track_root,
-        manifest,
-        certificate,
-        certificate_hashes,
-        transaction_id,
-        #[cfg(test)]
-        None,
-    )
+/// Returns whether the live certificate format requires the root-level PDF.
+///
+/// This intentionally performs only the format/hash-set inspection needed by
+/// interrupted-revision recovery. Full integrity validation remains in
+/// [`verify`]. Legacy certificates without a format version use the historical
+/// three-entry set and do not trigger PDF recovery.
+pub(crate) fn expects_pdf(track_root: &Path) -> Result<bool> {
+    let sums = contained_path(track_root, Path::new(CERTIFICATE_HASH_FILE), true)?;
+    let content = fs::read_to_string(&sums).map_err(|error| AppError::io(&sums, error))?;
+    let hashes = parse_certificate_hashes(&content)?;
+    let manifest = contained_path(track_root, Path::new(MANIFEST_FILE), true)?;
+    certificate_format_requires_pdf(&manifest, &hashes)
 }
 
 #[cfg(test)]
@@ -213,8 +322,10 @@ enum CertificatePublicationFailure {
     StagingDirectoryCreate,
     ManifestWrite,
     CertificateWrite,
+    PdfWrite,
     CertificateHashWrite,
-    PublishRename,
+    CertificatePublishRename,
+    PdfPublish,
     PostPublishVerification,
 }
 
@@ -225,14 +336,30 @@ impl CertificatePublicationFailure {
             Self::StagingDirectoryCreate => "staging-directory-create",
             Self::ManifestWrite => "manifest-write",
             Self::CertificateWrite => "certificate-write",
+            Self::PdfWrite => "pdf-write",
             Self::CertificateHashWrite => "certificate-hash-write",
-            Self::PublishRename => "publish-rename",
+            Self::CertificatePublishRename => "certificate-publish-rename",
+            Self::PdfPublish => "pdf-publish",
             Self::PostPublishVerification => "post-publish-verification",
         }
     }
 
     fn stage_id(self) -> String {
         format!("failure-injection-{}", self.label())
+    }
+}
+
+#[cfg(test)]
+impl CertificateGenerationFailure {
+    fn publication_failure(self) -> Option<CertificatePublicationFailure> {
+        match self {
+            Self::PdfGeneration => None,
+            Self::PdfStaging => Some(CertificatePublicationFailure::PdfWrite),
+            Self::PdfPublication => Some(CertificatePublicationFailure::PdfPublish),
+            Self::PostPublishVerification => {
+                Some(CertificatePublicationFailure::PostPublishVerification)
+            }
+        }
     }
 }
 
@@ -254,6 +381,7 @@ fn publish_certificate_set_impl(
     track_root: &Path,
     manifest: &[u8],
     certificate: &[u8],
+    pdf: &[u8],
     certificate_hashes: &[u8],
     transaction_id: &str,
     #[cfg(test)] failure: Option<CertificatePublicationFailure>,
@@ -273,10 +401,19 @@ fn publish_certificate_set_impl(
         CertificatePublicationFailure::StagingDirectoryCreate,
     )?;
     let stage = ensure_contained_directory(track_root, &stage_relative)?;
+    let staged_certificate_dir = stage.join("certificate");
+    let destination = contained_path(track_root, Path::new(CERTIFICATE_DIR), false)?;
+    let pdf_destination = contained_path(track_root, Path::new(PDF_FILE), false)?;
+    let mut destination_started_empty = false;
+    let mut certificate_published = false;
+    let mut pdf_published = false;
     let publish_result = (|| -> Result<()> {
-        let staged_manifest = stage.join("EVIDENCE_MANIFEST.json");
-        let staged_certificate = stage.join("DOCUMENTATION_CERTIFICATE.md");
-        let staged_hashes = stage.join("CERTIFICATE_SHA256.txt");
+        fs::create_dir(&staged_certificate_dir)
+            .map_err(|error| AppError::io(&staged_certificate_dir, error))?;
+        let staged_manifest = staged_certificate_dir.join("EVIDENCE_MANIFEST.json");
+        let staged_certificate = staged_certificate_dir.join("DOCUMENTATION_CERTIFICATE.md");
+        let staged_hashes = staged_certificate_dir.join("CERTIFICATE_SHA256.txt");
+        let staged_pdf = stage.join(PDF_FILE);
         #[cfg(test)]
         inject_certificate_publication_failure(
             failure,
@@ -290,6 +427,9 @@ fn publish_certificate_set_impl(
         )?;
         atomic_write_new(&staged_certificate, certificate)?;
         #[cfg(test)]
+        inject_certificate_publication_failure(failure, CertificatePublicationFailure::PdfWrite)?;
+        atomic_write_new(&staged_pdf, pdf)?;
+        #[cfg(test)]
         inject_certificate_publication_failure(
             failure,
             CertificatePublicationFailure::CertificateHashWrite,
@@ -297,11 +437,13 @@ fn publish_certificate_set_impl(
         atomic_write_new(&staged_hashes, certificate_hashes)?;
         verify_staged_set(track_root, &stage)?;
 
-        let destination = contained_path(track_root, Path::new(CERTIFICATE_DIR), false)?;
+        if pdf_destination.exists() {
+            return Err(AppError::Collision(pdf_destination.display().to_string()));
+        }
         #[cfg(test)]
         inject_certificate_publication_failure(
             failure,
-            CertificatePublicationFailure::PublishRename,
+            CertificatePublicationFailure::CertificatePublishRename,
         )?;
         if destination.exists() {
             if !destination.is_dir() {
@@ -314,9 +456,16 @@ fn publish_certificate_set_impl(
             {
                 return Err(AppError::Collision(destination.display().to_string()));
             }
+            destination_started_empty = true;
             fs::remove_dir(&destination).map_err(|error| AppError::io(&destination, error))?;
         }
-        fs::rename(&stage, &destination).map_err(|error| AppError::io(&destination, error))?;
+        fs::rename(&staged_certificate_dir, &destination)
+            .map_err(|error| AppError::io(&destination, error))?;
+        certificate_published = true;
+        #[cfg(test)]
+        inject_certificate_publication_failure(failure, CertificatePublicationFailure::PdfPublish)?;
+        copy_new(&staged_pdf, &pdf_destination)?;
+        pdf_published = true;
         #[cfg(test)]
         let post_publish_verification = inject_certificate_publication_failure(
             failure,
@@ -325,45 +474,91 @@ fn publish_certificate_set_impl(
         .and_then(|()| verify(track_root));
         #[cfg(not(test))]
         let post_publish_verification = verify(track_root);
-        if let Err(verification_error) = post_publish_verification {
-            let rollback = fs::rename(&destination, &stage);
-            return match rollback {
-                Ok(()) => Err(verification_error),
-                Err(rollback_error) => Err(AppError::Data(format!(
-                    "Certificate publication verification failed ({verification_error}); rollback failed: {rollback_error}"
-                ))),
-            };
-        }
+        post_publish_verification?;
+        fs::remove_dir_all(&stage).map_err(|error| AppError::io(&stage, error))?;
         Ok(())
     })();
-    if stage.exists() {
-        let _ = fs::remove_dir_all(&stage);
+
+    if let Err(cause) = publish_result {
+        let mut rollback_errors = Vec::new();
+        if pdf_published && pdf_destination.exists() {
+            if let Err(error) = fs::remove_file(&pdf_destination) {
+                rollback_errors.push(format!("PDF cleanup failed: {error}"));
+            }
+        }
+        if certificate_published && destination.exists() {
+            if let Err(error) = fs::rename(&destination, &staged_certificate_dir) {
+                rollback_errors.push(format!("certificate rollback failed: {error}"));
+            }
+        }
+        if rollback_errors.is_empty() && stage.exists() {
+            if let Err(error) = fs::remove_dir_all(&stage) {
+                rollback_errors.push(format!("staging cleanup failed: {error}"));
+            }
+        }
+        if rollback_errors.is_empty() && destination_started_empty && !destination.exists() {
+            if let Err(error) = fs::create_dir(&destination) {
+                rollback_errors.push(format!(
+                    "empty certificate directory recovery failed: {error}"
+                ));
+            }
+        }
+        if rollback_errors.is_empty() {
+            return Err(cause);
+        }
+        return Err(AppError::Data(format!(
+            "Certificate publication failed ({cause}); {}",
+            rollback_errors.join("; ")
+        )));
     }
-    publish_result
+
+    Ok(())
 }
 
 fn verify_staged_set(track_root: &Path, stage: &Path) -> Result<()> {
-    let hashes_path = stage.join("CERTIFICATE_SHA256.txt");
+    let certificate_stage = stage.join("certificate");
+    let hashes_path = certificate_stage.join("CERTIFICATE_SHA256.txt");
     let content =
         fs::read_to_string(&hashes_path).map_err(|error| AppError::io(&hashes_path, error))?;
-    for (relative, expected) in parse_certificate_hashes(&content)? {
+    let hashes = parse_certificate_hashes(&content)?;
+    let mut verified_pdf = None;
+    for (relative, expected) in &hashes {
         let path = match relative.as_str() {
             HASH_FILE => contained_path(track_root, Path::new(HASH_FILE), true)?,
-            MANIFEST_FILE => stage.join("EVIDENCE_MANIFEST.json"),
-            CERTIFICATE_FILE => stage.join("DOCUMENTATION_CERTIFICATE.md"),
+            MANIFEST_FILE => certificate_stage.join("EVIDENCE_MANIFEST.json"),
+            CERTIFICATE_FILE => certificate_stage.join("DOCUMENTATION_CERTIFICATE.md"),
+            PDF_FILE => stage.join(PDF_FILE),
             _ => return Err(AppError::Data("Unexpected certificate hash entry.".into())),
         };
-        if sha256_file(&path)? != expected {
+        let actual = if relative == PDF_FILE {
+            let bytes = fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+            let digest = sha256_bytes(&bytes);
+            verified_pdf = Some(bytes);
+            digest
+        } else {
+            sha256_file(&path)?
+        };
+        if actual != *expected {
             return Err(AppError::Validation(format!(
                 "Staged certificate integrity mismatch: {relative}"
             )));
         }
     }
+    if !certificate_format_requires_pdf(&certificate_stage.join("EVIDENCE_MANIFEST.json"), &hashes)?
+    {
+        return Err(AppError::Validation(
+            "A newly generated certificate must use the PDF certificate format.".into(),
+        ));
+    }
+    certificate_pdf::validate_pdf_bytes(verified_pdf.as_deref().ok_or_else(|| {
+        AppError::Validation("Staged certificate PDF hash entry was not verified.".into())
+    })?)?;
     Ok(())
 }
 
 fn parse_certificate_hashes(content: &str) -> Result<BTreeMap<String, String>> {
-    let expected_paths = [HASH_FILE, MANIFEST_FILE, CERTIFICATE_FILE];
+    let legacy_paths = [HASH_FILE, MANIFEST_FILE, CERTIFICATE_FILE];
+    let expected_paths = [HASH_FILE, MANIFEST_FILE, CERTIFICATE_FILE, PDF_FILE];
     let mut result = BTreeMap::new();
     for (line_number, line) in content.lines().enumerate() {
         if line.is_empty() {
@@ -394,12 +589,49 @@ fn parse_certificate_hashes(content: &str) -> Result<BTreeMap<String, String>> {
             )));
         }
     }
-    if result.len() != expected_paths.len() {
+    let is_legacy_set = result.len() == legacy_paths.len()
+        && legacy_paths.iter().all(|path| result.contains_key(*path));
+    let is_current_set = result.len() == expected_paths.len()
+        && expected_paths.iter().all(|path| result.contains_key(*path));
+    if !is_legacy_set && !is_current_set {
         return Err(AppError::Validation(
             "Certificate hash set is incomplete.".into(),
         ));
     }
     Ok(result)
+}
+
+fn certificate_format_requires_pdf(
+    manifest_path: &Path,
+    hashes: &BTreeMap<String, String>,
+) -> Result<bool> {
+    let bytes = fs::read(manifest_path).map_err(|error| AppError::io(manifest_path, error))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let format_version = manifest
+        .get("certificate")
+        .and_then(|certificate| certificate.get("format_version"))
+        .and_then(serde_json::Value::as_str);
+    match format_version {
+        Some(CERTIFICATE_FORMAT_VERSION) => {
+            if !hashes.contains_key(PDF_FILE) {
+                return Err(AppError::Validation(
+                    "Certificate format 2.0 requires the root-level technical PDF hash.".into(),
+                ));
+            }
+            Ok(true)
+        }
+        Some(version) => Err(AppError::Validation(format!(
+            "Unsupported certificate format version: {version}"
+        ))),
+        None => {
+            if hashes.contains_key(PDF_FILE) {
+                return Err(AppError::Validation(
+                    "A legacy certificate cannot contain an unversioned PDF hash entry.".into(),
+                ));
+            }
+            Ok(false)
+        }
+    }
 }
 
 fn parse_hashes(path: &Path) -> Result<BTreeMap<String, String>> {
@@ -456,7 +688,7 @@ fn validate_digest(digest: &str, line_number: usize) -> Result<()> {
 }
 
 fn hash_manifest_path_allowed(relative: &Path) -> bool {
-    if relative == Path::new(HASH_FILE) {
+    if relative == Path::new(HASH_FILE) || relative == Path::new(PDF_FILE) {
         return false;
     }
     !matches!(
@@ -482,7 +714,7 @@ mod tests {
         parse_hashes(&sums)
     }
 
-    fn publication_fixture(track_root: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    fn publication_fixture(track_root: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
         let main_hashes = b"fixture main hash manifest\n";
         let main_hash_path = track_root.join(HASH_FILE);
         fs::create_dir_all(
@@ -492,30 +724,40 @@ mod tests {
         )
         .expect("create documentation fixture directory");
         fs::write(&main_hash_path, main_hashes).expect("write main hash manifest fixture");
-        let manifest = b"{\"fixture\":true}\n".to_vec();
+        let manifest = format!(
+            "{{\"certificate\":{{\"format_version\":\"{CERTIFICATE_FORMAT_VERSION}\"}},\"fixture\":true}}\n"
+        )
+        .into_bytes();
         let certificate = b"# Fixture certificate\n".to_vec();
+        let mut pdf_document = printpdf::PdfDocument::new("Fixture certificate");
+        let pdf = pdf_document
+            .with_pages(vec![printpdf::PdfPage::new(
+                printpdf::Mm(210.0),
+                printpdf::Mm(297.0),
+                Vec::new(),
+            )])
+            .save(&printpdf::PdfSaveOptions::default(), &mut Vec::new());
         let certificate_hashes = format!(
-            "{}  {}\n{}  {}\n{}  {}\n",
+            "{}  {}\n{}  {}\n{}  {}\n{}  {}\n",
             sha256_bytes(main_hashes),
             HASH_FILE,
             sha256_bytes(&manifest),
             MANIFEST_FILE,
             sha256_bytes(&certificate),
-            CERTIFICATE_FILE
+            CERTIFICATE_FILE,
+            sha256_bytes(&pdf),
+            PDF_FILE,
         )
         .into_bytes();
-        (manifest, certificate, certificate_hashes)
+        (manifest, certificate, pdf, certificate_hashes)
     }
 
     fn assert_injected_publication_failure(failure: CertificatePublicationFailure) {
         let workspace = tempfile::tempdir().expect("temporary directory");
         let track_root = workspace.path();
-        let (manifest, certificate, certificate_hashes) = publication_fixture(track_root);
+        let (manifest, certificate, pdf, certificate_hashes) = publication_fixture(track_root);
         let live = track_root.join(CERTIFICATE_DIR);
-        let live_started_empty = failure != CertificatePublicationFailure::PostPublishVerification;
-        if live_started_empty {
-            fs::create_dir(&live).expect("create empty live certificate directory");
-        }
+        fs::create_dir(&live).expect("create empty live certificate directory");
         let correlated_stage = track_root
             .join(".archive")
             .join("certificate-staging")
@@ -525,6 +767,7 @@ mod tests {
             track_root,
             &manifest,
             &certificate,
+            &pdf,
             &certificate_hashes,
             &failure.stage_id(),
             Some(failure),
@@ -543,26 +786,23 @@ mod tests {
             "incomplete live certificate unexpectedly verified after {} failure",
             failure.label()
         );
-        if live_started_empty {
-            assert!(
-                live.is_dir(),
-                "empty live certificate directory was removed"
-            );
-            assert!(
-                fs::read_dir(&live)
-                    .expect("read restored certificate directory")
-                    .next()
-                    .is_none(),
-                "live certificate directory is not empty after {} failure",
-                failure.label()
-            );
-        } else {
-            assert!(
-                !live.exists(),
-                "absent live certificate directory was not restored after {} failure",
-                failure.label()
-            );
-        }
+        assert!(
+            live.is_dir(),
+            "empty live certificate directory was removed"
+        );
+        assert!(
+            fs::read_dir(&live)
+                .expect("read restored certificate directory")
+                .next()
+                .is_none(),
+            "live certificate directory is not empty after {} failure",
+            failure.label()
+        );
+        assert!(
+            !track_root.join(PDF_FILE).exists(),
+            "live PDF remains after {} failure",
+            failure.label()
+        );
         assert!(
             !correlated_stage.exists(),
             "correlated staging directory was not cleaned after {} failure",
@@ -596,13 +836,25 @@ mod tests {
     }
 
     #[test]
+    fn pdf_write_failure_is_controlled_and_cleaned() {
+        assert_injected_publication_failure(CertificatePublicationFailure::PdfWrite);
+    }
+
+    #[test]
     fn certificate_hash_write_failure_is_controlled_and_cleaned() {
         assert_injected_publication_failure(CertificatePublicationFailure::CertificateHashWrite);
     }
 
     #[test]
-    fn publish_rename_failure_is_controlled_and_cleaned() {
-        assert_injected_publication_failure(CertificatePublicationFailure::PublishRename);
+    fn certificate_publish_failure_is_controlled_and_cleaned() {
+        assert_injected_publication_failure(
+            CertificatePublicationFailure::CertificatePublishRename,
+        );
+    }
+
+    #[test]
+    fn pdf_publish_failure_rolls_back_certificate_and_cleans_staging() {
+        assert_injected_publication_failure(CertificatePublicationFailure::PdfPublish);
     }
 
     #[test]
@@ -612,23 +864,62 @@ mod tests {
 
     #[test]
     fn certificate_hash_parser_requires_exact_complete_unique_set() {
-        let valid = format!(
+        let legacy = format!(
             "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n"
         );
         assert_eq!(
-            parse_certificate_hashes(&valid).expect("valid set").len(),
+            parse_certificate_hashes(&legacy)
+                .expect("valid legacy set")
+                .len(),
             3
         );
 
+        let valid = format!(
+            "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {PDF_FILE}\n"
+        );
+        assert_eq!(
+            parse_certificate_hashes(&valid).expect("valid set").len(),
+            4
+        );
+
         let duplicate = format!(
-            "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {MANIFEST_FILE}\n"
+            "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {PDF_FILE}\n{DIGEST}  {PDF_FILE}\n"
         );
         assert!(parse_certificate_hashes(&duplicate).is_err());
 
         let invalid_digest = format!(
-            "short  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n"
+            "short  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {PDF_FILE}\n"
         );
         assert!(parse_certificate_hashes(&invalid_digest).is_err());
+    }
+
+    #[test]
+    fn legacy_certificate_without_pdf_remains_verifiable() {
+        let workspace = tempfile::tempdir().expect("temporary directory");
+        let track_root = workspace.path();
+        let main_hash_path = track_root.join(HASH_FILE);
+        fs::create_dir_all(main_hash_path.parent().expect("main hash parent"))
+            .expect("documentation directory");
+        fs::write(&main_hash_path, b"legacy main hash list\n").expect("main hash fixture");
+        let certificate_path = track_root.join(CERTIFICATE_FILE);
+        fs::create_dir_all(certificate_path.parent().expect("certificate parent"))
+            .expect("certificate directory");
+        let manifest_path = track_root.join(MANIFEST_FILE);
+        fs::write(&manifest_path, b"{\"certificate\":{}}\n").expect("legacy manifest");
+        fs::write(&certificate_path, b"# Legacy certificate\n").expect("legacy certificate");
+        let hashes = format!(
+            "{}  {}\n{}  {}\n{}  {}\n",
+            sha256_file(&main_hash_path).expect("main hash digest"),
+            HASH_FILE,
+            sha256_file(&manifest_path).expect("manifest digest"),
+            MANIFEST_FILE,
+            sha256_file(&certificate_path).expect("certificate digest"),
+            CERTIFICATE_FILE,
+        );
+        fs::write(track_root.join(CERTIFICATE_HASH_FILE), hashes).expect("legacy hash set");
+
+        verify(track_root).expect("legacy certificate remains valid");
+        assert!(!expects_pdf(track_root).expect("legacy format detection"));
     }
 
     #[test]
@@ -644,6 +935,9 @@ mod tests {
 
         fs::write(&sums, format!("{DIGEST}  06_CERTIFICATE/hidden.txt\n"))
             .expect("write excluded sums");
+        assert!(parse_hashes(&sums).is_err());
+
+        fs::write(&sums, format!("{DIGEST}  {PDF_FILE}\n")).expect("write excluded root PDF");
         assert!(parse_hashes(&sums).is_err());
     }
 

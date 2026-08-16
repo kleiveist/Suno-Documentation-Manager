@@ -153,13 +153,15 @@ Portable finalized track state
     ├── imported evidence
     ├── generated documentation
     ├── SHA256SUMS.txt
-    ├── certificate and manifest
+    ├── certificate, manifest, and root-level technical PDF
     └── archived revisions
 ```
 
 SQLite makes local interaction transactional and efficient. It is intentionally rebuildable from track folders where the folder contains enough information. A final track remains understandable and verifiable if `.suno-doc/` or the application is unavailable. See [Persistence and recovery](persistence.md).
 
 Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclosure`, and `indexed_legacy`. Generated disclosure records link to the verified AI-original evidence ID and retain the generator version and exact disclosure text. Those portable manifest fields allow a reviewer and the native gate to distinguish local derivation from a manually imported look-alike.
+
+Finalization renders `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` locally in native Rust from the same frozen track/profile/step/evidence snapshot as the JSON manifest and Markdown certificate. The fixed root PDF is excluded from the earlier `SHA256SUMS.txt` set to avoid a cycle; its complete SHA-256 digest is instead the fourth required entry in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`. The certificate directory and root PDF share one marker-backed staging, verification, rollback, recovery, and revision lifecycle.
 
 Evidence import is dispatched as blocking native work rather than running on the webview event loop. Copy and SHA-256 calculation share one bounded-buffer stream. Routine track loading performs metadata checks instead of repeatedly hashing evidence above 64 MiB; explicit verification and integrity/finalization remain full checks. Preview commands embed only bounded images or text, and treat project ZIPs as metadata-only. An explicit replacement preserves the evidence ID, archives the previous bytes, and coordinates the filesystem change with the SQLite update so an occupied `(track_id, relative_path)` never becomes a raw user-facing uniqueness error.
 
