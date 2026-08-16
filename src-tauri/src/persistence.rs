@@ -9,7 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 pub const DATABASE_RELATIVE_PATH: &str = ".suno-doc/workspace.sqlite";
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone)]
 pub struct Persistence {
@@ -432,12 +432,13 @@ impl Persistence {
     pub fn save_global_evidence(&self, evidence: &GlobalEvidenceItem) -> Result<()> {
         let e = &evidence.evidence;
         self.open()?.execute(
-            "INSERT INTO global_evidence(id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,coverage_start,coverage_end,notes)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+            "INSERT INTO global_evidence(id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,coverage_start,coverage_end,notes,metadata_json)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
              ON CONFLICT(id) DO UPDATE SET sha256=excluded.sha256,size_bytes=excluded.size_bytes,
              verified=excluded.verified,verification_error=excluded.verification_error,
-             coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,notes=excluded.notes",
-            params![e.id,e.role.as_str(),e.file_name,e.relative_path,e.sha256,e.size_bytes as i64,e.imported_at,e.verified as i64,e.verification_error,e.coverage_start,e.coverage_end,evidence.notes],
+             coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,notes=excluded.notes,
+             metadata_json=excluded.metadata_json",
+            params![e.id,e.role.as_str(),e.file_name,e.relative_path,e.sha256,e.size_bytes as i64,e.imported_at,e.verified as i64,e.verification_error,e.coverage_start,e.coverage_end,evidence.notes,serde_json::to_string(&e.metadata)?],
         )?;
         Ok(())
     }
@@ -445,7 +446,7 @@ impl Persistence {
     pub fn global_evidence(&self) -> Result<Vec<GlobalEvidenceItem>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,coverage_start,coverage_end,notes FROM global_evidence ORDER BY imported_at,id",
+            "SELECT id,role,file_name,relative_path,sha256,size_bytes,imported_at,verified,verification_error,coverage_start,coverage_end,notes,metadata_json FROM global_evidence ORDER BY imported_at,id",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(GlobalEvidenceItem {
@@ -466,7 +467,15 @@ impl Persistence {
                     derived_from_evidence_id: None,
                     generator_version: None,
                     generated_disclosure_text: None,
-                    metadata: Default::default(),
+                    metadata: serde_json::from_str(&row.get::<_, String>(12)?).map_err(
+                        |error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                12,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        },
+                    )?,
                 },
                 notes: row.get(11)?,
             })
@@ -560,6 +569,12 @@ pub fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute_batch(
             "ALTER TABLE evidence ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
              PRAGMA user_version=3;",
+        )?;
+    }
+    if version < 4 {
+        transaction.execute_batch(
+            "ALTER TABLE global_evidence ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+             PRAGMA user_version=4;",
         )?;
     }
     transaction.commit()?;
@@ -663,6 +678,11 @@ mod tests {
                    sha256 TEXT,size_bytes INTEGER NOT NULL,imported_at TEXT NOT NULL,verified INTEGER NOT NULL,
                    verification_error TEXT,source_global_evidence_id TEXT,coverage_start TEXT,coverage_end TEXT,
                    UNIQUE(track_id,relative_path)
+                 );
+                 CREATE TABLE global_evidence(
+                   id TEXT PRIMARY KEY,role TEXT NOT NULL,file_name TEXT NOT NULL,relative_path TEXT NOT NULL UNIQUE,
+                   sha256 TEXT,size_bytes INTEGER NOT NULL,imported_at TEXT NOT NULL,verified INTEGER NOT NULL,
+                   verification_error TEXT,coverage_start TEXT,coverage_end TEXT,notes TEXT
                  );
                  INSERT INTO tracks(id,legacy) VALUES('legacy-track',1),('managed-track',0);
                  INSERT INTO evidence(
@@ -817,13 +837,18 @@ mod tests {
                    derived_from_evidence_id TEXT,generator_version TEXT,generated_disclosure_text TEXT,
                    UNIQUE(track_id,relative_path)
                  );
+                 CREATE TABLE global_evidence(
+                   id TEXT PRIMARY KEY,role TEXT NOT NULL,file_name TEXT NOT NULL,relative_path TEXT NOT NULL UNIQUE,
+                   sha256 TEXT,size_bytes INTEGER NOT NULL,imported_at TEXT NOT NULL,verified INTEGER NOT NULL,
+                   verification_error TEXT,coverage_start TEXT,coverage_end TEXT,notes TEXT
+                 );
                  INSERT INTO tracks(id,legacy) VALUES('track-1',0);
                  INSERT INTO evidence(id,track_id,role,file_name,relative_path,size_bytes,imported_at,verified)
                  VALUES('evidence-1','track-1','other','old.txt','03_DOCUMENTATION/old.txt',3,'2026-01-01T00:00:00Z',1);
                  PRAGMA user_version=2;",
             )
             .expect("v2 fixture");
-        migrate(&mut connection).expect("v2 to v3 migration");
+        migrate(&mut connection).expect("v2 to current migration");
         let value: String = connection
             .query_row(
                 "SELECT metadata_json FROM evidence WHERE id='evidence-1'",
@@ -838,6 +863,45 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn sqlite_v3_migration_adds_empty_global_evidence_metadata() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE global_evidence(
+                   id TEXT PRIMARY KEY,role TEXT NOT NULL,file_name TEXT NOT NULL,relative_path TEXT NOT NULL UNIQUE,
+                   sha256 TEXT,size_bytes INTEGER NOT NULL,imported_at TEXT NOT NULL,verified INTEGER NOT NULL,
+                   verification_error TEXT,coverage_start TEXT,coverage_end TEXT,notes TEXT
+                 );
+                 INSERT INTO global_evidence(
+                   id,role,file_name,relative_path,size_bytes,imported_at,verified
+                 ) VALUES(
+                   'terms-1','suno_terms_rights','terms.html','.suno-doc/global-evidence/terms.html',
+                   12,'2026-08-16T00:00:00Z',1
+                 );
+                 PRAGMA user_version=3;",
+            )
+            .expect("v3 fixture");
+
+        migrate(&mut connection).expect("v3 to current migration");
+        let value: String = connection
+            .query_row(
+                "SELECT metadata_json FROM global_evidence WHERE id='terms-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("global metadata JSON");
+        let metadata: crate::model::EvidenceMetadata =
+            serde_json::from_str(&value).expect("metadata object");
+        assert_eq!(metadata, crate::model::EvidenceMetadata::default());
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .expect("schema version"),
             SCHEMA_VERSION
         );
     }

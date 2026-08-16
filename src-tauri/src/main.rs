@@ -26,6 +26,7 @@ fn main() {
             commands::update_profile,
             commands::list_global_evidence,
             commands::import_global_evidence,
+            commands::import_global_terms_evidence,
             commands::remove_global_evidence,
             commands::attach_global_evidence,
             commands::list_tracks,

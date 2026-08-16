@@ -46,6 +46,8 @@ The gate requires:
 - the actual release and Suno-export filenames to match the title or have an explicit intentional-deviation confirmation;
 - the concrete final-generation date of a commercial track to fall inside selected subscription coverage; and
 - commercial tracks to include archived Suno terms/rights evidence or the explicit status `Terms evidence not available`.
+
+Register archived Suno terms once under `Einstellungen`. The native importer accepts PDF, TXT, Markdown, HTML, PNG, and JPEG, retains the entered factual metadata, and places a portable global-evidence copy into every editable project. If a finalized project needs newer terms, create a revision first; finalized snapshots are never rewritten.
 - all generated documents to match current facts, evidence metadata, and template versions;
 - SHA-256 generation to cover the complete required set;
 - native verification to pass for every listed file; and

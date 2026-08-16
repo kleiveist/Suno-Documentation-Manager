@@ -55,6 +55,20 @@ describe("runtime selection", () => {
     });
   });
 
+  it("passes factual metadata to the global Suno terms file picker", async () => {
+    invokeMock.mockResolvedValue(null);
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+    const metadata = {
+      documentTitle: "Suno Terms of Service",
+      provider: "Suno",
+      sourceUrl: "https://suno.example/terms",
+      retrievalDate: "2026-08-16"
+    };
+
+    await expect(api.importGlobalTermsEvidence(metadata)).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenCalledWith("import_global_terms_evidence", { metadata });
+  });
+
   it("passes a library assignment when creating a track", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);

@@ -390,7 +390,22 @@ impl WorkspaceApp {
             }
             return Err(error);
         }
-        self.detail_from_record(track, false)
+        for global in self
+            .persistence
+            .global_evidence()?
+            .into_iter()
+            .filter(|item| item.evidence.role == EvidenceRole::SunoTermsRights)
+        {
+            if let Err(error) = self.attach_global_evidence(&track.id, &global.evidence.id) {
+                let _ = self.persistence.delete_track(&track.id);
+                let _ = fs::remove_dir_all(&target);
+                if !parent_existed {
+                    let _ = fs::remove_dir(&parent);
+                }
+                return Err(error);
+            }
+        }
+        self.load_track(&track.id)
     }
 
     pub fn list_tracks(&self) -> Result<Vec<TrackSummary>> {
@@ -760,6 +775,12 @@ impl WorkspaceApp {
         coverage_start: Option<String>,
         coverage_end: Option<String>,
     ) -> Result<GlobalEvidenceItem> {
+        if role == EvidenceRole::SunoTermsRights {
+            return Err(AppError::Validation(
+                "Register Suno terms/rights evidence globally with its factual document metadata."
+                    .into(),
+            ));
+        }
         if role == EvidenceRole::SubscriptionPayment {
             let start = coverage_start.as_deref().ok_or_else(|| {
                 AppError::Validation("Subscription coverage start is required.".into())
@@ -786,6 +807,40 @@ impl WorkspaceApp {
                 let _ = fs::remove_file(path);
             }
             return Err(error);
+        }
+        Ok(item)
+    }
+
+    pub fn register_global_terms_evidence(
+        &self,
+        source: &Path,
+        mut metadata: EvidenceMetadata,
+    ) -> Result<GlobalEvidenceItem> {
+        metadata.original_file_name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        validate_evidence_metadata(&EvidenceRole::SunoTermsRights, &metadata)?;
+        let mut item =
+            evidence::register_global(&self.root, EvidenceRole::SunoTermsRights, source)?;
+        item.evidence.metadata = metadata;
+        if let Err(error) = self.persistence.save_global_evidence(&item) {
+            if let Ok(path) =
+                contained_path(&self.root, Path::new(&item.evidence.relative_path), true)
+            {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error);
+        }
+
+        for track in self.persistence.tracks()?.into_iter().filter(|track| {
+            !matches!(
+                track.status,
+                TrackStatus::Finalized | TrackStatus::Superseded
+            )
+        }) {
+            self.attach_global_evidence(&track.id, &item.evidence.id)?;
         }
         Ok(item)
     }
@@ -853,38 +908,43 @@ impl WorkspaceApp {
 
     pub fn attach_global_evidence(&self, id: &str, evidence_id: &str) -> Result<TrackDetail> {
         let mut track = self.mutable_track(id)?;
-        validate_required_production_range(&track)?;
         let global = self.persistence.global_evidence_item(evidence_id)?;
-        if global.evidence.role != EvidenceRole::SubscriptionPayment {
-            return Err(AppError::Validation(
-                "Only subscription/payment evidence can satisfy the track subscription requirement."
-                    .into(),
-            ));
+        if self.persistence.evidence(id)?.iter().any(|item| {
+            item.source_global_evidence_id.as_deref() == Some(global.evidence.id.as_str())
+        }) {
+            return self.detail_from_record(track, false);
         }
-        let start =
-            global.evidence.coverage_start.as_deref().ok_or_else(|| {
+
+        if global.evidence.role == EvidenceRole::SubscriptionPayment {
+            validate_required_production_range(&track)?;
+            let start = global.evidence.coverage_start.as_deref().ok_or_else(|| {
                 AppError::Validation("Global evidence has no coverage start.".into())
             })?;
-        let end =
-            global.evidence.coverage_end.as_deref().ok_or_else(|| {
+            let end = global.evidence.coverage_end.as_deref().ok_or_else(|| {
                 AppError::Validation("Global evidence has no coverage end.".into())
             })?;
-        validate_date_range("Subscription coverage", start, end)?;
-        if start > track.fields.production_start_date.as_str()
-            || end < track.fields.production_end_date.as_str()
-        {
+            validate_date_range("Subscription coverage", start, end)?;
+            if start > track.fields.production_start_date.as_str()
+                || end < track.fields.production_end_date.as_str()
+            {
+                return Err(AppError::Validation(
+                    "The selected subscription evidence does not cover the full production period."
+                        .into(),
+                ));
+            }
+            if track.fields.commercial_use_intended
+                && !track.fields.suno_final_generation_date.trim().is_empty()
+                && (start > track.fields.suno_final_generation_date.as_str()
+                    || end < track.fields.suno_final_generation_date.as_str())
+            {
+                return Err(AppError::Validation(
+                    "The selected subscription evidence does not cover the recorded final-generation date."
+                        .into(),
+                ));
+            }
+        } else if global.evidence.role != EvidenceRole::SunoTermsRights {
             return Err(AppError::Validation(
-                "The selected subscription evidence does not cover the full production period."
-                    .into(),
-            ));
-        }
-        if track.fields.commercial_use_intended
-            && !track.fields.suno_final_generation_date.trim().is_empty()
-            && (start > track.fields.suno_final_generation_date.as_str()
-                || end < track.fields.suno_final_generation_date.as_str())
-        {
-            return Err(AppError::Validation(
-                "The selected subscription evidence does not cover the recorded final-generation date."
+                "Only subscription/payment or Suno terms/rights evidence can be attached to a track."
                     .into(),
             ));
         }
@@ -898,6 +958,9 @@ impl WorkspaceApp {
             return Err(error);
         }
         mark_content_changed(&mut track);
+        if global.evidence.role == EvidenceRole::SunoTermsRights {
+            track.fields.suno_terms_evidence_not_available = Some(false);
+        }
         track.status = TrackStatus::Active;
         track.updated_at = now();
         self.persistence.save_track(&track)?;
@@ -920,9 +983,12 @@ impl WorkspaceApp {
         source: &Path,
         mut metadata: EvidenceMetadata,
     ) -> Result<TrackDetail> {
-        if role == EvidenceRole::SubscriptionPayment {
+        if matches!(
+            role,
+            EvidenceRole::SubscriptionPayment | EvidenceRole::SunoTermsRights
+        ) {
             return Err(AppError::Validation(
-                "Register subscription evidence globally and attach a covering portable copy."
+                "Register subscription and Suno terms/rights evidence globally in Settings and attach a portable copy."
                     .into(),
             ));
         }
@@ -1005,9 +1071,13 @@ impl WorkspaceApp {
         source: &Path,
         mut metadata: EvidenceMetadata,
     ) -> Result<TrackDetail> {
-        if role == EvidenceRole::SubscriptionPayment {
+        if matches!(
+            role,
+            EvidenceRole::SubscriptionPayment | EvidenceRole::SunoTermsRights
+        ) {
             return Err(AppError::Validation(
-                "Replace subscription evidence in the global evidence register.".into(),
+                "Replace subscription and Suno terms/rights evidence in the global evidence register."
+                    .into(),
             ));
         }
         let mut track = self.mutable_track(id)?;
@@ -4537,7 +4607,7 @@ mod tests {
     }
 
     #[test]
-    fn terms_and_timestamp_imports_persist_factual_metadata_and_clear_unavailable_status() {
+    fn global_terms_and_track_timestamp_imports_persist_factual_metadata() {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory.path().join("workspace");
         let app = WorkspaceApp::open(&workspace, true).expect("workspace");
@@ -4558,13 +4628,27 @@ mod tests {
             },
         )
         .expect("explicit unavailable status");
+        let immutable_track = app
+            .create_track(CreateTrackInput {
+                title: "Immutable Before Global Terms".into(),
+                production_start_date: "2026-07-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track that will represent a finalized snapshot");
+        let mut immutable_record = app
+            .persistence
+            .track(&immutable_track.id)
+            .expect("immutable track record");
+        immutable_record.status = TrackStatus::Finalized;
+        app.persistence
+            .save_track(&immutable_record)
+            .expect("mark immutable fixture finalized");
 
         let terms_source = directory.path().join("suno-terms-2026-08-01.md");
         fs::write(&terms_source, b"# Archived local terms fixture\n").expect("terms fixture");
-        let terms = app
-            .import_evidence_with_metadata_from(
-                &track.id,
-                EvidenceRole::SunoTermsRights,
+        let global_terms = app
+            .register_global_terms_evidence(
                 &terms_source,
                 EvidenceMetadata {
                     document_title: "Suno Terms of Service".into(),
@@ -4576,7 +4660,10 @@ mod tests {
                     ..EvidenceMetadata::default()
                 },
             )
-            .expect("terms import");
+            .expect("global terms import");
+        assert_eq!(global_terms.evidence.role, EvidenceRole::SunoTermsRights);
+        assert_eq!(global_terms.evidence.metadata.provider, "Suno");
+        let terms = app.load_track(&track.id).expect("track with global terms");
         assert_eq!(terms.fields.suno_terms_evidence_not_available, Some(false));
         let terms_item = terms
             .evidence
@@ -4588,6 +4675,31 @@ mod tests {
             "suno-terms-2026-08-01.md"
         );
         assert_eq!(terms_item.metadata.provider, "Suno");
+        assert_eq!(
+            terms_item.source_global_evidence_id.as_deref(),
+            Some(global_terms.evidence.id.as_str())
+        );
+        assert_eq!(terms_item.provenance, EvidenceProvenance::GlobalCopy);
+        assert!(!app
+            .load_track(&immutable_track.id)
+            .expect("unchanged finalized track")
+            .evidence
+            .iter()
+            .any(|item| item.role == EvidenceRole::SunoTermsRights));
+
+        let later_track = app
+            .create_track(CreateTrackInput {
+                title: "Created After Global Terms".into(),
+                production_start_date: "2026-08-02".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("later track");
+        assert!(later_track.evidence.iter().any(|item| {
+            item.role == EvidenceRole::SunoTermsRights
+                && item.source_global_evidence_id.as_deref()
+                    == Some(global_terms.evidence.id.as_str())
+        }));
 
         let timestamp_source = directory.path().join("external-timestamp.json");
         fs::write(&timestamp_source, b"{\"timestamp\":\"fixture\"}\n").expect("timestamp fixture");
@@ -4633,6 +4745,11 @@ mod tests {
 
         drop(app);
         let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");
+        let stored_global = reopened.global_evidence().expect("global evidence");
+        assert!(stored_global.iter().any(|item| {
+            item.evidence.id == global_terms.evidence.id
+                && item.evidence.metadata.document_title == "Suno Terms of Service"
+        }));
         let evidence = reopened
             .load_track(&track.id)
             .expect("reopened track")
@@ -4989,7 +5106,7 @@ mod tests {
         assert_eq!(created.library.album_title.as_deref(), Some("Night Drive"));
         assert_eq!(created.relative_path, "Night Drive/Album Track");
         assert!(workspace.join("Night Drive/Album Track").is_dir());
-        assert_eq!(crate::persistence::SCHEMA_VERSION, 3);
+        assert_eq!(crate::persistence::SCHEMA_VERSION, 4);
         drop(app);
 
         let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");

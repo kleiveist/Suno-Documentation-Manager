@@ -97,6 +97,12 @@ For a start near the end of a month, the next payment date is first clamped to t
 
 The cadence is a calculation rule for this one document, not permission to extrapolate it indefinitely. A monthly document does not prove later months, and an annual document does not prove a later subscription year. Register the next actual invoice as a separate record, and do not use the calculated period if cancellation, refund, a partial period, or the document itself shows narrower coverage. The source file is preserved.
 
+## Register global Suno terms evidence
+
+Open `Einstellungen` and use `Nutzungsbedingungen auswählen` under `Archivierte Suno-Nutzungsbedingungen`. Enter only the factual document title, provider/source, source URL, retrieval date, and optional effective date or note, then select one local PDF, TXT, Markdown, HTML, PNG, or JPEG file.
+
+The selected source remains untouched. SunoDM registers a hashed copy under `.suno-doc/global-evidence/` and automatically places a portable `global_copy` under `04_LICENSES/` for every new or still editable project. A finalized project is deliberately not changed; create a revision before assigning newer terms. The evidence records only the archived document and its provenance and does not determine rights or validity.
+
 When documenting a track, select only evidence whose materialized start and end dates actually cover its production period. Before finalization, the application copies the selected file into the track evidence structure, calculates its hash, records `global_copy` provenance and the workspace source record ID, and includes those fields, the exact coverage dates, and the relative path in the manifest. Portability therefore does not depend on rerunning the cadence calculation: the track retains the concrete interval and remains self-contained if the workspace index is later unavailable.
 
 ## Create a track

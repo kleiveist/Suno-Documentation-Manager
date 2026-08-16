@@ -94,7 +94,7 @@ An empty N/A reason is invalid. A conditional child requirement can become N/A a
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
 | 06 | `ai-transparency` | AI Transparency | AI service and visible-disclosure policy/result unless all three content checks are explicitly `No` |
 | 07 | `release` | Release | Final release audio, guided release-note choices, and export facts |
-| 08 | `evidence-licenses` | Evidence & Licenses | Subscription evidence covering the concrete final-generation date plus local terms evidence or an explicit unavailable status |
+| 08 | `evidence-licenses` | Evidence & Licenses | Subscription evidence covering the concrete final-generation date plus the portable copy of globally registered terms evidence or an explicit unavailable status |
 | 09 | `integrity` | Integrity | Current generated documents, SHA-256 list, complete native re-verification, and no mismatch |
 | 10 | `finalize` | Finalize | Blocking-deviation check and native certificate transaction |
 
@@ -169,7 +169,7 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 - instrumental, lyrics source/text, and selected `Lyrics` human work are mutually consistent;
 - original release and Suno-export filenames either match the documented title or have an explicit intentional-deviation confirmation;
 - a commercial track's recorded final-generation date is inside verified selected subscription coverage;
-- commercial intent has both subscription evidence and archived terms/rights evidence or the explicit `Terms evidence not available` status;
+- commercial intent has both subscription evidence and a portable copy of globally registered archived terms/rights evidence or the explicit `Terms evidence not available` status;
 - every policy-required artwork disclosure has `generated_disclosure` provenance, the supported generator version, the exact configured text, a verified AI-original source ID, and bytes identical to final artwork;
 - generated documents match their normalized inputs and template versions;
 - `SHA256SUMS.txt` exists and covers the required current set;

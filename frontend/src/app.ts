@@ -376,7 +376,7 @@ const evidenceRoles: EvidenceRole[] = [
   "release_wav", "release_mp3", "release_mp4", "release_artwork", "ai_artwork_original",
   "ai_artwork_edited", "human_edited_artwork", "final_artwork", "external_audio_file",
   "external_audio_license", "own_audio_file", "source_code_file", "code_generated_audio_file", "third_party_sample_file",
-  "third_party_sample_license", "suno_terms_rights", "external_timestamp", "other"
+  "third_party_sample_license", "external_timestamp", "other"
 ];
 
 const externalAudioSourceChoices: readonly GuidedChoice[] = [
@@ -1492,11 +1492,12 @@ export class SunoDocumentationApp {
       <div class="section-intro"><div><p class="overline">Lokale Nachweise</p><h3>Evidence & Lizenzen</h3><p>Originale bleiben am Quellort. Importierte Kopien werden gehasht und niemals still überschrieben.</p></div><button class="button button--primary" data-action="import-evidence" ${locked ? "disabled" : ""}>${icon("upload")} Evidence importieren</button></div>
       ${missing.length ? `<div class="evidence-needed"><strong>${missing.length} erforderliche Nachweise fehlen</strong><div>${missing.map((item) => {
         if (item.evidenceRole === "subscription_payment") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – unten aus globaler Evidence zuordnen</span>`;
+        if (item.evidenceRole === "suno_terms_rights") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – globale Datei unter Einstellungen registrieren</span>`;
         const current = [...track.evidence].reverse().find((evidence) => evidence.role === item.evidenceRole);
         return `<button data-import-role="${item.evidenceRole}" ${current ? `data-replace-evidence="${escapeHtml(current.id)}"` : ""} ${locked ? "disabled" : ""}>${icon(current ? "upload" : "plus")}<span><strong>${escapeHtml(item.label)}</strong><small>${current ? "Vorhandene Datei sicher ersetzen" : escapeHtml(evidenceRoleLabel(item.evidenceRole!))}</small><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`;
       }).join("")}</div></div>` : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track, locked) : ""}
-      ${track.fields.commercialUseIntended ? `<div class="form-section"><p class="field-label">Archivierte Suno-Nutzungsbedingungen</p><p class="field-help">Nur lokal importierte Service-Terms-Evidence; SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p>${this.inlineEvidenceActions(track, [["suno_terms_rights", "Nutzungsbedingungen importieren"]])}<button class="button button--secondary" data-action="terms-unavailable" ${locked || (hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable !== true) ? "disabled" : ""}>${hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable === true ? "Widerspruch: unavailable-Status zurücknehmen" : hasTermsEvidence ? icon("check") + " Lokaler Terms-Nachweis vorhanden" : track.fields.sunoTermsEvidenceNotAvailable === true ? icon("check") + " Terms evidence not available – Status zurücknehmen" : "Terms evidence not available dokumentieren"}</button></div>` : ""}
+      ${track.fields.commercialUseIntended ? this.renderGlobalTermsEvidencePicker(track, locked, hasTermsEvidence) : ""}
       <div class="form-section"><p class="field-label">Optionaler externer Zeitstempel</p>${this.inlineEvidenceActions(track, [["external_timestamp", "Zeitstempelnachweis importieren"]])}</div>
       <div class="panel evidence-table-panel"><div class="evidence-table-head"><span>Datei</span><span>Rolle</span><span>Integrität</span><span>Größe</span><span></span></div>
         ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><button class="evidence-name" data-preview-evidence="${item.id}" title="Evidence-Vorschau öffnen"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small>${item.metadata?.documentTitle ? `<small>${escapeHtml(item.metadata.documentTitle)} · ${escapeHtml(item.metadata.provider)}</small>` : ""}</button><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${item.id}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${item.id}" aria-label="Evidence entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></span></div>`).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
@@ -1512,6 +1513,7 @@ export class SunoDocumentationApp {
   }
 
   private renderGlobalEvidencePicker(track: TrackDetail, locked = false): string {
+    const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
     const attached = track.evidence.some((item) => item.role === "subscription_payment" && item.verified && Boolean(item.sha256)
       && Boolean(item.coverageStart) && Boolean(item.coverageEnd)
       && item.coverageStart! <= track.fields.productionStartDate && item.coverageEnd! >= track.fields.productionEndDate
@@ -1523,7 +1525,7 @@ export class SunoDocumentationApp {
       : recordedCoverage.coverageStart <= track.fields.sunoFinalGenerationDate && recordedCoverage.coverageEnd >= track.fields.sunoFinalGenerationDate
         ? "YES"
         : "NO";
-    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum und Finalgeneration</h4><p>Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner. Final-generation coverage: <strong>${coverageStatus}</strong>. Dies ist ausschließlich ein Datumsabgleich, keine Rechteaussage.</p></div>${this.state.globalEvidence.length ? `<div>${this.state.globalEvidence.map((item) => {
+    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum und Finalgeneration</h4><p>Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner. Final-generation coverage: <strong>${coverageStatus}</strong>. Dies ist ausschließlich ein Datumsabgleich, keine Rechteaussage.</p></div>${subscriptions.length ? `<div>${subscriptions.map((item) => {
       const coversProduction = Boolean(item.coverageStart) && Boolean(item.coverageEnd)
         && Boolean(track.fields.productionStartDate) && Boolean(track.fields.productionEndDate)
         && item.coverageStart! <= track.fields.productionStartDate
@@ -1534,6 +1536,23 @@ export class SunoDocumentationApp {
       const covers = coversProduction && coversGeneration;
       return `<article class="${covers ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · Produktion: ${coversProduction ? "YES" : "NO"} · Finalgeneration: ${coversGeneration ? "YES" : track.fields.sunoFinalGenerationDate ? "NO" : "NOT VERIFIED"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !covers ? "disabled" : ""}>${attached ? "Zugeordnet" : covers ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
     }).join("")}</div>` : `<p class="empty-inline">Noch keine globale Abo-Evidence. Registriere sie unter Einstellungen.</p>`}</section>`;
+  }
+
+  private renderGlobalTermsEvidencePicker(track: TrackDetail, locked: boolean, hasTermsEvidence: boolean): string {
+    const terms = this.state.globalEvidence.filter((item) => item.role === "suno_terms_rights");
+    const attachedIds = new Set(track.evidence
+      .filter((item) => item.role === "suno_terms_rights")
+      .map((item) => item.sourceGlobalEvidenceId)
+      .filter((value): value is string => Boolean(value)));
+    return `<section class="global-picker"><div><p class="overline">Globale Service-Terms-Evidence</p><h4>Archivierte Suno-Nutzungsbedingungen</h4><p>Die Datei wird einmal unter Einstellungen lokal registriert und als gehashte portable Kopie in nicht finalisierte Projekte übernommen. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div>
+      ${terms.length ? `<div>${terms.map((item) => {
+        const attached = attachedIds.has(item.id);
+        const title = item.metadata?.documentTitle || item.fileName;
+        const details = [item.metadata?.provider, formatDate(item.metadata?.retrievalDate)].filter(Boolean).join(" · ");
+        return `<article class="${attached ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(details || item.fileName)} · Gefordert: ${escapeHtml(evidenceRoleFileTypes("suno_terms_rights"))}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached ? "disabled" : ""}>${attached ? "Im Projekt hinterlegt" : "Diesem Projekt zuordnen"}</button></article>`;
+      }).join("")}</div>` : `<p class="empty-inline">Noch keine globalen Suno-Nutzungsbedingungen. Registriere die Datei unter Einstellungen.</p>`}
+      <button class="button button--secondary" data-action="terms-unavailable" ${locked || (hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable !== true) ? "disabled" : ""}>${hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable === true ? "Widerspruch: unavailable-Status zurücknehmen" : hasTermsEvidence ? icon("check") + " Globaler Terms-Nachweis im Projekt hinterlegt" : track.fields.sunoTermsEvidenceNotAvailable === true ? icon("check") + " Terms evidence not available – Status zurücknehmen" : "Terms evidence not available dokumentieren"}</button>
+    </section>`;
   }
 
   private renderIntegrity(track: TrackDetail): string {
@@ -1601,6 +1620,8 @@ export class SunoDocumentationApp {
 
   private renderSettings(): string {
     const profile = this.state.profile;
+    const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
+    const terms = this.state.globalEvidence.filter((item) => item.role === "suno_terms_rights");
     return `<div class="page-content settings-page">
       <div class="page-lead"><div><p class="overline">Workspace-Stammdaten</p><h2>Globale Angaben</h2><p>Diese Werte werden einmal gespeichert und als tatsächlicher Snapshot in jedes Track-Dokument übernommen.</p></div></div>
       <form id="profile-form" class="panel settings-form">
@@ -1610,7 +1631,10 @@ export class SunoDocumentationApp {
         <div class="form-save settings-save"><span>${icon("shield")} Stammdaten verbleiben in der lokalen Workspace-Datenbank.</span><button class="button button--primary" type="submit">${icon("check")} Einstellungen speichern</button></div>
       </form>
       <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
-        ${this.state.globalEvidence.length ? `<div class="global-evidence-list">${this.state.globalEvidence.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globalen Nachweis entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
+        ${subscriptions.length ? `<div class="global-evidence-list">${subscriptions.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globalen Nachweis entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
+      </section>
+      <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Globale Datei für alle Projekte</p><h3>Archivierte Suno-Nutzungsbedingungen</h3><p>Importiere Service Terms oder Rechteinformationen einmal lokal. Die Datei wird gehasht und in jedes neue sowie jedes noch bearbeitbare Projekt als portable Evidence-Kopie hinterlegt. Finalisierte Snapshots bleiben unverändert.</p><p>Gefordert: ${escapeHtml(evidenceRoleFileTypes("suno_terms_rights"))}. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div><button class="button button--secondary" data-action="import-global-terms">${icon("upload")} Nutzungsbedingungen auswählen</button></div>
+        ${terms.length ? `<div class="global-evidence-list">${terms.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Quelle nicht angegeben")} · Abruf ${formatDate(item.metadata?.retrievalDate)} · ${escapeHtml(item.fileName)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globale Nutzungsbedingungen entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch keine globalen Suno-Nutzungsbedingungen registriert.</p>`}
       </section>
     </div>`;
   }
@@ -1852,7 +1876,13 @@ export class SunoDocumentationApp {
       return;
     }
     if (button.dataset.attachGlobal) {
-      await this.trackMutation("Abo-Nachweis wird in den Track kopiert …", () => this.api.attachGlobalEvidence(this.requireTrack().id, button.dataset.attachGlobal!), "Abo-Nachweis zugeordnet");
+      const global = this.state.globalEvidence.find((item) => item.id === button.dataset.attachGlobal);
+      const terms = global?.role === "suno_terms_rights";
+      await this.trackMutation(
+        terms ? "Nutzungsbedingungen werden in das Projekt kopiert …" : "Abo-Nachweis wird in den Track kopiert …",
+        () => this.api.attachGlobalEvidence(this.requireTrack().id, button.dataset.attachGlobal!),
+        terms ? "Nutzungsbedingungen im Projekt hinterlegt" : "Abo-Nachweis zugeordnet"
+      );
       return;
     }
     if (button.dataset.resolveDeviation) {
@@ -1928,6 +1958,7 @@ export class SunoDocumentationApp {
         break;
       case "import-evidence": await this.chooseEvidenceRole(); break;
       case "import-global-evidence": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.evidencePreview = null; this.state.showSubscriptionEvidence = true; this.render(); break;
+      case "import-global-terms": await this.importGlobalTermsEvidence(); break;
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
@@ -2218,6 +2249,28 @@ export class SunoDocumentationApp {
         `${evidenceRoleLabel(role)} wurde kopiert, gehasht und dem Track zugeordnet.${replaceEvidenceId ? " Die vorherige Kopie wurde archiviert." : ""}`
       );
     }
+  }
+
+  private async importGlobalTermsEvidence(): Promise<void> {
+    const metadata = this.collectEvidenceMetadata("suno_terms_rights");
+    if (!metadata) return;
+    const imported = await this.withBusy(
+      "Nutzungsbedingungen auswählen, global speichern und in Projekte kopieren …",
+      async () => {
+        const item = await this.api.importGlobalTermsEvidence(metadata);
+        if (!item) return null;
+        return { item, globalEvidence: await this.api.listGlobalEvidence() };
+      }
+    );
+    if (!imported) return;
+    this.state.globalEvidence = imported.globalEvidence;
+    await this.refreshTracks();
+    this.showToast(
+      "success",
+      "Globale Nutzungsbedingungen registriert",
+      "Die Datei wurde lokal gehasht und in jedes noch bearbeitbare Projekt kopiert. Finalisierte Snapshots wurden nicht verändert."
+    );
+    this.render();
   }
 
   private collectEvidenceMetadata(role: EvidenceRole): Partial<EvidenceMetadata> | null | undefined {

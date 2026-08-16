@@ -190,6 +190,19 @@ export function createDemoApi(): DesktopApi {
   const albums = new Map<string, string>();
   let globalEvidence: GlobalEvidenceItem[] = [{ ...evidence("subscription_payment", "subscription_2026-07.pdf"), coverageStart: "2026-07-01", coverageEnd: "2026-07-31" }];
 
+  const attachGlobalToTrack = (track: TrackDetail, item: GlobalEvidenceItem): void => {
+    if (track.evidence.some((entry) => entry.sourceGlobalEvidenceId === item.id)) return;
+    track.evidence.push({
+      ...clone(item),
+      id: crypto.randomUUID(),
+      sourceGlobalEvidenceId: item.id,
+      provenance: "global_copy",
+      relativePath: `04_LICENSES/${item.role === "suno_terms_rights" ? "suno_terms" : "subscription"}_${item.fileName}`
+    });
+    if (item.role === "suno_terms_rights") track.fields.sunoTermsEvidenceNotAvailable = false;
+    refresh(track);
+  };
+
   const albumKey = (title: string): string => title.trim().normalize("NFKC").toLocaleLowerCase("de-DE");
   const rememberAlbum = (library: TrackLibraryAssignment): void => {
     if (library.section === "album" && library.albumTitle) {
@@ -276,6 +289,32 @@ export function createDemoApi(): DesktopApi {
       globalEvidence.push(item);
       return clone(item);
     },
+    async importGlobalTermsEvidence(metadata) {
+      await wait();
+      const item: GlobalEvidenceItem = {
+        ...evidence("suno_terms_rights", "suno_terms.html"),
+        relativePath: ".suno-doc/global-evidence/suno_terms.html",
+        metadata: {
+          originalFileName: "suno_terms.html",
+          documentTitle: "",
+          provider: "",
+          sourceUrl: "",
+          retrievalDate: "",
+          effectiveDate: "",
+          factualNote: "",
+          externalTimestamp: "",
+          referencedHash: "",
+          referencedArtifact: "",
+          ...metadata
+        }
+      };
+      globalEvidence.push(item);
+      for (const track of tracks.values()) {
+        if (track.status === "FINALIZED" || track.status === "SUPERSEDED") continue;
+        attachGlobalToTrack(track, item);
+      }
+      return clone(item);
+    },
     async removeGlobalEvidence(evidenceId) {
       await wait();
       globalEvidence = globalEvidence.filter((item) => item.id !== evidenceId);
@@ -285,8 +324,7 @@ export function createDemoApi(): DesktopApi {
       const track = get(trackId);
       const item = globalEvidence.find((entry) => entry.id === evidenceId);
       if (!item) throw new Error("Der globale Nachweis wurde nicht gefunden.");
-      track.evidence.push({ ...clone(item), id: crypto.randomUUID(), sourceGlobalEvidenceId: item.id, relativePath: `04_LICENSES/${item.fileName}` });
-      refresh(track);
+      attachGlobalToTrack(track, item);
       return clone(track);
     },
     async listTracks(): Promise<TrackSummary[]> {
@@ -315,6 +353,9 @@ export function createDemoApi(): DesktopApi {
       const track = makeTrack(id, input.title.trim(), profile, false, library);
       track.fields.productionStartDate = input.productionStartDate;
       track.fields.commercialUseIntended = input.commercialUseIntended;
+      for (const item of globalEvidence.filter((entry) => entry.role === "suno_terms_rights")) {
+        attachGlobalToTrack(track, item);
+      }
       refresh(track);
       tracks.set(id, track);
       if (workspace) workspace.trackCount = tracks.size;

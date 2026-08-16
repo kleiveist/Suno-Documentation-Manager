@@ -109,6 +109,8 @@ Step 10 now creates `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` directly in the track
 
 Workflow 1.3 and certificate format 3.0 add explicit final Suno generation dates, instrumental and source-filename consistency checks, factual subscription coverage against the final-generation date, locally archived Suno terms/rights evidence, and optional external timestamp evidence. Project/version identifiers and a generation time are not requested. These are technical documentation facts only: the result does not certify authorship, ownership, non-infringement, legality, license validity, judicial weight, compliance, or governmental approval.
 
+Archived Suno terms/rights files are selected once under `Einstellungen`. SunoDM stores the local global record with its factual metadata and SHA-256, then places a portable `global_copy` in every new or still editable project. Finalized snapshots are never changed; use a new revision before attaching newer global terms.
+
 ## Local data model
 
 The application deliberately uses two authorities:

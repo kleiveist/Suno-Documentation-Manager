@@ -11,7 +11,7 @@
 | Audience | Product developers and architects |
 | Related ATP | N/A — template-level architecture |
 
-> **Template provenance:** This provider-neutral page records upstream design guidance, not the implemented Suno Documentation Manager persistence contract. Statements below that the template has no embedded SQLite capability refer to the upstream reusable template. This product does implement native workspace SQLite schema version 3 plus portable track files; [Local persistence and recovery](persistence.md) is authoritative.
+> **Template provenance:** This provider-neutral page records upstream design guidance, not the implemented Suno Documentation Manager persistence contract. Statements below that the template has no embedded SQLite capability refer to the upstream reusable template. This product does implement native workspace SQLite schema version 4 plus portable track files; [Local persistence and recovery](persistence.md) is authoritative.
 
 ## Purpose
 

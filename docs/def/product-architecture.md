@@ -87,7 +87,7 @@ The command surface is deliberately explicit. The exact Rust input and output st
 | Workspace | `create_workspace`, `open_workspace`, `scan_workspace` |
 | Track | `create_track`, `load_track`, `update_track`, `update_track_library`, `rename_album` |
 | Evidence | `import_evidence`, `preview_evidence`, `remove_evidence`, `verify_evidence` |
-| Global evidence | `list_global_evidence`, `import_global_evidence`, `remove_global_evidence`, `attach_global_evidence` |
+| Global evidence | `list_global_evidence`, `import_global_evidence`, `import_global_terms_evidence`, `remove_global_evidence`, `attach_global_evidence` |
 | Documents | `generate_documents` |
 | Artwork | `generate_artwork_disclosure` |
 | Integrity | `calculate_hashes`, `verify_hashes` |

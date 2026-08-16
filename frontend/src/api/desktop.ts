@@ -36,6 +36,7 @@ export interface DesktopApi {
   updateProfile(profile: GlobalProfile): Promise<GlobalProfile>;
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]>;
   importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle): Promise<GlobalEvidenceItem | null>;
+  importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null>;
   removeGlobalEvidence(evidenceId: string): Promise<void>;
   attachGlobalEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
   listTracks(): Promise<TrackSummary[]>;
@@ -138,6 +139,15 @@ class TauriDesktopApi implements DesktopApi {
   async importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle): Promise<GlobalEvidenceItem | null> {
     try {
       return await command<GlobalEvidenceItem | null>("import_global_evidence", { role, coverageStart, billingCycle });
+    } catch (error) {
+      if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
+      throw error;
+    }
+  }
+
+  async importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null> {
+    try {
+      return await command<GlobalEvidenceItem | null>("import_global_terms_evidence", { metadata });
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;

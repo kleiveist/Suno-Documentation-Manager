@@ -217,9 +217,12 @@ pub fn register_global(
     role: EvidenceRole,
     source: &Path,
 ) -> Result<GlobalEvidenceItem> {
-    if role != EvidenceRole::SubscriptionPayment && role != EvidenceRole::Other {
+    if !matches!(
+        role,
+        EvidenceRole::SubscriptionPayment | EvidenceRole::SunoTermsRights | EvidenceRole::Other
+    ) {
         return Err(AppError::Validation(
-            "Only subscription/payment or other reusable evidence may be registered globally."
+            "Only subscription/payment, Suno terms/rights, or other reusable evidence may be registered globally."
                 .into(),
         ));
     }
@@ -263,15 +266,21 @@ pub fn portable_global_copy(
     if short_id.len() < 4 {
         return Err(AppError::Data("Global evidence ID is invalid.".into()));
     }
-    let name = format!("subscription_{short_id}_{original_name}");
+    let prefix = match global.evidence.role {
+        EvidenceRole::SubscriptionPayment => "subscription",
+        EvidenceRole::SunoTermsRights => "suno_terms",
+        _ => "global",
+    };
+    let name = format!("{prefix}_{short_id}_{original_name}");
     let relative = PathBuf::from("04_LICENSES").join(name);
     let destination = contained_path(track_root, &relative, false)?;
     copy_new(source, &destination)?;
-    let mut item = build_item(EvidenceRole::SubscriptionPayment, relative, &destination)?;
+    let mut item = build_item(global.evidence.role, relative, &destination)?;
     item.source_global_evidence_id = Some(global.evidence.id.clone());
     item.coverage_start = global.evidence.coverage_start.clone();
     item.coverage_end = global.evidence.coverage_end.clone();
     item.provenance = EvidenceProvenance::GlobalCopy;
+    item.metadata = global.evidence.metadata.clone();
     Ok(item)
 }
 

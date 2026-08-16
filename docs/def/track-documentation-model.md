@@ -158,7 +158,7 @@ Folder generation creates directories and managed text documents only when appro
 | AI artwork edited | `05_ARTWORK/` | Required only when that production stage occurred |
 | Human-edited artwork | `05_ARTWORK/` | Required only when that production stage occurred |
 | Final artwork | `05_ARTWORK/` | The authoritative JPG/PNG downloaded from Suno, or the required locally disclosed derivative |
-| Archived Suno terms/rights | `04_LICENSES/` | Local PDF/TXT/Markdown/HTML/PNG/JPEG plus title, provider, source URL, retrieval date, optional effective date and factual note |
+| Archived Suno terms/rights | Global registration under `.suno-doc/global-evidence/`, portable copy under `04_LICENSES/` | Local PDF/TXT/Markdown/HTML/PNG/JPEG plus title, provider, source URL, retrieval date, optional effective date and factual note; automatically assigned to new/editable projects |
 | External timestamp evidence | `03_DOCUMENTATION/` | Optional local evidence plus provider/issuer, timestamp, referenced hash, and referenced artifact; no claim of legal qualification |
 | Other evidence | Role-selected contained destination | Optional; must have a factual description |
 
