@@ -96,7 +96,7 @@ function makeTrack(
     postExportEditingPerformed: false,
     artworkOrigin: complete ? ("ai_assisted" as const) : ("" as const),
     aiImageService: complete ? "OpenAI" : "",
-    humanArtworkModifications: complete ? "Typografie und Farbkorrektur" : "",
+    humanArtworkModifications: complete ? ["Typography added", "Color correction"] : [],
     depictsRealPerson: complete ? false : null,
     depictsRealEvent: complete ? false : null,
     containsTrademark: complete ? false : null,
@@ -113,7 +113,7 @@ function makeTrack(
   };
   const items = complete
     ? [
-        evidence("release_wav", `${title}_FINAL.wav`),
+        evidence("release_wav", `${title}.wav`),
         evidence("suno_final_export", `${title}_SUNO_FINAL.wav`),
         { ...evidence("subscription_payment", "subscription_2026-07.pdf"), provenance: "global_copy" as const, sourceGlobalEvidenceId: "demo-global-subscription", coverageStart: "2026-07-01", coverageEnd: "2026-07-31" },
         originalArtwork,
@@ -140,7 +140,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.3",
+      templateVersion: "1.4",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -368,9 +368,19 @@ export function createDemoApi(): DesktopApi {
     async updateTrack(trackId, patch) {
       await wait();
       const track = get(trackId);
+      const previousTitle = track.fields.title;
       track.fields = { ...track.fields, ...clone(patch) };
       if (patch.title !== undefined) {
         track.relativePath = trackRelativePath(track.library, patch.title);
+        if (patch.title !== previousTitle && track.status !== "FINALIZED") {
+          for (const item of track.evidence.filter((entry) =>
+            ["release_wav", "release_mp3", "release_mp4"].includes(entry.role)
+          )) {
+            const extension = item.fileName.includes(".") ? item.fileName.slice(item.fileName.lastIndexOf(".")) : "";
+            item.fileName = `${patch.title}${extension}`;
+            item.relativePath = `01_RELEASE/${item.fileName}`;
+          }
+        }
       }
       track.documents.current = false;
       if (track.status === "FINALIZED") {
@@ -502,7 +512,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.3",
+        templateVersion: "1.4",
         files: documentFiles
       };
       track.integrity.generated = false;

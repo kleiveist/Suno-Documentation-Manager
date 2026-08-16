@@ -4,14 +4,14 @@
 - Origin: ai_assisted
 - AI service: Example Image Service
 - AI-generated base image: 05_ARTWORK/ai-original.png
-- Human modifications: Cropped and adjusted contrast.
+- Human modifications: Cropping, Brightness/contrast adjusted
 - Disclosure policy: always
 - Disclosure applied: No
 - Final output: 05_ARTWORK/final-cover.png
-- Depicts a real person: No
-- Represents a real event as authentic: Yes
+- Real person intentionally depicted: No
+- Real event represented as authentic: Yes
 - Real-event note: Synthetic night-sky scene.
-- Contains a trademark or logo: No
+- Trademark or company logo reproduced: No
 
 ## Artwork evidence
 

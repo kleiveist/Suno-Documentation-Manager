@@ -159,6 +159,9 @@ export interface TrackFields {
   ownAudioSource: string;
   ownAudioOwnership: string;
   codeBasedGeneration: boolean | null;
+  codeAudioPostProcessed: boolean | null;
+  codeAudioPostProcessingOperations: string[];
+  codeAudioPostProcessingNote: string;
   thirdPartySamplesUploaded: boolean | null;
   thirdPartySampleSource: string;
   thirdPartySampleOwnership: string;
@@ -169,7 +172,10 @@ export interface TrackFields {
   commercialUseIntended: boolean;
   artworkOrigin: ArtworkOrigin | "";
   aiImageService: string;
-  humanArtworkModifications: string;
+  humanArtworkProcessOperations: string[];
+  humanArtworkProcessNotes: string;
+  humanArtworkModifications: string[];
+  customArtworkChange: string;
   depictsRealPerson: boolean | null;
   realPersonNotes: string;
   depictsRealEvent: boolean | null;
@@ -312,6 +318,9 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     ownAudioSource: "",
     ownAudioOwnership: "",
     codeBasedGeneration: null,
+    codeAudioPostProcessed: null,
+    codeAudioPostProcessingOperations: [],
+    codeAudioPostProcessingNote: "",
     thirdPartySamplesUploaded: null,
     thirdPartySampleSource: "",
     thirdPartySampleOwnership: "",
@@ -322,7 +331,10 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     commercialUseIntended: profile.defaultCommercialUse,
     artworkOrigin: "",
     aiImageService: profile.defaultAiImageService,
-    humanArtworkModifications: "",
+    humanArtworkProcessOperations: [],
+    humanArtworkProcessNotes: "",
+    humanArtworkModifications: [],
+    customArtworkChange: "",
     depictsRealPerson: null,
     realPersonNotes: "",
     depictsRealEvent: null,

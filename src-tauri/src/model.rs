@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -131,7 +131,10 @@ impl EvidenceRole {
 
     pub fn allowed_extensions(&self) -> &'static [&'static str] {
         match self {
-            Self::ReleaseWav => &["wav"],
+            // `release_wav` is the historical authoritative final-audio role. Keep
+            // the persisted role name for compatibility while accepting the actual
+            // imported release format and preserving its extension.
+            Self::ReleaseWav => &["wav", "mp3", "flac", "m4a", "aiff", "aif", "ogg"],
             Self::ReleaseMp3 => &["mp3"],
             Self::ReleaseMp4 => &["mp4", "m4v"],
             Self::SunoProjectZip => &["zip"],
@@ -204,6 +207,37 @@ impl Default for Profile {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrVec {
+    String(String),
+    Vec(Vec<String>),
+}
+
+fn string_or_vec(value: StringOrVec) -> Vec<String> {
+    match value {
+        StringOrVec::String(value) if value.trim().is_empty() => Vec::new(),
+        StringOrVec::String(value) => vec![value],
+        StringOrVec::Vec(values) => values,
+    }
+}
+
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    StringOrVec::deserialize(deserializer).map(string_or_vec)
+}
+
+fn deserialize_optional_string_or_vec<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<StringOrVec>::deserialize(deserializer).map(|value| value.map(string_or_vec))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TrackFields {
@@ -224,6 +258,10 @@ pub struct TrackFields {
     pub own_audio_source: String,
     pub own_audio_ownership: String,
     pub code_based_generation: Option<bool>,
+    pub code_audio_post_processed: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    pub code_audio_post_processing_operations: Vec<String>,
+    pub code_audio_post_processing_note: String,
     pub third_party_samples_uploaded: Option<bool>,
     pub third_party_sample_source: String,
     pub third_party_sample_ownership: String,
@@ -234,7 +272,12 @@ pub struct TrackFields {
     pub commercial_use_intended: bool,
     pub artwork_origin: String,
     pub ai_image_service: String,
-    pub human_artwork_modifications: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    pub human_artwork_process_operations: Vec<String>,
+    pub human_artwork_process_notes: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    pub human_artwork_modifications: Vec<String>,
+    pub custom_artwork_change: String,
     pub depicts_real_person: Option<bool>,
     pub real_person_notes: String,
     pub depicts_real_event: Option<bool>,
@@ -266,6 +309,9 @@ impl Default for TrackFields {
             own_audio_source: String::new(),
             own_audio_ownership: String::new(),
             code_based_generation: None,
+            code_audio_post_processed: None,
+            code_audio_post_processing_operations: Vec::new(),
+            code_audio_post_processing_note: String::new(),
             third_party_samples_uploaded: None,
             third_party_sample_source: String::new(),
             third_party_sample_ownership: String::new(),
@@ -276,7 +322,10 @@ impl Default for TrackFields {
             commercial_use_intended: true,
             artwork_origin: String::new(),
             ai_image_service: String::new(),
-            human_artwork_modifications: String::new(),
+            human_artwork_process_operations: Vec::new(),
+            human_artwork_process_notes: String::new(),
+            human_artwork_modifications: Vec::new(),
+            custom_artwork_change: String::new(),
             depicts_real_person: None,
             real_person_notes: String::new(),
             depicts_real_event: None,
@@ -305,6 +354,20 @@ impl TrackFields {
             self.own_audio_source.clear();
             self.own_audio_ownership.clear();
         }
+        if self.code_based_generation != Some(true) {
+            self.code_audio_post_processed = None;
+            self.code_audio_post_processing_operations.clear();
+            self.code_audio_post_processing_note.clear();
+        } else if self.code_audio_post_processed != Some(true) {
+            self.code_audio_post_processing_operations.clear();
+            self.code_audio_post_processing_note.clear();
+        } else if !self
+            .code_audio_post_processing_operations
+            .iter()
+            .any(|value| value == "Other post-processing")
+        {
+            self.code_audio_post_processing_note.clear();
+        }
         if self.third_party_samples_uploaded != Some(true) {
             self.third_party_sample_source.clear();
             self.third_party_sample_ownership.clear();
@@ -320,13 +383,25 @@ impl TrackFields {
         }
 
         let artwork_present = !matches!(self.artwork_origin.as_str(), "" | "none");
+        if self.artwork_origin != "human" {
+            self.human_artwork_process_operations.clear();
+            self.human_artwork_process_notes.clear();
+        }
         if matches!(self.artwork_origin.as_str(), "human" | "none") {
             self.ai_image_service.clear();
             self.human_artwork_modifications.clear();
+            self.custom_artwork_change.clear();
             self.disclosure_applied = None;
             self.disclosure_text.clear();
         } else if self.artwork_origin != "ai_assisted" {
             self.human_artwork_modifications.clear();
+            self.custom_artwork_change.clear();
+        } else if !self
+            .human_artwork_modifications
+            .iter()
+            .any(|value| value == "Other human editing")
+        {
+            self.custom_artwork_change.clear();
         }
 
         if !artwork_present {
@@ -388,6 +463,10 @@ pub struct TrackPatch {
     pub own_audio_source: Option<String>,
     pub own_audio_ownership: Option<String>,
     pub code_based_generation: Option<bool>,
+    pub code_audio_post_processed: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_or_vec")]
+    pub code_audio_post_processing_operations: Option<Vec<String>>,
+    pub code_audio_post_processing_note: Option<String>,
     pub third_party_samples_uploaded: Option<bool>,
     pub third_party_sample_source: Option<String>,
     pub third_party_sample_ownership: Option<String>,
@@ -398,7 +477,12 @@ pub struct TrackPatch {
     pub commercial_use_intended: Option<bool>,
     pub artwork_origin: Option<String>,
     pub ai_image_service: Option<String>,
-    pub human_artwork_modifications: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_or_vec")]
+    pub human_artwork_process_operations: Option<Vec<String>>,
+    pub human_artwork_process_notes: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_or_vec")]
+    pub human_artwork_modifications: Option<Vec<String>>,
+    pub custom_artwork_change: Option<String>,
     pub depicts_real_person: Option<bool>,
     pub real_person_notes: Option<String>,
     pub depicts_real_event: Option<bool>,
@@ -691,4 +775,50 @@ pub struct DocumentPreview {
     pub files: Vec<String>,
     pub collisions: Vec<String>,
     pub adoption_required: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn historical_artwork_freetext_loads_without_data_loss_and_serializes_as_a_list() {
+        let fields: TrackFields = serde_json::from_value(serde_json::json!({
+            "humanArtworkModifications": "Historischer frei beschreibbarer Wert",
+            "codeAudioPostProcessingOperations": "Historische Nachbearbeitung"
+        }))
+        .expect("historical track fields");
+
+        assert_eq!(
+            fields.human_artwork_modifications,
+            vec!["Historischer frei beschreibbarer Wert"]
+        );
+        assert_eq!(
+            fields.code_audio_post_processing_operations,
+            vec!["Historische Nachbearbeitung"]
+        );
+        let serialized = serde_json::to_value(fields).expect("serialize migrated fields");
+        assert!(serialized["humanArtworkModifications"].is_array());
+        assert!(serialized["codeAudioPostProcessingOperations"].is_array());
+    }
+
+    #[test]
+    fn inactive_code_and_artwork_branches_remove_unclaimed_operations() {
+        let mut fields = TrackFields {
+            code_based_generation: Some(false),
+            code_audio_post_processed: Some(true),
+            code_audio_post_processing_operations: vec!["Mixing".into()],
+            artwork_origin: "ai_generated".into(),
+            human_artwork_process_operations: vec!["Photographed".into()],
+            human_artwork_modifications: vec!["Cropping".into()],
+            ..TrackFields::default()
+        };
+
+        fields.normalize_conditionals();
+
+        assert_eq!(fields.code_audio_post_processed, None);
+        assert!(fields.code_audio_post_processing_operations.is_empty());
+        assert!(fields.human_artwork_process_operations.is_empty());
+        assert!(fields.human_artwork_modifications.is_empty());
+    }
 }

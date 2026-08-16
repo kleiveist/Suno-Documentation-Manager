@@ -71,17 +71,18 @@ At minimum, the workflow can record the following confirmed facts:
 
 - track title;
 - production start and production end dates;
-- Suno model and project URL;
-- Suno plan at creation;
+- Suno model and project URL, with the model retained as unrestricted text;
+- Suno plan at creation, retained as unrestricted historical text;
 - final export date;
 - lyrics source;
 - the lyrics text actually used when the track is not instrumental;
 - the complete Suno style prompt;
 - whether external audio, own audio, code-based generation, or third-party samples were used;
 - the guided source category and rights basis for every applicable audio-source branch;
-- the source-code or source-text evidence file and its generated WAV/MP3 output when code-based generation is confirmed;
+- the source-code or source-text evidence file, its generated WAV/MP3 output, the explicit post-processing answer, and any selected post-processing operations when code-based generation is confirmed;
 - whether human editing or post-export editing occurred;
-- the specific confirmed human editing operations; and
+- the specific confirmed human editing operations;
+- applicable human artwork process operations, editable process notes, and selected human changes to AI-assisted artwork; and
 - whether commercial use is intended.
 
 Confirmed human-work labels are selected from the guided choices for arrangement, lyrics, timing/cuts, sound design, EQ, mixing, mastering, and loudness adjustment. Post-export work uses its own guided set for editing/cuts, arrangement, timing correction, sound design, EQ, mixing, mastering, loudness adjustment, noise reduction, and dynamics processing. Release notes likewise use guided release-version choices. A label appears only when the user selects it; the generator does not add generic arrangement, mixing, mastering, or release claims by default.
@@ -93,7 +94,7 @@ The localized UI label and the stored value are deliberately separate. Source, r
 The model stores a controlling answer separately from its dependent details. If `External audio uploaded?` is `No`, source, ownership, license, and uploaded-file questions are not required. If it is `Yes`, the dependent facts and evidence become applicable. The same rule applies to:
 
 - own audio;
-- code-based generation, which requires both a source-code/source-text evidence file and the generated WAV or MP3 only after an explicit positive answer;
+- code-based generation, which requires both a source-code/source-text evidence file and the generated WAV or MP3 only after an explicit positive answer; it then requires a post-processing `Yes`/`No`, and only `Yes` requires at least one operation;
 - third-party samples;
 - human lyrics and human editing;
 - post-export processing;
@@ -146,7 +147,8 @@ Folder generation creates directories and managed text documents only when appro
 | Source code or source text (`.rb`, `.py`, `.txt`, `.md`, and other supported text-based formats) | `02_SUNO/` | Required only when code-based generation is confirmed |
 | Code-generated audio (`.wav` or `.mp3`) | `02_SUNO/` | Required together with source-code evidence when code-based generation is confirmed |
 | Subscription or payment evidence (PDF, PNG/JPEG, TXT, or Markdown) | `04_LICENSES/` | Selected when its materialized coverage interval covers the track production period |
-| Release WAV, MP3, or MP4 | `01_RELEASE/` | Release output; the configured final release role is mandatory |
+| Final release audio (WAV, MP3, FLAC, M4A, AIFF, or OGG) | `01_RELEASE/` | Singular authoritative release output; the imported extension is preserved |
+| Additional release MP3 or MP4 | `01_RELEASE/` | Optional additional release representation |
 | Release artwork | `01_RELEASE/` | Final release package artwork when applicable |
 | AI artwork original | `05_ARTWORK/` | Required when an AI base image is declared |
 | AI artwork edited | `05_ARTWORK/` | Required only when that production stage occurred |
@@ -157,6 +159,10 @@ Folder generation creates directories and managed text documents only when appro
 `release_wav` and `final_artwork` are singular authoritative roles in version 0.1. To replace either asset, use the explicit upload control attached to the current evidence. The app reuses that evidence record, archives the previous managed bytes, and never chooses silently between competing final assets.
 
 An import validates the type and role, calculates a safe destination, detects a collision, copies without deleting the source, calculates SHA-256 during the same streaming copy, records size and metadata, and reevaluates the workflow. It runs outside the webview thread. Routine loading avoids a repeated full SHA-256 read for evidence larger than 64 MiB; explicit evidence verification and integrity/finalization operations remain full cryptographic checks. Manifest paths are relative to the track root.
+
+The authoritative release-audio copy is named `01_RELEASE/<safe track title>.<imported extension>`. The native filename sanitizer preserves readable title text while replacing filesystem-invalid characters and rejecting traversal or absolute paths. Import and title-change operations never overwrite an occupied target. A title change renames managed release evidence and its relative metadata only through the native Rust boundary, with rollback on failure. Finalized tracks remain immutable.
+
+When an active, non-superseded track still has an exact managed legacy path such as `01_RELEASE/suno_final_export.wav`, loading may conservatively rename it to the title-based path and update the evidence record only if the managed provenance and role are unambiguous and the target is free. Indexed legacy, ambiguous, colliding, finalized, and superseded records remain unchanged.
 
 The evidence UI exposes accepted file types for every role. Existing images and bounded text or source-code files can be previewed inside the app. Archive preview is metadata-only and never expands or reads an entire project ZIP into memory. The adjacent replacement action is distinct from preview so viewing evidence cannot accidentally open a file picker.
 
@@ -196,17 +202,17 @@ This is a project transparency policy. The product does not label it as a univer
 
 ## Generated documents
 
-Template version `1.2` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and evidence metadata. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
+Template version `1.4` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and evidence metadata. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
 
 Generated headings, explanatory prose, and guided-choice values are always English. German UI labels are mapped to their stable English values before rendering. An unknown legacy selection is represented by an English reclassification notice rather than copying potentially non-English unrestricted text into a generated choice field. User-authored factual content that must remain exact—such as lyrics, the Suno style prompt, a disclosure text, or an individually required factual note—is preserved verbatim and is not treated as generated prose.
 
 | Output | Minimum purpose |
 | --- | --- |
-| `02_SUNO/suno_project.txt` | Suno project URL, confirmed production facts, code-generation answer, and applicable source-code plus generated-audio evidence paths |
+| `02_SUNO/suno_project.txt` | Suno project URL, confirmed production facts, code-generation and post-processing answers, selected operations, and applicable source-code plus generated-audio evidence paths |
 | `02_SUNO/Lyrics.md` | Lyrics source and the exact used lyrics text when applicable |
 | `02_SUNO/Style.md` | The complete style prompt entered in Suno |
 | `03_DOCUMENTATION/README.md` | Human-readable track documentation entry point |
-| `03_DOCUMENTATION/AI_USAGE.md` | Confirmed AI systems, uses, and artwork disclosure facts |
+| `03_DOCUMENTATION/AI_USAGE.md` | Confirmed AI systems, code-audio post-processing facts, human changes to AI-assisted artwork, and disclosure facts |
 | `04_LICENSES/suno_account_and_license.md` | Snapshot of relevant account, plan, and selected subscription evidence facts |
 | `04_LICENSES/openai_image_generation.md` | AI image service facts when applicable; the historical file name does not imply an API integration |
 | `05_ARTWORK/artwork_process.md` | Artwork stages, human changes, content-check declarations, and disclosure result |
@@ -292,6 +298,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Added code-audio post-processing, human/AI-assisted artwork operations, factual content-check output, title-based release-audio naming, conservative legacy release migration, and template version 1.4. | Project team |
 | 2026-08-16 | Replaced Source/right and lyrics-source dropdowns with mutually exclusive guided buttons without changing stored canonical values. | Project team |
 | 2026-08-16 | Required the generated WAV/MP3 alongside source code for code-based generation and advanced generated documents to template version 1.3. | Project team |
 | 2026-08-15 | Defined the post-commit reusable certificate summary as a presentation of authoritative finalized track data. | Project team |

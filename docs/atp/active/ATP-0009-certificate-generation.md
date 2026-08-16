@@ -60,7 +60,7 @@ Accept certificate generation when a ready track produces a complete self-contai
 
 | ID | Description | Source or setup |
 | --- | --- | --- |
-| TD-01 | Ready track | Artist `Acceptance Artist`, track `Acceptance Track`, workflow `suno-track` `1.1`, fixed evidence roles |
+| TD-01 | Ready track | Artist `Acceptance Artist`, track `Acceptance Track`, workflow `suno-track` `1.2`, fixed evidence roles |
 | TD-02 | N/A details | At least one legitimate conditional N/A with a non-empty reason |
 | TD-03 | Global subscription evidence | Synthetic PDF registered globally and selected for the production period |
 | TD-04 | Failure injection | Native test hook that fails one certificate artifact write before final state commit |

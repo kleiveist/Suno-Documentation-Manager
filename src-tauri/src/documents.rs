@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.3";
+pub const TEMPLATE_VERSION: &str = "1.4";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -265,6 +265,19 @@ fn value_or_missing(value: &str) -> &str {
     }
 }
 
+fn documented_list(values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        "Not documented".into()
+    } else {
+        values.join(", ")
+    }
+}
+
 const LEGACY_SELECTION_NOTICE: &str =
     "Legacy value retained in the track record; select a defined category in the app.";
 
@@ -502,6 +515,22 @@ fn render(
     if f.code_based_generation == Some(true) {
         source_declarations.push_str(&format!("- Source-code evidence: {source_code_file}\n"));
         source_declarations.push_str(&format!(
+            "- Post-processing performed: {}\n",
+            yes_no(f.code_audio_post_processed)
+        ));
+        if f.code_audio_post_processed == Some(true) {
+            source_declarations.push_str(&format!(
+                "- Post-processing operations: {}\n",
+                documented_list(&f.code_audio_post_processing_operations)
+            ));
+            if !f.code_audio_post_processing_note.trim().is_empty() {
+                source_declarations.push_str(&format!(
+                    "- Other post-processing note: {}\n",
+                    value_or_missing(&f.code_audio_post_processing_note)
+                ));
+            }
+        }
+        source_declarations.push_str(&format!(
             "- Code-generated audio evidence: {code_generated_audio_file}\n"
         ));
     }
@@ -570,8 +599,14 @@ fn render(
             if f.artwork_origin == "ai_assisted" {
                 ai_artwork_usage.push_str(&format!(
                     "- Human modifications: {}\n",
-                    value_or_missing(&f.human_artwork_modifications)
+                    documented_list(&f.human_artwork_modifications)
                 ));
+                if !f.custom_artwork_change.trim().is_empty() {
+                    ai_artwork_usage.push_str(&format!(
+                        "- Other human editing details: {}\n",
+                        value_or_missing(&f.custom_artwork_change)
+                    ));
+                }
             }
             if ai_transparency_disabled {
                 ai_artwork_usage.push_str(
@@ -634,6 +669,18 @@ fn render(
         value_or_missing(&f.artwork_origin)
     );
     if artwork_present {
+        if f.artwork_origin == "human" {
+            artwork_document.push_str(&format!(
+                "- Human process operations: {}\n",
+                documented_list(&f.human_artwork_process_operations)
+            ));
+            if !f.human_artwork_process_notes.trim().is_empty() {
+                artwork_document.push_str(&format!(
+                    "- Human process notes: {}\n",
+                    value_or_missing(&f.human_artwork_process_notes)
+                ));
+            }
+        }
         if ai_artwork {
             artwork_document.push_str(&format!(
                 "- AI service: {}\n- AI-generated base image: {}\n",
@@ -643,8 +690,14 @@ fn render(
             if f.artwork_origin == "ai_assisted" {
                 artwork_document.push_str(&format!(
                     "- Human modifications: {}\n",
-                    value_or_missing(&f.human_artwork_modifications)
+                    documented_list(&f.human_artwork_modifications)
                 ));
+                if !f.custom_artwork_change.trim().is_empty() {
+                    artwork_document.push_str(&format!(
+                        "- Other human editing details: {}\n",
+                        value_or_missing(&f.custom_artwork_change)
+                    ));
+                }
             }
             if ai_transparency_disabled {
                 artwork_document.push_str(
@@ -665,7 +718,7 @@ fn render(
             }
         }
         artwork_document.push_str(&format!(
-            "- Final output: {}\n- Depicts a real person: {}\n",
+            "- Final output: {}\n- Real person intentionally depicted: {}\n",
             final_artwork,
             yes_no(f.depicts_real_person)
         ));
@@ -676,7 +729,7 @@ fn render(
             ));
         }
         artwork_document.push_str(&format!(
-            "- Represents a real event as authentic: {}\n",
+            "- Real event represented as authentic: {}\n",
             yes_no(f.depicts_real_event)
         ));
         if f.depicts_real_event == Some(true) {
@@ -686,7 +739,7 @@ fn render(
             ));
         }
         artwork_document.push_str(&format!(
-            "- Contains a trademark or logo: {}\n",
+            "- Trademark or company logo reproduced: {}\n",
             yes_no(f.contains_trademark)
         ));
         if f.contains_trademark == Some(true) {
@@ -720,7 +773,7 @@ fn render(
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
             value_or_missing(&f.suno_project_url),
             value_or_missing(&f.suno_model),
@@ -732,6 +785,8 @@ fn render(
             yes_no(f.own_audio_uploaded),
             yes_no(f.code_based_generation),
             if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
+            if f.code_based_generation == Some(true) { yes_no(f.code_audio_post_processed) } else { "Not applicable" },
+            if f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true) { documented_list(&f.code_audio_post_processing_operations) } else { "Not applicable".into() },
             if f.code_based_generation == Some(true) { code_generated_audio_file } else { "Not applicable" },
             yes_no(f.third_party_samples_uploaded),
         ),
@@ -755,11 +810,13 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/AI_USAGE.md".into(),
         format!(
-            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Lyrics source: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
+            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Lyrics source: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
             marker(), value_or_missing(&f.suno_model), value_or_missing(&f.suno_project_url),
             value_or_missing(&f.lyrics_source), yes_no(f.external_audio_uploaded),
             yes_no(f.code_based_generation),
             if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
+            if f.code_based_generation == Some(true) { yes_no(f.code_audio_post_processed) } else { "Not applicable" },
+            if f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true) { documented_list(&f.code_audio_post_processing_operations) } else { "Not applicable".into() },
             if f.code_based_generation == Some(true) { code_generated_audio_file } else { "Not applicable" },
             ai_artwork_usage
         ),
@@ -857,6 +914,9 @@ mod tests {
             own_audio_source: "Original field recording".into(),
             own_audio_ownership: "Solely owned by the artist".into(),
             code_based_generation: Some(false),
+            code_audio_post_processed: None,
+            code_audio_post_processing_operations: Vec::new(),
+            code_audio_post_processing_note: String::new(),
             third_party_samples_uploaded: Some(false),
             third_party_sample_source: INACTIVE_FIXTURE_VALUES[3].into(),
             third_party_sample_ownership: INACTIVE_FIXTURE_VALUES[4].into(),
@@ -867,7 +927,13 @@ mod tests {
             commercial_use_intended: true,
             artwork_origin: "ai_assisted".into(),
             ai_image_service: "Example Image Service".into(),
-            human_artwork_modifications: "Cropped and adjusted contrast.".into(),
+            human_artwork_process_operations: Vec::new(),
+            human_artwork_process_notes: String::new(),
+            human_artwork_modifications: vec![
+                "Cropping".into(),
+                "Brightness/contrast adjusted".into(),
+            ],
+            custom_artwork_change: String::new(),
             depicts_real_person: Some(false),
             real_person_notes: INACTIVE_FIXTURE_VALUES[6].into(),
             depicts_real_event: Some(true),
@@ -1147,6 +1213,68 @@ mod tests {
     }
 
     #[test]
+    fn conditional_post_processing_and_artwork_facts_render_without_legal_inference() {
+        let (mut track, profile, evidence) = fixture_input();
+        track.fields.code_based_generation = Some(true);
+        track.fields.code_audio_post_processed = Some(false);
+        track.fields.code_audio_post_processing_operations = vec!["STALE-MIXING".into()];
+        track.fields.code_audio_post_processing_note = "STALE-NOTE".into();
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let readme = &rendered["03_DOCUMENTATION/README.md"];
+        assert!(readme.contains("Post-processing performed: No"));
+        assert!(!readme.contains("Post-processing operations:"));
+        assert!(!readme.contains("STALE-MIXING"));
+        assert!(!readme.contains("STALE-NOTE"));
+
+        track.fields.code_audio_post_processed = Some(true);
+        track.fields.code_audio_post_processing_operations = vec![
+            "Mixing".into(),
+            "EQ".into(),
+            "Compression".into(),
+            "Mastering".into(),
+            "Other post-processing".into(),
+        ];
+        track.fields.code_audio_post_processing_note = "Manual spectral repair".into();
+        track.fields.artwork_origin = "human".into();
+        track.fields.human_artwork_process_operations = vec![
+            "Photographed".into(),
+            "Retouching".into(),
+            "Typography added".into(),
+        ];
+        track.fields.human_artwork_process_notes = "Manual darkroom scan".into();
+        track.fields.depicts_real_person = Some(true);
+        track.fields.real_person_notes = "The performing artist".into();
+        track.fields.depicts_real_event = Some(false);
+        track.fields.contains_trademark = Some(true);
+        track.fields.trademark_notes = "A user-supplied company logo".into();
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let combined = rendered.values().cloned().collect::<String>();
+        for factual_statement in [
+            "Post-processing performed: Yes",
+            "Post-processing operations: Mixing, EQ, Compression, Mastering, Other post-processing",
+            "Other post-processing note: Manual spectral repair",
+            "Human process operations: Photographed, Retouching, Typography added",
+            "Human process notes: Manual darkroom scan",
+            "Real person intentionally depicted: Yes",
+            "Real-person note: The performing artist",
+            "Real event represented as authentic: No",
+            "Trademark or company logo reproduced: Yes",
+            "Trademark/logo note: A user-supplied company logo",
+        ] {
+            assert!(
+                combined.contains(factual_statement),
+                "missing factual document statement: {factual_statement}"
+            );
+        }
+        let lowercase = combined.to_lowercase();
+        for forbidden in FORBIDDEN_LEGAL_CLAIMS {
+            assert!(!lowercase.contains(forbidden));
+        }
+    }
+
+    #[test]
     fn unknown_legacy_selection_is_retained_in_data_but_not_copied_into_english_documents() {
         let (mut track, profile, evidence) = fixture_input();
         track.fields.own_audio_source = "Historischer deutscher Freitext".into();
@@ -1292,7 +1420,7 @@ mod tests {
             post_export_editing_details: stale_values[8].into(),
             artwork_origin: "none".into(),
             ai_image_service: stale_values[9].into(),
-            human_artwork_modifications: stale_values[10].into(),
+            human_artwork_modifications: vec![stale_values[10].into()],
             depicts_real_person: Some(false),
             real_person_notes: stale_values[11].into(),
             depicts_real_event: Some(false),

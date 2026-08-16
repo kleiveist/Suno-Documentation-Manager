@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.1"
+version = "1.2"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -249,6 +249,22 @@ missing_message = "Der Quellcode oder die Quelldatei der codebasierten Erzeugung
 evidence_role = "source_code_file"
 
 [[requirements]]
+key = "source.code_audio_post_processed"
+step_id = "source"
+kind = "field"
+required = true
+when = "code_based_generation"
+missing_message = "Die Angabe zur Nachbearbeitung des codebasiert erzeugten Audios fehlt."
+
+[[requirements]]
+key = "source.code_audio_post_processing_operations"
+step_id = "source"
+kind = "field"
+required = true
+when = "code_audio_post_processed"
+missing_message = "Mindestens eine tatsächlich durchgeführte Audio-Nachbearbeitung fehlt."
+
+[[requirements]]
 key = "source.code_generated_audio_file"
 step_id = "evidence_licenses"
 kind = "evidence"
@@ -404,6 +420,14 @@ required = true
 when = "ai_artwork"
 missing_message = "Das unveränderte AI-Artwork-Original fehlt."
 evidence_role = "ai_artwork_original"
+
+[[requirements]]
+key = "artwork.human_modifications"
+step_id = "artwork"
+kind = "field"
+required = true
+when = "ai_assisted_artwork"
+missing_message = "Mindestens eine menschliche Änderung am KI-assistierten Artwork fehlt."
 
 [[requirements]]
 key = "artwork.final"

@@ -301,6 +301,10 @@ export function canonicalGuidedChoiceList(value: string, choices: readonly Guide
   );
 }
 
+export function canonicalGuidedChoiceArray(values: readonly string[], choices: readonly GuidedChoice[]): string[] {
+  return [...new Set(values.map((item) => canonicalGuidedChoiceValue(item, choices)).filter(Boolean))];
+}
+
 export function singleChoiceFieldMarkup(
   name: string,
   label: string,
@@ -444,6 +448,76 @@ const postExportWorkChoices: readonly GuidedChoice[] = [
   ["Dynamics processing", "Dynamikbearbeitung"]
 ];
 
+const codeAudioPostProcessingChoices: readonly GuidedChoice[] = [
+  ["Editing and cuts", "Schnitt"],
+  ["Arrangement", "Arrangement"],
+  ["Mixing", "Mixing"],
+  ["Loudness adjustment", "Lautstärke angepasst"],
+  ["Normalization", "Normalisierung"],
+  ["EQ", "EQ"],
+  ["Compression", "Kompression"],
+  ["Limiting", "Limiting"],
+  ["Reverb", "Reverb"],
+  ["Delay", "Delay"],
+  ["Additional effects", "Weitere Effekte"],
+  ["Stereo processing", "Stereo-Bearbeitung"],
+  ["Panning", "Panorama"],
+  ["Fade-in/fade-out", "Fade-In/Fade-Out"],
+  ["Noise reduction", "Noise Reduction"],
+  ["Mastering", "Mastering"],
+  ["Resampling", "Resampling"],
+  ["Format conversion", "Formatkonvertierung"],
+  ["Other post-processing", "Sonstige Nachbearbeitung"]
+];
+
+const humanArtworkProcessChoices: readonly GuidedChoice[] = [
+  ["Independently drawn", "Eigenständig gezeichnet"],
+  ["Independently illustrated", "Eigenständig illustriert"],
+  ["Photographed", "Fotografiert"],
+  ["Digitally painted", "Digital gemalt"],
+  ["Created in 3D", "3D erstellt"],
+  ["Compositing", "Compositing"],
+  ["Color correction", "Farbkorrektur"],
+  ["Retouching", "Retusche"],
+  ["Cropping", "Zuschnitt"],
+  ["Typography added", "Typografie hinzugefügt"],
+  ["Layers edited", "Ebenen bearbeitet"],
+  ["Light/shadow adjusted", "Licht/Schatten angepasst"],
+  ["Background edited", "Hintergrund bearbeitet"],
+  ["Effects added", "Effekte hinzugefügt"],
+  ["Other editing", "Sonstige Bearbeitung"]
+];
+
+const aiArtworkHumanChangeChoices: readonly GuidedChoice[] = [
+  ["Prompt written manually", "Prompt manuell erstellt"],
+  ["Subject selected", "Motiv ausgewählt"],
+  ["Variants compared", "Varianten verglichen"],
+  ["Framing selected", "Ausschnitt gewählt"],
+  ["Cropping", "Zuschnitt"],
+  ["Retouching", "Retusche"],
+  ["Color correction", "Farbkorrektur"],
+  ["Brightness/contrast adjusted", "Helligkeit/Kontrast"],
+  ["Layer editing", "Ebenenbearbeitung"],
+  ["Compositing", "Compositing"],
+  ["Background changed", "Hintergrund verändert"],
+  ["Elements removed", "Elemente entfernt"],
+  ["Elements added", "Elemente hinzugefügt"],
+  ["Typography added", "Typografie hinzugefügt"],
+  ["Logo/title added", "Logo/Titel hinzugefügt"],
+  ["Effects added", "Effekte hinzugefügt"],
+  ["Upscaling", "Upscaling"],
+  ["Format adjusted", "Format angepasst"],
+  ["Manual tracing", "Manuelle Nachzeichnung"],
+  ["Other human editing", "Sonstige menschliche Bearbeitung"]
+];
+
+const sunoModelSuggestions = [
+  "v5.5", "v5", "v4.5-all", "v4.5+", "v4.5", "v4", "v3.5", "v3",
+  "Custom Model / v5.5 Custom Model"
+] as const;
+
+const sunoPlanSuggestions = ["Free", "Pro", "Premier"] as const;
+
 const releaseNoteChoices: readonly GuidedChoice[] = [
   ["Original Suno version", "Originale Suno-Fassung"],
   ["Streaming master", "Streaming-Master"],
@@ -470,6 +544,18 @@ export function normalizeGuidedTrackFields(fields: TrackFields): TrackFields {
   normalized.thirdPartySampleOwnership = canonicalGuidedChoiceValue(normalized.thirdPartySampleOwnership, sampleRightsChoices);
   normalized.humanEditingDetails = canonicalGuidedChoiceList(normalized.humanEditingDetails, humanWorkChoices);
   normalized.postExportEditingDetails = canonicalGuidedChoiceList(normalized.postExportEditingDetails, postExportWorkChoices);
+  normalized.codeAudioPostProcessingOperations = canonicalGuidedChoiceArray(
+    normalized.codeAudioPostProcessingOperations,
+    codeAudioPostProcessingChoices
+  );
+  normalized.humanArtworkProcessOperations = canonicalGuidedChoiceArray(
+    normalized.humanArtworkProcessOperations,
+    humanArtworkProcessChoices
+  );
+  normalized.humanArtworkModifications = canonicalGuidedChoiceArray(
+    normalized.humanArtworkModifications,
+    aiArtworkHumanChangeChoices
+  );
   normalized.releaseNotes = canonicalGuidedChoiceList(normalized.releaseNotes, releaseNoteChoices);
   return normalized;
 }
@@ -1357,12 +1443,12 @@ export class SunoDocumentationApp {
           ${this.boolQuestion("ownAudioUploaded", "Eigene Audiodatei hochgeladen?", "Eine von dir erstellte Aufnahme oder Instrumentalspur.", draft.ownAudioUploaded)}
           ${conditional.has("ownAudioSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("ownAudioSource", "Quelle", draft.ownAudioSource, ownAudioSourceChoices, true)}${this.guidedSingleChoiceField("ownAudioOwnership", "Rechtezuordnung", draft.ownAudioOwnership, ownAudioRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["own_audio_file", "Eigene Audiodatei importieren"]])}</div>` : ""}
           ${this.boolQuestion("codeBasedGeneration", "Codebasierte Erzeugung?", "Wurde eine Audiodatei oder ein Ausgangsmaterial mithilfe von Quellcode erzeugt?", draft.codeBasedGeneration)}
-          ${conditional.has("sourceCodeFile") ? `<div class="conditional-panel"><div class="conditional-line"></div><p class="field-help">Importiere den tatsächlich verwendeten Quellcode und zusätzlich die damit erzeugte Audiodatei. Für das Audio werden WAV oder MP3 akzeptiert.</p>${this.inlineEvidenceActions(track, [["source_code_file", "Quellcode oder Quelldatei importieren"], ["code_generated_audio_file", "Erzeugte WAV- oder MP3-Datei importieren"]])}</div>` : ""}
+          ${conditional.has("sourceCodeFile") ? `<div class="conditional-panel"><div class="conditional-line"></div><p class="field-help">Importiere zuerst den tatsächlich verwendeten Quellcode oder die Quelldatei.</p>${this.inlineEvidenceActions(track, [["source_code_file", "Quellcode oder Quelldatei importieren"]])}${this.boolQuestion("codeAudioPostProcessed", "Wurde das aus dem Quellcode erzeugte Audio nachbearbeitet?", "Es werden nur ausdrücklich bestätigte Bearbeitungen dokumentiert.", draft.codeAudioPostProcessed)}${conditional.has("codeAudioPostProcessingOperations") ? this.multiChoiceArrayField("codeAudioPostProcessingOperations", "Welche Nachbearbeitungen wurden durchgeführt?", draft.codeAudioPostProcessingOperations, codeAudioPostProcessingChoices, true) : ""}${conditional.has("codeAudioPostProcessingNote") ? this.textArea("codeAudioPostProcessingNote", "Sonstige Nachbearbeitung – Details", "Frei beschreibbare zusätzliche Nachbearbeitung", draft.codeAudioPostProcessingNote) : ""}<div class="form-section"><p class="field-label">Erzeugte Audio-Datei</p><p class="field-help">Importiere abschließend die tatsächlich aus dem Quellcode erzeugte WAV- oder MP3-Datei.</p>${this.inlineEvidenceActions(track, [["code_generated_audio_file", "Erzeugte WAV- oder MP3-Datei importieren"]])}</div></div>` : ""}
           ${this.boolQuestion("thirdPartySamplesUploaded", "Fremde Samples hochgeladen?", "Samples oder Loops, die von Dritten stammen.", draft.thirdPartySamplesUploaded)}
           ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("thirdPartySampleSource", "Sample-Quelle", draft.thirdPartySampleSource, sampleSourceChoices, true)}${this.guidedSingleChoiceField("thirdPartySampleOwnership", "Lizenz / Rechte", draft.thirdPartySampleOwnership, sampleRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
         break;
       case "suno":
-        body = `<div class="field-grid two-col">${this.textField("sunoModel", "Suno-Modell", "z. B. v4.5", draft.sunoModel, true)}${this.textField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier", draft.sunoPlanAtCreation, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}</div>
+        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtCreation, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}</div>
           <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
         break;
       case "human_work":
@@ -1375,10 +1461,11 @@ export class SunoDocumentationApp {
           ${conditional.has("postExportEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("postExportEditingDetails", "Bestätigte Nachbearbeitungsschritte", draft.postExportEditingDetails, postExportWorkChoices, true)}</div>` : ""}`;
         break;
       case "artwork":
-        body = `<div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.textField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, true) : ""}</div>
-          ${conditional.has("humanArtworkModifications") ? this.textArea("humanArtworkModifications", "Menschliche Änderungen", "Nur tatsächlich ausgeführte Änderungen", draft.humanArtworkModifications, true) : ""}
+        body = `<div class="policy-card artwork-factual-notice">${icon("info")}<div><p class="overline">Nur relevante Angaben</p><h4>Faktische Dokumentation</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div></div><div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.textField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, true) : ""}</div>
+          ${conditional.has("humanArtworkProcessOperations") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkProcessOperations", "Menschlicher Arbeitsprozess", draft.humanArtworkProcessOperations, humanArtworkProcessChoices)}${this.textArea("humanArtworkProcessNotes", "Beschreibung / Ergänzungen", "Arbeitsprozess frei beschreiben oder die Auswahl ergänzen", draft.humanArtworkProcessNotes)}</div>` : ""}
+          ${conditional.has("humanArtworkModifications") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkModifications", "Menschliche Änderungen", draft.humanArtworkModifications, aiArtworkHumanChangeChoices, true)}${conditional.has("customArtworkChange") ? this.textArea("customArtworkChange", "Sonstige menschliche Bearbeitung – Details", "Frei beschreibbare zusätzliche Änderung", draft.customArtworkChange) : ""}</div>` : ""}
           ${conditional.has("aiArtworkOriginal") ? `<div class="form-section"><p class="field-label">Originale KI-Ausgabe</p>${this.inlineEvidenceActions(track, [["ai_artwork_original", "KI-Original importieren"], ["ai_artwork_edited", "KI-bearbeitete Version importieren"], ["human_edited_artwork", "Menschlich bearbeitete Version importieren"]])}</div>` : ""}
-          ${draft.artworkOrigin && draft.artworkOrigin !== "none" ? `<div class="question-group"><div><p class="overline">Kurzer Content-Check</p><h4>Nur relevante Angaben</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div>${this.boolQuestion("depictsRealPerson", "Zeigt das Artwork absichtlich eine reale Person?", "", draft.depictsRealPerson)}${conditional.has("realPersonNotes") ? this.textArea("realPersonNotes", "Notiz zur realen Person", "Darstellung und Kontext", draft.realPersonNotes, true) : ""}${this.boolQuestion("depictsRealEvent", "Stellt es ein reales Ereignis als authentisch dar?", "", draft.depictsRealEvent)}${conditional.has("realEventNotes") ? this.textArea("realEventNotes", "Notiz zum realen Ereignis", "Darstellung und Kontext", draft.realEventNotes, true) : ""}${this.boolQuestion("containsTrademark", "Reproduziert es eine Marke oder ein Firmenlogo?", "", draft.containsTrademark)}${conditional.has("trademarkNotes") ? this.textArea("trademarkNotes", "Notiz zur Marke / zum Logo", "Darstellung und Kontext", draft.trademarkNotes, true) : ""}</div><div class="form-section"><p class="field-label">Finales Artwork</p><p class="field-help">Lade hier die endgültige JPG- oder PNG-Datei hoch, die du aus Suno heruntergeladen hast. Falls ein sichtbarer KI-Hinweis erforderlich ist, ersetzt du sie anschließend durch die lokal gekennzeichnete Fassung.</p>${this.inlineEvidenceActions(track, [["final_artwork", "Finales Suno-Artwork importieren"]])}</div>` : ""}`;
+          ${draft.artworkOrigin && draft.artworkOrigin !== "none" ? `<div class="question-group"><div><p class="overline">Artwork Content Check</p><h4>Ja oder Nein auswählen</h4><p>Folgeangaben erscheinen nur bei Ja und bleiben frei beschreibbar.</p></div>${this.boolQuestion("depictsRealPerson", "Zeigt das Artwork absichtlich eine reale Person?", "", draft.depictsRealPerson)}${conditional.has("realPersonNotes") ? this.textArea("realPersonNotes", "Welche reale Person wird dargestellt bzw. in welchem Zusammenhang?", "Darstellung und Kontext faktisch beschreiben", draft.realPersonNotes, true) : ""}${this.boolQuestion("depictsRealEvent", "Stellt es ein reales Ereignis als authentisch dar?", "", draft.depictsRealEvent)}${conditional.has("realEventNotes") ? this.textArea("realEventNotes", "Welches reale Ereignis wird dargestellt bzw. in welchem Zusammenhang?", "Darstellung und Kontext faktisch beschreiben", draft.realEventNotes, true) : ""}${this.boolQuestion("containsTrademark", "Reproduziert es eine Marke oder ein Firmenlogo?", "", draft.containsTrademark)}${conditional.has("trademarkNotes") ? this.textArea("trademarkNotes", "Welche Marke oder welches Firmenlogo wird reproduziert bzw. in welchem Zusammenhang?", "Darstellung und Kontext faktisch beschreiben", draft.trademarkNotes, true) : ""}</div><div class="form-section"><p class="field-label">Finales Artwork</p><p class="field-help">Lade hier die endgültige JPG- oder PNG-Datei hoch, die du aus Suno heruntergeladen hast. Falls ein sichtbarer KI-Hinweis erforderlich ist, ersetzt du sie anschließend durch die lokal gekennzeichnete Fassung.</p>${this.inlineEvidenceActions(track, [["final_artwork", "Finales Suno-Artwork importieren"]])}</div>` : ""}`;
         break;
       case "ai_transparency":
         body = `<div class="policy-card">${icon("info")}<div><p class="overline">Projektinterne Transparenzrichtlinie · Track-Snapshot</p><h4>${this.policyLabel(track.profileSnapshot.artworkTransparencyPolicy)}</h4><p>Dies ist die aktuell für den Track gespeicherte Projektregel – keine pauschale gesetzliche Aussage. Globale Änderungen aktualisieren offene Tracks; finalisierte Snapshots bleiben unverändert.</p></div></div>
@@ -1386,7 +1473,7 @@ export class SunoDocumentationApp {
         break;
       case "release":
         body = `<div class="field-grid two-col">${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, releaseNoteChoices)}</div>
-          <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Für die Finalisierung ist eine WAV-Datei erforderlich. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Release-WAV importieren"], ["release_mp3", "MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
+          <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Die primäre Audiodatei behält ihre Endung und wird im verwalteten Ordner sicher nach dem Tracktitel benannt. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Finale Release-Audiodatei importieren"], ["release_mp3", "Zusätzliche MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
         break;
     }
     const locked = track.status === "FINALIZED";
@@ -1524,6 +1611,18 @@ export class SunoDocumentationApp {
     return `<label class="field"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><input type="${type}" name="${name}" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(value)}" ${required ? "required" : ""}></label>`;
   }
 
+  private suggestedTextField(
+    name: string,
+    label: string,
+    placeholder: string,
+    value: string,
+    suggestions: readonly string[],
+    required = false
+  ): string {
+    const listId = `${name}-suggestions`;
+    return `<label class="field"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><input type="text" name="${escapeHtml(name)}" list="${escapeHtml(listId)}" autocomplete="off" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(value)}" ${required ? "required" : ""}><datalist id="${escapeHtml(listId)}">${suggestions.map((suggestion) => `<option value="${escapeHtml(suggestion)}"></option>`).join("")}</datalist><small class="field-help">Vorschlag wählen oder einen beliebigen eigenen Wert eingeben.</small></label>`;
+  }
+
   private dateField(name: string, label: string, value: string, required = false): string {
     return this.textField(name, label, "", value, required, "date");
   }
@@ -1540,6 +1639,22 @@ export class SunoDocumentationApp {
       ...selected.filter((item) => !known.has(item)).map((item) => [item, `Bisherige Auswahl: ${item} (bitte prüfen)`] as const)
     ];
     return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${name}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : ""}</fieldset>`;
+  }
+
+  private multiChoiceArrayField(
+    name: string,
+    label: string,
+    value: readonly string[],
+    options: readonly GuidedChoice[],
+    required = false
+  ): string {
+    const selected = canonicalGuidedChoiceArray(value, options);
+    const known = new Set(options.map(([option]) => option));
+    const choices: GuidedChoice[] = [
+      ...options,
+      ...selected.filter((item) => !known.has(item)).map((item) => [item, `Bisheriger Freitext: ${item}`] as const)
+    ];
+    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group data-choice-array ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : `<p class="field-help">Mehrere Angaben können gleichzeitig ausgewählt und durch Freitext ergänzt werden.</p>`}</fieldset>`;
   }
 
   private selectField(name: string, label: string, value: string, options: Array<[string, string]>, required = false): string {
@@ -1927,8 +2042,12 @@ export class SunoDocumentationApp {
       const group = input.closest<HTMLElement>("[data-multi-choice-group]");
       const checked = [...(group?.querySelectorAll<HTMLInputElement>("input[data-multi-choice]:checked") ?? [])]
         .map((item) => item.value);
-      (this.state.trackDraft as unknown as Record<string, unknown>)[input.name] = serializeMultiChoiceValue(checked);
+      const storesArray = group?.hasAttribute("data-choice-array") ?? false;
+      (this.state.trackDraft as unknown as Record<string, unknown>)[input.name] = storesArray
+        ? checked
+        : serializeMultiChoiceValue(checked);
       this.draftDirty = true;
+      if (storesArray) this.render();
       return;
     }
     const key = input.name as keyof TrackFields;

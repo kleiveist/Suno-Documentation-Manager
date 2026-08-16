@@ -76,12 +76,12 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.1",
+    workflowVersion: "1.2",
     profileSnapshot: structuredClone(profile),
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.3", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.4", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     blockingDeviations: []
@@ -120,6 +120,11 @@ describe("conditional fields", () => {
     fields.codeBasedGeneration = true;
     expect(visibleConditionalFields(fields, profile)).toContain("sourceCodeFile");
     expect(visibleConditionalFields(fields, profile)).toContain("codeGeneratedAudioFile");
+    expect(visibleConditionalFields(fields, profile)).toContain("codeAudioPostProcessed");
+    fields.codeAudioPostProcessed = true;
+    fields.codeAudioPostProcessingOperations = ["Mixing", "Other post-processing"];
+    expect(visibleConditionalFields(fields, profile)).toContain("codeAudioPostProcessingOperations");
+    expect(visibleConditionalFields(fields, profile)).toContain("codeAudioPostProcessingNote");
   });
 
   it("shows AI and content-check follow-ups conditionally", () => {
@@ -159,6 +164,7 @@ describe("missing requirements", () => {
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("source-code-file");
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("code-generated-audio-file");
     track.fields.codeBasedGeneration = true;
+    track.fields.codeAudioPostProcessed = false;
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toEqual(
       expect.arrayContaining(["source-code-file", "code-generated-audio-file"])
     );
@@ -187,6 +193,7 @@ describe("missing requirements", () => {
   it("requires a verified generated disclosure artifact for AI artwork", () => {
     const track = completeTrack();
     track.fields.artworkOrigin = "ai_assisted";
+    track.fields.humanArtworkModifications = ["Prompt written manually"];
     track.fields.aiImageService = "Local Image Tool";
     track.fields.disclosureApplied = true;
     track.fields.disclosureText = "AI-assisted";
@@ -214,6 +221,50 @@ describe("missing requirements", () => {
     final.sha256 = disclosed.sha256;
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("artwork-final");
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("release-final-artwork");
+  });
+
+  it("evaluates code-audio post-processing only on the applicable branch", () => {
+    const track = completeTrack();
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain(
+      "code-audio-post-processed-answer"
+    );
+
+    track.fields.codeBasedGeneration = true;
+    track.fields.codeAudioPostProcessed = false;
+    track.evidence.push(evidence("source_code_file"), evidence("code_generated_audio_file"));
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain(
+      "code-audio-post-processing-operations"
+    );
+
+    track.fields.codeAudioPostProcessed = true;
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain(
+      "code-audio-post-processing-operations"
+    );
+    track.fields.codeAudioPostProcessingOperations = ["Mixing", "EQ", "Mastering"];
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain(
+      "code-audio-post-processing-operations"
+    );
+  });
+
+  it("accepts future and historical free-text Suno model and plan values", () => {
+    const track = completeTrack();
+    track.fields.sunoModel = "v6";
+    track.fields.sunoPlanAtCreation = "Historical Studio Plan";
+    const missing = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(missing).not.toContain("suno-model");
+    expect(missing).not.toContain("suno-plan");
+  });
+
+  it("requires at least one human change for AI-assisted artwork", () => {
+    const track = completeTrack();
+    track.fields.artworkOrigin = "ai_assisted";
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain(
+      "artwork-human-changes"
+    );
+    track.fields.humanArtworkModifications = ["Cropping", "Color correction"];
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain(
+      "artwork-human-changes"
+    );
   });
 
   it("deactivates AI Transparency after three explicit No answers", () => {
@@ -263,7 +314,7 @@ describe("statuses and finalization", () => {
   it("lists the accepted file types directly for every evidence role", () => {
     expect(evidenceRoleFileTypes("suno_project_zip")).toBe("ZIP");
     expect(evidenceRoleFileTypes("suno_screenshot")).toContain("PNG");
-    expect(evidenceRoleFileTypes("release_wav")).toBe("WAV");
+    expect(evidenceRoleFileTypes("release_wav")).toContain("FLAC");
     expect(evidenceRoleFileTypes("source_code_file")).toContain("Python");
     expect(evidenceRoleFileTypes("code_generated_audio_file")).toBe("WAV oder MP3");
   });

@@ -158,7 +158,9 @@ Use the current-track view to work through:
 
 The application displays one task-oriented set of questions at a time. A negative controlling answer closes its branch. For example, answering `No` to external audio upload means source, ownership, license, and uploaded-file details for external audio are not requested. Answering `Yes` makes those details applicable.
 
-In `02 Source`, choose the applicable source category and rights basis from the guided clickable buttons instead of a dropdown or unrestricted description. Each question permits exactly one active choice. This applies to external audio, own audio, and third-party samples. Answer `Code-based generation?` explicitly. A `No` answer ends that branch. A `Yes` answer opens two evidence controls: one for the code or text that was actually used and one for the resulting WAV or MP3. Supported source formats include Ruby, Python, plain text, Markdown, JavaScript, TypeScript, Rust, shell scripts, and other listed text-based formats. Both managed copies are stored below `02_SUNO/` and their paths are included in the generated English project documentation.
+In `02 Source`, choose the applicable source category and rights basis from the guided clickable buttons instead of a dropdown or unrestricted description. Each question permits exactly one active choice. This applies to external audio, own audio, and third-party samples. Answer `Code-based generation?` explicitly. A `No` answer ends that branch. A `Yes` answer first requests the code or text that was actually used, then asks whether its audio output was post-processed, and finally requests the resulting WAV or MP3. If post-processing is `Yes`, select every operation that actually occurred; at least one is required, and `Other post-processing` reveals an editable detail field. `No` creates no operation claim. Supported source formats include Ruby, Python, plain text, Markdown, JavaScript, TypeScript, Rust, shell scripts, and other listed text-based formats. Both managed copies and the factual post-processing answer are included in the generated English project documentation.
+
+In `03 Suno`, the model and plan-at-creation fields offer suggestions but remain freely editable. You can select a listed value such as `v5.5` or `Premier`, or retain an exact historical, custom, or future value such as `v6`; the app does not validate either field against a closed list.
 
 Record only work that occurred. Do not select arrangement, mixing, mastering, or another editing label unless it accurately describes confirmed work on this track.
 
@@ -166,7 +168,9 @@ In `04 Human Work`, choose exactly one lyrics source from the clickable single-c
 
 The interface can display guided labels in German, but the corresponding stored values and generated choice statements are English. Exact user-authored facts such as lyrics and the Suno style prompt remain verbatim.
 
-In `05 Artwork`, answer the three content checks and upload the final JPG or PNG downloaded from Suno. The final-artwork role is requested exactly once in this step, not again under Release. If a file already occupies the role but does not satisfy the current rule, the open requirement uses the safe replacement action and archives the previous managed bytes. For AI artwork, three explicit `No` answers deactivate `06 AI Transparency`; otherwise the configured disclosure policy applies. In `07 Release`, choose any applicable release-note labels and import the final audio files.
+In `05 Artwork`, the visible notice explains that only relevant facts are requested and that the app records your confirmation without making a legal decision. For human artwork, select any number of process chips and freely add or edit process notes. For AI-assisted artwork, select at least one actual human change; `Other human editing` reveals an optional free-text detail. Answer each content check with its independent `Yes` or `No` buttons. Only `Yes` reveals the required factual note for that question; `No` hides and clears it. Upload the final JPG or PNG downloaded from Suno. The final-artwork role is requested exactly once in this step, not again under Release. For AI artwork, three explicit `No` answers deactivate `06 AI Transparency`; otherwise the configured disclosure policy applies.
+
+In `07 Release`, choose any applicable release-note labels and import the final audio. The managed authoritative copy keeps its real audio extension and is named from the safe track title, for example `01_RELEASE/Neon Universe.wav` or `01_RELEASE/Neon Universe.mp3`. A collision is reported instead of overwritten. Renaming an editable track updates managed release evidence through the native operation; finalized tracks require the existing revision workflow first.
 
 ## Import evidence
 
@@ -251,6 +255,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Explained conditional code-audio post-processing, free model/plan suggestions, artwork process selections and factual checks, and safe title-based release filenames. | Project team |
 | 2026-08-16 | Replaced Source and lyrics-source dropdowns with accessible clickable single-choice buttons. | Project team |
 | 2026-08-16 | Documented the required generated WAV/MP3 evidence for code-based generation. | Project team |
 | 2026-08-16 | Documented centered final-artwork covers and the initials fallback throughout track presentation. | Project team |

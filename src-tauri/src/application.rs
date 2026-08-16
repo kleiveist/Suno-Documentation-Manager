@@ -468,15 +468,31 @@ impl WorkspaceApp {
         apply_patch(&mut track.fields, patch);
         validate_track_fields(&track.fields)?;
         if track.fields != previous_fields {
+            let mut release_renames = Vec::new();
             if track.fields.title != previous_fields.title {
                 let target = physical_track_relative(&track.library, &track.fields.title)?;
                 self.move_track_directory(&previous_path, &target, false)?;
                 track.relative_path = target;
+                match self.rename_managed_release_evidence(&track, &track.fields.title) {
+                    Ok(renamed) => release_renames = renamed,
+                    Err(error) => {
+                        if let Err(rollback) =
+                            self.rollback_track_move(&track.relative_path, &previous_path)
+                        {
+                            return Err(AppError::Data(format!(
+                                "Release rename failed ({error}); folder rollback failed: {rollback}"
+                            )));
+                        }
+                        return Err(error);
+                    }
+                }
             }
             mark_content_changed(&mut track);
             track.status = TrackStatus::Active;
             track.updated_at = now();
             if let Err(error) = self.persistence.save_track(&track) {
+                let release_rollback =
+                    self.rollback_release_evidence_renames(&track, &release_renames);
                 if track.relative_path != previous_path {
                     if let Err(rollback) =
                         self.rollback_track_move(&track.relative_path, &previous_path)
@@ -485,6 +501,11 @@ impl WorkspaceApp {
                             "Track update failed ({error}); folder rollback failed: {rollback}"
                         )));
                     }
+                }
+                if let Err(rollback) = release_rollback {
+                    return Err(AppError::Data(format!(
+                        "Track update failed ({error}); release rollback failed: {rollback}"
+                    )));
                 }
                 return Err(error);
             }
@@ -2311,6 +2332,203 @@ impl WorkspaceApp {
         Ok(())
     }
 
+    fn rename_managed_release_evidence(
+        &self,
+        track: &TrackRecord,
+        title: &str,
+    ) -> Result<Vec<(EvidenceItem, EvidenceItem)>> {
+        let root = self.track_root(track)?;
+        let mut renamed = Vec::new();
+        for previous in self
+            .persistence
+            .evidence(&track.id)?
+            .into_iter()
+            .filter(|item| {
+                item.provenance == EvidenceProvenance::ManagedCopy
+                    && matches!(
+                        item.role,
+                        EvidenceRole::ReleaseWav
+                            | EvidenceRole::ReleaseMp3
+                            | EvidenceRole::ReleaseMp4
+                    )
+            })
+        {
+            let result = (|| -> Result<Option<(EvidenceItem, EvidenceItem)>> {
+                let planned = evidence::managed_relative_path(
+                    title,
+                    &previous.role,
+                    Path::new(&previous.file_name),
+                )?;
+                let planned_portable = portable_relative(&planned);
+                if planned_portable == previous.relative_path {
+                    return Ok(None);
+                }
+                if self
+                    .persistence
+                    .evidence_by_relative_path(&track.id, &planned_portable)?
+                    .is_some()
+                {
+                    return Err(AppError::Collision(planned_portable));
+                }
+                let source = contained_path(&root, Path::new(&previous.relative_path), true)?;
+                let target = contained_path(&root, &planned, false)?;
+                if target.exists() {
+                    return Err(AppError::Collision(planned_portable));
+                }
+                fs::rename(&source, &target).map_err(|error| AppError::io(&target, error))?;
+                let update_result = (|| -> Result<EvidenceItem> {
+                    let mut updated = previous.clone();
+                    updated.relative_path = planned_portable;
+                    updated.file_name = target
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| {
+                            AppError::Validation("Managed release file name is invalid.".into())
+                        })?
+                        .to_owned();
+                    self.persistence.save_evidence(&track.id, &updated)?;
+                    Ok(updated)
+                })();
+                match update_result {
+                    Ok(updated) => Ok(Some((previous.clone(), updated))),
+                    Err(error) => {
+                        fs::rename(&target, &source).map_err(|rollback| {
+                            AppError::Data(format!(
+                                "Release metadata update failed ({error}); file rollback failed: {rollback}"
+                            ))
+                        })?;
+                        Err(error)
+                    }
+                }
+            })();
+            match result {
+                Ok(Some(pair)) => renamed.push(pair),
+                Ok(None) => {}
+                Err(error) => {
+                    if let Err(rollback) = self.rollback_release_evidence_renames(track, &renamed) {
+                        return Err(AppError::Data(format!(
+                            "Release rename failed ({error}); earlier release rollback failed: {rollback}"
+                        )));
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(renamed)
+    }
+
+    fn rollback_release_evidence_renames(
+        &self,
+        track: &TrackRecord,
+        renamed: &[(EvidenceItem, EvidenceItem)],
+    ) -> Result<()> {
+        if renamed.is_empty() {
+            return Ok(());
+        }
+        let root = self.track_root(track)?;
+        let mut errors = Vec::new();
+        for (previous, updated) in renamed.iter().rev() {
+            let source = contained_path(&root, Path::new(&updated.relative_path), false)?;
+            let target = contained_path(&root, Path::new(&previous.relative_path), false)?;
+            if source.is_file() && !target.exists() {
+                if let Err(error) = fs::rename(&source, &target) {
+                    errors.push(format!("{}: {error}", updated.relative_path));
+                    continue;
+                }
+            }
+            if let Err(error) = self.persistence.save_evidence(&track.id, previous) {
+                errors.push(format!("{} metadata: {error}", previous.relative_path));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Data(errors.join("; ")))
+        }
+    }
+
+    fn migrate_legacy_release_evidence(&self, track: &TrackRecord) -> Result<bool> {
+        if matches!(
+            track.status,
+            TrackStatus::Finalized | TrackStatus::Superseded
+        ) {
+            return Ok(false);
+        }
+        let root = self.track_root(track)?;
+        let mut migrated = false;
+        for previous in self
+            .persistence
+            .evidence(&track.id)?
+            .into_iter()
+            .filter(|item| {
+                let relative = Path::new(&item.relative_path);
+                let extension = relative
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_ascii_lowercase);
+                item.provenance == EvidenceProvenance::ManagedCopy
+                    && matches!(
+                        item.role,
+                        EvidenceRole::ReleaseWav
+                            | EvidenceRole::ReleaseMp3
+                            | EvidenceRole::ReleaseMp4
+                    )
+                    && relative.parent() == Some(Path::new("01_RELEASE"))
+                    && relative.file_name().and_then(|value| value.to_str())
+                        == Some(item.file_name.as_str())
+                    && relative.file_stem().and_then(|value| value.to_str())
+                        == Some("suno_final_export")
+                    && extension.as_deref().is_some_and(|extension| {
+                        item.role.allowed_extensions().contains(&extension)
+                    })
+            })
+        {
+            let Ok(planned) = evidence::managed_relative_path(
+                &track.fields.title,
+                &previous.role,
+                Path::new(&previous.file_name),
+            ) else {
+                continue;
+            };
+            let planned_portable = portable_relative(&planned);
+            if planned_portable == previous.relative_path
+                || contained_path(&root, &planned, false)?.exists()
+                || self
+                    .persistence
+                    .evidence_by_relative_path(&track.id, &planned_portable)?
+                    .is_some()
+            {
+                continue;
+            }
+            let source = contained_path(&root, Path::new(&previous.relative_path), false)?;
+            let metadata = match fs::symlink_metadata(&source) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(AppError::io(&source, error)),
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                continue;
+            }
+            let target = contained_path(&root, &planned, false)?;
+            fs::rename(&source, &target).map_err(|error| AppError::io(&target, error))?;
+            let mut updated = previous.clone();
+            updated.relative_path = planned_portable;
+            updated.file_name = target
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| {
+                    AppError::Validation("Managed release file name is invalid.".into())
+                })?
+                .to_owned();
+            if let Err(error) = self.persistence.save_evidence(&track.id, &updated) {
+                let _ = fs::rename(&target, &source);
+                return Err(error);
+            }
+            migrated = true;
+        }
+        Ok(migrated)
+    }
+
     fn track_root(&self, track: &TrackRecord) -> Result<PathBuf> {
         contained_path(&self.root, Path::new(&track.relative_path), true)
     }
@@ -2398,6 +2616,11 @@ impl WorkspaceApp {
         mut track: TrackRecord,
         inspect_finalized: bool,
     ) -> Result<TrackDetail> {
+        if self.migrate_legacy_release_evidence(&track)? {
+            mark_content_changed(&mut track);
+            track.updated_at = now();
+            self.persistence.save_track(&track)?;
+        }
         let root = self.track_root(&track)?;
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(&track.id)?;
@@ -3024,6 +3247,23 @@ fn validate_multiline_text(name: &str, value: &str, max: usize) -> Result<()> {
     Ok(())
 }
 
+fn validate_text_list(
+    name: &str,
+    values: &[String],
+    max_items: usize,
+    max_item: usize,
+) -> Result<()> {
+    if values.len() > max_items {
+        return Err(AppError::Validation(format!(
+            "{name} contains too many entries."
+        )));
+    }
+    for value in values {
+        validate_multiline_text(name, value, max_item)?;
+    }
+    Ok(())
+}
+
 fn parse_date(name: &str, value: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| AppError::Validation(format!("{name} must use YYYY-MM-DD.")))
@@ -3161,8 +3401,18 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
             20_000,
         ),
         (
-            "Artwork modifications",
-            fields.human_artwork_modifications.as_str(),
+            "Code-audio post-processing note",
+            fields.code_audio_post_processing_note.as_str(),
+            20_000,
+        ),
+        (
+            "Human artwork process notes",
+            fields.human_artwork_process_notes.as_str(),
+            20_000,
+        ),
+        (
+            "Custom artwork change",
+            fields.custom_artwork_change.as_str(),
             20_000,
         ),
         (
@@ -3175,6 +3425,22 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
         ("Release notes", fields.release_notes.as_str(), 20_000),
     ] {
         validate_multiline_text(name, value, max)?;
+    }
+    for (name, values) in [
+        (
+            "Code-audio post-processing operations",
+            fields.code_audio_post_processing_operations.as_slice(),
+        ),
+        (
+            "Human artwork process operations",
+            fields.human_artwork_process_operations.as_slice(),
+        ),
+        (
+            "Human artwork modifications",
+            fields.human_artwork_modifications.as_slice(),
+        ),
+    ] {
+        validate_text_list(name, values, 100, 4_000)?;
     }
     for (name, value) in [
         ("Production start", fields.production_start_date.as_str()),
@@ -3584,6 +3850,15 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     if let Some(value) = patch.code_based_generation {
         fields.code_based_generation = Some(value);
     }
+    if let Some(value) = patch.code_audio_post_processed {
+        fields.code_audio_post_processed = Some(value);
+    }
+    if let Some(value) = patch.code_audio_post_processing_operations {
+        fields.code_audio_post_processing_operations = value;
+    }
+    if let Some(value) = patch.code_audio_post_processing_note {
+        fields.code_audio_post_processing_note = value;
+    }
     if let Some(value) = patch.third_party_samples_uploaded {
         fields.third_party_samples_uploaded = Some(value);
     }
@@ -3614,8 +3889,17 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     if let Some(value) = patch.ai_image_service {
         fields.ai_image_service = value;
     }
+    if let Some(value) = patch.human_artwork_process_operations {
+        fields.human_artwork_process_operations = value;
+    }
+    if let Some(value) = patch.human_artwork_process_notes {
+        fields.human_artwork_process_notes = value;
+    }
     if let Some(value) = patch.human_artwork_modifications {
         fields.human_artwork_modifications = value;
+    }
+    if let Some(value) = patch.custom_artwork_change {
+        fields.custom_artwork_change = value;
     }
     if let Some(value) = patch.depicts_real_person {
         fields.depicts_real_person = Some(value);
@@ -4077,7 +4361,7 @@ mod tests {
             post_export_editing_details: "stale post edit".into(),
             artwork_origin: "ai_assisted".into(),
             ai_image_service: "stale AI service".into(),
-            human_artwork_modifications: "stale artwork modifications".into(),
+            human_artwork_modifications: vec!["stale artwork modifications".into()],
             depicts_real_person: Some(true),
             real_person_notes: "stale person note".into(),
             depicts_real_event: Some(true),
@@ -4118,7 +4402,6 @@ mod tests {
             &fields.human_editing_details,
             &fields.post_export_editing_details,
             &fields.ai_image_service,
-            &fields.human_artwork_modifications,
             &fields.real_person_notes,
             &fields.real_event_notes,
             &fields.trademark_notes,
@@ -4126,6 +4409,7 @@ mod tests {
         ] {
             assert!(value.is_empty(), "inactive value survived: {value}");
         }
+        assert!(fields.human_artwork_modifications.is_empty());
         assert_eq!(fields.disclosure_applied, None);
         assert_eq!(fields.depicts_real_person, Some(false));
 
@@ -4388,6 +4672,133 @@ mod tests {
             .find(|track| track.id == created.id)
             .expect("album summary");
         assert_eq!(summary.library, created.library);
+    }
+
+    #[test]
+    fn new_guided_and_free_text_track_values_survive_workspace_reopen_exactly() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+
+        let assisted = app
+            .create_track(CreateTrackInput {
+                title: "Future Model Track".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("AI-assisted track");
+        app.update_track(
+            &assisted.id,
+            TrackPatch {
+                suno_model: Some("v6 private preview".into()),
+                suno_plan_at_creation: Some("Historical Founder Plan".into()),
+                code_based_generation: Some(true),
+                code_audio_post_processed: Some(true),
+                code_audio_post_processing_operations: Some(vec![
+                    "Mixing".into(),
+                    "EQ".into(),
+                    "Other post-processing".into(),
+                ]),
+                code_audio_post_processing_note: Some("Manual spectral repair".into()),
+                artwork_origin: Some("ai_assisted".into()),
+                ai_image_service: Some("Future Image Tool".into()),
+                human_artwork_modifications: Some(vec![
+                    "Cropping".into(),
+                    "Typography added".into(),
+                    "Other human editing".into(),
+                ]),
+                custom_artwork_change: Some("Hand-painted edge cleanup".into()),
+                depicts_real_person: Some(true),
+                real_person_notes: Some("A named collaborator in the foreground".into()),
+                depicts_real_event: Some(false),
+                contains_trademark: Some(true),
+                trademark_notes: Some("A supplied sponsor logo in the corner".into()),
+                ..TrackPatch::default()
+            },
+        )
+        .expect("persist AI-assisted values");
+
+        let human = app
+            .create_track(CreateTrackInput {
+                title: "Human Artwork Track".into(),
+                production_start_date: "2026-08-02".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("human-artwork track");
+        app.update_track(
+            &human.id,
+            TrackPatch {
+                artwork_origin: Some("human".into()),
+                human_artwork_process_operations: Some(vec![
+                    "Photographed".into(),
+                    "Color correction".into(),
+                    "Typography added".into(),
+                ]),
+                human_artwork_process_notes: Some("35 mm scan, then manual layout".into()),
+                depicts_real_person: Some(false),
+                depicts_real_event: Some(false),
+                contains_trademark: Some(false),
+                ..TrackPatch::default()
+            },
+        )
+        .expect("persist human-artwork values");
+        drop(app);
+
+        let reopened = WorkspaceApp::open(&workspace, false).expect("reopen workspace");
+        let assisted = reopened
+            .load_track(&assisted.id)
+            .expect("reload AI-assisted track");
+        assert_eq!(assisted.fields.suno_model, "v6 private preview");
+        assert_eq!(
+            assisted.fields.suno_plan_at_creation,
+            "Historical Founder Plan"
+        );
+        assert_eq!(assisted.fields.code_audio_post_processed, Some(true));
+        assert_eq!(
+            assisted.fields.code_audio_post_processing_operations,
+            vec!["Mixing", "EQ", "Other post-processing"]
+        );
+        assert_eq!(
+            assisted.fields.code_audio_post_processing_note,
+            "Manual spectral repair"
+        );
+        assert_eq!(
+            assisted.fields.human_artwork_modifications,
+            vec!["Cropping", "Typography added", "Other human editing"]
+        );
+        assert_eq!(
+            assisted.fields.custom_artwork_change,
+            "Hand-painted edge cleanup"
+        );
+        assert_eq!(assisted.fields.depicts_real_person, Some(true));
+        assert_eq!(assisted.fields.depicts_real_event, Some(false));
+        assert_eq!(assisted.fields.contains_trademark, Some(true));
+        assert_eq!(
+            assisted.fields.real_person_notes,
+            "A named collaborator in the foreground"
+        );
+        assert_eq!(
+            assisted.fields.trademark_notes,
+            "A supplied sponsor logo in the corner"
+        );
+
+        let human = reopened
+            .load_track(&human.id)
+            .expect("reload human-artwork track");
+        assert_eq!(
+            human.fields.human_artwork_process_operations,
+            vec!["Photographed", "Color correction", "Typography added"]
+        );
+        assert_eq!(
+            human.fields.human_artwork_process_notes,
+            "35 mm scan, then manual layout"
+        );
+        assert_eq!(human.fields.depicts_real_person, Some(false));
+        assert_eq!(human.fields.depicts_real_event, Some(false));
+        assert_eq!(human.fields.contains_trademark, Some(false));
     }
 
     #[test]
@@ -4723,6 +5134,17 @@ mod tests {
             .expect("track");
         let old_root = app.root().join(&created.relative_path);
         fs::write(old_root.join("02_SUNO/source.wav"), b"rename sentinel").expect("sentinel");
+        let release_source = directory.path().join("original-master.wav");
+        fs::write(&release_source, b"RIFF\x08\0\0\0WAVErename release").expect("release fixture");
+        let imported = app
+            .import_evidence_from(&created.id, EvidenceRole::ReleaseWav, &release_source)
+            .expect("release import before title rename");
+        let old_release = imported
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("old release evidence");
+        assert_eq!(old_release.relative_path, "01_RELEASE/Old Track.wav");
 
         let renamed = app
             .update_track(
@@ -4741,6 +5163,74 @@ mod tests {
                 .expect("preserved sentinel"),
             b"rename sentinel"
         );
+        let renamed_release = renamed
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("renamed release evidence");
+        assert_eq!(renamed_release.file_name, "New Track.wav");
+        assert_eq!(renamed_release.relative_path, "01_RELEASE/New Track.wav");
+        assert!(app
+            .root()
+            .join("Singles/New Track/01_RELEASE/New Track.wav")
+            .is_file());
+        assert!(!app
+            .root()
+            .join("Singles/New Track/01_RELEASE/Old Track.wav")
+            .exists());
+    }
+
+    #[test]
+    fn track_title_release_collision_rolls_back_folder_file_and_metadata() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let created = app
+            .create_track(CreateTrackInput {
+                title: "Old Conflict".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let source = directory.path().join("release.wav");
+        fs::write(&source, b"RIFF\x08\0\0\0WAVEmanaged release").expect("release source");
+        app.import_evidence_from(&created.id, EvidenceRole::ReleaseWav, &source)
+            .expect("release import");
+        let old_root = app.root().join(&created.relative_path);
+        let occupied = old_root.join("01_RELEASE/New Conflict.wav");
+        fs::write(&occupied, b"unmanaged collision sentinel").expect("collision sentinel");
+
+        let error = app
+            .update_track(
+                &created.id,
+                TrackPatch {
+                    title: Some("New Conflict".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect_err("occupied release target must reject title change");
+        assert!(matches!(error, AppError::Collision(_)));
+        assert!(old_root.is_dir());
+        assert!(!app.root().join("Singles/New Conflict").exists());
+        assert_eq!(
+            fs::read(old_root.join("01_RELEASE/Old Conflict.wav"))
+                .expect("managed release after rollback"),
+            b"RIFF\x08\0\0\0WAVEmanaged release"
+        );
+        assert_eq!(
+            fs::read(&occupied).expect("collision sentinel after rollback"),
+            b"unmanaged collision sentinel"
+        );
+        let unchanged = app.load_track(&created.id).expect("unchanged track");
+        assert_eq!(unchanged.title, "Old Conflict");
+        let release = unchanged
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release evidence");
+        assert_eq!(release.file_name, "Old Conflict.wav");
+        assert_eq!(release.relative_path, "01_RELEASE/Old Conflict.wav");
     }
 
     #[test]
@@ -4923,7 +5413,7 @@ mod tests {
             .find(|item| item.role == EvidenceRole::ReleaseWav)
             .expect("active replacement");
         assert_eq!(active_release.id, current_release.id);
-        assert_eq!(active_release.file_name, "second.wav");
+        assert_eq!(active_release.file_name, "Singular Assets.wav");
         assert!(app
             .root()
             .join(&replaced_release.relative_path)
@@ -4960,6 +5450,171 @@ mod tests {
                 .filter(|item| item.role == EvidenceRole::FinalArtwork)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn release_import_never_overwrites_an_existing_track_title_target() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let track = app
+            .create_track(CreateTrackInput {
+                title: "Collision Track".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let target = app
+            .root()
+            .join(&track.relative_path)
+            .join("01_RELEASE/Collision Track.wav");
+        fs::write(&target, b"existing bytes").expect("collision sentinel");
+        let source = directory.path().join("incoming.wav");
+        fs::write(&source, b"RIFF\x08\0\0\0WAVEincoming").expect("release source");
+
+        assert!(matches!(
+            app.import_evidence_from(&track.id, EvidenceRole::ReleaseWav, &source),
+            Err(AppError::Collision(_))
+        ));
+        assert_eq!(
+            fs::read(&target).expect("preserved target"),
+            b"existing bytes"
+        );
+        assert!(app
+            .persistence
+            .evidence(&track.id)
+            .expect("evidence list")
+            .is_empty());
+    }
+
+    #[test]
+    fn unfinalized_legacy_managed_release_name_migrates_but_finalized_snapshot_does_not() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let track = app
+            .create_track(CreateTrackInput {
+                title: "Legacy Managed".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let source = directory.path().join("source.wav");
+        fs::write(&source, b"RIFF\x08\0\0\0WAVElegacy managed").expect("release source");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::ReleaseWav, &source)
+            .expect("release import");
+        let mut item = imported
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release evidence")
+            .clone();
+        let root = app.root().join(&track.relative_path);
+        fs::rename(
+            root.join(&item.relative_path),
+            root.join("01_RELEASE/suno_final_export.wav"),
+        )
+        .expect("simulate historical managed name");
+        item.file_name = "suno_final_export.wav".into();
+        item.relative_path = "01_RELEASE/suno_final_export.wav".into();
+        app.persistence
+            .save_evidence(&track.id, &item)
+            .expect("historical evidence metadata");
+
+        let migrated = app.load_track(&track.id).expect("load and migrate");
+        let migrated_item = migrated
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("migrated evidence");
+        assert_eq!(migrated_item.relative_path, "01_RELEASE/Legacy Managed.wav");
+        assert!(root.join("01_RELEASE/Legacy Managed.wav").is_file());
+
+        fs::rename(
+            root.join("01_RELEASE/Legacy Managed.wav"),
+            root.join("01_RELEASE/suno_final_export.wav"),
+        )
+        .expect("restore historical name");
+        let mut finalized_item = migrated_item.clone();
+        finalized_item.file_name = "suno_final_export.wav".into();
+        finalized_item.relative_path = "01_RELEASE/suno_final_export.wav".into();
+        app.persistence
+            .save_evidence(&track.id, &finalized_item)
+            .expect("finalized historical metadata");
+        let mut record = app.persistence.track(&track.id).expect("track record");
+        record.status = TrackStatus::Finalized;
+        app.persistence
+            .save_track(&record)
+            .expect("finalized record");
+
+        assert!(!app
+            .migrate_legacy_release_evidence(&record)
+            .expect("finalized migration check"));
+        assert!(root.join("01_RELEASE/suno_final_export.wav").is_file());
+        assert!(!root.join("01_RELEASE/Legacy Managed.wav").exists());
+        assert_eq!(
+            app.persistence
+                .evidence(&track.id)
+                .expect("stored finalized evidence")[0]
+                .relative_path,
+            "01_RELEASE/suno_final_export.wav"
+        );
+    }
+
+    #[test]
+    fn legacy_release_migration_leaves_an_occupied_title_target_unchanged() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let track = app
+            .create_track(CreateTrackInput {
+                title: "Migration Collision".into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: false,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("track");
+        let source = directory.path().join("source.wav");
+        fs::write(&source, b"RIFF\x08\0\0\0WAVElegacy managed").expect("release source");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::ReleaseWav, &source)
+            .expect("release import");
+        let mut item = imported
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release evidence")
+            .clone();
+        let root = app.root().join(&track.relative_path);
+        fs::rename(
+            root.join(&item.relative_path),
+            root.join("01_RELEASE/suno_final_export.wav"),
+        )
+        .expect("simulate historical managed name");
+        item.file_name = "suno_final_export.wav".into();
+        item.relative_path = "01_RELEASE/suno_final_export.wav".into();
+        app.persistence
+            .save_evidence(&track.id, &item)
+            .expect("historical evidence metadata");
+        let occupied = root.join("01_RELEASE/Migration Collision.wav");
+        fs::write(&occupied, b"occupied title target").expect("occupied target");
+
+        let loaded = app.load_track(&track.id).expect("load without migration");
+        let unchanged = loaded
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("unchanged evidence");
+        assert_eq!(unchanged.file_name, "suno_final_export.wav");
+        assert_eq!(unchanged.relative_path, "01_RELEASE/suno_final_export.wav");
+        assert!(root.join("01_RELEASE/suno_final_export.wav").is_file());
+        assert_eq!(
+            fs::read(occupied).expect("preserved occupied target"),
+            b"occupied title target"
         );
     }
 
@@ -5334,7 +5989,9 @@ mod tests {
                     commercial_use_intended: Some(true),
                     artwork_origin: Some("ai_assisted".into()),
                     ai_image_service: Some("Local Tool".into()),
-                    human_artwork_modifications: Some("Visible disclosure added locally".into()),
+                    human_artwork_modifications: Some(vec![
+                        "Visible disclosure added locally".into()
+                    ]),
                     depicts_real_person: Some(true),
                     real_person_notes: Some("Documented real-person depiction".into()),
                     depicts_real_event: Some(false),
@@ -5454,7 +6111,7 @@ mod tests {
             fs::read_to_string(track_root.join(certificate::MANIFEST_FILE)).expect("manifest text");
         assert!(!manifest.contains(app.root().to_string_lossy().as_ref()));
         assert!(manifest.contains("\"relative_path\": \".\""));
-        assert!(manifest.contains("01_RELEASE/release-master.wav"));
+        assert!(manifest.contains("01_RELEASE/End To End.wav"));
         assert!(manifest.contains("02_SUNO/suno-export.wav"));
         assert!(manifest.contains("05_ARTWORK/End-To-End_AI_ORIGINAL.png"));
         assert!(manifest.contains("05_ARTWORK/End-To-End_AI_EDITED.png"));
@@ -6949,7 +7606,7 @@ mod tests {
             TrackPatch {
                 artwork_origin: Some("ai_assisted".into()),
                 ai_image_service: Some("Local Tool".into()),
-                human_artwork_modifications: Some("Visible disclosure added locally".into()),
+                human_artwork_modifications: Some(vec!["Visible disclosure added locally".into()]),
                 depicts_real_person: Some(true),
                 real_person_notes: Some("Documented real-person depiction".into()),
                 depicts_real_event: Some(false),
@@ -7173,13 +7830,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_upgrade_archives_finalized_v11_and_requires_fresh_v12_outputs() {
+    fn workflow_upgrade_archives_finalized_v12_and_requires_fresh_v13_outputs() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
         let finalized =
             finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
-        assert_eq!(finalized.workflow_version, "1.1");
+        assert_eq!(finalized.workflow_version, "1.2");
         let track_root = app.root().join(&finalized.relative_path);
         let certificate_before = certificate_file_snapshot(&track_root);
         let hashes_before =
@@ -7196,17 +7853,17 @@ mod tests {
             )
             .expect("stored old-workflow override");
 
-        let workflow_v12 = workflow::config_with_version_for_test("1.2")
-            .expect("test-only workflow 1.2 configuration");
+        let workflow_v13 = workflow::config_with_version_for_test("1.3")
+            .expect("test-only workflow 1.3 configuration");
         let upgraded = app
-            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v12)
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v13)
             .expect("explicit workflow reevaluation")
             .track
             .expect("upgraded track detail");
 
         assert_eq!(upgraded.status, TrackStatus::Active);
         assert_eq!(upgraded.workflow_id, "suno-track");
-        assert_eq!(upgraded.workflow_version, "1.2");
+        assert_eq!(upgraded.workflow_version, "1.3");
         assert!(!upgraded.documents.current);
         assert!(!upgraded.integrity.generated);
         assert!(!upgraded.integrity.verified);
@@ -7245,7 +7902,7 @@ mod tests {
         }
 
         assert!(matches!(
-            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v12),
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v13),
             Err(AppError::Validation(_))
         ));
         assert_eq!(

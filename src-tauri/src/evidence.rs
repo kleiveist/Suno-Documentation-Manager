@@ -441,7 +441,15 @@ fn managed_file_name(track_title: &str, role: &EvidenceRole, original: &str) -> 
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let safe_title = crate::security::slugify(track_title)?;
+    let release_role = matches!(
+        role,
+        EvidenceRole::ReleaseWav | EvidenceRole::ReleaseMp3 | EvidenceRole::ReleaseMp4
+    );
+    let safe_title = if release_role {
+        crate::security::safe_file_stem(track_title)?
+    } else {
+        crate::security::slugify(track_title)?
+    };
     let suffix = match role {
         EvidenceRole::AiArtworkOriginal => Some("AI_ORIGINAL"),
         EvidenceRole::AiArtworkEdited => Some("AI_EDITED"),
@@ -451,6 +459,7 @@ fn managed_file_name(track_title: &str, role: &EvidenceRole, original: &str) -> 
     };
     Ok(match suffix {
         Some(suffix) => format!("{safe_title}_{suffix}.{extension}"),
+        None if release_role => format!("{safe_title}.{extension}"),
         None => original.to_owned(),
     })
 }
@@ -470,7 +479,7 @@ mod tests {
 
         let imported = import(&track_root, "Test Track", EvidenceRole::ReleaseWav, &source)
             .expect("evidence import");
-        assert_eq!(imported.relative_path, "01_RELEASE/release.wav");
+        assert_eq!(imported.relative_path, "01_RELEASE/Test Track.wav");
         assert!(imported.verified);
         assert_eq!(
             fs::read(&source).expect("source remains"),
@@ -500,6 +509,28 @@ mod tests {
             ),
             Err(AppError::FileType { .. })
         ));
+    }
+
+    #[test]
+    fn release_import_uses_a_safe_track_title_and_preserves_the_actual_extension() {
+        let directory = tempdir().expect("temporary directory");
+        let track_root = directory.path().join("track");
+        fs::create_dir(&track_root).expect("track root");
+        let mp3 = directory.path().join("source-master.mp3");
+        fs::write(&mp3, b"ID3release evidence").expect("MP3 source");
+
+        let imported = import(
+            &track_root,
+            "Neon: Universe?",
+            EvidenceRole::ReleaseWav,
+            &mp3,
+        )
+        .expect("release import");
+
+        assert_eq!(imported.file_name, "Neon-Universe.mp3");
+        assert_eq!(imported.relative_path, "01_RELEASE/Neon-Universe.mp3");
+        assert!(track_root.join("01_RELEASE/Neon-Universe.mp3").is_file());
+        assert!(!track_root.join("01_RELEASE/source-master.mp3").exists());
     }
 
     #[test]

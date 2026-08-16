@@ -41,7 +41,7 @@ The repository file [workflows/suno-track.toml](../../workflows/suno-track.toml)
 ```toml
 schema_version = 1
 id = "suno-track"
-version = "1.1"
+version = "1.2"
 name = "Suno Track Documentation"
 ```
 
@@ -116,10 +116,12 @@ The following branch rules are mandatory:
 | --- | --- | --- |
 | External audio uploaded | Hide dependent source/license requirements and exclude them from evaluation | Require source, ownership, license evidence, and uploaded file |
 | Own audio uploaded | Hide own-audio details | Require confirmed ownership/source details and file role |
-| Code-based generation | Hide both code-generation evidence controls and requirements | Require one supported source-code/source-text file and its generated WAV or MP3 under `02_SUNO/` |
+| Code-based generation | Hide code-generation evidence and the post-processing question | Require one supported source-code/source-text file and its generated WAV or MP3 under `02_SUNO/`; require an explicit post-processing answer |
+| Code-audio post-processing | Do not request operations and do not generate editing claims | Require one or more selected operations; an optional free-text note is retained only with `Other post-processing` |
 | Third-party samples uploaded | Hide sample details | Require sample source, permission/license note, and applicable evidence |
 | Lyrics source | Instrumental hides lyrics text | Every non-instrumental source requires the exact text used; the Suno style prompt is always required |
 | Human or post-export editing | Do not add generic editing claims | Require at least one specific operation from the applicable guided multi-selection |
+| Artwork origin | Hide process fields that do not match the selected origin | Human artwork can record multiple process operations plus editable notes; AI-assisted artwork requires at least one selected human change |
 | AI-generated or AI-assisted artwork | Permit the whole AI Transparency step to be stored as N/A only with a reason | Require AI original and one final artwork under Artwork. If all three content checks are `No`, deactivate AI Transparency; otherwise require service, policy decision, disclosure result, and locally generated provenance/source lineage when disclosure applies |
 | Real person, real event, trademark, or logo content check | End that question | Require a factual note and any configured evidence; do not decide legality |
 | External license evidence | Do not ask for unrelated license fields | Require evidence selection, contained copy, and integrity inclusion |
@@ -127,6 +129,8 @@ The following branch rules are mandatory:
 Changing a controller reevaluates and clears the requirement status of now-hidden dependent fields. Historical values are not silently presented as current answers; removal follows an explicit domain rule or confirmation.
 
 Source categories, rights bases, human-work operations, post-export operations, and release-note selections use stable English values with localized presentation labels. This keeps generated document choices English without requiring the interface itself to be English. Unknown historical free text remains reviewable as a legacy option until the user deliberately replaces it.
+
+Suno model and plan-at-creation remain unrestricted strings. The UI offers current suggestions, but a historical, custom, or future value is valid and must round-trip exactly; the evaluator checks only that the applicable string is non-empty.
 
 ## Missing-item calculation
 
@@ -184,7 +188,7 @@ Every track and certificate stores both `workflow_id` and `workflow_version`. A 
 
 ```text
 Finalized with workflow 1.0
-Current workflow version: 1.1
+Current workflow version: 1.2
 ```
 
 Re-evaluation is explicit. It creates new working state and, after successful acceptance, a new revision; it never rewrites the meaning of an archived `1.0` result.
@@ -232,6 +236,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Advanced the workflow to 1.2 for conditional code-audio post-processing and the required human-change selection on AI-assisted artwork; retained unrestricted Suno model and plan strings. | Project team |
 | 2026-08-16 | Advanced the workflow to 1.1 and required generated WAV/MP3 evidence together with source code for a positive code-based-generation answer. | Project team |
 | 2026-08-15 | Defined read-only finalized navigation, stale-draft disposal, and direct revision access. | Project team |
 | 2026-08-15 | Added the conditional code-based Source branch, guided Source classifications, and English canonical values for localized choice controls. | Project team |

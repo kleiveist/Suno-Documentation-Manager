@@ -21,7 +21,7 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.1";
+export const WORKFLOW_VERSION = "1.2";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
@@ -48,6 +48,7 @@ export interface RequirementEvaluation extends MissingRequirement {
 }
 
 const hasText = (value: string): boolean => value.trim().length > 0;
+const hasSelections = (value: readonly string[]): boolean => value.some((item) => item.trim().length > 0);
 const hasEvidence = (evidence: EvidenceItem[], role: EvidenceRole): boolean =>
   evidence.some((item) => item.role === role && item.verified && Boolean(item.sha256) && !item.verificationError);
 const localDisclosureArtifacts = (evidence: EvidenceItem[], fields: TrackFields): EvidenceItem[] =>
@@ -114,7 +115,14 @@ export function visibleConditionalFields(fields: TrackFields, profile: GlobalPro
   }
   if (fields.codeBasedGeneration === true) {
     visible.add("sourceCodeFile");
+    visible.add("codeAudioPostProcessed");
     visible.add("codeGeneratedAudioFile");
+    if (fields.codeAudioPostProcessed === true) {
+      visible.add("codeAudioPostProcessingOperations");
+      if (fields.codeAudioPostProcessingOperations.includes("Other post-processing")) {
+        visible.add("codeAudioPostProcessingNote");
+      }
+    }
   }
   if (fields.thirdPartySamplesUploaded === true) {
     visible.add("thirdPartySampleSource");
@@ -130,7 +138,11 @@ export function visibleConditionalFields(fields: TrackFields, profile: GlobalPro
     visible.add("aiArtworkOriginal");
     if (profile.artworkTransparencyPolicy !== "none" && !contentCheckAllNegative(fields)) visible.add("disclosure");
   }
-  if (fields.artworkOrigin === "ai_assisted") visible.add("humanArtworkModifications");
+  if (fields.artworkOrigin === "human") visible.add("humanArtworkProcessOperations");
+  if (fields.artworkOrigin === "ai_assisted") {
+    visible.add("humanArtworkModifications");
+    if (fields.humanArtworkModifications.includes("Other human editing")) visible.add("customArtworkChange");
+  }
   if (fields.depictsRealPerson === true) visible.add("realPersonNotes");
   if (fields.depictsRealEvent === true) visible.add("realEventNotes");
   if (fields.containsTrademark === true) visible.add("trademarkNotes");
@@ -177,6 +189,10 @@ export function evaluateRequirements(
   }
   if (fields.codeBasedGeneration === true) {
     add("source-code-file", "evidence_licenses", "Quellcode oder Quelldatei der codebasierten Erzeugung", hasEvidence(evidence, "source_code_file"), "source_code_file");
+    add("code-audio-post-processed-answer", "source", "Angabe zur Nachbearbeitung des codebasiert erzeugten Audios", fields.codeAudioPostProcessed !== null);
+    if (fields.codeAudioPostProcessed === true) {
+      add("code-audio-post-processing-operations", "source", "Bestätigte Nachbearbeitungsschritte des codebasiert erzeugten Audios", hasSelections(fields.codeAudioPostProcessingOperations));
+    }
     add("code-generated-audio-file", "evidence_licenses", "Mit dem Quellcode erzeugte WAV- oder MP3-Datei", hasEvidence(evidence, "code_generated_audio_file"), "code_generated_audio_file");
   }
   if (fields.thirdPartySamplesUploaded === true) {
@@ -205,6 +221,9 @@ export function evaluateRequirements(
   if (fields.postExportEditingPerformed === true) add("post-editing-details", "human_work", "Bearbeitungsschritte nach Export", hasText(fields.postExportEditingDetails));
 
   add("artwork-origin", "artwork", "Entstehungsart des Artworks", Boolean(fields.artworkOrigin));
+  if (fields.artworkOrigin === "ai_assisted") {
+    add("artwork-human-changes", "artwork", "Mindestens eine menschliche Änderung am KI-assistierten Artwork", hasSelections(fields.humanArtworkModifications));
+  }
   if (fields.artworkOrigin && fields.artworkOrigin !== "none") {
     add("real-person-answer", "artwork", "Content-Check: reale Person", fields.depictsRealPerson !== null);
     add("real-event-answer", "artwork", "Content-Check: reales Ereignis", fields.depictsRealEvent !== null);
@@ -246,7 +265,7 @@ export function evaluateRequirements(
     }
   }
 
-  add("release-wav", "release", "Finale Release-WAV", hasEvidence(evidence, "release_wav"), "release_wav");
+  add("release-wav", "release", "Finale Release-Audiodatei", hasEvidence(evidence, "release_wav"), "release_wav");
   if (fields.commercialUseIntended) add("subscription-evidence", "evidence_licenses", "Abo-/Zahlungsnachweis für den Produktionszeitraum", hasCoveringSubscriptionEvidence(evidence, fields), "subscription_payment");
   add("documents-current", "integrity", "Aktuelle generierte Dokumente", documents.generated && documents.current);
   add("hashes-verified", "integrity", "Vollständige SHA-256-Verifikation", integrity.verified && integrity.mismatchFiles.length === 0);
@@ -352,7 +371,7 @@ export function evidenceRoleLabel(role: EvidenceRole): string {
     suno_project_zip: "Suno-Projekt-ZIP",
     suno_screenshot: "Suno-Screenshot",
     subscription_payment: "Abo-/Zahlungsnachweis",
-    release_wav: "Release-WAV",
+    release_wav: "Finale Release-Audiodatei",
     release_mp3: "Release-MP3",
     release_mp4: "Release-MP4",
     release_artwork: "Release-Artwork",
@@ -378,7 +397,7 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     suno_project_zip: "ZIP",
     suno_screenshot: "PNG, JPG, WebP oder PDF",
     subscription_payment: "PDF, PNG, JPG, TXT oder Markdown",
-    release_wav: "WAV",
+    release_wav: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     release_mp3: "MP3",
     release_mp4: "MP4 oder M4V",
     release_artwork: "PNG oder JPG",

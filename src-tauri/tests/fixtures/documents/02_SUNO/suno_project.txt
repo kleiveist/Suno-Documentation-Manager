@@ -1,5 +1,5 @@
 # suno-documentation-manager:template-v1
-Template version: 1.3
+Template version: 1.4
 Track: Golden Signal
 Suno project URL: https://suno.example/projects/golden-signal
 Suno model: v4.5
@@ -11,5 +11,7 @@ External audio uploaded: No
 Own audio uploaded: Yes
 Code-based generation: No
 Source-code evidence: Not applicable
+Code-audio post-processing performed: Not applicable
+Code-audio post-processing operations: Not applicable
 Code-generated audio evidence: Not applicable
 Third-party samples uploaded: No

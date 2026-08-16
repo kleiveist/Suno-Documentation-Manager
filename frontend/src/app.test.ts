@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAIN_NAVIGATION,
+  canonicalGuidedChoiceArray,
   canonicalGuidedChoiceList,
   canonicalGuidedChoiceValue,
   finalizedTrackPresentation,
@@ -58,6 +59,9 @@ describe("navigation", () => {
       "Timing and cuts | Loudness adjustment"
     );
     expect(canonicalGuidedChoiceValue("Historischer Freitext", choices)).toBe("Historischer Freitext");
+    expect(canonicalGuidedChoiceArray(["Timing und Cuts", "Historischer Freitext"], choices)).toEqual([
+      "Timing and cuts", "Historischer Freitext"
+    ]);
   });
 
   it("renders required single choices as mutually exclusive buttons", () => {
@@ -83,6 +87,9 @@ describe("navigation", () => {
       ownAudioOwnership: "Eigene Produktion",
       humanEditingDetails: "Timing und Cuts | Lautheitsanpassung",
       postExportEditingDetails: "Schnitt | Mixing",
+      codeAudioPostProcessingOperations: ["Schnitt", "Mastering"],
+      humanArtworkProcessOperations: ["Eigenständig gezeichnet"],
+      humanArtworkModifications: ["Farbkorrektur", "Historischer Artwork-Freitext"],
       releaseNotes: "Originale Suno-Fassung | Radio Edit"
     });
 
@@ -90,6 +97,9 @@ describe("navigation", () => {
     expect(normalized.ownAudioOwnership).toBe("Solely owned by the artist");
     expect(normalized.humanEditingDetails).toBe("Timing and cuts | Loudness adjustment");
     expect(normalized.postExportEditingDetails).toBe("Editing and cuts | Mixing");
+    expect(normalized.codeAudioPostProcessingOperations).toEqual(["Editing and cuts", "Mastering"]);
+    expect(normalized.humanArtworkProcessOperations).toEqual(["Independently drawn"]);
+    expect(normalized.humanArtworkModifications).toEqual(["Color correction", "Historischer Artwork-Freitext"]);
     expect(normalized.releaseNotes).toBe("Original Suno version | Radio edit");
   });
 
@@ -251,21 +261,21 @@ describe("navigation", () => {
         workflowVersion: "1.0",
         certificate: { valid: true, workflowVersion: "1.0" }
       },
-      { id: "suno-track", version: "1.1" }
+      { id: "suno-track", version: "1.2" }
     );
 
     expect(presentation).toEqual({
-      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.1",
+      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.2",
       action: "re-evaluate-track"
     });
     expect(workflowUpgradePresentation(
       {
         status: "FINALIZED",
         workflowId: "suno-track",
-        workflowVersion: "1.1",
-        certificate: { valid: true, workflowVersion: "1.1" }
+        workflowVersion: "1.2",
+        certificate: { valid: true, workflowVersion: "1.2" }
       },
-      { id: "suno-track", version: "1.1" }
+      { id: "suno-track", version: "1.2" }
     )).toBeNull();
   });
 });

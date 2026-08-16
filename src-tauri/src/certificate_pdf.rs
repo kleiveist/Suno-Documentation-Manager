@@ -307,8 +307,16 @@ fn validate_rendered_text(
         ("artwork origin", fields.artwork_origin.as_str()),
         ("AI image service", fields.ai_image_service.as_str()),
         (
-            "human artwork modifications",
-            fields.human_artwork_modifications.as_str(),
+            "code-audio post-processing note",
+            fields.code_audio_post_processing_note.as_str(),
+        ),
+        (
+            "human artwork process notes",
+            fields.human_artwork_process_notes.as_str(),
+        ),
+        (
+            "custom artwork change",
+            fields.custom_artwork_change.as_str(),
         ),
         ("disclosure text", fields.disclosure_text.as_str()),
         ("workflow ID", snapshot.track.workflow_id.as_str()),
@@ -318,6 +326,25 @@ fn validate_rendered_text(
         ("certificate version", snapshot.certificate_version),
     ] {
         validate_win_ansi(label, value)?;
+    }
+
+    for (label, values) in [
+        (
+            "code-audio post-processing operation",
+            fields.code_audio_post_processing_operations.as_slice(),
+        ),
+        (
+            "human artwork process operation",
+            fields.human_artwork_process_operations.as_slice(),
+        ),
+        (
+            "human artwork modification",
+            fields.human_artwork_modifications.as_slice(),
+        ),
+    ] {
+        for value in values {
+            validate_win_ansi(label, value)?;
+        }
     }
 
     for step in snapshot.steps {
@@ -502,6 +529,25 @@ fn render_sources_and_generation(layout: &mut PdfLayout, snapshot: &CertificateP
         ),
     ];
 
+    if fields.code_based_generation == Some(true) {
+        rows.push(TableRow::plain(
+            "Code-audio post-processing",
+            yes_no(fields.code_audio_post_processed),
+        ));
+        if fields.code_audio_post_processed == Some(true) {
+            push_documented_detail(
+                &mut rows,
+                "Code-audio post-processing operations",
+                &fields.code_audio_post_processing_operations.join(", "),
+            );
+            push_documented_detail(
+                &mut rows,
+                "Other code-audio post-processing",
+                &fields.code_audio_post_processing_note,
+            );
+        }
+    }
+
     if fields.external_audio_uploaded == Some(true) {
         push_documented_detail(
             &mut rows,
@@ -551,11 +597,30 @@ fn render_sources_and_generation(layout: &mut PdfLayout, snapshot: &CertificateP
     push_documented_detail(&mut rows, "Suno style prompt", &fields.suno_style_prompt);
     push_documented_detail(&mut rows, "Artwork origin", &fields.artwork_origin);
     push_documented_detail(&mut rows, "AI image service", &fields.ai_image_service);
-    push_documented_detail(
-        &mut rows,
-        "Human artwork modifications",
-        &fields.human_artwork_modifications,
-    );
+    if fields.artwork_origin == "human" {
+        push_documented_detail(
+            &mut rows,
+            "Human artwork process operations",
+            &fields.human_artwork_process_operations.join(", "),
+        );
+        push_documented_detail(
+            &mut rows,
+            "Human artwork process notes",
+            &fields.human_artwork_process_notes,
+        );
+    }
+    if fields.artwork_origin == "ai_assisted" {
+        push_documented_detail(
+            &mut rows,
+            "Human artwork modifications",
+            &fields.human_artwork_modifications.join(", "),
+        );
+        push_documented_detail(
+            &mut rows,
+            "Other human artwork modification",
+            &fields.custom_artwork_change,
+        );
+    }
     if let Some(disclosure_applied) = fields.disclosure_applied {
         rows.push(TableRow::plain(
             "Disclosure applied",
@@ -1300,7 +1365,7 @@ mod tests {
                 relative_path: ".".into(),
                 status: TrackStatus::Ready,
                 workflow_id: "suno-track".into(),
-                workflow_version: "1.1".into(),
+                workflow_version: "1.2".into(),
                 profile_snapshot: profile.clone(),
                 library: TrackLibraryPlacement::default(),
                 fields,

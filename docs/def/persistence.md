@@ -94,7 +94,9 @@ The current SQLite schema version is `2`, stored in `PRAGMA user_version`. Schem
 
 The version 1 to version 2 migration backfills evidence belonging to a track already marked `legacy` as `indexed_legacy`; all other old rows are conservatively `managed_copy`. It leaves derivation, generator, and generated-text fields empty because version 1 did not retain enough data to prove them. In particular, migration never upgrades an old row to `generated_disclosure` merely from its role, filename, or bytes.
 
-Track records are serialized in the existing `tracks.data_json` column. The album-or-single placement is an additive typed JSON field with a Serde default of `single`. It adds no table, column, index, or relation, so introducing it does not advance `PRAGMA user_version` beyond `2`. Reading older JSON without the field is backward-compatible; a later record save materializes the default. This rule applies only to compatible additive fields with an explicit safe default. Relational layout changes still require an ordered schema migration.
+Track records are serialized in the existing `tracks.data_json` column. Album placement, code-audio post-processing answers/operation arrays, human artwork process arrays/notes, and AI-assisted human-change arrays/notes are additive typed JSON fields with safe defaults. Suno model and plan-at-creation remain strings. These fields add no table, column, index, or relation, so they do not advance `PRAGMA user_version` beyond `2`. Reading older JSON without them is backward-compatible; historical single-string artwork/change values deserialize conservatively as one-item arrays instead of being discarded. A later record save materializes normalized defaults. Relational layout changes still require an ordered schema migration.
+
+An active managed final-audio record at the exact historical `01_RELEASE/suno_final_export.<supported extension>` path can be migrated lazily to the safe title-based filename when the target is unused. The operation updates the file and evidence path together and marks generated documents stale. It never applies to finalized or superseded snapshots, indexed legacy provenance, ambiguous paths, or collisions.
 
 Opening a supported older database performs ordered native migrations inside a transaction. A migration must satisfy these rules:
 
@@ -275,6 +277,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-16 | Documented additive workflow-field compatibility and the conservative managed release-name migration without a SQLite schema bump. | Project team |
 | 2026-08-14 | Defined workspace-index ownership, additive JSON compatibility, and index-loss behavior for track library placement. | Project team |
 | 2026-08-14 | Defined per-invoice cadence, single-file registration, materialized coverage dates, portability, and the no-extrapolation boundary. | Project team |
 | 2026-08-13 | Documented schema version 2, evidence provenance and disclosure lineage, recoverable legacy removal, and marker-based finalization recovery. | Project team |

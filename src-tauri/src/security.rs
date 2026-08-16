@@ -279,6 +279,72 @@ pub fn slugify(title: &str) -> Result<String> {
     Ok(result)
 }
 
+/// Build a portable, human-readable file stem from a validated track title.
+/// Path separators, Windows-reserved punctuation, control characters, trailing
+/// dots/spaces, and device names are never emitted.
+pub fn safe_file_stem(title: &str) -> Result<String> {
+    let mut result = String::new();
+    let mut replacement = false;
+    for character in title.trim().chars() {
+        let unsafe_character = character.is_control()
+            || matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            );
+        if unsafe_character {
+            if !replacement && !result.is_empty() {
+                while result.ends_with(' ') {
+                    result.pop();
+                }
+                result.push('-');
+                replacement = true;
+            }
+        } else if replacement && character == ' ' {
+            continue;
+        } else {
+            result.push(character);
+            replacement = false;
+        }
+    }
+    let trimmed = result.trim_matches(|character| matches!(character, ' ' | '.' | '-'));
+    if trimmed.is_empty() || matches!(trimmed, "." | "..") {
+        return Err(AppError::Validation(
+            "Track title does not form a safe file name.".into(),
+        ));
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    let reserved = matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+    Ok(if reserved {
+        format!("_{trimmed}")
+    } else {
+        trimmed.to_owned()
+    })
+}
+
 pub fn portable_relative(path: &Path) -> String {
     path.components()
         .filter_map(|c| match c {

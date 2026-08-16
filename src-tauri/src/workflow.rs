@@ -103,12 +103,14 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         "external_audio",
         "own_audio",
         "code_based_generation",
+        "code_audio_post_processed",
         "third_party_samples",
         "lyrics_text",
         "human_editing",
         "post_export_editing",
         "artwork_present",
         "ai_artwork",
+        "ai_assisted_artwork",
         "ai_transparency_required",
         "real_person",
         "real_event",
@@ -435,12 +437,16 @@ fn condition_applies(condition: &str, track: &TrackRecord) -> bool {
         "external_audio" => f.external_audio_uploaded == Some(true),
         "own_audio" => f.own_audio_uploaded == Some(true),
         "code_based_generation" => f.code_based_generation == Some(true),
+        "code_audio_post_processed" => {
+            f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true)
+        }
         "third_party_samples" => f.third_party_samples_uploaded == Some(true),
         "lyrics_text" => !matches!(f.lyrics_source.as_str(), "" | "instrumental"),
         "human_editing" => f.human_editing_performed == Some(true),
         "post_export_editing" => f.post_export_editing_performed == Some(true),
         "artwork_present" => !matches!(f.artwork_origin.as_str(), "" | "none"),
         "ai_artwork" => matches!(f.artwork_origin.as_str(), "ai_generated" | "ai_assisted"),
+        "ai_assisted_artwork" => f.artwork_origin == "ai_assisted",
         "ai_transparency_required" => {
             matches!(f.artwork_origin.as_str(), "ai_generated" | "ai_assisted")
                 && !content_check_all_negative(track)
@@ -608,6 +614,11 @@ fn field_requirement_met(
             present(&f.own_audio_source) && present(&f.own_audio_ownership)
         }
         "source.code_based_generation" => f.code_based_generation.is_some(),
+        "source.code_audio_post_processed" => f.code_audio_post_processed.is_some(),
+        "source.code_audio_post_processing_operations" => f
+            .code_audio_post_processing_operations
+            .iter()
+            .any(|value| present(value)),
         "source.third_party_samples_uploaded" => f.third_party_samples_uploaded.is_some(),
         "source.third_party_sample_details" => {
             present(&f.third_party_sample_source) && present(&f.third_party_sample_ownership)
@@ -624,6 +635,10 @@ fn field_requirement_met(
         "human_work.post_export_editing_performed" => f.post_export_editing_performed.is_some(),
         "human_work.post_export_editing_details" => present(&f.post_export_editing_details),
         "artwork.origin" => present(&f.artwork_origin),
+        "artwork.human_modifications" => f
+            .human_artwork_modifications
+            .iter()
+            .any(|value| present(value)),
         "artwork.real_person" => f.depicts_real_person.is_some(),
         "artwork.real_person_note" => present(&f.real_person_notes),
         "artwork.real_event" => f.depicts_real_event.is_some(),
@@ -692,6 +707,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn code_audio_post_processing_requirements_follow_both_controlling_answers() {
+        let mut track = disclosure_track("none", None);
+        track.fields.code_based_generation = Some(false);
+        assert!(!condition_applies("code_audio_post_processed", &track));
+
+        track.fields.code_based_generation = Some(true);
+        track.fields.code_audio_post_processed = Some(false);
+        assert!(!condition_applies("code_audio_post_processed", &track));
+        assert!(field_requirement_met(
+            "source.code_audio_post_processed",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+
+        track.fields.code_audio_post_processed = Some(true);
+        assert!(condition_applies("code_audio_post_processed", &track));
+        assert!(!field_requirement_met(
+            "source.code_audio_post_processing_operations",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        track.fields.code_audio_post_processing_operations =
+            vec!["Mixing".into(), "EQ".into(), "Mastering".into()];
+        assert!(field_requirement_met(
+            "source.code_audio_post_processing_operations",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn ai_assisted_artwork_requires_one_or_more_factual_human_changes() {
+        let mut track = disclosure_track("ai_assisted", None);
+        assert!(condition_applies("ai_assisted_artwork", &track));
+        assert!(!field_requirement_met(
+            "artwork.human_modifications",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        track.fields.human_artwork_modifications =
+            vec!["Prompt written manually".into(), "Cropping".into()];
+        assert!(field_requirement_met(
+            "artwork.human_modifications",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        track.fields.artwork_origin = "human".into();
+        assert!(!condition_applies("ai_assisted_artwork", &track));
+    }
+
     fn embedded_config() -> WorkflowConfig {
         toml::from_str(WORKFLOW_SOURCE).expect("embedded workflow must deserialize")
     }
@@ -709,14 +780,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_1_configuration_is_accepted() {
+    fn valid_version_1_2_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.1");
+        validate_config(&config).expect("valid workflow 1.2");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.1");
+        assert_eq!(config.version, "1.2");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
