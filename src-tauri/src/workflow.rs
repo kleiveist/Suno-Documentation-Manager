@@ -1,6 +1,8 @@
+use crate::audio_metadata::{has_suno_studio_marker, parse_suno_metadata};
 use crate::error::{AppError, Result};
 use crate::model::{
-    BlockingDeviation, EvidenceItem, EvidenceRole, Profile, StepState, StepStatus, TrackRecord,
+    BlockingDeviation, ByteIdenticalPair, ConsistencyIssue, EvidenceDerivedField, EvidenceItem,
+    EvidenceRole, FactOrigin, Profile, StepState, StepStatus, TrackAutomation, TrackRecord,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -275,6 +277,19 @@ pub fn evaluate(
         }
     }
 
+    // Consistency findings use the existing workflow/finalization gate. They
+    // are derived from the same persisted facts and evidence records and do
+    // not create a parallel deviation workflow for the user to maintain.
+    for issue in consistency_issues(track, evidence)
+        .into_iter()
+        .filter(|issue| issue.blocking)
+    {
+        missing_by_step
+            .entry(issue.step_id)
+            .or_default()
+            .push(issue.message);
+    }
+
     for requirement in &config.requirements {
         if !requirement.required || !condition_applies(&requirement.when, track) {
             continue;
@@ -420,7 +435,11 @@ pub fn progress(
         .iter()
         .filter(|item| !item.verified || item.sha256.is_none() || item.verification_error.is_some())
         .count();
-    if applicable.is_empty() && unverified_evidence == 0 {
+    let consistency_issue_count = consistency_issues(track, evidence)
+        .into_iter()
+        .filter(|issue| issue.blocking)
+        .count();
+    if applicable.is_empty() && unverified_evidence == 0 && consistency_issue_count == 0 {
         return Ok(0);
     }
     let completed = applicable
@@ -436,7 +455,10 @@ pub fn progress(
             )
         })
         .count();
-    Ok(((completed * 100) / (applicable.len() + unverified_evidence)).min(100) as u8)
+    Ok(
+        ((completed * 100) / (applicable.len() + unverified_evidence + consistency_issue_count))
+            .min(100) as u8,
+    )
 }
 
 fn condition_applies(condition: &str, track: &TrackRecord) -> bool {
@@ -676,6 +698,264 @@ pub fn original_evidence_file_name<'a>(
         })
 }
 
+pub fn automation_summary(track: &TrackRecord, evidence: &[EvidenceItem]) -> TrackAutomation {
+    let suno = relevant_suno_export(evidence);
+    let final_generation_origin = fact_origin(
+        &track.fields.suno_final_generation_date,
+        track.field_origins.suno_final_generation_date.as_ref(),
+        suno,
+    );
+    let production_end_origin = fact_origin(
+        &track.fields.production_end_date,
+        track.field_origins.production_end_date.as_ref(),
+        suno,
+    );
+    let byte_identical_pairs = byte_identical_pairs(evidence);
+    let release_identical_to_suno_export = byte_identical_pairs.iter().any(|pair| {
+        matches!(
+            (pair.left_role, pair.right_role),
+            (EvidenceRole::SunoFinalExport, EvidenceRole::ReleaseWav)
+                | (EvidenceRole::ReleaseWav, EvidenceRole::SunoFinalExport)
+        )
+    });
+    TrackAutomation {
+        final_generation_origin,
+        production_end_origin,
+        suno_metadata_detected: suno.is_some_and(|item| item.metadata.suno_studio_detected),
+        suno_created_timestamp: suno
+            .map(|item| item.metadata.suno_created_timestamp.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        suno_id: suno
+            .map(|item| item.metadata.suno_id.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        release_identical_to_suno_export,
+        byte_identical_pairs,
+        consistency_issues: consistency_issues(track, evidence),
+    }
+}
+
+pub fn byte_identical_pairs(evidence: &[EvidenceItem]) -> Vec<ByteIdenticalPair> {
+    let mut verified = evidence
+        .iter()
+        .filter(|item| {
+            item.verified
+                && item.verification_error.is_none()
+                && item.sha256.as_deref().is_some_and(|hash| !hash.is_empty())
+        })
+        .collect::<Vec<_>>();
+    verified.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut pairs = Vec::new();
+    for (index, left) in verified.iter().enumerate() {
+        for right in verified.iter().skip(index + 1) {
+            if left.sha256 != right.sha256 {
+                continue;
+            }
+            pairs.push(ByteIdenticalPair {
+                left_evidence_id: left.id.clone(),
+                left_role: left.role,
+                right_evidence_id: right.id.clone(),
+                right_role: right.role,
+                sha256: left.sha256.clone().unwrap_or_default(),
+            });
+        }
+    }
+    pairs
+}
+
+pub fn consistency_issues(track: &TrackRecord, evidence: &[EvidenceItem]) -> Vec<ConsistencyIssue> {
+    let mut issues = Vec::new();
+    let suno = relevant_suno_export(evidence);
+    if let Some(item) = suno {
+        let metadata = &item.metadata;
+        if !metadata.suno_created_date.trim().is_empty()
+            && !track.fields.suno_final_generation_date.trim().is_empty()
+            && track.fields.suno_final_generation_date.trim() != metadata.suno_created_date.trim()
+        {
+            issues.push(issue(
+                "suno_generation_date_conflict",
+                "Abweichung zwischen Benutzerangabe und WAV-Metadaten erkannt.",
+                "suno",
+            ));
+        }
+        let production_date_is_plausible = track.fields.production_start_date.trim().is_empty()
+            || metadata.suno_created_date.as_str() >= track.fields.production_start_date.as_str();
+        if track.fields.post_export_editing_performed == Some(false)
+            && production_date_is_plausible
+            && !metadata.suno_created_date.trim().is_empty()
+            && !track.fields.production_end_date.trim().is_empty()
+            && track.fields.production_end_date.trim() != metadata.suno_created_date.trim()
+        {
+            issues.push(issue(
+                "production_end_date_conflict",
+                "Das dokumentierte Produktionsende weicht vom erkannten Suno-Erzeugungsdatum ab.",
+                "track",
+            ));
+        }
+        let embedded_suno_values = metadata
+            .embedded_metadata
+            .iter()
+            .map(|entry| entry.value.as_str())
+            .filter(|value| has_suno_studio_marker(value))
+            .collect::<Vec<_>>();
+        let distinct_embedded_suno_values =
+            embedded_suno_values.iter().copied().collect::<HashSet<_>>();
+        let has_any_suno_state = metadata.suno_studio_detected
+            || !metadata.suno_raw_metadata.is_empty()
+            || !metadata.suno_created_timestamp.is_empty()
+            || !metadata.suno_created_date.is_empty()
+            || !metadata.suno_id.is_empty()
+            || !embedded_suno_values.is_empty();
+        if distinct_embedded_suno_values.len() > 1 {
+            issues.push(issue(
+                "suno_metadata_ambiguous",
+                "Mehrere widersprüchliche Suno-Metadatensätze wurden erkannt; kein Datum wurde automatisch ausgewählt.",
+                "suno",
+            ));
+        } else if has_any_suno_state
+            && !stored_suno_metadata_matches(metadata, &embedded_suno_values)
+        {
+            issues.push(issue(
+                "suno_stored_metadata_mismatch",
+                "Gespeicherte Suno-Metadaten stimmen nicht mit dem erhaltenen eingebetteten Wert überein.",
+                "suno",
+            ));
+        }
+    }
+
+    for (code, origin) in [
+        (
+            "suno_generation_origin_stale",
+            track.field_origins.suno_final_generation_date.as_ref(),
+        ),
+        (
+            "production_end_origin_stale",
+            track.field_origins.production_end_date.as_ref(),
+        ),
+    ] {
+        if origin.is_some_and(|origin| !derived_origin_matches(origin, suno)) {
+            issues.push(issue(
+                code,
+                "Die gespeicherte Evidence-Herkunft verweist nicht mehr auf den aktuellen Suno-Export.",
+                "suno",
+            ));
+        }
+    }
+
+    if evidence.iter().any(|item| {
+        verified_role(item, EvidenceRole::HumanEditedArtwork)
+            && !human_artwork_editing_documented(track)
+    }) {
+        issues.push(issue(
+            "human_artwork_editing_undocumented",
+            "Menschlich bearbeitetes Artwork ist vorhanden, aber die Bearbeitung ist nicht dokumentiert.",
+            "artwork",
+        ));
+    }
+
+    let ids = evidence
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<HashSet<_>>();
+    if evidence.iter().any(|item| {
+        item.derived_from_evidence_id
+            .as_deref()
+            .is_some_and(|source_id| source_id == item.id || !ids.contains(source_id))
+    }) {
+        issues.push(issue(
+            "referenced_evidence_missing",
+            "Eine automatisch referenzierte Evidence-Datei fehlt.",
+            "evidence_licenses",
+        ));
+    }
+
+    issues.sort_by(|left, right| left.code.cmp(&right.code));
+    issues.dedup_by(|left, right| left.code == right.code);
+    issues
+}
+
+fn relevant_suno_export(evidence: &[EvidenceItem]) -> Option<&EvidenceItem> {
+    evidence
+        .iter()
+        .find(|item| verified_role(item, EvidenceRole::SunoFinalExport))
+}
+
+fn stored_suno_metadata_matches(
+    metadata: &crate::model::EvidenceMetadata,
+    embedded_suno_values: &[&str],
+) -> bool {
+    if !metadata.suno_studio_detected
+        || embedded_suno_values.is_empty()
+        || embedded_suno_values
+            .iter()
+            .any(|value| *value != metadata.suno_raw_metadata)
+    {
+        return false;
+    }
+    let Some(parsed) = parse_suno_metadata(&metadata.suno_raw_metadata) else {
+        return false;
+    };
+    metadata.suno_created_timestamp == parsed.created_timestamp
+        && metadata.suno_created_date == parsed.created_date
+        && metadata.suno_id == parsed.id
+}
+
+fn fact_origin(
+    value: &str,
+    origin: Option<&EvidenceDerivedField>,
+    suno: Option<&EvidenceItem>,
+) -> FactOrigin {
+    if value.trim().is_empty() {
+        FactOrigin::NotDocumented
+    } else if origin
+        .is_some_and(|origin| origin.value == value && derived_origin_matches(origin, suno))
+    {
+        FactOrigin::EvidenceDerivedMetadata
+    } else {
+        FactOrigin::UserConfirmedFact
+    }
+}
+
+fn derived_origin_matches(origin: &EvidenceDerivedField, suno: Option<&EvidenceItem>) -> bool {
+    suno.is_some_and(|item| {
+        origin.evidence_id == item.id
+            && origin.evidence_sha256 == item.sha256.clone().unwrap_or_default()
+            && origin.original_value == item.metadata.suno_created_timestamp
+            && origin.value == item.metadata.suno_created_date
+    })
+}
+
+fn human_artwork_editing_documented(track: &TrackRecord) -> bool {
+    let fields = &track.fields;
+    match fields.artwork_origin.as_str() {
+        "human" => {
+            fields
+                .human_artwork_process_operations
+                .iter()
+                .any(|value| present(value))
+                || present(&fields.human_artwork_process_notes)
+        }
+        "ai_assisted" => {
+            fields
+                .human_artwork_modifications
+                .iter()
+                .any(|value| present(value))
+                || present(&fields.custom_artwork_change)
+        }
+        _ => false,
+    }
+}
+
+fn issue(code: &str, message: &str, step_id: &str) -> ConsistencyIssue {
+    ConsistencyIssue {
+        code: code.into(),
+        message: message.into(),
+        step_id: step_id.into(),
+        blocking: true,
+    }
+}
+
 pub fn filename_matches_documented_title(title: &str, file_name: &str) -> bool {
     let stem = std::path::Path::new(file_name)
         .file_stem()
@@ -807,6 +1087,7 @@ mod tests {
             workflow_version: "1.0".into(),
             profile_snapshot: Profile::default(),
             library: Default::default(),
+            field_origins: Default::default(),
             fields: crate::model::TrackFields {
                 artwork_origin: origin.into(),
                 disclosure_applied: applied,
@@ -841,6 +1122,201 @@ mod tests {
             generated_disclosure_text: None,
             metadata: Default::default(),
         }
+    }
+
+    fn suno_export(created_date: &str) -> EvidenceItem {
+        let mut item = verified_evidence(EvidenceRole::SunoFinalExport);
+        item.file_name = "suno.wav".into();
+        item.relative_path = "02_SUNO/suno.wav".into();
+        item.metadata.suno_studio_detected = true;
+        item.metadata.suno_created_timestamp = format!("{created_date}T06:38:06Z");
+        item.metadata.suno_created_date = created_date.into();
+        item.metadata.suno_id = "6c8a40fd-32bf-4c7b-ab59-23579ff95828".into();
+        let raw = format!(
+            "made with suno studio; created={created_date}T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828"
+        );
+        item.metadata.suno_raw_metadata = raw.clone();
+        item.metadata.embedded_metadata = vec![crate::model::EmbeddedMetadata {
+            key: "ICMT".into(),
+            value: raw,
+        }];
+        item
+    }
+
+    #[test]
+    fn byte_identity_is_a_system_verification_over_verified_hashes() {
+        let suno = suno_export("2026-08-17");
+        let mut release = verified_evidence(EvidenceRole::ReleaseWav);
+        release.sha256 = suno.sha256.clone();
+        let pairs = byte_identical_pairs(&[suno.clone(), release.clone()]);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].sha256, suno.sha256.clone().unwrap());
+
+        release.verified = false;
+        assert!(byte_identical_pairs(&[suno, release]).is_empty());
+    }
+
+    #[test]
+    fn metadata_conflict_is_dynamic_and_blocks_the_existing_suno_step() {
+        let mut track = disclosure_track("none", None);
+        track.fields.suno_final_generation_date = "2026-08-16".into();
+        let evidence = vec![suno_export("2026-08-17")];
+        let issues = consistency_issues(&track, &evidence);
+        assert!(issues.iter().any(|issue| {
+            issue.code == "suno_generation_date_conflict"
+                && issue.step_id == "suno"
+                && issue.blocking
+        }));
+
+        track.fields.suno_final_generation_date = "2026-08-17".into();
+        assert!(!consistency_issues(&track, &evidence)
+            .iter()
+            .any(|issue| issue.code == "suno_generation_date_conflict"));
+    }
+
+    #[test]
+    fn stored_suno_metadata_requires_exact_embedded_raw_and_complete_parsed_fields() {
+        fn mismatch(track: &TrackRecord, item: EvidenceItem) -> bool {
+            consistency_issues(track, &[item])
+                .iter()
+                .any(|issue| issue.code == "suno_stored_metadata_mismatch" && issue.blocking)
+        }
+
+        let track = disclosure_track("none", None);
+        let valid = suno_export("2026-08-17");
+        assert!(!mismatch(&track, valid.clone()));
+
+        let mut missing_embedded_raw = valid.clone();
+        missing_embedded_raw.metadata.embedded_metadata.clear();
+        assert!(mismatch(&track, missing_embedded_raw));
+
+        let mut missing_timestamp = valid.clone();
+        missing_timestamp.metadata.suno_created_timestamp.clear();
+        assert!(mismatch(&track, missing_timestamp));
+
+        let mut missing_detection_flag = valid.clone();
+        missing_detection_flag.metadata.suno_studio_detected = false;
+        assert!(mismatch(&track, missing_detection_flag));
+
+        let mut wrong_date = valid.clone();
+        wrong_date.metadata.suno_created_date = "2026-08-18".into();
+        assert!(mismatch(&track, wrong_date));
+
+        let mut raw_differs_from_embedded = valid.clone();
+        raw_differs_from_embedded
+            .metadata
+            .suno_raw_metadata
+            .push(' ');
+        assert!(mismatch(&track, raw_differs_from_embedded));
+
+        // The old contains-based check accepted this because the stored UUID
+        // occurs in an unrelated note. The structured id= value is different.
+        let mut misleading_uuid_substring = valid.clone();
+        let misleading_raw = "made with suno studio; created=2026-08-17T06:38:06Z; id=180ee4f0-977b-4db8-8968-e93e3ac9d506; note=6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+        misleading_uuid_substring.metadata.suno_raw_metadata = misleading_raw.into();
+        misleading_uuid_substring.metadata.embedded_metadata[0].value = misleading_raw.into();
+        assert!(mismatch(&track, misleading_uuid_substring));
+
+        // A stored timestamp appearing as a substring is not enough when the
+        // actual created= value is not strict RFC3339.
+        let mut invalid_timestamp = valid;
+        let invalid_raw = "made with suno studio; created=2026-08-17 06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828; note=2026-08-17T06:38:06Z";
+        invalid_timestamp.metadata.suno_raw_metadata = invalid_raw.into();
+        invalid_timestamp.metadata.embedded_metadata[0].value = invalid_raw.into();
+        assert!(mismatch(&track, invalid_timestamp));
+
+        let mut invalid_uuid = suno_export("2026-08-17");
+        let invalid_uuid_raw = "made with suno studio; created=2026-08-17T06:38:06Z; id=not-a-uuid; note=6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+        invalid_uuid.metadata.suno_raw_metadata = invalid_uuid_raw.into();
+        invalid_uuid.metadata.embedded_metadata[0].value = invalid_uuid_raw.into();
+        assert!(mismatch(&track, invalid_uuid));
+    }
+
+    #[test]
+    fn distinct_embedded_suno_records_are_reported_as_ambiguous() {
+        let track = disclosure_track("none", None);
+        let mut item = suno_export("2026-08-17");
+        item.metadata
+            .embedded_metadata
+            .push(crate::model::EmbeddedMetadata {
+                key: "ICMT".into(),
+                value: "made with suno studio; created=2026-08-18T06:38:06Z; id=180ee4f0-977b-4db8-8968-e93e3ac9d506".into(),
+            });
+
+        let issues = consistency_issues(&track, &[item]);
+
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "suno_metadata_ambiguous" && issue.blocking));
+        assert!(!issues
+            .iter()
+            .any(|issue| issue.code == "suno_stored_metadata_mismatch"));
+    }
+
+    #[test]
+    fn production_end_conflict_applies_only_to_confirmed_no_post_editing() {
+        let mut track = disclosure_track("none", None);
+        track.fields.production_start_date = "2026-08-01".into();
+        track.fields.production_end_date = "2026-08-18".into();
+        track.fields.post_export_editing_performed = Some(false);
+        let evidence = vec![suno_export("2026-08-17")];
+
+        assert!(consistency_issues(&track, &evidence).iter().any(|issue| {
+            issue.code == "production_end_date_conflict" && issue.step_id == "track"
+        }));
+
+        track.fields.post_export_editing_performed = Some(true);
+        assert!(!consistency_issues(&track, &evidence)
+            .iter()
+            .any(|issue| issue.code == "production_end_date_conflict"));
+    }
+
+    #[test]
+    fn automatic_fact_origin_requires_the_current_evidence_hash_and_timestamp() {
+        let mut track = disclosure_track("none", None);
+        let suno = suno_export("2026-08-17");
+        track.fields.suno_final_generation_date = "2026-08-17".into();
+        track.field_origins.suno_final_generation_date = Some(EvidenceDerivedField {
+            value: "2026-08-17".into(),
+            original_value: "2026-08-17T06:38:06Z".into(),
+            evidence_id: suno.id.clone(),
+            evidence_sha256: suno.sha256.clone().unwrap(),
+        });
+        assert_eq!(
+            automation_summary(&track, std::slice::from_ref(&suno)).final_generation_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+
+        track
+            .field_origins
+            .suno_final_generation_date
+            .as_mut()
+            .unwrap()
+            .evidence_sha256 = "b".repeat(64);
+        let summary = automation_summary(&track, &[suno]);
+        assert_eq!(
+            summary.final_generation_origin,
+            FactOrigin::UserConfirmedFact
+        );
+        assert!(summary
+            .consistency_issues
+            .iter()
+            .any(|issue| issue.code == "suno_generation_origin_stale"));
+    }
+
+    #[test]
+    fn human_edited_artwork_requires_a_documented_artwork_process() {
+        let mut track = disclosure_track("ai_generated", None);
+        let evidence = vec![verified_evidence(EvidenceRole::HumanEditedArtwork)];
+        assert!(consistency_issues(&track, &evidence)
+            .iter()
+            .any(|issue| issue.code == "human_artwork_editing_undocumented"));
+
+        track.fields.artwork_origin = "ai_assisted".into();
+        track.fields.human_artwork_modifications = vec!["Color correction".into()];
+        assert!(!consistency_issues(&track, &evidence)
+            .iter()
+            .any(|issue| issue.code == "human_artwork_editing_undocumented"));
     }
 
     #[test]
@@ -1056,14 +1532,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_3_configuration_is_accepted() {
+    fn valid_version_1_4_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.3");
+        validate_config(&config).expect("valid workflow 1.4");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.3");
+        assert_eq!(config.version, "1.4");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
@@ -1071,6 +1547,10 @@ mod tests {
             .requirements
             .iter()
             .any(|requirement| requirement.key == "suno.project_or_version_id"));
+        assert!(!config
+            .requirements
+            .iter()
+            .any(|requirement| requirement.key == "suno.download_export_date"));
     }
 
     #[test]

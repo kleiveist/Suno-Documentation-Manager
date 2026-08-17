@@ -2,8 +2,8 @@ use crate::certificate_pdf::{self, CertificatePdfSnapshot};
 use crate::error::{AppError, Result};
 use crate::integrity::HASH_FILE;
 use crate::model::{
-    BlockingDeviation, EvidenceItem, EvidenceMetadata, EvidenceProvenance, EvidenceRole, Profile,
-    StepState, StepStatus, TrackRecord,
+    BlockingDeviation, EvidenceItem, EvidenceMetadata, EvidenceProvenance, EvidenceRole,
+    FactOrigin, Profile, StepState, StepStatus, TrackRecord,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
@@ -20,7 +20,7 @@ pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md"
 pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "3.0";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "4.0";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +40,153 @@ struct ManifestEvidence<'a> {
     generator_version: Option<&'a str>,
     generated_disclosure_text: Option<&'a str>,
     metadata: &'a EvidenceMetadata,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AutomaticEvidenceRelationship {
+    kind: &'static str,
+    source_evidence_id: String,
+    source_role: &'static str,
+    target_evidence_id: String,
+    target_role: &'static str,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AutomaticGlobalTrackRelationship {
+    kind: &'static str,
+    source_global_evidence_id: String,
+    materialized_evidence_id: String,
+    role: &'static str,
+    target_track_id: String,
+}
+
+fn automatic_role_relationships(evidence: &[&EvidenceItem]) -> Vec<AutomaticEvidenceRelationship> {
+    let mut relationships = Vec::new();
+
+    append_role_relationships(
+        evidence,
+        EvidenceRole::SourceCodeFile,
+        EvidenceRole::CodeGeneratedAudioFile,
+        "source_to_generated_audio",
+        &mut relationships,
+    );
+    for (source_role, target_role) in [
+        (
+            EvidenceRole::AiArtworkOriginal,
+            EvidenceRole::AiArtworkEdited,
+        ),
+        (
+            EvidenceRole::AiArtworkEdited,
+            EvidenceRole::HumanEditedArtwork,
+        ),
+        (EvidenceRole::HumanEditedArtwork, EvidenceRole::FinalArtwork),
+    ] {
+        append_role_relationships(
+            evidence,
+            source_role,
+            target_role,
+            "artwork_stage",
+            &mut relationships,
+        );
+    }
+
+    relationships.sort_by(|left, right| {
+        left.kind
+            .cmp(right.kind)
+            .then_with(|| left.source_evidence_id.cmp(&right.source_evidence_id))
+            .then_with(|| left.target_evidence_id.cmp(&right.target_evidence_id))
+    });
+    relationships
+}
+
+fn automatic_global_track_relationships(
+    track_id: &str,
+    evidence: &[&EvidenceItem],
+) -> Vec<AutomaticGlobalTrackRelationship> {
+    let mut relationships = evidence
+        .iter()
+        .copied()
+        .filter(|item| item.provenance == EvidenceProvenance::GlobalCopy)
+        .filter_map(|item| {
+            item.source_global_evidence_id
+                .as_deref()
+                .filter(|source_id| !source_id.trim().is_empty())
+                .map(|source_id| AutomaticGlobalTrackRelationship {
+                    kind: "global_evidence_to_track",
+                    source_global_evidence_id: source_id.to_owned(),
+                    materialized_evidence_id: item.id.clone(),
+                    role: item.role.as_str(),
+                    target_track_id: track_id.to_owned(),
+                })
+        })
+        .collect::<Vec<_>>();
+    relationships.sort_by(|left, right| {
+        left.source_global_evidence_id
+            .cmp(&right.source_global_evidence_id)
+            .then_with(|| {
+                left.materialized_evidence_id
+                    .cmp(&right.materialized_evidence_id)
+            })
+    });
+    relationships
+}
+
+fn append_role_relationships(
+    evidence: &[&EvidenceItem],
+    source_role: EvidenceRole,
+    target_role: EvidenceRole,
+    kind: &'static str,
+    relationships: &mut Vec<AutomaticEvidenceRelationship>,
+) {
+    let sources = evidence
+        .iter()
+        .copied()
+        .filter(|item| item.role == source_role)
+        .collect::<Vec<_>>();
+    let targets = evidence
+        .iter()
+        .copied()
+        .filter(|item| item.role == target_role)
+        .collect::<Vec<_>>();
+
+    for target in &targets {
+        let Some(source_id) = target
+            .derived_from_evidence_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        if let Some(source) = sources
+            .iter()
+            .copied()
+            .find(|source| source.id == source_id)
+        {
+            relationships.push(evidence_relationship(kind, source, target));
+        }
+    }
+
+    // Role inference is only a safe ID-level statement when both concrete
+    // stages are singletons and the target has no explicit lineage claim.
+    if sources.len() == 1 && targets.len() == 1 && targets[0].derived_from_evidence_id.is_none() {
+        relationships.push(evidence_relationship(kind, sources[0], targets[0]));
+    }
+}
+
+fn evidence_relationship(
+    kind: &'static str,
+    source: &EvidenceItem,
+    target: &EvidenceItem,
+) -> AutomaticEvidenceRelationship {
+    AutomaticEvidenceRelationship {
+        kind,
+        source_evidence_id: source.id.clone(),
+        source_role: source.role.as_str(),
+        target_evidence_id: target.id.clone(),
+        target_role: target.role.as_str(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -148,8 +295,13 @@ fn generate_impl(
             metadata: &item.metadata,
         })
         .collect::<Vec<_>>();
+    let automation = crate::workflow::automation_summary(track, evidence);
+    let byte_identical_pairs = crate::workflow::byte_identical_pairs(evidence);
+    let automatic_relationships = automatic_role_relationships(&evidence_values);
+    let automatic_global_relationships =
+        automatic_global_track_relationships(&track.id, &evidence_values);
     let manifest = json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "track": {
             "id": track.id,
             "title": track.fields.title,
@@ -199,11 +351,25 @@ fn generate_impl(
             "evidence_derived_metadata": "Metadata read from or captured with a local evidence import",
             "system_verification": "Local structural, hash, consistency, and configured workflow checks"
         },
+        "evidence_derived_metadata": {
+            "suno_created_timestamp": automation.suno_created_timestamp,
+            "suno_id": automation.suno_id,
+        },
         "system_verification": {
             "subscription_final_generation_coverage": crate::workflow::subscription_generation_coverage(track, evidence),
             "release_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav),
             "suno_export_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport),
             "external_timestamp_evidence_exists": evidence.iter().any(|item| item.role == EvidenceRole::ExternalTimestamp && item.verified),
+            "fact_origins": {
+                "final_suno_generation_date": automation.final_generation_origin,
+                "production_end_date": automation.production_end_origin,
+            },
+            "suno_metadata_detected": automation.suno_metadata_detected,
+            "release_identical_to_suno_export": automation.release_identical_to_suno_export,
+            "byte_identical_pairs": &byte_identical_pairs,
+            "automatic_role_relationships": &automatic_relationships,
+            "automatic_global_track_relationships": &automatic_global_relationships,
+            "consistency_issues": &automation.consistency_issues,
         },
         "deviations": deviations,
         "revision_archives": &archived_revisions,
@@ -254,6 +420,9 @@ fn generate_impl(
             crate::workflow::CoverageStatus::No => "NO",
             crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
         };
+    let final_generation_origin = fact_origin_label(automation.final_generation_origin);
+    let suno_metadata_detected = yes_no(automation.suno_metadata_detected);
+    let release_identical_to_suno_export = yes_no(automation.release_identical_to_suno_export);
     let lyrics = if track.fields.instrumental_track == Some(true) {
         "N/A – instrumental track"
     } else if track.fields.lyrics_text.trim().is_empty() {
@@ -299,15 +468,15 @@ fn generate_impl(
         archived_revisions.join(", ")
     };
     let certificate = format!(
-        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Status: **DOCUMENTATION COMPLETE**\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n\n## C. Final Suno Generation\n\n- Project URL [User-confirmed fact]: {}\n- Final generation date [User-confirmed fact]: {}\n- Download/export date [User-confirmed fact]: {}\n- Model [User-confirmed fact]: {}\n- Plan [User-confirmed fact]: {}\n\n## D. Source provenance\n\n- External audio uploaded: {}\n- Own audio uploaded: {}\n- Code-based generation: {}\n- Third-party samples uploaded: {}\n\n## E. Human contribution\n\n- Lyrics: {lyrics}\n- Lyrics source: {}\n- Confirmed human editing: {}\n- Confirmed post-export editing: {}\n\n## F. AI Usage\n\n- Suno style prompt: {}\n- Artwork origin: {}\n- AI image service: {}\n\n## G. Artwork content checks\n\n- Real person: {}\n- Real event: {}\n- Trademark/logo: {}\n\n## H. License and rights evidence\n\n- Selected subscription evidence covers the recorded final-generation date: **{generation_coverage}**\n- Terms evidence: {}\n- Terms evidence not available [User-confirmed fact]: {}\n- External timestamp evidence: {}\n\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## J. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## Certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, and **System verification**.\n",
+        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Status: **DOCUMENTATION COMPLETE**\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Origin: **{final_generation_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Download/export date [User-confirmed fact]: {}\n- Project URL [User-confirmed fact]: {}\n- Model [User-confirmed fact]: {}\n- Plan [User-confirmed fact]: {}\n\n## D. Source provenance\n\n- External audio uploaded: {}\n- Own audio uploaded: {}\n- Code-based generation: {}\n- Third-party samples uploaded: {}\n\n## E. Human contribution\n\n- Lyrics: {lyrics}\n- Lyrics source: {}\n- Confirmed human editing: {}\n- Confirmed post-export editing: {}\n\n## F. AI Usage\n\n- Suno style prompt: {}\n- Artwork origin: {}\n- AI image service: {}\n\n## G. Artwork content checks\n\n- Real person: {}\n- Real event: {}\n- Trademark/logo: {}\n\n## H. License and rights evidence\n\n- Selected subscription evidence covers the recorded final-generation date: **{generation_coverage}**\n- Terms evidence: {}\n- Terms evidence not available [User-confirmed fact]: {}\n- External timestamp evidence: {}\n\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## J. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## Certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, and **System verification**.\n",
         env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
         track.fields.title,
         profile.artist_name,
-        documented(&track.fields.suno_project_url),
         documented(&track.fields.suno_final_generation_date),
         documented(&track.fields.suno_download_export_date),
+        documented(&track.fields.suno_project_url),
         documented(&track.fields.suno_model),
         documented(&track.fields.suno_plan_at_creation),
         recorded_bool(track.fields.external_audio_uploaded),
@@ -339,6 +508,7 @@ fn generate_impl(
     }
     let pdf = certificate_pdf::generate_pdf(&CertificatePdfSnapshot {
         track,
+        automation: &automation,
         profile,
         steps,
         evidence: &evidence_values,
@@ -749,9 +919,25 @@ fn parse_certificate_hashes(content: &str) -> Result<BTreeMap<String, String>> {
 
 fn documented(value: &str) -> &str {
     if value.trim().is_empty() {
-        "Not recorded"
+        "Not documented"
     } else {
         value
+    }
+}
+
+fn fact_origin_label(origin: FactOrigin) -> &'static str {
+    match origin {
+        FactOrigin::UserConfirmedFact => "User-confirmed fact",
+        FactOrigin::EvidenceDerivedMetadata => "Evidence-derived metadata",
+        FactOrigin::NotDocumented => "Not documented",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "YES"
+    } else {
+        "NO"
     }
 }
 
@@ -774,7 +960,7 @@ fn certificate_format_requires_pdf(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(CERTIFICATE_FORMAT_VERSION | "2.0") => {
+        Some(CERTIFICATE_FORMAT_VERSION | "3.0" | "2.0") => {
             if !hashes.contains_key(PDF_FILE) {
                 return Err(AppError::Validation(
                     "This certificate format requires the root-level technical PDF hash.".into(),
@@ -869,11 +1055,207 @@ mod tests {
 
     const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+    fn relationship_evidence(id: &str, role: EvidenceRole) -> EvidenceItem {
+        EvidenceItem {
+            id: id.into(),
+            role,
+            file_name: format!("{id}.dat"),
+            relative_path: format!("03_DOCUMENTATION/{id}.dat"),
+            sha256: Some(DIGEST.into()),
+            size_bytes: 1,
+            imported_at: "2026-08-17T10:00:00Z".into(),
+            verified: true,
+            verification_error: None,
+            source_global_evidence_id: None,
+            coverage_start: None,
+            coverage_end: None,
+            provenance: EvidenceProvenance::ManagedCopy,
+            derived_from_evidence_id: None,
+            generator_version: None,
+            generated_disclosure_text: None,
+            metadata: EvidenceMetadata::default(),
+        }
+    }
+
     fn parse_main_hash_fixture(content: &str) -> Result<BTreeMap<String, String>> {
         let workspace = tempfile::tempdir().expect("temporary directory");
         let sums = workspace.path().join("SHA256SUMS.txt");
         fs::write(&sums, content).expect("write SHA256SUMS fixture");
         parse_hashes(&sums)
+    }
+
+    #[test]
+    fn automatic_relationships_cover_only_unambiguous_adjacent_role_pairs() {
+        let source = relationship_evidence("source", EvidenceRole::SourceCodeFile);
+        let generated = relationship_evidence("generated", EvidenceRole::CodeGeneratedAudioFile);
+        let artwork_original =
+            relationship_evidence("artwork-original", EvidenceRole::AiArtworkOriginal);
+        let artwork_ai_edited =
+            relationship_evidence("artwork-ai-edited", EvidenceRole::AiArtworkEdited);
+        let artwork_human_edited =
+            relationship_evidence("artwork-human-edited", EvidenceRole::HumanEditedArtwork);
+        let artwork_final = relationship_evidence("artwork-final", EvidenceRole::FinalArtwork);
+        let mut global = relationship_evidence("terms-copy", EvidenceRole::SunoTermsRights);
+        global.provenance = EvidenceProvenance::GlobalCopy;
+        global.source_global_evidence_id = Some("global-terms".into());
+        let evidence = [
+            &source,
+            &generated,
+            &artwork_original,
+            &artwork_ai_edited,
+            &artwork_human_edited,
+            &artwork_final,
+            &global,
+        ];
+
+        let relationships = automatic_role_relationships(&evidence);
+
+        assert_eq!(relationships.len(), 4);
+        assert!(relationships.iter().any(|relationship| {
+            relationship.kind == "source_to_generated_audio"
+                && relationship.source_evidence_id == "source"
+                && relationship.target_evidence_id == "generated"
+        }));
+        assert!(relationships.iter().any(|relationship| {
+            relationship.kind == "artwork_stage"
+                && relationship.source_evidence_id == "artwork-original"
+                && relationship.target_evidence_id == "artwork-ai-edited"
+        }));
+        assert!(relationships.iter().any(|relationship| {
+            relationship.kind == "artwork_stage"
+                && relationship.source_evidence_id == "artwork-ai-edited"
+                && relationship.target_evidence_id == "artwork-human-edited"
+        }));
+        assert!(relationships.iter().any(|relationship| {
+            relationship.kind == "artwork_stage"
+                && relationship.source_evidence_id == "artwork-human-edited"
+                && relationship.target_evidence_id == "artwork-final"
+        }));
+        assert!(relationships
+            .iter()
+            .all(|relationship| relationship.kind != "global_copy"));
+
+        let global_relationships = automatic_global_track_relationships("track-1", &evidence);
+        assert_eq!(
+            global_relationships,
+            vec![AutomaticGlobalTrackRelationship {
+                kind: "global_evidence_to_track",
+                source_global_evidence_id: "global-terms".into(),
+                materialized_evidence_id: "terms-copy".into(),
+                role: EvidenceRole::SunoTermsRights.as_str(),
+                target_track_id: "track-1".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn explicit_lineage_disambiguates_multiple_sources_without_cartesian_products() {
+        let source_one = relationship_evidence("source-one", EvidenceRole::SourceCodeFile);
+        let source_two = relationship_evidence("source-two", EvidenceRole::SourceCodeFile);
+        let mut generated =
+            relationship_evidence("generated", EvidenceRole::CodeGeneratedAudioFile);
+        generated.derived_from_evidence_id = Some(source_two.id.clone());
+        let artwork_one = relationship_evidence("artwork-one", EvidenceRole::AiArtworkOriginal);
+        let artwork_two = relationship_evidence("artwork-two", EvidenceRole::AiArtworkOriginal);
+        let mut artwork_edited =
+            relationship_evidence("artwork-edited", EvidenceRole::AiArtworkEdited);
+        artwork_edited.derived_from_evidence_id = Some(artwork_one.id.clone());
+        let evidence = [
+            &source_one,
+            &source_two,
+            &generated,
+            &artwork_one,
+            &artwork_two,
+            &artwork_edited,
+        ];
+
+        let relationships = automatic_role_relationships(&evidence);
+
+        assert_eq!(relationships.len(), 2);
+        assert!(relationships.iter().any(|relationship| {
+            relationship.source_evidence_id == "source-two"
+                && relationship.target_evidence_id == "generated"
+        }));
+        assert!(relationships.iter().any(|relationship| {
+            relationship.source_evidence_id == "artwork-one"
+                && relationship.target_evidence_id == "artwork-edited"
+        }));
+        assert!(relationships.iter().all(|relationship| {
+            relationship.source_evidence_id != "source-one"
+                && relationship.source_evidence_id != "artwork-two"
+        }));
+    }
+
+    #[test]
+    fn ambiguous_roles_without_explicit_lineage_emit_no_id_relationship() {
+        let source_one = relationship_evidence("source-one", EvidenceRole::SourceCodeFile);
+        let source_two = relationship_evidence("source-two", EvidenceRole::SourceCodeFile);
+        let generated = relationship_evidence("generated", EvidenceRole::CodeGeneratedAudioFile);
+        let artwork_one = relationship_evidence("artwork-one", EvidenceRole::AiArtworkOriginal);
+        let artwork_two = relationship_evidence("artwork-two", EvidenceRole::AiArtworkOriginal);
+        let artwork_edited = relationship_evidence("artwork-edited", EvidenceRole::AiArtworkEdited);
+        let evidence = [
+            &source_one,
+            &source_two,
+            &generated,
+            &artwork_one,
+            &artwork_two,
+            &artwork_edited,
+        ];
+
+        assert!(automatic_role_relationships(&evidence).is_empty());
+    }
+
+    #[test]
+    fn artwork_relationships_never_skip_a_concrete_stage() {
+        let original = relationship_evidence("original", EvidenceRole::AiArtworkOriginal);
+        let human_edited = relationship_evidence("human-edited", EvidenceRole::HumanEditedArtwork);
+        let final_artwork = relationship_evidence("final", EvidenceRole::FinalArtwork);
+        let evidence = [&original, &human_edited, &final_artwork];
+
+        let relationships = automatic_role_relationships(&evidence);
+
+        assert_eq!(relationships.len(), 1);
+        assert_eq!(relationships[0].source_evidence_id, "human-edited");
+        assert_eq!(relationships[0].target_evidence_id, "final");
+    }
+
+    #[test]
+    fn invalid_or_non_adjacent_explicit_lineage_is_not_replaced_by_role_inference() {
+        let source = relationship_evidence("source", EvidenceRole::SourceCodeFile);
+        let mut generated =
+            relationship_evidence("generated", EvidenceRole::CodeGeneratedAudioFile);
+        generated.derived_from_evidence_id = Some("missing-source".into());
+        let original = relationship_evidence("original", EvidenceRole::AiArtworkOriginal);
+        let human_edited = relationship_evidence("human-edited", EvidenceRole::HumanEditedArtwork);
+        let mut final_artwork = relationship_evidence("final", EvidenceRole::FinalArtwork);
+        final_artwork.derived_from_evidence_id = Some(original.id.clone());
+        let evidence = [
+            &source,
+            &generated,
+            &original,
+            &human_edited,
+            &final_artwork,
+        ];
+
+        assert!(automatic_role_relationships(&evidence).is_empty());
+    }
+
+    #[test]
+    fn current_and_previous_pdf_certificate_formats_remain_recognizable() {
+        let workspace = tempfile::tempdir().expect("temporary directory");
+        let manifest_path = workspace.path().join("manifest.json");
+        let hashes = BTreeMap::from([(PDF_FILE.into(), DIGEST.into())]);
+
+        for version in ["2.0", "3.0", CERTIFICATE_FORMAT_VERSION] {
+            fs::write(
+                &manifest_path,
+                format!("{{\"certificate\":{{\"format_version\":\"{version}\"}}}}\n"),
+            )
+            .expect("certificate manifest fixture");
+            assert!(certificate_format_requires_pdf(&manifest_path, &hashes)
+                .expect("supported certificate format"));
+        }
     }
 
     fn publication_fixture(track_root: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {

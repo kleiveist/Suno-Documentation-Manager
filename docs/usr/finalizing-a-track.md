@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-15 |
+| Last review | 2026-08-17 |
 | Audience | Users finalizing a track documentation set |
 | Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md) |
 
@@ -44,14 +44,15 @@ The gate requires:
 - every required evidence role to contain a real readable file;
 - the explicit instrumental answer to agree with lyrics source/text and selected human work;
 - the actual release and Suno-export filenames to match the title or have an explicit intentional-deviation confirmation;
+- user-confirmed dates, evidence-derived dates, and their recorded evidence/hash origins to have no unresolved contradiction;
 - the concrete final-generation date of a commercial track to fall inside selected subscription coverage; and
-- commercial tracks to include archived Suno terms/rights evidence or the explicit status `Terms evidence not available`.
-
-Register an archived Suno terms PDF once under `Einstellungen`. `PDF auswählen` opens the native file dialog directly, accepts only a signature-checked PDF, and places a portable global-evidence copy into every editable project without asking for manual metadata. If a finalized project needs newer terms, create a revision first; finalized snapshots are never rewritten.
+- commercial tracks to include archived Suno terms/rights evidence or the explicit status `Terms evidence not available`;
 - all generated documents to match current facts, evidence metadata, and template versions;
 - SHA-256 generation to cover the complete required set;
 - native verification to pass for every listed file; and
 - workflow and application versions to be available for the certificate.
+
+Register an archived Suno terms PDF once under `Einstellungen`. `PDF auswählen` opens the native file dialog directly, accepts only a signature-checked PDF, and places a portable global-evidence copy into every editable project without asking for manual metadata. If a finalized project needs newer terms, create a revision first; finalized snapshots are never rewritten.
 
 `FAIL`, `BLOCKED`, `NOT VERIFIED`, or an N/A item without a reason prevents finalization.
 
@@ -64,13 +65,25 @@ Open the track overview and follow each missing-item action. Common blockers inc
 - a missing AI artwork original after AI artwork was declared;
 - no selected subscription evidence for the production period;
 - an unanswered conditional ownership or license question;
+- a user-confirmed final-generation date that conflicts with valid embedded Suno metadata;
+- an evidence-derived date whose source evidence was replaced or removed;
 - a stale generated document after an input changed;
 - an unprocessed visible AI disclosure required by project policy; or
 - an integrity mismatch.
 
 Do not enter a guessed historical value or attach an unrelated file merely to clear a blocker. A truthful `NOT VERIFIED` state is preferable to fabricated documentation.
 
-The final release WAV and final artwork are each singular. If either changes, remove its current evidence entry before importing the replacement so generated documents and the certificate cannot refer to an ambiguous asset.
+The Suno final export, final release audio, and final artwork are each singular. Use the adjacent replacement action when one changes so generated documents and the certificate cannot refer to ambiguous authoritative assets.
+
+## Review automatic Suno metadata
+
+When you import a Suno final-export WAV, the application checks its bounded structured metadata. A recognized `made with suno studio` value with valid `created` and `id` fields appears in the evidence details as evidence-derived metadata. The application does not add new editable generation-time or ID questions.
+
+The calendar part of `created` fills an empty final-generation date. It fills an empty production-end date only after you explicitly answer that no post-export editing occurred; the date must not be earlier than production start. If editing did occur, record the real production end yourself. The exact download date is optional and stays empty unless you actually know it. The application never substitutes the embedded creation time, import time, or a filesystem timestamp for a download date or final export date.
+
+Check the origin shown next to an automatic value. Replacing or removing the Suno export updates or removes only facts that still carry that evidence origin. A conflicting value you confirmed manually is preserved and shown as a blocker for you to resolve. An ordinary WAV without the structured marker remains usable evidence and does not create generation facts.
+
+The overview also reports hash-based byte identity. `Release identical to Suno export` means the verified release audio and Suno final export have exactly the same SHA-256; matching names or dates alone do not produce that result. Identity is a technical observation, not a legal conclusion and not a requirement that the files must be identical after documented editing.
 
 ## Review artwork transparency
 
@@ -90,7 +103,7 @@ The content check records your answers. It does not decide legality.
 
 ## Generate current documents
 
-Use the document-generation action after completing the relevant steps. Review the generated Markdown and text files for factual accuracy. The documents should state confirmed facts and applicable N/A reasons, not legal guarantees.
+Use the document-generation action after completing the relevant steps. Template `1.6` includes current evidence metadata in the deterministic document snapshot; the manifest and certificate retain the automatic fact origins and final-Suno verification summary. Review the generated Markdown and text files for factual accuracy. The documents should state confirmed facts and applicable N/A reasons, not legal guarantees.
 
 While the native service prepares, renders, and atomically writes the managed documents, the progress view shows the current phase, elapsed time, current relative path, and completed document count. These are live operation values rather than a simulated upload. The animated scene is only a visual companion; the final native result remains authoritative. Generated headings and guided values remain English even when the interface and progress view are German.
 
@@ -129,7 +142,7 @@ SunoDM_DOCUMENTATION_CERTIFICATE.pdf
 └── CERTIFICATE_SHA256.txt
 ```
 
-`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` format 3.0 is an A4, A–J technical representation of the same finalized snapshot. It separates the documented title from both original filenames; identifies the concrete Suno generation; renders every source branch with N/A where appropriate; records only selected human work; exposes artwork answers; and lists subscription coverage, archived terms, optional external timestamp evidence, provenance, lineage, and full SHA-256 values. The Certificate ID and `Seite X / Y` appear on every page. It is technical documentation, not legal or governmental certification.
+`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` format 4.0 is an A4, A–J technical representation of the same finalized snapshot. It separates the documented title from both original filenames; gives a compact final-Suno summary with the final-generation date, its fact origin, metadata-detection result, and release/export byte identity; renders every source branch with N/A where appropriate; records only selected human work; exposes artwork answers; and lists subscription coverage, archived terms, optional external timestamp evidence, provenance, lineage, and full SHA-256 values. The Certificate ID and `Seite X / Y` appear on every page. It is technical documentation, not legal or governmental certification.
 
 During finalization, the progress view distinguishes native gate validation, snapshot collection, transaction protection, certificate/manifest generation, certificate verification, the complete SHA-256 reread, and the final database commit. File names, byte counts, file counts, and elapsed time remain visible while the filesystem work runs outside the Tauri main thread.
 
@@ -137,9 +150,9 @@ After the verified native result is committed, a certificate summary opens autom
 
 Review the certificate ID, track, artist, workflow and application versions, timestamp, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, earlier revision references, and final status. Expected success status is `DOCUMENTATION COMPLETE`.
 
-Review manifest schema 2 and confirm that paths are track-root-relative. `documentedFacts` contains the full final-generation and consistency snapshot; each evidence item includes the original import filename, path, size, full hash, timestamp, provenance, and lineage. The current terms importer records the selected PDF and system-derived file facts only; external timestamps still include issuer, timestamp, referenced hash, and artifact. No field is fetched from a network or inferred from a filename.
+Review manifest schema 3 and confirm that paths are track-root-relative. `documented_facts` contains the full user-facing track-fact snapshot; each evidence item includes the original import filename, path, size, full hash, import timestamp, provenance, lineage, technical audio facts, and structured embedded metadata when present. The dedicated `evidence_derived_metadata` section retains the selected Suno timestamp and ID, while `system_verification` records detection, fact origins, every byte-identical evidence pair, the release/export identity result, unambiguous role relationships, explicit global-evidence-to-track relationships, and consistency issues. The current terms importer records the selected PDF and system-derived file facts only; external timestamps still include issuer, timestamp, referenced hash, and artifact. No field is fetched from a network or inferred from a filename.
 
-Project/version ID, final generation ID/project version, and a final-generation time are not requested and are not finalization requirements. Compatibility fields from older local records are ignored by the current workflow and are not emitted into newly generated human-readable documents or certificates.
+Project/version ID and legacy manually entered generation-ID/time fields are not requested and are not finalization requirements. A valid generation ID and timestamp embedded in the WAV remain attached to that evidence and can appear in the machine-readable manifest without becoming editable form fields. Compatibility fields from older local records are ignored by the current workflow.
 
 The certificate includes this mandatory meaning:
 
@@ -163,13 +176,13 @@ Do not edit a finalized file in place. If a release asset, evidence file, genera
 
 ## Create a revision after a change
 
-Every finalized track is shown as a read-only snapshot. Its workflow rail, tabs, Dashboard, Tracks, Workspace, and Settings remain navigable, and evidence previews plus non-mutating integrity verification remain available. The application does not repeatedly attempt to save a finalized form while navigating. Actions that would change fields, evidence, generated documents, hashes, or step status stay disabled until a revision exists.
+Every finalized track is shown as a read-only snapshot. Its workflow rail, tabs, Dashboard, Tracks, Workspace, and Settings remain navigable, and evidence previews plus non-mutating integrity verification remain available. The application does not parse historical WAV evidence merely to backfill a newly supported fact, and it does not repeatedly attempt to save a finalized form while navigating. Actions that would change fields, evidence metadata, generated documents, hashes, or step status stay disabled until a revision exists.
 
 Use `Create new revision and edit` from the overview, any workflow step (including Integrity and Finalize), or the certificate view when you intend to document a new snapshot. This action is available for both valid and invalid finalized certificates. Do not invalidate a valid certificate merely to make the revision action appear.
 
 When the application reports `Documentation changed after finalization`, review the mismatch before proceeding. Then create the revision explicitly.
 
-The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, the complete former certificate directory, and the former root-level technical PDF below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. After the next successful finalization, the current manifest, Markdown certificate, and PDF list the relative paths of these managed earlier revision archives. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
+The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, the complete former certificate directory, and the former root-level technical PDF below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. The mutable revision may analyze carried Suno WAV evidence and derive its permitted dates; the archived finalized revision is not changed. After the next successful finalization, the current manifest, Markdown certificate, and PDF list the relative paths of these managed earlier revision archives. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
 
 Tracks created by an older application version or recovered from an imported folder may not yet contain `.archive/revisions/`. Revision creation safely creates this managed parent before moving any live certificate artifact; users do not need to create the folder manually.
 
@@ -201,6 +214,7 @@ Executed results and remaining manual checks are recorded in [ATP-0007](../atp/a
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Documented Suno WAV metadata review, conditional date derivation, optional download date, consistency blockers, byte identity, revision-only analysis, and the 1.4/1.6/3/4.0 artifact versions. | Project team |
 | 2026-08-15 | Added finalization progress and the automatic, reusable certificate-summary dialog. | Project team |
 | 2026-08-16 | Documented workflow 1.3 gates and certificate 3.0 final-generation, terms, timestamp, origin-label, and disclaimer content. | Project team |
 | 2026-08-15 | Documented live document, SHA-256, and verification progress, including the immediate second hash pass and reduced-motion behavior. | Project team |

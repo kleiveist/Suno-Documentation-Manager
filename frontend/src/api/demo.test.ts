@@ -7,6 +7,17 @@ async function settle<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
+async function finalizeGravity(api: ReturnType<typeof createDemoApi>) {
+  await settle(api.updateTrack("gravity", {
+    sunoExportFilenameDifferenceConfirmed: true,
+    sunoTermsEvidenceNotAvailable: true
+  }));
+  await settle(api.generateDocuments("gravity", false));
+  await settle(api.calculateHashes("gravity"));
+  await settle(api.verifyHashes("gravity"));
+  return settle(api.finalizeTrack("gravity"));
+}
+
 afterEach(() => vi.useRealTimers());
 
 describe("demo track library", () => {
@@ -68,6 +79,106 @@ describe("demo track library", () => {
 });
 
 describe("demo evidence controls", () => {
+  it("models Suno-WAV metadata as automatic facts without filling the download date", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await settle(api.updateTrack("cosmic-pulse", { postExportEditingPerformed: false }));
+    await settle(api.importEvidence("cosmic-pulse", "release_wav"));
+
+    const updated = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
+    const suno = updated!.evidence.find((item) => item.role === "suno_final_export")!;
+
+    expect(suno.metadata).toEqual(expect.objectContaining({
+      sunoStudioDetected: true,
+      sunoCreatedTimestamp: "2026-08-17T06:38:06Z",
+      sunoCreatedDate: "2026-08-17",
+      sunoId: "6c8a40fd-32bf-4c7b-ab59-23579ff95828"
+    }));
+    expect(updated!.fields.sunoFinalGenerationDate).toBe("2026-08-17");
+    expect(updated!.fields.productionEndDate).toBe("2026-08-17");
+    expect(updated!.fields.sunoDownloadExportDate).toBe("");
+    expect(updated!.automation).toEqual(expect.objectContaining({
+      finalGenerationOrigin: "evidence_derived_metadata",
+      productionEndOrigin: "evidence_derived_metadata",
+      sunoMetadataDetected: true,
+      releaseIdenticalToSunoExport: true
+    }));
+  });
+
+  it("keeps a user date on metadata conflict and revokes automatic production end after editing", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await settle(api.updateTrack("cosmic-pulse", {
+      sunoFinalGenerationDate: "2026-08-16",
+      postExportEditingPerformed: false
+    }));
+    const imported = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
+
+    expect(imported!.fields.sunoFinalGenerationDate).toBe("2026-08-16");
+    expect(imported!.automation.consistencyIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "suno_generation_date_conflict", blocking: true })
+    ]));
+    expect(imported!.fields.productionEndDate).toBe("2026-08-17");
+
+    const edited = await settle(api.updateTrack("cosmic-pulse", {
+      postExportEditingPerformed: true,
+      postExportEditingDetails: "Mastering"
+    }));
+    expect(edited.fields.productionEndDate).toBe("");
+    expect(edited.automation.productionEndOrigin).toBe("not_documented");
+  });
+
+  it("does not overwrite automatic dates that are changed in a user patch", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await settle(api.updateTrack("cosmic-pulse", { postExportEditingPerformed: false }));
+    await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
+
+    const patched = await settle(api.updateTrack("cosmic-pulse", {
+      sunoFinalGenerationDate: "2026-08-16",
+      productionEndDate: "2026-08-18"
+    }));
+
+    expect(patched.fields.sunoFinalGenerationDate).toBe("2026-08-16");
+    expect(patched.fields.productionEndDate).toBe("2026-08-18");
+    expect(patched.automation.finalGenerationOrigin).toBe("user_confirmed_fact");
+    expect(patched.automation.productionEndOrigin).toBe("user_confirmed_fact");
+    expect(patched.automation.consistencyIssues.map((issue) => issue.code)).toEqual(expect.arrayContaining([
+      "suno_generation_date_conflict",
+      "production_end_date_conflict"
+    ]));
+
+    const edited = await settle(api.updateTrack("cosmic-pulse", {
+      postExportEditingPerformed: true,
+      postExportEditingDetails: "Mastering",
+      productionEndDate: "2026-08-19"
+    }));
+    expect(edited.fields.productionEndDate).toBe("2026-08-19");
+    expect(edited.automation.productionEndOrigin).toBe("user_confirmed_fact");
+  });
+
+  it("clears an automatic production end when the embedded date predates production start", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await settle(api.updateTrack("cosmic-pulse", { postExportEditingPerformed: false }));
+    const imported = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
+    expect(imported!.automation.productionEndOrigin).toBe("evidence_derived_metadata");
+
+    const updated = await settle(api.updateTrack("cosmic-pulse", {
+      productionStartDate: "2026-08-18"
+    }));
+
+    expect(updated.fields.productionEndDate).toBe("");
+    expect(updated.automation.productionEndOrigin).toBe("not_documented");
+    expect(updated.automation.consistencyIssues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "production_end_date_conflict" })
+    ]));
+  });
+
   it("replaces one selected record and previews present image evidence", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -106,5 +217,56 @@ describe("demo evidence controls", () => {
         })
       ]));
     }
+  });
+});
+
+describe("demo revision protection", () => {
+  it("requires a finalized snapshot before creating a revision", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const before = await settle(api.loadTrack("gravity"));
+
+    const revision = api.createRevision("gravity");
+    const rejected = expect(revision).rejects.toThrow("Nur ein finalisierter Track");
+    await vi.runAllTimersAsync();
+    await rejected;
+    expect(await settle(api.loadTrack("gravity"))).toEqual(before);
+
+    const finalized = await finalizeGravity(api);
+    expect(finalized.track?.status).toBe("FINALIZED");
+    const opened = await settle(api.createRevision("gravity"));
+    expect(opened.track?.status).toBe("ACTIVE");
+    expect(opened.track?.certificate.valid).toBe(false);
+  });
+
+  it("rejects content mutations while a finalized snapshot is locked", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await finalizeGravity(api);
+    const before = await settle(api.loadTrack("gravity"));
+
+    const mutations = [
+      () => api.updateTrack("gravity", { title: "Changed" }),
+      () => api.addDeviation("gravity", "late change", true),
+      () => api.importEvidence("gravity", "source_code_file"),
+      () => api.generateDocuments("gravity", false),
+      () => api.calculateHashes("gravity")
+    ];
+    for (const mutate of mutations) {
+      const mutation = mutate();
+      const rejected = expect(mutation).rejects.toThrow("neue Revision");
+      await vi.runAllTimersAsync();
+      await rejected;
+    }
+
+    const after = await settle(api.loadTrack("gravity"));
+    expect(after.fields).toEqual(before.fields);
+    expect(after.evidence).toEqual(before.evidence);
+    expect(after.documents).toEqual(before.documents);
+    expect(after.integrity).toEqual(before.integrity);
+    expect(after.certificate).toEqual(before.certificate);
+    expect(after.status).toBe("FINALIZED");
   });
 });

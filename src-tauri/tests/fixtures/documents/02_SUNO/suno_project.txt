@@ -1,5 +1,5 @@
 # suno-documentation-manager:template-v1
-Template version: 1.5
+Template version: 1.6
 Track: Golden Signal
 Suno project URL: https://suno.example/projects/golden-signal
 Final generation date: 2026-02-05

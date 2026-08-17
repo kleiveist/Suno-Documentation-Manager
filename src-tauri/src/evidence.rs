@@ -1,5 +1,10 @@
+use crate::audio_metadata::{
+    has_suno_studio_marker, is_persistable_metadata_text, parse_suno_metadata,
+};
 use crate::error::{AppError, Result};
-use crate::model::{EvidenceItem, EvidenceProvenance, EvidenceRole, GlobalEvidenceItem};
+use crate::model::{
+    EvidenceItem, EvidenceMetadata, EvidenceProvenance, EvidenceRole, GlobalEvidenceItem,
+};
 use crate::security::{
     contained_path, copy_new, copy_new_hashed, ensure_contained_directory, portable_relative,
     sha256_file,
@@ -11,6 +16,100 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const AUTOMATIC_HASH_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Captures file and audio properties that can be determined from the selected
+/// evidence bytes. Caller-supplied technical values are deliberately replaced:
+/// these fields are system-derived, never user assertions.
+pub fn capture_automatic_metadata(
+    source: &Path,
+    mut metadata: EvidenceMetadata,
+) -> EvidenceMetadata {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    metadata.file_extension = extension.clone();
+    metadata.mime_type = mime_type_for_extension(&extension).into();
+    metadata.audio_format.clear();
+    metadata.audio_channels = None;
+    metadata.audio_sample_rate_hz = None;
+    metadata.audio_duration_milliseconds = None;
+    metadata.audio_bit_depth = None;
+    metadata.embedded_metadata.clear();
+    metadata.suno_studio_detected = false;
+    metadata.suno_created_timestamp.clear();
+    metadata.suno_created_date.clear();
+    metadata.suno_id.clear();
+    metadata.suno_raw_metadata.clear();
+
+    if extension == "wav" {
+        // Import remains fail-soft when a valid RIFF/WAVE has no readable
+        // optional metadata. Signature validation and hashing are independent.
+        if let Ok(Some(audio)) = crate::audio_metadata::inspect_wav(source) {
+            metadata.audio_format = audio.audio_format;
+            metadata.audio_channels = audio.channels;
+            metadata.audio_sample_rate_hz = audio.sample_rate_hz;
+            metadata.audio_duration_milliseconds = audio.duration_milliseconds;
+            metadata.audio_bit_depth = audio.bit_depth;
+            metadata.embedded_metadata = audio
+                .embedded_metadata
+                .into_iter()
+                .filter(|entry| {
+                    is_persistable_metadata_text(&entry.key)
+                        && is_persistable_metadata_text(&entry.value)
+                })
+                .collect();
+            metadata.suno_studio_detected = metadata
+                .embedded_metadata
+                .iter()
+                .any(|entry| has_suno_studio_marker(&entry.value));
+
+            // Do not trust separately carried structured values. The exact raw
+            // value must still exist in a retained embedded entry and is parsed
+            // centrally, all-or-nothing, before it can populate track facts.
+            let raw = audio.suno_raw_metadata;
+            if metadata.suno_studio_detected
+                && is_persistable_metadata_text(&raw)
+                && metadata
+                    .embedded_metadata
+                    .iter()
+                    .any(|entry| entry.value == raw)
+            {
+                metadata.suno_raw_metadata = raw;
+                if let Some(parsed) = parse_suno_metadata(&metadata.suno_raw_metadata) {
+                    metadata.suno_created_timestamp = parsed.created_timestamp;
+                    metadata.suno_created_date = parsed.created_date;
+                    metadata.suno_id = parsed.id;
+                }
+            }
+        } else {
+            metadata.audio_format = "WAV".into();
+        }
+    }
+    metadata
+}
+
+fn mime_type_for_extension(extension: &str) -> &'static str {
+    match extension {
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "aif" | "aiff" => "audio/aiff",
+        "ogg" => "audio/ogg",
+        "mp4" | "m4v" => "video/mp4",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "json" => "application/json",
+        "md" => "text/markdown",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
 
 pub fn validate_type(role: &EvidenceRole, source: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source).map_err(|error| AppError::io(source, error))?;
@@ -478,6 +577,82 @@ fn managed_file_name(track_title: &str, role: &EvidenceRole, original: &str) -> 
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn wav_with_info(entries: Vec<([u8; 4], Vec<u8>)>) -> Vec<u8> {
+        fn chunk(destination: &mut Vec<u8>, id: &[u8; 4], value: &[u8]) {
+            destination.extend_from_slice(id);
+            destination.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            destination.extend_from_slice(value);
+            if value.len() % 2 == 1 {
+                destination.push(0);
+            }
+        }
+
+        let mut info = b"INFO".to_vec();
+        for (id, value) in entries {
+            chunk(&mut info, &id, &value);
+        }
+        let mut chunks = Vec::new();
+        chunk(&mut chunks, b"LIST", &info);
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&((4 + chunks.len()) as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(&chunks);
+        wav
+    }
+
+    #[test]
+    fn automatic_wav_metadata_drops_unsafe_optional_text_and_keeps_valid_suno_facts() {
+        let directory = tempdir().expect("temporary directory");
+        let source = directory.path().join("controls.wav");
+        let raw = "made with suno studio; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+        let mut suno = raw.as_bytes().to_vec();
+        suno.push(0);
+        fs::write(
+            &source,
+            wav_with_info(vec![
+                (*b"IART", b"unsafe\x1bartist".to_vec()),
+                (*b"ICMT", suno),
+            ]),
+        )
+        .expect("control-bearing WAV fixture");
+
+        validate_type(&EvidenceRole::SunoFinalExport, &source).expect("valid WAV signature");
+        let metadata = capture_automatic_metadata(&source, EvidenceMetadata::default());
+
+        assert_eq!(metadata.embedded_metadata.len(), 1);
+        assert_eq!(metadata.embedded_metadata[0].key, "ICMT");
+        assert_eq!(metadata.embedded_metadata[0].value, raw);
+        assert!(metadata.suno_studio_detected);
+        assert_eq!(metadata.suno_raw_metadata, raw);
+        assert_eq!(metadata.suno_created_timestamp, "2026-08-17T06:38:06Z");
+        assert_eq!(metadata.suno_created_date, "2026-08-17");
+        assert_eq!(metadata.suno_id, "6c8a40fd-32bf-4c7b-ab59-23579ff95828");
+        assert!(metadata.embedded_metadata.iter().all(|entry| {
+            is_persistable_metadata_text(&entry.key) && is_persistable_metadata_text(&entry.value)
+        }));
+    }
+
+    #[test]
+    fn control_bearing_suno_record_is_not_usable_as_raw_metadata() {
+        let directory = tempdir().expect("temporary directory");
+        let source = directory.path().join("unsafe-suno.wav");
+        let unsafe_raw = b"made with suno studio; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828\x1b";
+        fs::write(
+            &source,
+            wav_with_info(vec![(*b"ICMT", unsafe_raw.to_vec())]),
+        )
+        .expect("unsafe Suno WAV fixture");
+
+        let metadata = capture_automatic_metadata(&source, EvidenceMetadata::default());
+
+        assert!(metadata.embedded_metadata.is_empty());
+        assert!(!metadata.suno_studio_detected);
+        assert!(metadata.suno_raw_metadata.is_empty());
+        assert!(metadata.suno_created_timestamp.is_empty());
+        assert!(metadata.suno_created_date.is_empty());
+        assert!(metadata.suno_id.is_empty());
+    }
 
     #[test]
     fn evidence_import_validates_type_preserves_source_and_rejects_collision() {

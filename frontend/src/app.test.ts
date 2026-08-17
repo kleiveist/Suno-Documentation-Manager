@@ -5,7 +5,10 @@ import {
   canonicalGuidedChoiceArray,
   canonicalGuidedChoiceList,
   canonicalGuidedChoiceValue,
+  canCreateTrackRevision,
+  factOriginLabel,
   finalizedTrackPresentation,
+  isTrackContentLocked,
   missingProfileFields,
   normalizeGuidedTrackFields,
   operationProgressPercent,
@@ -17,12 +20,14 @@ import {
   singleChoiceFieldMarkup,
   serializeMultiChoiceValue,
   trackSummaryFromDetail,
+  trackCheckSummary,
   type GuidedChoice,
   type WorkspaceScopedUiState,
+  workflowUpgradeFinalizationBlocker,
   workflowUpgradePresentation
 } from "./app";
 import { WORKFLOW_STEPS } from "./domain/workflow";
-import { emptyProfile, emptyTrackFields } from "./domain/types";
+import { emptyProfile, emptyTrackAutomation, emptyTrackFields, type TrackDetail } from "./domain/types";
 import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
 
 describe("theme", () => {
@@ -101,6 +106,48 @@ describe("navigation", () => {
     expect(normalized.humanArtworkProcessOperations).toEqual(["Independently drawn"]);
     expect(normalized.humanArtworkModifications).toEqual(["Color correction", "Historischer Artwork-Freitext"]);
     expect(normalized.releaseNotes).toBe("Original Suno version | Radio edit");
+  });
+
+  it("labels automatic dates as evidence-derived without adding another input fact", () => {
+    expect(factOriginLabel("evidence_derived_metadata")).toBe("Automatisch aus Suno-WAV erkannt");
+    expect(factOriginLabel("user_confirmed_fact")).toBe("Nutzerangabe");
+    expect(factOriginLabel("not_documented")).toBe("Noch nicht dokumentiert");
+  });
+
+  it("summarizes metadata, integrity, coverage and warnings compactly", () => {
+    const track = {
+      id: "summary-track",
+      title: "Summary Track",
+      relativePath: "Singles/Summary Track",
+      library: { section: "single" },
+      status: "ACTIVE",
+      updatedAt: "2026-08-17T10:00:00Z",
+      progress: 0,
+      missingCount: 1,
+      workflowId: "suno-track",
+      workflowVersion: "1.4",
+      fields: { ...emptyTrackFields(), commercialUseIntended: false },
+      profileSnapshot: emptyProfile,
+      automation: {
+        ...emptyTrackAutomation(),
+        sunoMetadataDetected: true,
+        consistencyIssues: [{ code: "conflict", message: "Konflikt", stepId: "suno", blocking: true }]
+      },
+      evidence: [],
+      steps: [],
+      documents: { generated: false, current: false, templateVersion: "1.6", files: [] },
+      integrity: { generated: true, verified: true, fileCount: 0, verifiedCount: 0, mismatchFiles: [] },
+      blockingDeviations: [],
+      certificate: { valid: false }
+    } satisfies TrackDetail;
+
+    expect(trackCheckSummary(track)).toEqual({
+      documentation: "unvollständig",
+      fileIntegrity: "geprüft",
+      sunoMetadata: "erkannt",
+      subscriptionCoverage: "nicht erforderlich",
+      warningCount: 1
+    });
   });
 
   it("exposes every required German main view", () => {
@@ -203,8 +250,25 @@ describe("navigation", () => {
     }));
     expect(finalizedTrackPresentation({ status: "ACTIVE", certificate: { valid: false } })).toBeNull();
 
+    const superseded = finalizedTrackPresentation({
+      status: "SUPERSEDED",
+      certificate: { valid: true, certificateId: "SDM-2026-OLD" }
+    });
+    expect(superseded).toEqual(expect.objectContaining({
+      title: "Ersetzter Snapshot – nur lesbar",
+      message: expect.stringContaining("Navigation und reine Prüfungen bleiben verfügbar")
+    }));
+    expect(superseded).not.toHaveProperty("actionLabel");
+
+    expect(isTrackContentLocked("FINALIZED")).toBe(true);
+    expect(isTrackContentLocked("SUPERSEDED")).toBe(true);
+    expect(isTrackContentLocked("ACTIVE")).toBe(false);
+    expect(canCreateTrackRevision("FINALIZED")).toBe(true);
+    expect(canCreateTrackRevision("SUPERSEDED")).toBe(false);
     expect(shouldDiscardLockedDraft("FINALIZED", true)).toBe(true);
     expect(shouldDiscardLockedDraft("FINALIZED", false)).toBe(false);
+    expect(shouldDiscardLockedDraft("SUPERSEDED", true)).toBe(true);
+    expect(shouldDiscardLockedDraft("SUPERSEDED", false)).toBe(false);
     expect(shouldDiscardLockedDraft("ACTIVE", true)).toBe(false);
   });
 
@@ -261,21 +325,49 @@ describe("navigation", () => {
         workflowVersion: "1.0",
         certificate: { valid: true, workflowVersion: "1.0" }
       },
-      { id: "suno-track", version: "1.3" }
+      { id: "suno-track", version: "1.4" }
     );
 
     expect(presentation).toEqual({
-      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.3",
+      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.4",
       action: "re-evaluate-track"
     });
     expect(workflowUpgradePresentation(
       {
         status: "FINALIZED",
         workflowId: "suno-track",
-        workflowVersion: "1.3",
-        certificate: { valid: true, workflowVersion: "1.3" }
+        workflowVersion: "1.4",
+        certificate: { valid: true, workflowVersion: "1.4" }
       },
-      { id: "suno-track", version: "1.3" }
+      { id: "suno-track", version: "1.4" }
+    )).toBeNull();
+
+    expect(workflowUpgradePresentation(
+      {
+        status: "SUPERSEDED",
+        workflowId: "suno-track",
+        workflowVersion: "1.0",
+        certificate: { valid: true, workflowVersion: "1.0" }
+      },
+      { id: "suno-track", version: "1.4" }
+    )).toEqual({
+      message: "Superseded snapshot uses workflow suno-track 1.0 / Current workflow suno-track 1.4"
+    });
+  });
+
+  it("blocks finalization until an outdated workflow is explicitly re-evaluated", () => {
+    const track = {
+      status: "ACTIVE" as const,
+      workflowId: "suno-track",
+      workflowVersion: "1.0",
+      certificate: { valid: false }
+    };
+
+    expect(workflowUpgradeFinalizationBlocker(track, { id: "suno-track", version: "1.4" }))
+      .toContain("ausdrücklich mit dem aktuellen Workflow neu bewertet");
+    expect(workflowUpgradeFinalizationBlocker(
+      { ...track, workflowVersion: "1.4" },
+      { id: "suno-track", version: "1.4" }
     )).toBeNull();
   });
 });

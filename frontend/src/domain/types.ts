@@ -100,6 +100,52 @@ export interface EvidenceMetadata {
   externalTimestamp: string;
   referencedHash: string;
   referencedArtifact: string;
+  fileExtension: string;
+  mimeType: string;
+  audioFormat: string;
+  audioChannels: number | null;
+  audioSampleRateHz: number | null;
+  audioDurationMilliseconds: number | null;
+  audioBitDepth: number | null;
+  embeddedMetadata: EmbeddedMetadata[];
+  sunoStudioDetected: boolean;
+  sunoCreatedTimestamp: string;
+  sunoCreatedDate: string;
+  sunoId: string;
+  sunoRawMetadata: string;
+}
+
+export interface EmbeddedMetadata {
+  key: string;
+  value: string;
+}
+
+export type FactOrigin = "user_confirmed_fact" | "evidence_derived_metadata" | "not_documented";
+
+export interface ByteIdenticalPair {
+  leftEvidenceId: string;
+  leftRole: EvidenceRole;
+  rightEvidenceId: string;
+  rightRole: EvidenceRole;
+  sha256: string;
+}
+
+export interface ConsistencyIssue {
+  code: string;
+  message: string;
+  stepId: StepId;
+  blocking: boolean;
+}
+
+export interface TrackAutomation {
+  finalGenerationOrigin: FactOrigin;
+  productionEndOrigin: FactOrigin;
+  sunoMetadataDetected: boolean;
+  sunoCreatedTimestamp?: string;
+  sunoId?: string;
+  releaseIdenticalToSunoExport: boolean;
+  byteIdenticalPairs: ByteIdenticalPair[];
+  consistencyIssues: ConsistencyIssue[];
 }
 
 export interface EvidencePreview {
@@ -230,6 +276,7 @@ export interface TrackDetail extends TrackSummary {
   workflowId: string;
   workflowVersion: string;
   profileSnapshot: GlobalProfile;
+  automation: TrackAutomation;
   fields: TrackFields;
   steps: WorkflowStepState[];
   evidence: EvidenceItem[];
@@ -323,6 +370,45 @@ export const emptyProfile: GlobalProfile = {
   artworkTransparencyPolicy: "always",
   disclosureText: "AI-assisted"
 };
+
+export function emptyEvidenceMetadata(): EvidenceMetadata {
+  return {
+    originalFileName: "",
+    documentTitle: "",
+    provider: "",
+    sourceUrl: "",
+    retrievalDate: "",
+    effectiveDate: "",
+    factualNote: "",
+    externalTimestamp: "",
+    referencedHash: "",
+    referencedArtifact: "",
+    fileExtension: "",
+    mimeType: "",
+    audioFormat: "",
+    audioChannels: null,
+    audioSampleRateHz: null,
+    audioDurationMilliseconds: null,
+    audioBitDepth: null,
+    embeddedMetadata: [],
+    sunoStudioDetected: false,
+    sunoCreatedTimestamp: "",
+    sunoCreatedDate: "",
+    sunoId: "",
+    sunoRawMetadata: ""
+  };
+}
+
+export function emptyTrackAutomation(): TrackAutomation {
+  return {
+    finalGenerationOrigin: "not_documented",
+    productionEndOrigin: "not_documented",
+    sunoMetadataDetected: false,
+    releaseIdenticalToSunoExport: false,
+    byteIdenticalPairs: [],
+    consistencyIssues: []
+  };
+}
 
 export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFields {
   return {

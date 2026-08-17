@@ -577,6 +577,92 @@ pub struct EvidenceMetadata {
     pub external_timestamp: String,
     pub referenced_hash: String,
     pub referenced_artifact: String,
+    /// File properties captured by the native importer. These values are
+    /// evidence-derived and never requested from the user.
+    pub file_extension: String,
+    pub mime_type: String,
+    pub audio_format: String,
+    pub audio_channels: Option<u16>,
+    pub audio_sample_rate_hz: Option<u32>,
+    pub audio_duration_milliseconds: Option<u64>,
+    pub audio_bit_depth: Option<u16>,
+    pub embedded_metadata: Vec<EmbeddedMetadata>,
+    /// Structured values extracted from WAV evidence. Only the currently
+    /// registered Suno final export may feed track-level facts;
+    /// `suno_raw_metadata` preserves the embedded source value.
+    pub suno_studio_detected: bool,
+    pub suno_created_timestamp: String,
+    pub suno_created_date: String,
+    pub suno_id: String,
+    pub suno_raw_metadata: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EmbeddedMetadata {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EvidenceDerivedField {
+    pub value: String,
+    pub original_value: String,
+    pub evidence_id: String,
+    pub evidence_sha256: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TrackFieldOrigins {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suno_final_generation_date: Option<EvidenceDerivedField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub production_end_date: Option<EvidenceDerivedField>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FactOrigin {
+    UserConfirmedFact,
+    EvidenceDerivedMetadata,
+    #[default]
+    NotDocumented,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ByteIdenticalPair {
+    pub left_evidence_id: String,
+    pub left_role: EvidenceRole,
+    pub right_evidence_id: String,
+    pub right_role: EvidenceRole,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsistencyIssue {
+    pub code: String,
+    pub message: String,
+    pub step_id: String,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackAutomation {
+    pub final_generation_origin: FactOrigin,
+    pub production_end_origin: FactOrigin,
+    pub suno_metadata_detected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suno_created_timestamp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suno_id: Option<String>,
+    pub release_identical_to_suno_export: bool,
+    pub byte_identical_pairs: Vec<ByteIdenticalPair>,
+    pub consistency_issues: Vec<ConsistencyIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -717,6 +803,8 @@ pub struct TrackRecord {
     pub profile_snapshot: Profile,
     #[serde(default)]
     pub library: TrackLibraryPlacement,
+    #[serde(default)]
+    pub field_origins: TrackFieldOrigins,
     pub fields: TrackFields,
     pub documents: DocumentState,
     pub integrity: IntegrityState,
@@ -763,6 +851,7 @@ pub struct TrackDetail {
     pub workflow_id: String,
     pub workflow_version: String,
     pub profile_snapshot: Profile,
+    pub automation: TrackAutomation,
     pub fields: TrackFields,
     pub steps: Vec<StepState>,
     pub evidence: Vec<EvidenceItem>,

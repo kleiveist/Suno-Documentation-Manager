@@ -131,6 +131,19 @@ describe("runtime selection", () => {
     });
   });
 
+  it("lets the native Suno importer derive technical metadata without user-supplied fields", async () => {
+    invokeMock.mockResolvedValue({ id: "track-1" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.importEvidence("track-1", "suno_final_export");
+
+    expect(invokeMock).toHaveBeenCalledWith("import_evidence", {
+      trackId: "track-1",
+      role: "suno_final_export",
+      replaceEvidenceId: undefined
+    });
+  });
+
   it("loads the bounded final-artwork cover through its dedicated command", async () => {
     invokeMock.mockResolvedValue({ evidenceId: "artwork-1", dataUrl: "data:image/png;base64,AA==" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);

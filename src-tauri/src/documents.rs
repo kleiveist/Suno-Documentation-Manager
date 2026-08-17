@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.5";
+pub const TEMPLATE_VERSION: &str = "1.6";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -927,6 +927,7 @@ mod tests {
             workflow_version: "1.3".into(),
             profile_snapshot: Profile::default(),
             library: Default::default(),
+            field_origins: Default::default(),
             fields,
             documents: crate::model::DocumentState::default(),
             integrity: crate::model::IntegrityState::default(),

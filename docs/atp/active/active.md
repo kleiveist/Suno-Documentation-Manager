@@ -20,6 +20,6 @@
 - 📝 [ATP-0012: Filesystem containment and safe writes](ATP-0012-filesystem-containment.md)
 - 📝 [ATP-0013: End-to-end offline track workflow](ATP-0013-end-to-end-offline-workflow.md)
 - 📝 [ATP-0014: Track library album and single organization](ATP-0014-track-library-organization.md)
-- 📝 [ATP-0015: Technical evidence certificate 3.0](ATP-0015-technical-evidence-certificate.md)
+- 📝 [ATP-0015: Technical evidence certificate 4.0](ATP-0015-technical-evidence-certificate.md)
 
 <!-- AUTO-GENERATED:docs-index END -->

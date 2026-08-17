@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.3"
+version = "1.4"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -330,14 +330,6 @@ kind = "field"
 required = true
 when = "always"
 missing_message = "Das Datum der finalen Suno-Generation fehlt."
-
-[[requirements]]
-key = "suno.download_export_date"
-step_id = "suno"
-kind = "field"
-required = true
-when = "always"
-missing_message = "Das Download-/Exportdatum der finalen Suno-Datei fehlt."
 
 [[requirements]]
 key = "suno.plan_at_creation"

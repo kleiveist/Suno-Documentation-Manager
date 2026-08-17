@@ -10,11 +10,16 @@ import {
 import { subscriptionCoverageEnd } from "../domain/subscription";
 import { trackLibraryAssignment } from "../domain/track-library";
 import {
+  emptyEvidenceMetadata,
   emptyProfile,
+  emptyTrackAutomation,
   emptyTrackFields,
   type ActionResult,
+  type ByteIdenticalPair,
+  type ConsistencyIssue,
   type EvidenceItem,
   type EvidenceRole,
+  type FactOrigin,
   type GlobalProfile,
   type GlobalEvidenceItem,
   type OperationProgress,
@@ -55,17 +60,48 @@ function trackRelativePath(library: TrackLibraryAssignment, title: string): stri
 }
 
 function evidence(role: EvidenceRole, fileName: string): EvidenceItem {
+  const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".") + 1).toLocaleLowerCase() : "";
+  const audioPair = role === "release_wav" || role === "suno_final_export";
+  const hashCharacter = audioPair ? "7" : ((role.length % 15) + 1).toString(16);
   return {
     id: crypto.randomUUID(),
     role,
     fileName,
     relativePath: `evidence/${fileName}`,
-    sha256: "7d8f35b868a8f3d4e5b4a2f331f4b0ddc6be8365d932b838b42ec86e09721690",
+    sha256: hashCharacter.repeat(64),
     sizeBytes: 8_476_231,
     importedAt: now(),
     verified: true,
-    provenance: "managed_copy"
+    provenance: "managed_copy",
+    metadata: {
+      ...emptyEvidenceMetadata(),
+      originalFileName: fileName,
+      fileExtension: extension,
+      mimeType: extension === "wav" ? "audio/wav" : extension === "png" ? "image/png" : "application/octet-stream",
+      audioFormat: extension === "wav" ? "WAV" : "",
+      audioChannels: extension === "wav" ? 2 : null,
+      audioSampleRateHz: extension === "wav" ? 48_000 : null,
+      audioDurationMilliseconds: extension === "wav" ? 213_450 : null,
+      audioBitDepth: extension === "wav" ? 24 : null
+    }
   };
+}
+
+function sunoEvidence(fileName: string, createdTimestamp = "2026-07-24T10:12:13Z"): EvidenceItem {
+  const item = evidence("suno_final_export", fileName);
+  const createdDate = createdTimestamp.slice(0, 10);
+  const technicalId = "6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+  const raw = `made with suno studio; created=${createdTimestamp}; id=${technicalId}`;
+  item.metadata = {
+    ...item.metadata!,
+    embeddedMetadata: [{ key: "comment", value: raw }],
+    sunoStudioDetected: true,
+    sunoCreatedTimestamp: createdTimestamp,
+    sunoCreatedDate: createdDate,
+    sunoId: technicalId,
+    sunoRawMetadata: raw
+  };
+  return item;
 }
 
 function makeTrack(
@@ -79,10 +115,10 @@ function makeTrack(
     ...emptyTrackFields(profile),
     title,
     productionStartDate: "2026-07-18",
-    productionEndDate: complete ? "2026-07-24" : "",
+    productionEndDate: "",
     sunoModel: complete ? "v4.5" : "",
     sunoProjectUrl: complete ? "https://suno.com/song/demo-project" : "",
-    sunoFinalGenerationDate: complete ? "2026-07-24" : "",
+    sunoFinalGenerationDate: "",
     sunoDownloadExportDate: complete ? "2026-07-24" : "",
     sunoPlanAtCreation: "Premier",
     finalExportDate: complete ? "2026-07-24" : "",
@@ -117,7 +153,7 @@ function makeTrack(
   const items = complete
     ? [
         evidence("release_wav", `${title}.wav`),
-        evidence("suno_final_export", `${title}_SUNO_FINAL.wav`),
+        sunoEvidence(`${title}_SUNO_FINAL.wav`),
         { ...evidence("subscription_payment", "subscription_2026-07.pdf"), provenance: "global_copy" as const, sourceGlobalEvidenceId: "demo-global-subscription", coverageStart: "2026-07-01", coverageEnd: "2026-07-31" },
         originalArtwork,
         disclosedArtwork,
@@ -136,6 +172,7 @@ function makeTrack(
     workflowId: WORKFLOW_ID,
     workflowVersion: WORKFLOW_VERSION,
     profileSnapshot: clone(profile),
+    automation: emptyTrackAutomation(),
     fields,
     steps: [],
     evidence: items,
@@ -143,7 +180,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.5",
+      templateVersion: "1.6",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -159,11 +196,14 @@ function makeTrack(
   return track;
 }
 
-function refresh(track: TrackDetail): void {
+type AutomaticFieldSnapshot = Pick<TrackDetail["fields"], "sunoFinalGenerationDate" | "productionEndDate">;
+
+function refresh(track: TrackDetail, previousFields?: AutomaticFieldSnapshot): void {
   track.title = track.fields.title;
   track.coverEvidenceId = track.evidence.find((item) =>
     item.role === "final_artwork" && item.verified && Boolean(item.sha256) && !item.verificationError
   )?.id;
+  refreshAutomation(track, previousFields);
   const profile = track.profileSnapshot;
   const missing = calculateMissingRequirements(track, profile);
   track.steps = stepStatuses(track, profile);
@@ -173,6 +213,113 @@ function refresh(track: TrackDetail): void {
     track.status = finalizationGate(track, profile).valid ? "READY" : track.progress > 0 ? "ACTIVE" : "DRAFT";
   }
   track.updatedAt = now();
+}
+
+function reconcileAutomaticDate(
+  currentValue: string,
+  previousValue: string | undefined,
+  previousOrigin: FactOrigin,
+  derivedValue: string,
+  permitted: boolean
+): { value: string; origin: FactOrigin } {
+  let origin = previousOrigin;
+
+  // A field that differs from the value held while it was system-owned was
+  // changed by the user. It must no longer be overwritten during this refresh.
+  if (origin === "evidence_derived_metadata" && previousValue !== undefined && currentValue !== previousValue) {
+    origin = currentValue.trim() ? "user_confirmed_fact" : "not_documented";
+  }
+
+  if (!permitted || !derivedValue) {
+    if (origin === "evidence_derived_metadata") currentValue = "";
+    return {
+      value: currentValue,
+      origin: currentValue.trim() ? "user_confirmed_fact" : "not_documented"
+    };
+  }
+  if (origin === "evidence_derived_metadata") {
+    return { value: derivedValue, origin };
+  }
+  if (!currentValue.trim()) {
+    return { value: derivedValue, origin: "evidence_derived_metadata" };
+  }
+  return { value: currentValue, origin: "user_confirmed_fact" };
+}
+
+function refreshAutomation(track: TrackDetail, previousFields?: AutomaticFieldSnapshot): void {
+  const previous = track.automation;
+  const suno = track.evidence.find((item) =>
+    item.role === "suno_final_export" && item.verified && Boolean(item.sha256) && !item.verificationError
+      && Boolean(item.metadata?.sunoStudioDetected)
+  );
+  const createdDate = suno?.metadata?.sunoCreatedDate?.trim() ?? "";
+  const issues: ConsistencyIssue[] = [];
+  const editable = track.status !== "FINALIZED" && track.status !== "SUPERSEDED";
+  const productionDateIsPlausible = Boolean(createdDate)
+    && (!track.fields.productionStartDate.trim() || createdDate >= track.fields.productionStartDate);
+  const productionEndPermitted = track.fields.postExportEditingPerformed === false && productionDateIsPlausible;
+  const finalGeneration = editable
+    ? reconcileAutomaticDate(
+        track.fields.sunoFinalGenerationDate,
+        previousFields?.sunoFinalGenerationDate,
+        previous.finalGenerationOrigin,
+        createdDate,
+        Boolean(createdDate)
+      )
+    : { value: track.fields.sunoFinalGenerationDate, origin: previous.finalGenerationOrigin };
+  const productionEnd = editable
+    ? reconcileAutomaticDate(
+        track.fields.productionEndDate,
+        previousFields?.productionEndDate,
+        previous.productionEndOrigin,
+        createdDate,
+        productionEndPermitted
+      )
+    : { value: track.fields.productionEndDate, origin: previous.productionEndOrigin };
+
+  track.fields.sunoFinalGenerationDate = finalGeneration.value;
+  track.fields.productionEndDate = productionEnd.value;
+  if (createdDate && track.fields.sunoFinalGenerationDate && track.fields.sunoFinalGenerationDate !== createdDate) {
+    issues.push({
+      code: "suno_generation_date_conflict",
+      message: "Abweichung zwischen Nutzerangabe und WAV-Metadaten erkannt.",
+      stepId: "suno",
+      blocking: true
+    });
+  }
+  if (productionEndPermitted && track.fields.productionEndDate && track.fields.productionEndDate !== createdDate) {
+    issues.push({
+      code: "production_end_date_conflict",
+      message: "Das dokumentierte Produktionsende weicht vom erkannten Suno-Erzeugungsdatum ab.",
+      stepId: "track",
+      blocking: true
+    });
+  }
+
+  const pairs: ByteIdenticalPair[] = [];
+  const verified = track.evidence.filter((item) => item.verified && Boolean(item.sha256) && !item.verificationError);
+  for (let index = 0; index < verified.length; index += 1) {
+    for (let rightIndex = index + 1; rightIndex < verified.length; rightIndex += 1) {
+      const left = verified[index];
+      const right = verified[rightIndex];
+      if (left.sha256 !== right.sha256) continue;
+      pairs.push({ leftEvidenceId: left.id, leftRole: left.role, rightEvidenceId: right.id, rightRole: right.role, sha256: left.sha256! });
+    }
+  }
+  const releaseIdenticalToSunoExport = pairs.some((pair) =>
+    (pair.leftRole === "suno_final_export" && pair.rightRole === "release_wav")
+    || (pair.leftRole === "release_wav" && pair.rightRole === "suno_final_export")
+  );
+  track.automation = {
+    finalGenerationOrigin: finalGeneration.origin,
+    productionEndOrigin: productionEnd.origin,
+    sunoMetadataDetected: Boolean(suno?.metadata?.sunoStudioDetected),
+    sunoCreatedTimestamp: suno?.metadata?.sunoCreatedTimestamp || undefined,
+    sunoId: suno?.metadata?.sunoId || undefined,
+    releaseIdenticalToSunoExport,
+    byteIdenticalPairs: pairs,
+    consistencyIssues: issues
+  };
 }
 
 export function createDemoApi(): DesktopApi {
@@ -215,6 +362,16 @@ export function createDemoApi(): DesktopApi {
   const get = (trackId: string): TrackDetail => {
     const track = tracks.get(trackId);
     if (!track) throw new Error("Der Track wurde im aktuellen Workspace nicht gefunden.");
+    return track;
+  };
+  const mutableTrack = (trackId: string): TrackDetail => {
+    const track = get(trackId);
+    if (track.status === "FINALIZED") {
+      throw new Error("Der Track ist finalisiert. Lege vor Änderungen eine neue Revision an.");
+    }
+    if (track.status === "SUPERSEDED") {
+      throw new Error("Der Track wurde durch eine neuere Revision ersetzt und kann nicht mehr geändert werden.");
+    }
     return track;
   };
   const result = (track: TrackDetail, message: string): ActionResult => ({ message, track: clone(track) });
@@ -295,16 +452,8 @@ export function createDemoApi(): DesktopApi {
         ...evidence("suno_terms_rights", "suno_terms.pdf"),
         relativePath: ".suno-doc/global-evidence/suno_terms.pdf",
         metadata: {
+          ...emptyEvidenceMetadata(),
           originalFileName: "suno_terms.pdf",
-          documentTitle: "",
-          provider: "",
-          sourceUrl: "",
-          retrievalDate: "",
-          effectiveDate: "",
-          factualNote: "",
-          externalTimestamp: "",
-          referencedHash: "",
-          referencedArtifact: ""
         }
       };
       globalEvidence.push(item);
@@ -320,7 +469,7 @@ export function createDemoApi(): DesktopApi {
     },
     async attachGlobalEvidence(trackId, evidenceId) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       const item = globalEvidence.find((entry) => entry.id === evidenceId);
       if (!item) throw new Error("Der globale Nachweis wurde nicht gefunden.");
       attachGlobalToTrack(track, item);
@@ -410,12 +559,16 @@ export function createDemoApi(): DesktopApi {
     },
     async updateTrack(trackId, patch) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       const previousTitle = track.fields.title;
+      const previousAutomaticFields: AutomaticFieldSnapshot = {
+        sunoFinalGenerationDate: track.fields.sunoFinalGenerationDate,
+        productionEndDate: track.fields.productionEndDate
+      };
       track.fields = { ...track.fields, ...clone(patch) };
       if (patch.title !== undefined) {
         track.relativePath = trackRelativePath(track.library, patch.title);
-        if (patch.title !== previousTitle && track.status !== "FINALIZED") {
+        if (patch.title !== previousTitle) {
           for (const item of track.evidence.filter((entry) =>
             ["release_wav", "release_mp3", "release_mp4"].includes(entry.role)
           )) {
@@ -426,17 +579,12 @@ export function createDemoApi(): DesktopApi {
         }
       }
       track.documents.current = false;
-      if (track.status === "FINALIZED") {
-        track.certificate.valid = false;
-        track.certificate.invalidationReason = "Dokumentation nach Finalisierung geändert";
-        track.integrity.mismatchFiles = ["03_DOCUMENTATION/README.md"];
-      }
-      refresh(track);
+      refresh(track, previousAutomaticFields);
       return clone(track);
     },
     async adoptLegacyProfile(trackId) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       track.profileSnapshot = clone(profile);
       track.documents.current = false;
       refresh(track);
@@ -444,7 +592,7 @@ export function createDemoApi(): DesktopApi {
     },
     async addDeviation(trackId, description, blocking) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       track.blockingDeviations ??= [];
       track.blockingDeviations.push({ id: crypto.randomUUID(), title: blocking ? "Blockierende Abweichung" : "Hinweis", description, blocking, resolved: false, createdAt: now() });
       refresh(track);
@@ -452,7 +600,7 @@ export function createDemoApi(): DesktopApi {
     },
     async resolveDeviation(trackId, deviationId) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       const deviation = track.blockingDeviations?.find((item) => item.id === deviationId);
       if (deviation) Object.assign(deviation, { resolved: true, resolvedAt: now() });
       refresh(track);
@@ -460,14 +608,14 @@ export function createDemoApi(): DesktopApi {
     },
     async removeDeviation(trackId, deviationId) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       track.blockingDeviations = track.blockingDeviations?.filter((item) => item.id !== deviationId);
       refresh(track);
       return clone(track);
     },
     async setStepStatus(trackId, stepId: StepId, status: StepStatus, naReason?: string) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       const current = track.steps.find((step) => step.id === stepId);
       if (current) Object.assign(current, { status, naReason, updatedAt: now() });
       else track.steps.push({ id: stepId, status, naReason, updatedAt: now() });
@@ -476,8 +624,8 @@ export function createDemoApi(): DesktopApi {
     },
     async importEvidence(trackId, role, replaceEvidenceId) {
       await wait();
-      const track = get(trackId);
-      if (!replaceEvidenceId && ["release_wav", "final_artwork"].includes(role) && track.evidence.some((item) => item.role === role)) {
+      const track = mutableTrack(trackId);
+      if (!replaceEvidenceId && ["release_wav", "suno_final_export", "final_artwork"].includes(role) && track.evidence.some((item) => item.role === role)) {
         throw new Error(`Die Rolle ${role} ist bereits belegt. Verwende den Upload-Button an der vorhandenen Evidence zum Ersetzen.`);
       }
       const extension = role.includes("artwork") || role === "suno_screenshot" || role === "final_artwork"
@@ -491,7 +639,9 @@ export function createDemoApi(): DesktopApi {
           : role.includes("subscription")
             ? "pdf"
             : "zip";
-      const next = evidence(role, `${role}.${extension}`);
+      const next = role === "suno_final_export"
+        ? sunoEvidence(`${role}.${extension}`, "2026-08-17T06:38:06Z")
+        : evidence(role, `${role}.${extension}`);
       const replaceIndex = replaceEvidenceId
         ? track.evidence.findIndex((item) => item.id === replaceEvidenceId && item.role === role)
         : -1;
@@ -504,7 +654,7 @@ export function createDemoApi(): DesktopApi {
     },
     async removeEvidence(trackId, evidenceId) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       track.evidence = track.evidence.filter((item) => item.id !== evidenceId);
       track.documents.current = false;
       refresh(track);
@@ -543,7 +693,7 @@ export function createDemoApi(): DesktopApi {
       return { files: ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"], collisions: [], adoptionRequired: false };
     },
     async generateDocuments(trackId, _adoptExisting, onProgress) {
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       const documentFiles = ["02_SUNO/suno_project.txt", "02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md", "04_LICENSES/suno_account_and_license.md", "04_LICENSES/openai_image_generation.md", "05_ARTWORK/artwork_process.md"];
       await demoProgress(onProgress, [
         { stage: "preparing_documents", processedBytes: 0, totalBytes: 0, processedFiles: 0, totalFiles: documentFiles.length },
@@ -555,7 +705,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.5",
+        templateVersion: "1.6",
         files: documentFiles
       };
       track.integrity.generated = false;
@@ -565,7 +715,7 @@ export function createDemoApi(): DesktopApi {
     },
     async generateArtworkDisclosure(trackId, disclosureText) {
       await wait();
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       track.fields.disclosureApplied = true;
       if (disclosureText) track.fields.disclosureText = disclosureText;
       const source = [...track.evidence].reverse().find((item) => item.role === "ai_artwork_original" && item.verified);
@@ -584,7 +734,7 @@ export function createDemoApi(): DesktopApi {
       return result(track, "Der sichtbare KI-Hinweis wurde lokal auf einer neuen Artwork-Version angewendet.");
     },
     async calculateHashes(trackId, onProgress) {
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       if (!track.documents.current) throw new Error("Erzeuge zuerst die aktuellen Dokumente.");
       const totalFiles = track.evidence.length + track.documents.files.length;
       const totalBytes = Math.max(totalFiles, 1) * 8_476_231;
@@ -625,7 +775,7 @@ export function createDemoApi(): DesktopApi {
       return finalizationGate(track, track.profileSnapshot);
     },
     async finalizeTrack(trackId, onProgress) {
-      const track = get(trackId);
+      const track = mutableTrack(trackId);
       const gate = finalizationGate(track, track.profileSnapshot);
       if (!gate.valid) throw new Error(`Finalisierung blockiert: ${[...gate.missingItems, ...gate.blockingItems].join(", ")}`);
       const totalFiles = track.integrity.fileCount;
@@ -650,6 +800,7 @@ export function createDemoApi(): DesktopApi {
     async invalidateCertificate(trackId) {
       await wait();
       const track = get(trackId);
+      if (track.status !== "FINALIZED") throw new Error("Der Track ist nicht finalisiert.");
       track.certificate.valid = false;
       track.certificate.invalidatedAt = now();
       track.certificate.invalidationReason = "Manuell invalidiert";
@@ -658,6 +809,9 @@ export function createDemoApi(): DesktopApi {
     async createRevision(trackId) {
       await wait();
       const track = get(trackId);
+      if (track.status !== "FINALIZED") {
+        throw new Error("Nur ein finalisierter Track kann eine neue Revision beginnen.");
+      }
       track.status = "ACTIVE";
       track.certificate = { valid: false };
       track.integrity.generated = false;
@@ -672,6 +826,9 @@ export function createDemoApi(): DesktopApi {
       const track = get(trackId);
       if (track.workflowId === WORKFLOW_ID && track.workflowVersion === WORKFLOW_VERSION) {
         throw new Error("Der Track verwendet bereits die aktuelle Workflow-Version.");
+      }
+      if (track.status === "SUPERSEDED") {
+        throw new Error("Der Track wurde durch eine neuere Revision ersetzt und kann nicht mehr geändert werden.");
       }
       const archived = track.status === "FINALIZED";
       track.workflowId = WORKFLOW_ID;

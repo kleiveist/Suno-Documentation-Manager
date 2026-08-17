@@ -2,6 +2,7 @@
 
 mod application;
 mod artwork;
+mod audio_metadata;
 mod certificate;
 mod certificate_pdf;
 mod commands;

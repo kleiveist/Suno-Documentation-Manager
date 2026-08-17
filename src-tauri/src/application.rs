@@ -5,11 +5,11 @@ use crate::evidence;
 use crate::integrity;
 use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
-    DocumentPreview, DocumentState, EvidenceItem, EvidenceMetadata, EvidencePreview,
-    EvidenceProvenance, EvidenceRole, GlobalEvidenceItem, IntegrityState, LegacyCandidate,
-    OperationProgress, Profile, StepState, StepStatus, SubscriptionBillingCycle, TrackCoverPreview,
-    TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch, TrackRecord, TrackStatus,
-    TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
+    DocumentPreview, DocumentState, EvidenceDerivedField, EvidenceItem, EvidenceMetadata,
+    EvidencePreview, EvidenceProvenance, EvidenceRole, GlobalEvidenceItem, IntegrityState,
+    LegacyCandidate, OperationProgress, Profile, StepState, StepStatus, SubscriptionBillingCycle,
+    TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch,
+    TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -382,6 +382,7 @@ impl WorkspaceApp {
             workflow_version: config.version,
             profile_snapshot: profile,
             library,
+            field_origins: Default::default(),
             fields,
             documents: DocumentState::default(),
             integrity: IntegrityState::default(),
@@ -502,13 +503,16 @@ impl WorkspaceApp {
         let mut track = self.mutable_track(id)?;
         let previous_path = track.relative_path.clone();
         let previous_fields = track.fields.clone();
+        let previous_origins = track.field_origins.clone();
         apply_patch(&mut track.fields, patch);
+        let evidence = self.persistence.evidence(id)?;
+        reconcile_evidence_derived_fields(&mut track, &evidence);
         if track.fields.title != previous_fields.title {
             track.fields.release_filename_difference_confirmed = None;
             track.fields.suno_export_filename_difference_confirmed = None;
         }
         validate_track_fields(&track.fields)?;
-        if track.fields != previous_fields {
+        if track.fields != previous_fields || track.field_origins != previous_origins {
             let mut release_renames = Vec::new();
             if track.fields.title != previous_fields.title {
                 let target = physical_track_relative(&track.library, &track.fields.title)?;
@@ -560,8 +564,7 @@ impl WorkspaceApp {
         id: &str,
         input: TrackLibraryPlacement,
     ) -> Result<TrackDetail> {
-        self.reconcile_physical_library()?;
-        let mut track = self.persistence.track(id)?;
+        let mut track = self.mutable_track(id)?;
         let library = self.existing_album_spelling(normalize_track_library(input)?)?;
         let previous_path = track.relative_path.clone();
         let target_path = physical_track_relative(&library, &track.fields.title)?;
@@ -819,6 +822,14 @@ impl WorkspaceApp {
             }
         }
         let mut item = evidence::register_global(&self.root, role, source)?;
+        let mut metadata =
+            evidence::capture_automatic_metadata(source, EvidenceMetadata::default());
+        metadata.original_file_name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        item.evidence.metadata = metadata;
         item.evidence.coverage_start = coverage_start;
         item.evidence.coverage_end = coverage_end;
         if let Err(error) = self.persistence.save_global_evidence(&item) {
@@ -833,14 +844,16 @@ impl WorkspaceApp {
     }
 
     pub fn register_global_terms_evidence(&self, source: &Path) -> Result<GlobalEvidenceItem> {
-        let original_file_name = source
+        let mut item =
+            evidence::register_global(&self.root, EvidenceRole::SunoTermsRights, source)?;
+        let mut metadata =
+            evidence::capture_automatic_metadata(source, EvidenceMetadata::default());
+        metadata.original_file_name = source
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_owned();
-        let mut item =
-            evidence::register_global(&self.root, EvidenceRole::SunoTermsRights, source)?;
-        item.evidence.metadata.original_file_name = original_file_name;
+        item.evidence.metadata = metadata;
         if let Err(error) = self.persistence.save_global_evidence(&item) {
             if let Ok(path) =
                 contained_path(&self.root, Path::new(&item.evidence.relative_path), true)
@@ -974,6 +987,8 @@ impl WorkspaceApp {
             }
             return Err(error);
         }
+        let all_evidence = self.persistence.evidence(id)?;
+        reconcile_evidence_derived_fields(&mut track, &all_evidence);
         mark_content_changed(&mut track);
         if global.evidence.role == EvidenceRole::SunoTermsRights {
             track.fields.suno_terms_evidence_not_available = Some(false);
@@ -984,6 +999,7 @@ impl WorkspaceApp {
         self.detail_from_record(track, false)
     }
 
+    #[cfg(test)]
     pub fn import_evidence_from(
         &self,
         id: &str,
@@ -1036,34 +1052,43 @@ impl WorkspaceApp {
                 "Unter {planned_portable} ist bereits Evidence registriert. Verwende den Upload-Button an der vorhandenen Evidence zum sicheren Ersetzen."
             )));
         }
-        metadata.original_file_name = source
+        let original_file_name = source
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_owned();
-        validate_evidence_metadata(&role, &metadata)?;
-        let mut item = evidence::import(&track_root, &track.fields.title, role.clone(), source)?;
-        item.metadata = metadata;
-        if let Err(error) = self.persistence.save_evidence(id, &item) {
-            if let Ok(path) = contained_path(&track_root, Path::new(&item.relative_path), true) {
-                let _ = fs::remove_file(path);
+        let mut item = evidence::import(&track_root, &track.fields.title, role, source)?;
+        let managed_path = contained_path(&track_root, Path::new(&item.relative_path), true)?;
+        let persist_result = (|| -> Result<()> {
+            metadata = evidence::capture_automatic_metadata(&managed_path, metadata);
+            metadata.original_file_name = original_file_name;
+            validate_evidence_metadata(&role, &metadata)?;
+            item.metadata = metadata;
+
+            let mut all_evidence = self.persistence.evidence(id)?;
+            all_evidence.push(item.clone());
+            reconcile_evidence_derived_fields(&mut track, &all_evidence);
+            mark_content_changed(&mut track);
+            if role == EvidenceRole::ReleaseWav {
+                track.fields.release_filename_difference_confirmed = None;
+            } else if role == EvidenceRole::SunoFinalExport {
+                track.fields.suno_export_filename_difference_confirmed = None;
+            } else if role == EvidenceRole::SunoTermsRights {
+                track.fields.suno_terms_evidence_not_available = Some(false);
             }
+            track.status = TrackStatus::Active;
+            track.updated_at = now();
+            self.persistence
+                .save_track_and_evidence(&track, std::slice::from_ref(&item))
+        })();
+        if let Err(error) = persist_result {
+            let _ = fs::remove_file(&managed_path);
             return Err(error);
         }
-        mark_content_changed(&mut track);
-        if role == EvidenceRole::ReleaseWav {
-            track.fields.release_filename_difference_confirmed = None;
-        } else if role == EvidenceRole::SunoFinalExport {
-            track.fields.suno_export_filename_difference_confirmed = None;
-        } else if role == EvidenceRole::SunoTermsRights {
-            track.fields.suno_terms_evidence_not_available = Some(false);
-        }
-        track.status = TrackStatus::Active;
-        track.updated_at = now();
-        self.persistence.save_track(&track)?;
         self.detail_from_record(track, false)
     }
 
+    #[cfg(test)]
     pub fn replace_evidence_from(
         &self,
         id: &str,
@@ -1086,7 +1111,7 @@ impl WorkspaceApp {
         evidence_id: &str,
         role: EvidenceRole,
         source: &Path,
-        mut metadata: EvidenceMetadata,
+        metadata: EvidenceMetadata,
     ) -> Result<TrackDetail> {
         if matches!(
             role,
@@ -1116,35 +1141,41 @@ impl WorkspaceApp {
             )));
         }
         let track_root = self.track_root(&track)?;
-        metadata.original_file_name = source
+        let original_file_name = source
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_owned();
-        validate_evidence_metadata(&role, &metadata)?;
-        evidence::replace(
-            &track_root,
-            &track.fields.title,
-            role,
-            source,
-            &previous,
-            |item| {
-                let mut item = item.clone();
-                item.metadata = metadata.clone();
-                self.persistence.save_evidence(id, &item)
-            },
-        )?;
-        mark_content_changed(&mut track);
-        if role == EvidenceRole::ReleaseWav {
-            track.fields.release_filename_difference_confirmed = None;
-        } else if role == EvidenceRole::SunoFinalExport {
-            track.fields.suno_export_filename_difference_confirmed = None;
-        } else if role == EvidenceRole::SunoTermsRights {
-            track.fields.suno_terms_evidence_not_available = Some(false);
-        }
-        track.status = TrackStatus::Active;
-        track.updated_at = now();
-        self.persistence.save_track(&track)?;
+        let track_title = track.fields.title.clone();
+        evidence::replace(&track_root, &track_title, role, source, &previous, |item| {
+            let mut item = item.clone();
+            let managed_path = contained_path(&track_root, Path::new(&item.relative_path), true)?;
+            let mut captured =
+                evidence::capture_automatic_metadata(&managed_path, metadata.clone());
+            captured.original_file_name = original_file_name.clone();
+            validate_evidence_metadata(&role, &captured)?;
+            item.metadata = captured;
+
+            let mut all_evidence = self.persistence.evidence(id)?;
+            let stored = all_evidence
+                .iter_mut()
+                .find(|stored| stored.id == item.id)
+                .ok_or_else(|| AppError::EvidenceNotFound(item.id.clone()))?;
+            *stored = item.clone();
+            reconcile_evidence_derived_fields(&mut track, &all_evidence);
+            mark_content_changed(&mut track);
+            if role == EvidenceRole::ReleaseWav {
+                track.fields.release_filename_difference_confirmed = None;
+            } else if role == EvidenceRole::SunoFinalExport {
+                track.fields.suno_export_filename_difference_confirmed = None;
+            } else if role == EvidenceRole::SunoTermsRights {
+                track.fields.suno_terms_evidence_not_available = Some(false);
+            }
+            track.status = TrackStatus::Active;
+            track.updated_at = now();
+            self.persistence
+                .save_track_and_evidence(&track, std::slice::from_ref(&item))
+        })?;
         self.detail_from_record(track, false)
     }
 
@@ -1201,6 +1232,8 @@ impl WorkspaceApp {
                 let _ = fs::remove_dir(&directory);
                 return Err(error);
             }
+            let remaining_evidence = self.persistence.evidence(id)?;
+            reconcile_evidence_derived_fields(&mut track, &remaining_evidence);
             mark_content_changed(&mut track);
             if item.role == EvidenceRole::ReleaseWav {
                 track.fields.release_filename_difference_confirmed = None;
@@ -1256,6 +1289,8 @@ impl WorkspaceApp {
                 None => error,
             });
         }
+        let remaining_evidence = self.persistence.evidence(id)?;
+        reconcile_evidence_derived_fields(&mut track, &remaining_evidence);
         mark_content_changed(&mut track);
         if item.provenance == EvidenceProvenance::GeneratedDisclosure {
             track.fields.disclosure_applied = None;
@@ -1446,6 +1481,7 @@ impl WorkspaceApp {
             ..OperationProgress::default()
         });
         let mut track = self.mutable_track(id)?;
+        ensure_current_workflow(&track)?;
         validate_track_fields(&track.fields)?;
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
@@ -1603,6 +1639,7 @@ impl WorkspaceApp {
         on_progress: &mut impl FnMut(OperationProgress),
     ) -> Result<ActionResult> {
         let mut track = self.mutable_track(id)?;
+        ensure_current_workflow(&track)?;
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
         let stored = self.persistence.stored_steps(id)?;
@@ -1717,6 +1754,7 @@ impl WorkspaceApp {
             ..OperationProgress::default()
         });
         let mut track = self.mutable_track(id)?;
+        ensure_current_workflow(&track)?;
         let validation = self.validation_for(track.clone())?;
         if !validation.valid {
             return Err(AppError::Validation(
@@ -1955,6 +1993,12 @@ impl WorkspaceApp {
             ));
         }
         let root = self.track_root(&track)?;
+        // Analyze legacy Suno evidence before any certificate artifacts are
+        // moved. Missing, changed, or unreadable bytes remain a non-fatal
+        // verification concern for the new revision instead of leaving a
+        // half-created revision behind.
+        let (prepared_track, analyzed_evidence) = self.prepare_revision_suno_analysis(track)?;
+        track = prepared_track;
         let certificate_integrity = if certificate::verify(&root).is_ok() {
             "valid"
         } else {
@@ -2065,7 +2109,10 @@ impl WorkspaceApp {
         track.documents.current = false;
         track.integrity = IntegrityState::default();
         track.updated_at = now();
-        if let Err(error) = self.persistence.save_track(&track) {
+        if let Err(error) = self
+            .persistence
+            .save_track_and_evidence(&track, &analyzed_evidence)
+        {
             return Err(rollback_revision_state(
                 &live_certificate,
                 &archive.join("certificate"),
@@ -2094,6 +2141,9 @@ impl WorkspaceApp {
         current: &workflow::WorkflowConfig,
     ) -> Result<ActionResult> {
         let previous = self.persistence.track(id)?;
+        if previous.status == TrackStatus::Superseded {
+            return Err(AppError::Finalized);
+        }
         if previous.workflow_id == current.id && previous.workflow_version == current.version {
             return Err(AppError::Validation(
                 "The track already uses the current workflow version.".into(),
@@ -2171,6 +2221,7 @@ impl WorkspaceApp {
                     workflow_version: config.version,
                     profile_snapshot: Profile::default(),
                     library,
+                    field_origins: Default::default(),
                     fields,
                     documents: DocumentState {
                         generated: false,
@@ -2226,7 +2277,10 @@ impl WorkspaceApp {
     fn mutable_track(&self, id: &str) -> Result<TrackRecord> {
         self.reconcile_physical_library()?;
         let track = self.persistence.track(id)?;
-        if track.status == TrackStatus::Finalized {
+        if matches!(
+            track.status,
+            TrackStatus::Finalized | TrackStatus::Superseded
+        ) {
             return Err(AppError::Finalized);
         }
         Ok(track)
@@ -2251,17 +2305,41 @@ impl WorkspaceApp {
             .filter(|item| {
                 matches!(
                     item.role,
-                    EvidenceRole::ReleaseWav | EvidenceRole::FinalArtwork
+                    EvidenceRole::ReleaseWav
+                        | EvidenceRole::SunoFinalExport
+                        | EvidenceRole::FinalArtwork
                 )
             })
             .map(|item| item.role)
             .collect::<HashSet<_>>();
+        let mut unindexed_singular_candidates = HashMap::<EvidenceRole, usize>::new();
+        for file in files.iter().filter(|file| !indexed.contains(*file)) {
+            let role = infer_legacy_role(file);
+            if matches!(
+                role,
+                EvidenceRole::ReleaseWav
+                    | EvidenceRole::SunoFinalExport
+                    | EvidenceRole::FinalArtwork
+            ) {
+                *unindexed_singular_candidates.entry(role).or_default() += 1;
+            }
+        }
         for file in files.iter().filter(|file| !indexed.contains(*file)) {
             let inferred_role = infer_legacy_role(file);
-            let ambiguous_singular = matches!(
+            let singular = matches!(
                 inferred_role,
-                EvidenceRole::ReleaseWav | EvidenceRole::FinalArtwork
-            ) && !singular_roles.insert(inferred_role.clone());
+                EvidenceRole::ReleaseWav
+                    | EvidenceRole::SunoFinalExport
+                    | EvidenceRole::FinalArtwork
+            );
+            let ambiguous_singular = singular
+                && (singular_roles.contains(&inferred_role)
+                    || unindexed_singular_candidates
+                        .get(&inferred_role)
+                        .is_some_and(|count| *count > 1));
+            if singular && !ambiguous_singular {
+                singular_roles.insert(inferred_role);
+            }
             let role = if ambiguous_singular {
                 EvidenceRole::Other
             } else {
@@ -2717,11 +2795,70 @@ impl WorkspaceApp {
         let root = self.track_root(track)?;
         let mut result = Vec::new();
         for item in self.persistence.evidence(&track.id)? {
+            let previous_verification = (
+                item.sha256.clone(),
+                item.size_bytes,
+                item.verified,
+                item.verification_error.clone(),
+            );
             let verified = evidence::inspect(&root, item)?;
-            self.persistence.save_evidence(&track.id, &verified)?;
+            let current_verification = (
+                verified.sha256.clone(),
+                verified.size_bytes,
+                verified.verified,
+                verified.verification_error.clone(),
+            );
+            // A read-only load must not reserialize legacy metadata_json just
+            // because additive serde-default fields exist in a newer build.
+            if current_verification != previous_verification {
+                self.persistence.save_evidence(&track.id, &verified)?;
+            }
             result.push(verified);
         }
         Ok(result)
+    }
+
+    /// Explicit revision creation is the sole backfill path for evidence that
+    /// predates automatic WAV inspection. Normal loading intentionally never
+    /// enriches historical/finalized records.
+    fn prepare_revision_suno_analysis(
+        &self,
+        mut track: TrackRecord,
+    ) -> Result<(TrackRecord, Vec<EvidenceItem>)> {
+        let root = self.track_root(&track)?;
+        let mut evidence_items = self.persistence.evidence(&track.id)?;
+        let mut changed_items = Vec::new();
+        for item in evidence_items
+            .iter_mut()
+            .filter(|item| item.role == EvidenceRole::SunoFinalExport)
+        {
+            let path = contained_path(&root, Path::new(&item.relative_path), false)?;
+            let bytes_match = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                    item.sha256.as_deref().is_some_and(|expected| {
+                        sha256_file(&path).is_ok_and(|actual| actual == expected)
+                    })
+                }
+                _ => false,
+            };
+            if !item.verified || item.verification_error.is_some() || !bytes_match {
+                // Keep the persisted snapshot untouched, but exclude stale
+                // evidence from facts prepared for the mutable revision.
+                item.verified = false;
+                continue;
+            }
+            let captured = evidence::capture_automatic_metadata(&path, item.metadata.clone());
+            if validate_evidence_metadata(&item.role, &captured).is_err() {
+                item.verified = false;
+                continue;
+            }
+            if captured != item.metadata {
+                item.metadata = captured;
+                changed_items.push(item.clone());
+            }
+        }
+        reconcile_evidence_derived_fields(&mut track, &evidence_items);
+        Ok((track, changed_items))
     }
 
     fn validation_for(&self, mut track: TrackRecord) -> Result<ValidationResult> {
@@ -2760,6 +2897,9 @@ impl WorkspaceApp {
         )?;
         self.persistence.save_track(&track)?;
         let mut blocking_items = Vec::new();
+        if let Some(message) = workflow_version_mismatch(&track)? {
+            blocking_items.push(message);
+        }
         for step in &evaluation.steps {
             if matches!(
                 step.status,
@@ -2796,10 +2936,14 @@ impl WorkspaceApp {
         mut track: TrackRecord,
         inspect_finalized: bool,
     ) -> Result<TrackDetail> {
-        if self.migrate_legacy_release_evidence(&track)? {
+        let immutable_snapshot = matches!(
+            track.status,
+            TrackStatus::Finalized | TrackStatus::Superseded
+        );
+        let stored_track_state = serde_json::to_vec(&track)?;
+        if !immutable_snapshot && self.migrate_legacy_release_evidence(&track)? {
             mark_content_changed(&mut track);
             track.updated_at = now();
-            self.persistence.save_track(&track)?;
         }
         let root = self.track_root(&track)?;
         let evidence = self.verified_evidence(&track)?;
@@ -2812,37 +2956,47 @@ impl WorkspaceApp {
             &deviations,
             &stored,
         )?;
-        track.documents.current = documents::is_current(
-            &root,
-            &track,
-            &track.profile_snapshot,
-            &evidence,
-            &first.steps,
-        )?;
+        if !immutable_snapshot {
+            track.documents.current = documents::is_current(
+                &root,
+                &track,
+                &track.profile_snapshot,
+                &evidence,
+                &first.steps,
+            )?;
+        }
         let contains_large_evidence = evidence
             .iter()
             .any(|item| item.size_bytes > evidence::AUTOMATIC_HASH_LIMIT_BYTES);
-        if root.join(integrity::HASH_FILE).is_file() && !contains_large_evidence {
-            track.integrity = integrity::verify(&root).unwrap_or_else(|_| IntegrityState {
-                generated: true,
-                verified: false,
-                file_count: 0,
-                verified_count: 0,
-                generated_at: None,
-                verified_at: Some(now()),
-                mismatch_files: vec![
-                    "03_DOCUMENTATION/SHA256SUMS.txt (invalid or unreadable)".into()
-                ],
-            });
-        } else if !root.join(integrity::HASH_FILE).is_file() {
-            track.integrity = IntegrityState::default();
+        let inspected_integrity =
+            if root.join(integrity::HASH_FILE).is_file() && !contains_large_evidence {
+                integrity::verify(&root).unwrap_or_else(|_| IntegrityState {
+                    generated: true,
+                    verified: false,
+                    file_count: 0,
+                    verified_count: 0,
+                    generated_at: None,
+                    verified_at: Some(now()),
+                    mismatch_files: vec![
+                        "03_DOCUMENTATION/SHA256SUMS.txt (invalid or unreadable)".into()
+                    ],
+                })
+            } else if !root.join(integrity::HASH_FILE).is_file() {
+                IntegrityState::default()
+            } else {
+                track.integrity.clone()
+            };
+        if !immutable_snapshot {
+            track.integrity = inspected_integrity.clone();
         }
         if inspect_finalized && track.status == TrackStatus::Finalized {
             let certificate_valid = certificate::verify(&root).is_ok();
             let evidence_valid = evidence.iter().all(|item| {
                 item.verified && item.sha256.is_some() && item.verification_error.is_none()
             });
-            if !track.integrity.verified || !certificate_valid || !evidence_valid {
+            if (!inspected_integrity.verified || !certificate_valid || !evidence_valid)
+                && track.certificate.valid
+            {
                 invalidate_state(&mut track, "Documentation changed after finalization");
             }
         }
@@ -2868,8 +3022,13 @@ impl WorkspaceApp {
                 TrackStatus::Active
             };
         }
-        self.persistence.save_track(&track)?;
+        // Avoid normalizing old JSON records on a read-only load merely due to
+        // new serde-default fields. Persist only a real semantic state change.
+        if serde_json::to_vec(&track)? != stored_track_state {
+            self.persistence.save_track(&track)?;
+        }
         let cover_evidence_id = final_artwork_evidence_id(&evidence);
+        let automation = workflow::automation_summary(&track, &evidence);
         Ok(TrackDetail {
             id: track.id.clone(),
             title: track.fields.title.clone(),
@@ -2885,6 +3044,7 @@ impl WorkspaceApp {
             workflow_id: track.workflow_id.clone(),
             workflow_version: track.workflow_version.clone(),
             profile_snapshot: track.profile_snapshot.clone(),
+            automation,
             fields: track.fields.clone(),
             steps: evaluation.steps,
             evidence,
@@ -2909,6 +3069,7 @@ impl WorkspaceApp {
         )?;
         let progress = workflow::progress(&track, &track.profile_snapshot, &evidence, &deviations)?;
         let cover_evidence_id = final_artwork_evidence_id(&evidence);
+        let automation = workflow::automation_summary(&track, &evidence);
         Ok(TrackDetail {
             id: track.id.clone(),
             title: track.fields.title.clone(),
@@ -2924,6 +3085,7 @@ impl WorkspaceApp {
             workflow_id: track.workflow_id.clone(),
             workflow_version: track.workflow_version.clone(),
             profile_snapshot: track.profile_snapshot.clone(),
+            automation,
             fields: track.fields.clone(),
             steps: evaluation.steps,
             evidence,
@@ -3069,6 +3231,24 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+fn workflow_version_mismatch(track: &TrackRecord) -> Result<Option<String>> {
+    let current = workflow::config()?;
+    if track.workflow_id == current.id && track.workflow_version == current.version {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "Workflow {} {} is stored for this track, but {} {} is current. Re-evaluate the track explicitly before generating documents, hashes, or a certificate.",
+        track.workflow_id, track.workflow_version, current.id, current.version
+    )))
+}
+
+fn ensure_current_workflow(track: &TrackRecord) -> Result<()> {
+    if let Some(message) = workflow_version_mismatch(track)? {
+        return Err(AppError::Validation(message));
+    }
+    Ok(())
+}
+
 fn invalidate_state(track: &mut TrackRecord, reason: &str) {
     track.certificate.valid = false;
     track.certificate.invalidated_at = Some(now());
@@ -3078,6 +3258,81 @@ fn invalidate_state(track: &mut TrackRecord, reason: &str) {
 fn mark_content_changed(track: &mut TrackRecord) {
     track.documents.current = false;
     track.integrity = IntegrityState::default();
+}
+
+/// Reconciles only facts that SunoDM previously populated itself. Existing
+/// user values are never overwritten: a differing embedded date is surfaced
+/// by the workflow consistency gate instead.
+fn reconcile_evidence_derived_fields(track: &mut TrackRecord, evidence: &[EvidenceItem]) -> bool {
+    let suno = evidence.iter().find(|item| {
+        item.role == EvidenceRole::SunoFinalExport
+            && item.verified
+            && item.verification_error.is_none()
+            && item.sha256.is_some()
+            && item.metadata.suno_studio_detected
+            && !item.metadata.suno_created_timestamp.trim().is_empty()
+            && !item.metadata.suno_created_date.trim().is_empty()
+    });
+    let derived = suno.map(|item| EvidenceDerivedField {
+        value: item.metadata.suno_created_date.clone(),
+        original_value: item.metadata.suno_created_timestamp.clone(),
+        evidence_id: item.id.clone(),
+        evidence_sha256: item.sha256.clone().unwrap_or_default(),
+    });
+
+    let mut changed = reconcile_derived_value(
+        &mut track.fields.suno_final_generation_date,
+        &mut track.field_origins.suno_final_generation_date,
+        derived.as_ref(),
+        true,
+    );
+    let production_date_is_plausible = derived.as_ref().is_some_and(|value| {
+        track.fields.production_start_date.trim().is_empty()
+            || value.value.as_str() >= track.fields.production_start_date.as_str()
+    });
+    changed |= reconcile_derived_value(
+        &mut track.fields.production_end_date,
+        &mut track.field_origins.production_end_date,
+        derived.as_ref(),
+        track.fields.post_export_editing_performed == Some(false) && production_date_is_plausible,
+    );
+    changed
+}
+
+fn reconcile_derived_value(
+    field: &mut String,
+    origin: &mut Option<EvidenceDerivedField>,
+    derived: Option<&EvidenceDerivedField>,
+    permitted: bool,
+) -> bool {
+    let previous_field = field.clone();
+    let previous_origin = origin.clone();
+
+    // A value that no longer equals the last automatic assignment has been
+    // edited by the user and immediately ceases to be system-owned.
+    if origin
+        .as_ref()
+        .is_some_and(|recorded| field != &recorded.value)
+    {
+        *origin = None;
+    }
+
+    if let Some(value) = derived.filter(|_| permitted) {
+        if origin.is_some() || field.trim().is_empty() {
+            *field = value.value.clone();
+            *origin = Some(value.clone());
+        }
+    } else {
+        if origin
+            .as_ref()
+            .is_some_and(|recorded| field == &recorded.value)
+        {
+            field.clear();
+        }
+        *origin = None;
+    }
+
+    *field != previous_field || *origin != previous_origin
 }
 
 fn directory_is_empty_or_missing(path: &Path) -> Result<bool> {
@@ -3702,8 +3957,36 @@ fn validate_evidence_metadata(role: &EvidenceRole, metadata: &EvidenceMetadata) 
             metadata.referenced_artifact.as_str(),
             4000,
         ),
+        (
+            "Evidence file extension",
+            metadata.file_extension.as_str(),
+            32,
+        ),
+        ("Evidence MIME type", metadata.mime_type.as_str(), 200),
+        ("Evidence audio format", metadata.audio_format.as_str(), 200),
+        (
+            "Suno created timestamp",
+            metadata.suno_created_timestamp.as_str(),
+            200,
+        ),
+        ("Suno created date", metadata.suno_created_date.as_str(), 10),
+        ("Suno technical ID", metadata.suno_id.as_str(), 200),
+        (
+            "Raw embedded Suno metadata",
+            metadata.suno_raw_metadata.as_str(),
+            65_536,
+        ),
     ] {
         validate_multiline_text(name, value, max)?;
+    }
+    if metadata.embedded_metadata.len() > 256 {
+        return Err(AppError::Validation(
+            "Evidence contains too many embedded metadata entries.".into(),
+        ));
+    }
+    for entry in &metadata.embedded_metadata {
+        validate_multiline_text("Embedded metadata key", &entry.key, 128)?;
+        validate_multiline_text("Embedded metadata value", &entry.value, 65_536)?;
     }
     for (name, value) in [
         ("Evidence retrieval date", metadata.retrieval_date.as_str()),
@@ -4226,6 +4509,8 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{EmbeddedMetadata, FactOrigin};
+    use crate::workflow::CoverageStatus;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
@@ -4263,7 +4548,6 @@ mod tests {
             .update_track(
                 &created.id,
                 TrackPatch {
-                    production_end_date: Some("2026-08-02".into()),
                     suno_model: Some("v4.5".into()),
                     suno_project_url: Some("https://suno.com/song/acceptance-track".into()),
                     suno_project_version_id: Some("acceptance-project-version".into()),
@@ -5944,7 +6228,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_release_and_artwork_roles_are_singular() {
+    fn authoritative_release_suno_and_artwork_roles_are_singular() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
@@ -5996,6 +6280,13 @@ mod tests {
             .join(".archive/evidence-replacements")
             .is_dir());
 
+        app.import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &first_wav)
+            .expect("first Suno export import");
+        assert!(matches!(
+            app.import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &second_wav),
+            Err(AppError::Validation(_))
+        ));
+
         let first_art = fixtures.join("first.png");
         let second_art = fixtures.join("second.jpeg");
         image::RgbaImage::from_pixel(64, 64, image::Rgba([20, 30, 40, 255]))
@@ -6016,6 +6307,14 @@ mod tests {
                 .evidence
                 .iter()
                 .filter(|item| item.role == EvidenceRole::ReleaseWav)
+                .count(),
+            1
+        );
+        assert_eq!(
+            current
+                .evidence
+                .iter()
+                .filter(|item| item.role == EvidenceRole::SunoFinalExport)
                 .count(),
             1
         );
@@ -6554,9 +6853,7 @@ mod tests {
                     suno_project_url: Some("https://suno.com/song/test-track".into()),
                     suno_project_version_id: Some("project-end-to-end-v1".into()),
                     suno_final_generation_id: Some("generation-end-to-end".into()),
-                    suno_final_generation_date: Some("2026-08-02".into()),
                     suno_final_generation_time: Some("14:35".into()),
-                    suno_download_export_date: Some("2026-08-03".into()),
                     suno_plan_at_creation: Some("Pro".into()),
                     final_export_date: Some("2026-08-03".into()),
                     lyrics_source: Some("instrumental".into()),
@@ -6589,8 +6886,9 @@ mod tests {
         let release_master = fixture_root.join("release-master.wav");
         let ai_original = fixture_root.join("ai-original.png");
         let subscription = fixture_root.join("subscription.pdf");
-        fs::write(&suno_export, b"RIFF\x08\0\0\0WAVEsuno evidence").expect("Suno fixture");
-        fs::write(&release_master, b"RIFF\x08\0\0\0WAVErelease evidence").expect("release fixture");
+        let final_audio = p0_pcm_wav(Some(&p0_suno_comment("2026-08-02T06:38:06Z")));
+        fs::write(&suno_export, &final_audio).expect("Suno fixture");
+        fs::write(&release_master, &final_audio).expect("byte-identical release fixture");
         image::RgbaImage::from_pixel(640, 640, image::Rgba([24, 48, 96, 255]))
             .save(&ai_original)
             .expect("AI artwork fixture");
@@ -6601,8 +6899,17 @@ mod tests {
         .expect("subscription fixture");
         app.import_evidence_from(&updated.id, EvidenceRole::SunoFinalExport, &suno_export)
             .expect("Suno evidence import");
-        app.import_evidence_from(&updated.id, EvidenceRole::ReleaseWav, &release_master)
+        let automated = app
+            .import_evidence_from(&updated.id, EvidenceRole::ReleaseWav, &release_master)
             .expect("release evidence import");
+        assert_eq!(automated.fields.suno_final_generation_date, "2026-08-02");
+        assert_eq!(automated.fields.production_end_date, "2026-08-02");
+        assert!(automated.fields.suno_download_export_date.is_empty());
+        assert_eq!(
+            automated.automation.final_generation_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert!(automated.automation.release_identical_to_suno_export);
         app.update_track(
             &updated.id,
             TrackPatch {
@@ -6709,6 +7016,38 @@ mod tests {
         assert!(manifest.contains("05_ARTWORK/End-To-End_AI_EDITED.png"));
         assert!(manifest.contains("05_ARTWORK/End-To-End_FINAL.png"));
         assert!(manifest.contains("sourceGlobalEvidenceId"));
+        let manifest_json: serde_json::Value =
+            serde_json::from_str(&manifest).expect("manifest JSON");
+        assert_eq!(manifest_json["schema_version"].as_u64(), Some(3));
+        assert_eq!(
+            manifest_json["evidence_derived_metadata"]["suno_created_timestamp"].as_str(),
+            Some("2026-08-02T06:38:06Z")
+        );
+        assert_eq!(
+            manifest_json["evidence_derived_metadata"]["suno_id"].as_str(),
+            Some(P0_SUNO_ID)
+        );
+        assert_eq!(
+            manifest_json["system_verification"]["fact_origins"]["final_suno_generation_date"]
+                .as_str(),
+            Some("evidence_derived_metadata")
+        );
+        assert_eq!(
+            manifest_json["system_verification"]["release_identical_to_suno_export"].as_bool(),
+            Some(true)
+        );
+        assert!(manifest_json["system_verification"]["byte_identical_pairs"]
+            .as_array()
+            .is_some_and(|pairs| !pairs.is_empty()));
+
+        let markdown = fs::read_to_string(track_root.join(certificate::CERTIFICATE_FILE))
+            .expect("Markdown certificate");
+        assert!(markdown.contains("Final generation date [Evidence-derived metadata]: 2026-08-02"));
+        assert!(markdown.contains("Suno Studio metadata detected: **YES**"));
+        assert!(markdown.contains("Release identical to Suno final export: **YES**"));
+        assert!(markdown.contains("Download/export date [User-confirmed fact]: Not documented"));
+        assert!(!markdown.contains("2026-08-02T06:38:06Z"));
+        assert!(!markdown.contains(P0_SUNO_ID));
     }
 
     #[test]
@@ -7532,12 +7871,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_scan_keeps_one_final_artwork_singular_and_marks_duplicate_ambiguous() {
+    fn legacy_scan_never_arbitrarily_selects_duplicate_singular_candidates() {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory.path().join("workspace");
         let app = WorkspaceApp::open(&workspace, true).expect("workspace");
         let legacy_root = workspace.join("Legacy Artwork Candidates");
         fs::create_dir_all(legacy_root.join("05_ARTWORK")).expect("legacy artwork directory");
+        fs::create_dir_all(legacy_root.join("02_SUNO")).expect("legacy Suno directory");
         fs::write(
             legacy_root.join("05_ARTWORK/a_final.png"),
             b"\x89PNG\r\n\x1a\nfirst legacy final",
@@ -7548,6 +7888,16 @@ mod tests {
             b"\x89PNG\r\n\x1a\nsecond legacy final",
         )
         .expect("second final artwork candidate");
+        fs::write(
+            legacy_root.join("02_SUNO/a-export.wav"),
+            b"RIFF\x08\0\0\0WAVEfirst legacy Suno candidate",
+        )
+        .expect("first Suno candidate");
+        fs::write(
+            legacy_root.join("02_SUNO/b-export.wav"),
+            b"RIFF\x08\0\0\0WAVEsecond legacy Suno candidate",
+        )
+        .expect("second Suno candidate");
 
         app.scan_workspace().expect("legacy artwork scan");
         let track = app
@@ -7559,25 +7909,22 @@ mod tests {
             .persistence
             .evidence(&track.id)
             .expect("legacy artwork evidence");
-        let final_items = evidence
-            .iter()
-            .filter(|item| item.role == EvidenceRole::FinalArtwork)
-            .collect::<Vec<_>>();
         let ambiguous_items = evidence
             .iter()
             .filter(|item| item.role == EvidenceRole::Other)
             .collect::<Vec<_>>();
-        assert_eq!(final_items.len(), 1);
-        assert_eq!(ambiguous_items.len(), 1);
-        assert_eq!(final_items[0].relative_path, "05_ARTWORK/a_final.png");
-        assert_eq!(ambiguous_items[0].relative_path, "05_ARTWORK/b_final.png");
+        assert!(!evidence.iter().any(|item| matches!(
+            item.role,
+            EvidenceRole::FinalArtwork | EvidenceRole::SunoFinalExport
+        )));
+        assert_eq!(ambiguous_items.len(), 4);
         assert!(evidence.iter().all(|item| {
             item.provenance == EvidenceProvenance::IndexedLegacy && !item.verified
         }));
-        assert!(ambiguous_items[0]
+        assert!(ambiguous_items.iter().all(|item| item
             .verification_error
             .as_deref()
-            .is_some_and(|message| message.contains("ambiguous duplicate")));
+            .is_some_and(|message| message.contains("ambiguous duplicate"))));
     }
 
     #[test]
@@ -8471,13 +8818,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_upgrade_archives_finalized_v13_and_requires_fresh_v14_outputs() {
+    fn workflow_upgrade_archives_finalized_v14_and_requires_fresh_v15_outputs() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
         let finalized =
             finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
-        assert_eq!(finalized.workflow_version, "1.3");
+        assert_eq!(finalized.workflow_version, "1.4");
         let track_root = app.root().join(&finalized.relative_path);
         let certificate_before = certificate_file_snapshot(&track_root);
         let hashes_before =
@@ -8494,17 +8841,17 @@ mod tests {
             )
             .expect("stored old-workflow override");
 
-        let workflow_v14 = workflow::config_with_version_for_test("1.4")
-            .expect("test-only workflow 1.4 configuration");
+        let workflow_v15 = workflow::config_with_version_for_test("1.5")
+            .expect("test-only workflow 1.5 configuration");
         let upgraded = app
-            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v14)
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v15)
             .expect("explicit workflow reevaluation")
             .track
             .expect("upgraded track detail");
 
         assert_eq!(upgraded.status, TrackStatus::Active);
         assert_eq!(upgraded.workflow_id, "suno-track");
-        assert_eq!(upgraded.workflow_version, "1.4");
+        assert_eq!(upgraded.workflow_version, "1.5");
         assert!(!upgraded.documents.current);
         assert!(!upgraded.integrity.generated);
         assert!(!upgraded.integrity.verified);
@@ -8543,12 +8890,1116 @@ mod tests {
         }
 
         assert!(matches!(
-            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v14),
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v15),
             Err(AppError::Validation(_))
         ));
         assert_eq!(
             fs::read_dir(track_root.join(".archive/revisions"))
                 .expect("unchanged revision archive")
+                .count(),
+            1
+        );
+    }
+
+    const P0_SUNO_ID: &str = "6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+
+    fn p0_suno_comment(timestamp: &str) -> String {
+        format!("made with suno studio; created={timestamp}; id={P0_SUNO_ID}")
+    }
+
+    /// Test-only RIFF encoder. It intentionally does not call any production
+    /// parser or fixture utility, so malformed parser offsets cannot be masked
+    /// by an encoder sharing the same implementation.
+    fn p0_pcm_wav(comment: Option<&str>) -> Vec<u8> {
+        let entries = comment
+            .map(|value| vec![(*b"ICMT", value.as_bytes().to_vec())])
+            .unwrap_or_default();
+        p0_pcm_wav_with_info_entries(&entries)
+    }
+
+    fn p0_pcm_wav_with_info_entries(entries: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+        fn append_chunk(destination: &mut Vec<u8>, id: &[u8; 4], payload: &[u8]) {
+            destination.extend_from_slice(id);
+            destination.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            destination.extend_from_slice(payload);
+            if payload.len() % 2 == 1 {
+                destination.push(0);
+            }
+        }
+
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1_u16.to_le_bytes());
+        fmt.extend_from_slice(&2_u16.to_le_bytes());
+        fmt.extend_from_slice(&48_000_u32.to_le_bytes());
+        fmt.extend_from_slice(&192_000_u32.to_le_bytes());
+        fmt.extend_from_slice(&4_u16.to_le_bytes());
+        fmt.extend_from_slice(&16_u16.to_le_bytes());
+
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, b"fmt ", &fmt);
+        append_chunk(&mut chunks, b"data", &vec![0; 1_920]);
+        if !entries.is_empty() {
+            let mut info = b"INFO".to_vec();
+            for (id, entry) in entries {
+                let mut value = entry.clone();
+                value.push(0);
+                append_chunk(&mut info, id, &value);
+            }
+            append_chunk(&mut chunks, b"LIST", &info);
+        }
+
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&((4 + chunks.len()) as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(&chunks);
+        wav
+    }
+
+    fn p0_track(
+        app: &WorkspaceApp,
+        title: &str,
+        post_export_editing: Option<bool>,
+        commercial_use_intended: bool,
+    ) -> TrackDetail {
+        let created = app
+            .create_track(CreateTrackInput {
+                title: title.into(),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended,
+                library: TrackLibraryPlacement::default(),
+            })
+            .expect("P0 track creation");
+        let Some(post_export_editing) = post_export_editing else {
+            return created;
+        };
+        app.update_track(
+            &created.id,
+            TrackPatch {
+                post_export_editing_performed: Some(post_export_editing),
+                post_export_editing_details: post_export_editing
+                    .then(|| "Mastering after the Suno export".into()),
+                ..TrackPatch::default()
+            },
+        )
+        .expect("P0 post-export fact")
+    }
+
+    fn p0_evidence(detail: &TrackDetail, role: EvidenceRole) -> &EvidenceItem {
+        detail
+            .evidence
+            .iter()
+            .find(|item| item.role == role)
+            .expect("P0 evidence role")
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct P0RawFinalizedRows {
+        track_data_json: String,
+        track_updated_at: String,
+        track_status: String,
+        track_workflow_version: String,
+        evidence_metadata_json: String,
+        evidence_imported_at: String,
+        evidence_verified: i64,
+        evidence_verification_error: Option<String>,
+        evidence_sha256: Option<String>,
+        evidence_size_bytes: i64,
+    }
+
+    fn p0_raw_finalized_rows(
+        app: &WorkspaceApp,
+        track_id: &str,
+        evidence_id: &str,
+    ) -> P0RawFinalizedRows {
+        let connection = app.persistence.open().expect("raw workspace database");
+        let (track_data_json, track_updated_at, track_status, track_workflow_version) = connection
+            .query_row(
+                "SELECT data_json,updated_at,status,workflow_version FROM tracks WHERE id=?1",
+                [track_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("raw finalized track row");
+        let (
+            evidence_metadata_json,
+            evidence_imported_at,
+            evidence_verified,
+            evidence_verification_error,
+            evidence_sha256,
+            evidence_size_bytes,
+        ) = connection
+            .query_row(
+                "SELECT metadata_json,imported_at,verified,verification_error,sha256,size_bytes FROM evidence WHERE track_id=?1 AND id=?2",
+                rusqlite::params![track_id, evidence_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("raw finalized evidence row");
+        P0RawFinalizedRows {
+            track_data_json,
+            track_updated_at,
+            track_status,
+            track_workflow_version,
+            evidence_metadata_json,
+            evidence_imported_at,
+            evidence_verified,
+            evidence_verification_error,
+            evidence_sha256,
+            evidence_size_bytes,
+        }
+    }
+
+    #[test]
+    fn p0_suno_import_persists_exact_metadata_and_only_derives_generation_date() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Metadata Import", None, false);
+        let raw = p0_suno_comment("2026-08-17T06:38:06Z");
+        let source = directory.path().join("suno-metadata.wav");
+        let wav = p0_pcm_wav(Some(&raw));
+        fs::write(&source, &wav).expect("write Suno WAV");
+
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("import Suno WAV");
+        let evidence = p0_evidence(&imported, EvidenceRole::SunoFinalExport);
+
+        assert!(evidence.verified);
+        assert!(evidence
+            .sha256
+            .as_deref()
+            .is_some_and(|hash| !hash.is_empty()));
+        assert_eq!(evidence.size_bytes, wav.len() as u64);
+        assert_eq!(evidence.metadata.original_file_name, "suno-metadata.wav");
+        assert_eq!(evidence.metadata.file_extension, "wav");
+        assert_eq!(evidence.metadata.mime_type, "audio/wav");
+        assert_eq!(evidence.metadata.audio_format, "WAV");
+        assert_eq!(evidence.metadata.audio_channels, Some(2));
+        assert_eq!(evidence.metadata.audio_sample_rate_hz, Some(48_000));
+        assert_eq!(evidence.metadata.audio_duration_milliseconds, Some(10));
+        assert_eq!(evidence.metadata.audio_bit_depth, Some(16));
+        assert_eq!(
+            evidence.metadata.embedded_metadata,
+            vec![EmbeddedMetadata {
+                key: "ICMT".into(),
+                value: raw.clone(),
+            }]
+        );
+        assert!(evidence.metadata.suno_studio_detected);
+        assert_eq!(
+            evidence.metadata.suno_created_timestamp,
+            "2026-08-17T06:38:06Z"
+        );
+        assert_eq!(evidence.metadata.suno_created_date, "2026-08-17");
+        assert_eq!(evidence.metadata.suno_id, P0_SUNO_ID);
+        assert_eq!(evidence.metadata.suno_raw_metadata, raw);
+        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(
+            imported.automation.final_generation_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert!(imported.fields.production_end_date.is_empty());
+        assert!(imported.fields.suno_download_export_date.is_empty());
+        assert!(imported.fields.final_export_date.is_empty());
+    }
+
+    #[test]
+    fn p0_no_post_editing_derives_production_end_and_identical_release_passes() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Identical Audio", Some(false), false);
+        let raw = p0_suno_comment("2026-08-17T06:38:06Z");
+        let bytes = p0_pcm_wav(Some(&raw));
+        let suno_source = directory.path().join("separate-suno.wav");
+        let release_source = directory.path().join("separate-release.wav");
+        fs::write(&suno_source, &bytes).expect("write Suno source");
+        fs::write(&release_source, &bytes).expect("write release source");
+
+        app.import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &suno_source)
+            .expect("import Suno WAV");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::ReleaseWav, &release_source)
+            .expect("import byte-identical release WAV");
+        let suno = p0_evidence(&imported, EvidenceRole::SunoFinalExport);
+        let release = p0_evidence(&imported, EvidenceRole::ReleaseWav);
+
+        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(imported.fields.production_end_date, "2026-08-17");
+        assert_eq!(
+            imported.automation.production_end_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(suno.sha256, release.sha256);
+        assert!(imported.automation.release_identical_to_suno_export);
+        assert!(imported.automation.byte_identical_pairs.iter().any(|pair| {
+            pair.sha256 == suno.sha256.clone().unwrap_or_default()
+                && matches!(
+                    (pair.left_role, pair.right_role),
+                    (EvidenceRole::SunoFinalExport, EvidenceRole::ReleaseWav)
+                        | (EvidenceRole::ReleaseWav, EvidenceRole::SunoFinalExport)
+                )
+        }));
+    }
+
+    #[test]
+    fn p0_post_editing_never_leaves_an_automatic_production_end() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let raw = p0_suno_comment("2026-08-17T06:38:06Z");
+
+        let edited_first = p0_track(&app, "P0 Editing Before Import", Some(true), false);
+        let edited_first_source = directory.path().join("edited-first.wav");
+        fs::write(&edited_first_source, p0_pcm_wav(Some(&raw))).expect("write first WAV");
+        let edited_first = app
+            .import_evidence_from(
+                &edited_first.id,
+                EvidenceRole::SunoFinalExport,
+                &edited_first_source,
+            )
+            .expect("import after editing answer");
+        assert_eq!(edited_first.fields.suno_final_generation_date, "2026-08-17");
+        assert!(edited_first.fields.production_end_date.is_empty());
+        assert_eq!(
+            edited_first.automation.production_end_origin,
+            FactOrigin::NotDocumented
+        );
+
+        let automated_first = p0_track(&app, "P0 Editing After Import", Some(false), false);
+        let automated_source = directory.path().join("automated-first.wav");
+        fs::write(&automated_source, p0_pcm_wav(Some(&raw))).expect("write second WAV");
+        let automated_first = app
+            .import_evidence_from(
+                &automated_first.id,
+                EvidenceRole::SunoFinalExport,
+                &automated_source,
+            )
+            .expect("derive production end before editing answer changes");
+        assert_eq!(automated_first.fields.production_end_date, "2026-08-17");
+
+        let editing_enabled = app
+            .update_track(
+                &automated_first.id,
+                TrackPatch {
+                    post_export_editing_performed: Some(true),
+                    post_export_editing_details: Some("Mastering after export".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("record post-export editing");
+        assert!(editing_enabled.fields.production_end_date.is_empty());
+        assert_eq!(
+            editing_enabled.automation.production_end_origin,
+            FactOrigin::NotDocumented
+        );
+
+        let manual_end = app
+            .update_track(
+                &automated_first.id,
+                TrackPatch {
+                    production_end_date: Some("2026-08-20".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("record actual post-mastering end");
+        assert_eq!(manual_end.fields.production_end_date, "2026-08-20");
+        assert_eq!(
+            manual_end.automation.production_end_origin,
+            FactOrigin::UserConfirmedFact
+        );
+    }
+
+    #[test]
+    fn p0_plain_wav_uses_manual_fallback_without_inventing_suno_values() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Plain WAV", Some(false), false);
+        let source = directory.path().join("plain.wav");
+        fs::write(&source, p0_pcm_wav(None)).expect("write plain WAV");
+
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("plain WAV import remains valid");
+        let evidence = p0_evidence(&imported, EvidenceRole::SunoFinalExport);
+
+        assert_eq!(evidence.metadata.audio_format, "WAV");
+        assert_eq!(evidence.metadata.audio_channels, Some(2));
+        assert!(!evidence.metadata.suno_studio_detected);
+        assert!(evidence.metadata.suno_created_timestamp.is_empty());
+        assert!(evidence.metadata.suno_created_date.is_empty());
+        assert!(evidence.metadata.suno_id.is_empty());
+        assert!(evidence.metadata.suno_raw_metadata.is_empty());
+        assert!(imported.fields.suno_final_generation_date.is_empty());
+        assert!(imported.fields.production_end_date.is_empty());
+        assert_eq!(
+            imported.automation.final_generation_origin,
+            FactOrigin::NotDocumented
+        );
+        assert!(imported.automation.consistency_issues.is_empty());
+    }
+
+    #[test]
+    fn p0_optional_control_metadata_is_ignored_without_losing_valid_suno_facts() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Optional Control", Some(false), false);
+        let raw = p0_suno_comment("2026-08-17T06:38:06Z");
+        let source = directory.path().join("optional-control.wav");
+        fs::write(
+            &source,
+            p0_pcm_wav_with_info_entries(&[
+                (*b"IART", b"unsafe\x01artist".to_vec()),
+                (*b"ICMT", raw.as_bytes().to_vec()),
+            ]),
+        )
+        .expect("WAV with optional control metadata");
+
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("safe metadata subset imports");
+        let item = p0_evidence(&imported, EvidenceRole::SunoFinalExport);
+        assert_eq!(
+            item.metadata.embedded_metadata,
+            vec![EmbeddedMetadata {
+                key: "ICMT".into(),
+                value: raw.clone(),
+            }]
+        );
+        assert_eq!(item.metadata.suno_raw_metadata, raw);
+        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(imported.fields.production_end_date, "2026-08-17");
+    }
+
+    #[test]
+    fn p0_control_in_suno_comment_imports_wav_without_derived_facts() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Unsafe Suno Comment", Some(false), false);
+        let unsafe_raw = format!(
+            "made with suno studio; note=unsafe\x01text; created=2026-08-17T06:38:06Z; id={P0_SUNO_ID}"
+        );
+        let source = directory.path().join("unsafe-suno-comment.wav");
+        fs::write(
+            &source,
+            p0_pcm_wav_with_info_entries(&[(*b"ICMT", unsafe_raw.into_bytes())]),
+        )
+        .expect("WAV with unsafe Suno comment");
+
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("unsafe optional metadata does not reject WAV");
+        let item = p0_evidence(&imported, EvidenceRole::SunoFinalExport);
+        assert!(item.metadata.embedded_metadata.is_empty());
+        assert!(!item.metadata.suno_studio_detected);
+        assert!(item.metadata.suno_raw_metadata.is_empty());
+        assert!(imported.fields.suno_final_generation_date.is_empty());
+        assert!(imported.fields.production_end_date.is_empty());
+    }
+
+    #[test]
+    fn p0_manual_generation_conflict_is_preserved_and_blocks_the_workflow() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Manual Conflict", None, false);
+        let manual = app
+            .update_track(
+                &track.id,
+                TrackPatch {
+                    suno_final_generation_date: Some("2026-08-16".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("manual generation date");
+        let raw = p0_suno_comment("2026-08-17T06:38:06Z");
+        let source = directory.path().join("conflicting.wav");
+        fs::write(&source, p0_pcm_wav(Some(&raw))).expect("write conflicting WAV");
+
+        let imported = app
+            .import_evidence_from(&manual.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("import conflicting metadata without overwrite");
+
+        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-16");
+        assert_eq!(
+            imported.automation.final_generation_origin,
+            FactOrigin::UserConfirmedFact
+        );
+        let conflict = imported
+            .automation
+            .consistency_issues
+            .iter()
+            .find(|issue| issue.code == "suno_generation_date_conflict")
+            .expect("generation-date conflict");
+        assert!(conflict.blocking);
+        assert_eq!(
+            conflict.message,
+            "Abweichung zwischen Benutzerangabe und WAV-Metadaten erkannt."
+        );
+        assert!(imported
+            .missing_items
+            .iter()
+            .any(|item| item == &conflict.message));
+        let validation = app.validate_track(&manual.id).expect("workflow validation");
+        assert!(!validation.valid);
+        assert!(validation
+            .missing_items
+            .iter()
+            .any(|item| item == &conflict.message));
+    }
+
+    #[test]
+    fn p0_replacing_current_suno_export_updates_only_system_owned_values() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Replace Suno", Some(false), false);
+        let track = app
+            .update_track(
+                &track.id,
+                TrackPatch {
+                    suno_download_export_date: Some("2026-08-21".into()),
+                    final_export_date: Some("2026-08-22".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("manual export dates");
+        let first_source = directory.path().join("replace-first.wav");
+        fs::write(
+            &first_source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-17T06:38:06Z"))),
+        )
+        .expect("first Suno WAV");
+        let first = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &first_source)
+            .expect("first Suno import");
+        let evidence_id = p0_evidence(&first, EvidenceRole::SunoFinalExport)
+            .id
+            .clone();
+        assert_eq!(first.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(first.fields.production_end_date, "2026-08-17");
+
+        let second_source = directory.path().join("replace-second.wav");
+        fs::write(
+            &second_source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-18T06:38:06Z"))),
+        )
+        .expect("second Suno WAV");
+        let second = app
+            .replace_evidence_from(
+                &track.id,
+                &evidence_id,
+                EvidenceRole::SunoFinalExport,
+                &second_source,
+            )
+            .expect("replace current Suno export");
+        assert_eq!(second.fields.suno_final_generation_date, "2026-08-18");
+        assert_eq!(second.fields.production_end_date, "2026-08-18");
+        assert_eq!(second.fields.suno_download_export_date, "2026-08-21");
+        assert_eq!(second.fields.final_export_date, "2026-08-22");
+        assert_eq!(
+            second.automation.final_generation_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(
+            second.automation.production_end_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+
+        let manual_end = app
+            .update_track(
+                &track.id,
+                TrackPatch {
+                    production_end_date: Some("2026-08-20".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("manual production end override");
+        assert_eq!(
+            manual_end.automation.production_end_origin,
+            FactOrigin::UserConfirmedFact
+        );
+        let third_source = directory.path().join("replace-third.wav");
+        fs::write(
+            &third_source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-19T06:38:06Z"))),
+        )
+        .expect("third Suno WAV");
+        let third = app
+            .replace_evidence_from(
+                &track.id,
+                &evidence_id,
+                EvidenceRole::SunoFinalExport,
+                &third_source,
+            )
+            .expect("replace current Suno export again");
+
+        assert_eq!(third.fields.suno_final_generation_date, "2026-08-19");
+        assert_eq!(third.fields.production_end_date, "2026-08-20");
+        assert_eq!(
+            third.automation.production_end_origin,
+            FactOrigin::UserConfirmedFact
+        );
+        assert_eq!(third.fields.suno_download_export_date, "2026-08-21");
+        assert_eq!(third.fields.final_export_date, "2026-08-22");
+        assert_eq!(
+            third
+                .evidence
+                .iter()
+                .filter(|item| item.role == EvidenceRole::SunoFinalExport)
+                .count(),
+            1
+        );
+        let current = p0_evidence(&third, EvidenceRole::SunoFinalExport);
+        assert_eq!(current.id, evidence_id);
+        assert_eq!(
+            current.metadata.suno_created_timestamp,
+            "2026-08-19T06:38:06Z"
+        );
+    }
+
+    #[test]
+    fn p0_removing_suno_export_clears_only_automatic_values() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Remove Automatic", Some(false), false);
+        let track = app
+            .update_track(
+                &track.id,
+                TrackPatch {
+                    suno_download_export_date: Some("2026-08-21".into()),
+                    final_export_date: Some("2026-08-22".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("manual non-derived dates");
+        let source = directory.path().join("remove-automatic.wav");
+        fs::write(
+            &source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-17T06:38:06Z"))),
+        )
+        .expect("Suno WAV");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("Suno import");
+        let evidence_id = p0_evidence(&imported, EvidenceRole::SunoFinalExport)
+            .id
+            .clone();
+
+        let removed = app
+            .remove_evidence(&track.id, &evidence_id)
+            .expect("remove current Suno export");
+        assert!(removed.fields.suno_final_generation_date.is_empty());
+        assert!(removed.fields.production_end_date.is_empty());
+        assert_eq!(removed.fields.suno_download_export_date, "2026-08-21");
+        assert_eq!(removed.fields.final_export_date, "2026-08-22");
+        assert_eq!(
+            removed.automation.final_generation_origin,
+            FactOrigin::NotDocumented
+        );
+        assert_eq!(
+            removed.automation.production_end_origin,
+            FactOrigin::NotDocumented
+        );
+
+        let manual_track = p0_track(&app, "P0 Remove Preserves Manual", Some(false), false);
+        let manual_source = directory.path().join("remove-manual.wav");
+        fs::write(
+            &manual_source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-17T06:38:06Z"))),
+        )
+        .expect("second Suno WAV");
+        let manual_track = app
+            .import_evidence_from(
+                &manual_track.id,
+                EvidenceRole::SunoFinalExport,
+                &manual_source,
+            )
+            .expect("second Suno import");
+        let manual_id = p0_evidence(&manual_track, EvidenceRole::SunoFinalExport)
+            .id
+            .clone();
+        app.update_track(
+            &manual_track.id,
+            TrackPatch {
+                production_end_date: Some("2026-08-20".into()),
+                ..TrackPatch::default()
+            },
+        )
+        .expect("manual end override");
+        let removed_manual = app
+            .remove_evidence(&manual_track.id, &manual_id)
+            .expect("remove export with manual end");
+        assert!(removed_manual.fields.suno_final_generation_date.is_empty());
+        assert_eq!(removed_manual.fields.production_end_date, "2026-08-20");
+        assert_eq!(
+            removed_manual.automation.production_end_origin,
+            FactOrigin::UserConfirmedFact
+        );
+    }
+
+    #[test]
+    fn p0_metadata_derived_generation_date_feeds_subscription_coverage() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Subscription Coverage", Some(false), true);
+        let source = directory.path().join("coverage-suno.wav");
+        fs::write(
+            &source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-17T06:38:06Z"))),
+        )
+        .expect("coverage Suno WAV");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("metadata-derived generation date");
+        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
+
+        let receipt = directory.path().join("coverage-subscription.pdf");
+        fs::write(&receipt, b"%PDF-1.7\nsubscription receipt\n%%EOF\n").expect("subscription PDF");
+        let global = app
+            .register_global_evidence(
+                EvidenceRole::SubscriptionPayment,
+                &receipt,
+                Some("2026-08-01".into()),
+                Some("2026-08-31".into()),
+            )
+            .expect("global subscription evidence");
+        let attached = app
+            .attach_global_evidence(&track.id, &global.evidence.id)
+            .expect("attach covering subscription evidence");
+        let stored = app.persistence.track(&track.id).expect("stored track");
+
+        assert_eq!(
+            workflow::subscription_generation_coverage(&stored, &attached.evidence),
+            CoverageStatus::Yes
+        );
+        assert_eq!(
+            stored.field_origins.suno_final_generation_date,
+            Some(EvidenceDerivedField {
+                value: "2026-08-17".into(),
+                original_value: "2026-08-17T06:38:06Z".into(),
+                evidence_id: p0_evidence(&attached, EvidenceRole::SunoFinalExport)
+                    .id
+                    .clone(),
+                evidence_sha256: p0_evidence(&attached, EvidenceRole::SunoFinalExport)
+                    .sha256
+                    .clone()
+                    .expect("Suno SHA-256"),
+            })
+        );
+    }
+
+    #[test]
+    fn p0_finalized_pre_metadata_record_is_not_backfilled_on_load() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let fixture_root = directory.path().join("fixtures");
+        let ready = prepare_ready_track(&app, &fixture_root, "P0 Frozen Legacy Metadata");
+        let existing = p0_evidence(&ready, EvidenceRole::SunoFinalExport).clone();
+        let source = fixture_root.join("suno-export.wav");
+        fs::write(
+            &source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-02T06:38:06Z"))),
+        )
+        .expect("real Suno WAV bytes");
+        let replaced = app
+            .replace_evidence_from(
+                &ready.id,
+                &existing.id,
+                EvidenceRole::SunoFinalExport,
+                &source,
+            )
+            .expect("replace fixture with real WAV");
+        assert!(
+            p0_evidence(&replaced, EvidenceRole::SunoFinalExport)
+                .metadata
+                .suno_studio_detected
+        );
+        app.update_track(
+            &ready.id,
+            TrackPatch {
+                suno_export_filename_difference_confirmed: Some(true),
+                ..TrackPatch::default()
+            },
+        )
+        .expect("reconfirm fixture filename");
+
+        // Simulate a pre-feature evidence JSON row: the managed file already
+        // contains Suno metadata, while the persisted additive fields do not.
+        let mut legacy_evidence = app
+            .persistence
+            .evidence_item(&ready.id, &existing.id)
+            .expect("stored Suno evidence");
+        let original_file_name = legacy_evidence.metadata.original_file_name.clone();
+        legacy_evidence.metadata = EvidenceMetadata {
+            original_file_name,
+            ..EvidenceMetadata::default()
+        };
+        app.persistence
+            .save_evidence(&ready.id, &legacy_evidence)
+            .expect("seed pre-metadata evidence row");
+
+        app.generate_documents(&ready.id, false)
+            .expect("legacy-compatible documents");
+        app.calculate_hashes(&ready.id)
+            .expect("legacy-compatible hashes");
+        let validation = app
+            .validate_track(&ready.id)
+            .expect("legacy-compatible gate");
+        assert!(
+            validation.valid,
+            "missing={:?}; blocking={:?}",
+            validation.missing_items, validation.blocking_items
+        );
+        let finalized = app
+            .finalize_track(&ready.id)
+            .expect("finalize pre-metadata record")
+            .track
+            .expect("finalized detail");
+        let track_root = app.root().join(&finalized.relative_path);
+        let certificate_before = certificate_file_snapshot(&track_root);
+
+        // Simulate exact pre-feature JSON shapes. This catches a load path
+        // that deserializes additive defaults and needlessly writes the
+        // expanded current structures back.
+        let connection = app.persistence.open().expect("raw workspace database");
+        connection
+            .execute(
+                "UPDATE evidence SET metadata_json='{}' WHERE track_id=?1 AND id=?2",
+                rusqlite::params![ready.id, existing.id],
+            )
+            .expect("seed exact legacy metadata JSON");
+        let stored_track_json: String = connection
+            .query_row(
+                "SELECT data_json FROM tracks WHERE id=?1",
+                [ready.id.as_str()],
+                |row| row.get(0),
+            )
+            .expect("read current track JSON");
+        let mut legacy_track_json: serde_json::Value =
+            serde_json::from_str(&stored_track_json).expect("parse current track JSON");
+        legacy_track_json
+            .as_object_mut()
+            .expect("track JSON object")
+            .remove("fieldOrigins");
+        connection
+            .execute(
+                "UPDATE tracks SET data_json=?1 WHERE id=?2",
+                rusqlite::params![legacy_track_json.to_string(), ready.id],
+            )
+            .expect("seed exact legacy track JSON");
+        drop(connection);
+        let record_before = app.persistence.track(&ready.id).expect("frozen record");
+        let metadata_before = app
+            .persistence
+            .evidence_item(&ready.id, &existing.id)
+            .expect("frozen evidence")
+            .metadata;
+        assert!(!metadata_before.suno_studio_detected);
+        assert!(metadata_before.suno_created_timestamp.is_empty());
+        let raw_before = p0_raw_finalized_rows(&app, &ready.id, &existing.id);
+        assert_eq!(raw_before.evidence_metadata_json, "{}");
+        assert!(!raw_before.track_data_json.contains("fieldOrigins"));
+
+        let loaded = app.load_track(&ready.id).expect("load finalized record");
+        let metadata_after = p0_evidence(&loaded, EvidenceRole::SunoFinalExport)
+            .metadata
+            .clone();
+        let record_after = app.persistence.track(&ready.id).expect("record after load");
+        let raw_after = p0_raw_finalized_rows(&app, &ready.id, &existing.id);
+
+        assert_eq!(loaded.status, TrackStatus::Finalized);
+        assert!(loaded.certificate.valid);
+        assert_eq!(metadata_after, metadata_before);
+        assert_eq!(raw_after, raw_before);
+        assert_eq!(record_after.updated_at, record_before.updated_at);
+        assert_eq!(record_after.fields, record_before.fields);
+        assert_eq!(record_after.field_origins, record_before.field_origins);
+        assert_eq!(certificate_file_snapshot(&track_root), certificate_before);
+
+        app.list_tracks().expect("list finalized legacy track");
+        assert_eq!(
+            p0_raw_finalized_rows(&app, &ready.id, &existing.id),
+            raw_before
+        );
+        drop(app);
+
+        let reopened = WorkspaceApp::open(&directory.path().join("workspace"), false)
+            .expect("reopen workspace");
+        let reopened_track = reopened
+            .load_track(&ready.id)
+            .expect("load finalized track after reopen");
+        assert_eq!(reopened_track.status, TrackStatus::Finalized);
+        assert_eq!(
+            p0_raw_finalized_rows(&reopened, &ready.id, &existing.id),
+            raw_before
+        );
+        assert_eq!(certificate_file_snapshot(&track_root), certificate_before);
+
+        let revision = reopened
+            .create_revision(&ready.id)
+            .expect("explicit mutable revision")
+            .track
+            .expect("revision detail");
+        let analyzed = p0_evidence(&revision, EvidenceRole::SunoFinalExport);
+        assert_eq!(revision.status, TrackStatus::Active);
+        assert!(analyzed.metadata.suno_studio_detected);
+        assert_eq!(
+            analyzed.metadata.suno_created_timestamp,
+            "2026-08-02T06:38:06Z"
+        );
+    }
+
+    #[test]
+    fn evidence_import_rolls_back_file_and_database_when_track_commit_fails() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "Atomic Import", Some(false), false);
+        let source = directory.path().join("atomic-import.wav");
+        fs::write(
+            &source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-17T06:38:06Z"))),
+        )
+        .expect("atomic import WAV");
+        let relative = evidence::managed_relative_path(
+            &track.fields.title,
+            &EvidenceRole::SunoFinalExport,
+            &source,
+        )
+        .expect("planned managed path");
+        let track_before = serde_json::to_value(
+            app.persistence
+                .track(&track.id)
+                .expect("track before import"),
+        )
+        .expect("serialize track before import");
+        app.persistence
+            .open()
+            .expect("database")
+            .execute_batch(
+                "CREATE TRIGGER injected_track_save_failure BEFORE UPDATE ON tracks
+                 BEGIN SELECT RAISE(ABORT, 'injected track save failure'); END;",
+            )
+            .expect("failure trigger");
+
+        assert!(matches!(
+            app.import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source),
+            Err(AppError::Database(_))
+        ));
+        assert!(app
+            .persistence
+            .evidence(&track.id)
+            .expect("evidence after failed import")
+            .is_empty());
+        assert_eq!(
+            serde_json::to_value(
+                app.persistence
+                    .track(&track.id)
+                    .expect("track after import")
+            )
+            .expect("serialize track after import"),
+            track_before
+        );
+        assert!(!app
+            .root()
+            .join(&track.relative_path)
+            .join(relative)
+            .exists());
+    }
+
+    #[test]
+    fn evidence_replace_rolls_back_bytes_evidence_and_track_together() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "Atomic Replace", Some(false), false);
+        let first_source = directory.path().join("atomic-first.wav");
+        fs::write(
+            &first_source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-17T06:38:06Z"))),
+        )
+        .expect("first replacement WAV");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &first_source)
+            .expect("initial import");
+        let previous = p0_evidence(&imported, EvidenceRole::SunoFinalExport).clone();
+        let track_before = serde_json::to_value(
+            app.persistence
+                .track(&track.id)
+                .expect("track before replace"),
+        )
+        .expect("serialize track before replace");
+        let evidence_before = serde_json::to_value(
+            app.persistence
+                .evidence_item(&track.id, &previous.id)
+                .expect("evidence before replace"),
+        )
+        .expect("serialize evidence before replace");
+        let track_root = app.root().join(&track.relative_path);
+        let previous_path = track_root.join(&previous.relative_path);
+        let previous_bytes = fs::read(&previous_path).expect("previous managed bytes");
+        let second_source = directory.path().join("atomic-second.wav");
+        fs::write(
+            &second_source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-18T06:38:06Z"))),
+        )
+        .expect("second replacement WAV");
+        let second_relative = evidence::managed_relative_path(
+            &track.fields.title,
+            &EvidenceRole::SunoFinalExport,
+            &second_source,
+        )
+        .expect("second managed path");
+        app.persistence
+            .open()
+            .expect("database")
+            .execute_batch(
+                "CREATE TRIGGER injected_track_save_failure BEFORE UPDATE ON tracks
+                 BEGIN SELECT RAISE(ABORT, 'injected track save failure'); END;",
+            )
+            .expect("failure trigger");
+
+        assert!(matches!(
+            app.replace_evidence_from(
+                &track.id,
+                &previous.id,
+                EvidenceRole::SunoFinalExport,
+                &second_source,
+            ),
+            Err(AppError::Database(_))
+        ));
+        assert_eq!(
+            serde_json::to_value(
+                app.persistence
+                    .track(&track.id)
+                    .expect("track after replace")
+            )
+            .expect("serialize track after replace"),
+            track_before
+        );
+        assert_eq!(
+            serde_json::to_value(
+                app.persistence
+                    .evidence_item(&track.id, &previous.id)
+                    .expect("evidence after replace")
+            )
+            .expect("serialize evidence after replace"),
+            evidence_before
+        );
+        assert_eq!(
+            fs::read(&previous_path).expect("restored managed bytes"),
+            previous_bytes
+        );
+        assert!(!track_root.join(second_relative).exists());
+    }
+
+    #[test]
+    fn outdated_workflow_blocks_new_outputs_until_explicit_reevaluation() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let created = p0_track(&app, "Outdated Workflow", None, false);
+        let mut stale = app.persistence.track(&created.id).expect("stored track");
+        stale.workflow_version = "1.3".into();
+        app.persistence
+            .save_track(&stale)
+            .expect("seed old workflow");
+
+        let validation = app.validate_track(&created.id).expect("validation result");
+        assert!(!validation.valid);
+        assert!(validation
+            .blocking_items
+            .iter()
+            .any(|item| item.contains("Re-evaluate the track explicitly")));
+        for result in [
+            app.generate_documents(&created.id, false),
+            app.calculate_hashes(&created.id),
+            app.finalize_track(&created.id),
+        ] {
+            assert!(matches!(
+                result,
+                Err(AppError::Validation(message))
+                    if message.contains("Re-evaluate the track explicitly")
+            ));
+        }
+
+        let upgraded = app
+            .re_evaluate_track(&created.id)
+            .expect("explicit reevaluation")
+            .track
+            .expect("reevaluated track");
+        assert_eq!(upgraded.workflow_version, "1.4");
+    }
+
+    #[test]
+    fn superseded_tracks_reject_content_and_workflow_mutations() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let created = p0_track(&app, "Superseded Snapshot", None, false);
+        let mut superseded = app.persistence.track(&created.id).expect("stored track");
+        superseded.status = TrackStatus::Superseded;
+        superseded.workflow_version = "1.3".into();
+        app.persistence
+            .save_track(&superseded)
+            .expect("seed superseded snapshot");
+
+        assert!(matches!(
+            app.update_track(
+                &created.id,
+                TrackPatch {
+                    title: Some("Changed title".into()),
+                    ..TrackPatch::default()
+                },
+            ),
+            Err(AppError::Finalized)
+        ));
+        assert!(matches!(
+            app.update_track_library(&created.id, TrackLibraryPlacement::default()),
+            Err(AppError::Finalized)
+        ));
+        assert!(matches!(
+            app.import_evidence_from(
+                &created.id,
+                EvidenceRole::SunoFinalExport,
+                directory.path().join("unused.wav").as_path(),
+            ),
+            Err(AppError::Finalized)
+        ));
+        assert!(matches!(
+            app.re_evaluate_track(&created.id),
+            Err(AppError::Finalized)
+        ));
+    }
+
+    #[test]
+    fn revision_with_missing_suno_bytes_is_created_without_partial_failure() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let finalized = finalize_acceptance_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Missing Suno Revision",
+        );
+        let suno = p0_evidence(&finalized, EvidenceRole::SunoFinalExport).clone();
+        let track_root = app.root().join(&finalized.relative_path);
+        fs::remove_file(track_root.join(&suno.relative_path)).expect("remove Suno bytes");
+
+        let revision = app
+            .create_revision(&finalized.id)
+            .expect("revision despite missing Suno bytes")
+            .track
+            .expect("active revision");
+        assert_eq!(revision.status, TrackStatus::Active);
+        assert!(revision
+            .evidence
+            .iter()
+            .any(|item| item.id == suno.id && !item.verified));
+        assert_eq!(
+            fs::read_dir(track_root.join(".archive/revisions"))
+                .expect("revision archive")
                 .count(),
             1
         );

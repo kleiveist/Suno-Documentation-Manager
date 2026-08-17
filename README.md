@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-14 |
+| Last review | 2026-08-17 |
 | Audience | Users, contributors, and acceptance owners |
 | Related ATP | [Product acceptance plans](docs/atp/active/active.md) |
 
@@ -24,6 +24,7 @@ The certificate confirms completion of the configured documentation and integrit
 - reusable global Suno and artwork settings with track-specific snapshots;
 - a ten-step track documentation workflow;
 - safe local evidence import without deleting or silently replacing source files;
+- bounded extraction of structured Suno creation metadata and technical audio facts from imported WAV evidence;
 - explicit evidence provenance for managed imports, global copies, locally generated disclosure outputs, and indexed legacy files;
 - deterministic Markdown and text document generation;
 - local, reproducible visible disclosure for AI-generated or AI-assisted artwork;
@@ -107,7 +108,9 @@ Start with [Getting started](docs/usr/getting-started.md). Before finalization, 
 
 Step 10 now creates `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` directly in the track root. The local native renderer uses the same finalized structured snapshot as the Markdown certificate and evidence manifest; the PDF's SHA-256 is the fourth required entry in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`.
 
-Workflow 1.3 and certificate format 3.0 add explicit final Suno generation dates, instrumental and source-filename consistency checks, factual subscription coverage against the final-generation date, locally archived Suno terms/rights evidence, and optional external timestamp evidence. Project/version identifiers and a generation time are not requested. These are technical documentation facts only: the result does not certify authorship, ownership, non-infringement, legality, license validity, judicial weight, compliance, or governmental approval.
+Workflow 1.4 recognizes structured `made with suno studio` metadata in imported Suno WAV exports and records its validated `created` timestamp and `id` as evidence-derived metadata. The final-generation date is filled from that timestamp when no conflicting user-confirmed value exists. The production-end date is derived from the same evidence only after the user confirms that no post-export editing occurred; a real download date remains optional and is never inferred from the embedded creation time or filesystem dates. Manual contradictions, stale derivations, and inconsistent lineage appear as blockers in the existing workflow steps instead of creating a separate validation path.
+
+System verification compares SHA-256 values across all verified evidence and explicitly reports when the final release audio is byte-identical to the Suno export. Finalized snapshots remain immutable: metadata extraction never backfills them in place, while an explicitly created revision may analyze the carried evidence. Generated documents use template `1.6`; new finalizations write manifest schema `3` and certificate/PDF format `4.0`. These are technical documentation facts only: the result does not certify authorship, ownership, non-infringement, legality, license validity, judicial weight, compliance, or governmental approval.
 
 Archived Suno terms/rights files are selected once under `Einstellungen`. SunoDM stores the local global record with its factual metadata and SHA-256, then places a portable `global_copy` in every new or still editable project. Finalized snapshots are never changed; use a new revision before attaching newer global terms.
 
@@ -134,6 +137,8 @@ Every track evidence record has one explicit provenance value:
 | `indexed_legacy` | Discovered in an existing track folder and indexed conservatively rather than imported by the application |
 
 The portable `EVIDENCE_MANIFEST.json` retains that provenance. A generated disclosure also retains its source evidence ID, generator version, and exact disclosure text. The native finalization gate uses this lineage and byte hashes; an ordinary import with the same role is not accepted as proof that the application generated the disclosure.
+
+For supported WAV evidence, the manifest also retains system-observed file/audio properties and bounded structured metadata. Valid Suno `created` and `id` values keep their evidence ID and SHA-256 origin, so a later replacement, removal, or manual contradiction can be detected without treating a filename or filesystem timestamp as proof.
 
 Removing indexed legacy evidence is recoverable: the application moves a present file to `.archive/removals/<removal-id>/`, writes `removal.json`, and removes the index entry. Because the original path no longer exists, a later legacy scan does not re-index it. Historical content already under `06_CERTIFICATE/` is not treated as a failed finalization and is not moved unless the application-created `.archive/finalization-in-progress.json` marker proves that publication was interrupted.
 
@@ -239,6 +244,7 @@ Acceptance execution and remaining manual checks are recorded in the files under
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Documented workflow 1.4 evidence-derived Suno WAV metadata, conditional date automation, byte-identity verification, immutable revision handling, and artifact version updates. | Project team |
 | 2026-08-14 | Clarified the collapsible album/single folder tree in the user workflow. | Project team |
 | 2026-08-14 | Added the album/single library scope, workflow, persistence boundary, and detailed model link. | Project team |
 | 2026-08-13 | Documented evidence provenance, disclosure lineage, recoverable legacy removal, marker-based recovery, the Rust MSRV, and the version 0.1 path-race limitation. | Project team |

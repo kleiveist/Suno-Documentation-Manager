@@ -1,7 +1,7 @@
 <!-- suno-documentation-manager:template-v1 -->
 # Track documentation: Golden Signal
 
-Template version: `1.5`
+Template version: `1.6`
 Workflow: `suno-track-documentation` version `1.3`
 
 ## Snapshot

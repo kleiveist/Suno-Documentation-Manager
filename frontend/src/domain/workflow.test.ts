@@ -13,7 +13,9 @@ import {
   evidenceRoleFileTypes
 } from "./workflow";
 import {
+  emptyEvidenceMetadata,
   emptyProfile,
+  emptyTrackAutomation,
   emptyTrackFields,
   type EvidenceItem,
   type EvidenceRole,
@@ -43,9 +45,8 @@ function evidence(role: EvidenceRole): EvidenceItem {
     verified: true,
     provenance: "managed_copy",
     metadata: {
+      ...emptyEvidenceMetadata(),
       originalFileName: ["suno_final_export", "release_wav"].includes(role) ? "Complete Track.wav" : `${role}.dat`,
-      documentTitle: "", provider: "", sourceUrl: "", retrievalDate: "", effectiveDate: "",
-      factualNote: "", externalTimestamp: "", referencedHash: "", referencedArtifact: ""
     }
   };
 }
@@ -61,7 +62,7 @@ function completeTrack(): TrackDetail {
     sunoProjectVersionId: "project-version-1",
     sunoFinalGenerationId: "generation-1",
     sunoFinalGenerationDate: "2026-07-03",
-    sunoDownloadExportDate: "2026-07-03",
+    sunoDownloadExportDate: "",
     sunoPlanAtCreation: "Premier",
     finalExportDate: "2026-07-03",
     lyricsSource: "instrumental" as const,
@@ -86,12 +87,13 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.3",
+    workflowVersion: "1.4",
     profileSnapshot: structuredClone(profile),
+    automation: emptyTrackAutomation(),
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.5", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.6", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     blockingDeviations: []
@@ -173,6 +175,38 @@ describe("missing requirements", () => {
       missingItems: [],
       blockingItems: []
     });
+  });
+
+  it("allows an unknown download/export date without inventing precision", () => {
+    const track = completeTrack();
+    track.fields.sunoDownloadExportDate = "";
+
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("suno-download-date");
+    expect(finalizationGate(track, profile).valid).toBe(true);
+  });
+
+  it("assigns the final export date only to the release step", () => {
+    const track = completeTrack();
+    track.fields.finalExportDate = "";
+
+    expect(calculateMissingRequirements(track, profile)).toContainEqual(
+      expect.objectContaining({ id: "export-date", stepId: "release" })
+    );
+  });
+
+  it("mirrors each blocking native consistency issue once in its workflow step", () => {
+    const track = completeTrack();
+    track.automation.consistencyIssues = [{
+      code: "suno_generation_date_conflict",
+      message: "Abweichung zwischen Nutzerangabe und WAV-Metadaten erkannt.",
+      stepId: "suno",
+      blocking: true
+    }];
+
+    const matches = calculateMissingRequirements(track, profile)
+      .filter((item) => item.id === "consistency-suno_generation_date_conflict");
+    expect(matches).toEqual([expect.objectContaining({ stepId: "suno" })]);
+    expect(finalizationGate(track, profile).valid).toBe(false);
   });
 
   it("blocks contradictory instrumental, lyrics and confirmed human-work facts", () => {

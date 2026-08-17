@@ -1,6 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::model::{
-    BlockingDeviation, EvidenceItem, EvidenceRole, Profile, StepState, StepStatus, TrackRecord,
+    BlockingDeviation, EvidenceItem, EvidenceRole, FactOrigin, Profile, StepState, StepStatus,
+    TrackAutomation, TrackRecord,
 };
 use crate::workflow;
 use printpdf::{
@@ -32,6 +33,7 @@ const FOOTER_TEXT_Y_MM: f32 = 10.5;
 /// filter, or sort either slice.
 pub struct CertificatePdfSnapshot<'a> {
     pub track: &'a TrackRecord,
+    pub automation: &'a TrackAutomation,
     pub profile: &'a Profile,
     pub steps: &'a [StepState],
     pub evidence: &'a [&'a EvidenceItem],
@@ -590,33 +592,25 @@ fn render_final_suno_generation(layout: &mut PdfLayout, snapshot: &CertificatePd
     layout.section_title("C. Final Suno Generation");
     let fields = &snapshot.track.fields;
     let rows = vec![
-        TableRow::mono(
-            "Project URL [User-confirmed fact]",
-            documented(&fields.suno_project_url),
-        ),
         TableRow::plain(
-            "Suno account/profile [User-confirmed fact]",
-            documented(&snapshot.profile.suno_profile_name),
-        ),
-        TableRow::mono(
-            "Suno handle [User-confirmed fact]",
-            documented(&snapshot.profile.suno_handle),
-        ),
-        TableRow::plain(
-            "Final generation date [User-confirmed fact]",
+            "Final Suno generation",
             documented(&fields.suno_final_generation_date),
+        ),
+        TableRow::plain(
+            "Origin",
+            fact_origin_label(snapshot.automation.final_generation_origin),
+        ),
+        TableRow::plain(
+            "Suno Studio metadata detected",
+            yes_no_bool(snapshot.automation.suno_metadata_detected),
+        ),
+        TableRow::plain(
+            "Release identical to Suno final export",
+            yes_no_bool(snapshot.automation.release_identical_to_suno_export),
         ),
         TableRow::plain(
             "Download/export date [User-confirmed fact]",
             documented(&fields.suno_download_export_date),
-        ),
-        TableRow::plain(
-            "Model [User-confirmed fact]",
-            documented(&fields.suno_model),
-        ),
-        TableRow::plain(
-            "Plan [User-confirmed fact]",
-            documented(&fields.suno_plan_at_creation),
         ),
     ];
     layout.table_rows(&rows, 61.0);
@@ -1268,6 +1262,22 @@ fn documented(value: &str) -> &str {
     }
 }
 
+fn fact_origin_label(origin: FactOrigin) -> &'static str {
+    match origin {
+        FactOrigin::UserConfirmedFact => "User-confirmed fact",
+        FactOrigin::EvidenceDerivedMetadata => "Evidence-derived metadata",
+        FactOrigin::NotDocumented => "Not documented",
+    }
+}
+
+fn yes_no_bool(value: bool) -> &'static str {
+    if value {
+        "YES"
+    } else {
+        "NO"
+    }
+}
+
 fn evidence_original_file_name<'a>(
     evidence: &'a [&'a EvidenceItem],
     role: EvidenceRole,
@@ -1872,6 +1882,7 @@ mod tests {
 
     impl Fixture {
         fn new(evidence_count: usize) -> Self {
+            let workflow_config = workflow::config().expect("workflow fixture");
             let profile = Profile {
                 artist_name: "Künstlerin Änne Öster".into(),
                 suno_profile_name: "Studio Überklang".into(),
@@ -1903,10 +1914,11 @@ mod tests {
                 id: "track-fixture".into(),
                 relative_path: ".".into(),
                 status: TrackStatus::Ready,
-                workflow_id: "suno-track".into(),
-                workflow_version: "1.3".into(),
+                workflow_id: workflow_config.id.clone(),
+                workflow_version: workflow_config.version.clone(),
                 profile_snapshot: profile.clone(),
                 library: TrackLibraryPlacement::default(),
+                field_origins: Default::default(),
                 fields,
                 documents: DocumentState::default(),
                 integrity: IntegrityState::default(),
@@ -1915,8 +1927,7 @@ mod tests {
                 updated_at: "2026-01-04T00:00:00Z".into(),
                 legacy: false,
             };
-            let steps = workflow::config()
-                .expect("workflow fixture")
+            let steps = workflow_config
                 .steps
                 .into_iter()
                 .map(|step| StepState {
@@ -1949,8 +1960,10 @@ mod tests {
 
         fn generate_result(&self) -> Result<Vec<u8>> {
             let evidence_refs = self.evidence.iter().collect::<Vec<_>>();
+            let automation = workflow::automation_summary(&self.track, &self.evidence);
             generate_pdf(&CertificatePdfSnapshot {
                 track: &self.track,
+                automation: &automation,
                 profile: &self.profile,
                 steps: &self.steps,
                 evidence: &evidence_refs,
@@ -2064,6 +2077,46 @@ mod tests {
         assert!(!text.contains("legacy-project-version"));
         assert!(!text.contains("legacy-generation-id"));
         assert!(!text.contains("14:35"));
+    }
+
+    #[test]
+    fn renders_compact_suno_automation_without_raw_timestamp_or_technical_id() {
+        let mut fixture = Fixture::new(1);
+        fixture.track.fields.suno_final_generation_date = "2026-08-17".into();
+        let release_hash = fixture.evidence[0]
+            .sha256
+            .clone()
+            .expect("release fixture digest");
+        let mut suno = evidence_item(42);
+        suno.role = EvidenceRole::SunoFinalExport;
+        suno.relative_path = "02_SUNO/suno-final.wav".into();
+        suno.sha256 = Some(release_hash.clone());
+        suno.metadata.suno_studio_detected = true;
+        suno.metadata.suno_created_timestamp = "2026-08-17T06:38:06Z".into();
+        suno.metadata.suno_created_date = "2026-08-17".into();
+        suno.metadata.suno_id = "6c8a40fd-32bf-4c7b-ab59-23579ff95828".into();
+        suno.metadata.suno_raw_metadata = "made with suno studio; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828".into();
+        fixture.track.field_origins.suno_final_generation_date =
+            Some(crate::model::EvidenceDerivedField {
+                value: "2026-08-17".into(),
+                original_value: "2026-08-17T06:38:06Z".into(),
+                evidence_id: suno.id.clone(),
+                evidence_sha256: release_hash,
+            });
+        fixture.evidence.push(suno);
+        fixture
+            .evidence
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+        let (_, text) = parse_text(&fixture.generate());
+
+        assert!(text.contains("Final Suno generation"));
+        assert!(text.contains("2026-08-17"));
+        assert!(text.contains("Evidence-derived metadata"));
+        assert!(text.contains("Suno Studio metadata detected"));
+        assert!(text.contains("Release identical to Suno final export"));
+        assert!(!text.contains("2026-08-17T06:38:06Z"));
+        assert!(!text.contains("6c8a40fd-32bf-4c7b-ab59-23579ff95828"));
     }
 
     #[test]
@@ -2212,8 +2265,10 @@ mod tests {
         fixture.evidence.swap(0, 1);
         {
             let evidence_refs = fixture.evidence.iter().collect::<Vec<_>>();
+            let automation = workflow::automation_summary(&fixture.track, &fixture.evidence);
             let snapshot = CertificatePdfSnapshot {
                 track: &fixture.track,
+                automation: &automation,
                 profile: &fixture.profile,
                 steps: &fixture.steps,
                 evidence: &evidence_refs,
@@ -2234,8 +2289,10 @@ mod tests {
             .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
         fixture.evidence[0].verified = false;
         let evidence_refs = fixture.evidence.iter().collect::<Vec<_>>();
+        let automation = workflow::automation_summary(&fixture.track, &fixture.evidence);
         let snapshot = CertificatePdfSnapshot {
             track: &fixture.track,
+            automation: &automation,
             profile: &fixture.profile,
             steps: &fixture.steps,
             evidence: &evidence_refs,

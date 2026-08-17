@@ -21,7 +21,7 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.3";
+export const WORKFLOW_VERSION = "1.4";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
@@ -182,7 +182,7 @@ export function contentCheckAllNegative(fields: TrackFields): boolean {
 }
 
 export function evaluateRequirements(
-  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations">,
+  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations" | "automation">,
   profile: GlobalProfile
 ): RequirementEvaluation[] {
   const { fields, evidence, documents, integrity } = track;
@@ -235,9 +235,7 @@ export function evaluateRequirements(
   add("profile-subscription-start", "suno", "Startdatum des globalen Suno-Abonnements", hasText(profile.subscriptionStartDate));
   add("suno-url", "suno", "Suno-Projekt-URL", hasText(fields.sunoProjectUrl));
   add("suno-generation-date", "suno", "Datum der finalen Suno-Generation", hasText(fields.sunoFinalGenerationDate));
-  add("suno-download-date", "suno", "Download-/Exportdatum", hasText(fields.sunoDownloadExportDate));
   add("suno-plan", "suno", "Suno-Tarif bei Erstellung", hasText(fields.sunoPlanAtCreation));
-  add("export-date", "suno", "Datum des finalen Exports", hasText(fields.finalExportDate));
   add("suno-final-export", "suno", "Finaler Suno-Export", hasEvidence(evidence, "suno_final_export"), "suno_final_export");
   add("suno-filename", "suno", "Suno-Exportdateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "suno_final_export", fields.title, fields.sunoExportFilenameDifferenceConfirmed), "suno_final_export");
 
@@ -301,6 +299,7 @@ export function evaluateRequirements(
     }
   }
 
+  add("export-date", "release", "Datum des finalen Exports", hasText(fields.finalExportDate));
   add("release-wav", "release", "Finale Release-Audiodatei", hasEvidence(evidence, "release_wav"), "release_wav");
   add("release-filename", "release", "Release-Dateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "release_wav", fields.title, fields.releaseFilenameDifferenceConfirmed), "release_wav");
   if (fields.commercialUseIntended) {
@@ -311,6 +310,9 @@ export function evaluateRequirements(
   }
   add("documents-current", "integrity", "Aktuelle generierte Dokumente", documents.generated && documents.current);
   add("hashes-verified", "integrity", "Vollständige SHA-256-Verifikation", integrity.verified && integrity.mismatchFiles.length === 0);
+  for (const issue of track.automation.consistencyIssues.filter((item) => item.blocking)) {
+    add(`consistency-${issue.code}`, issue.stepId, issue.message, false);
+  }
   add("blocking-deviations", "finalize", "Alle blockierenden Abweichungen gelöst", (track.blockingDeviations ?? []).every((item) => !item.blocking || item.resolved));
   for (const item of evidence.filter((entry) => !entry.verified || !entry.sha256 || Boolean(entry.verificationError))) {
     add(
@@ -326,7 +328,7 @@ export function evaluateRequirements(
 }
 
 export function calculateMissingRequirements(
-  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations">,
+  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations" | "automation">,
   profile: GlobalProfile
 ): MissingRequirement[] {
   return evaluateRequirements(track, profile).filter((item) => !item.completed).map(({ completed: _completed, ...item }) => item);
@@ -356,7 +358,7 @@ export function calculateProgress(
 }
 
 export function finalizationGate(
-  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "steps" | "blockingDeviations">,
+  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "steps" | "blockingDeviations" | "automation">,
   profile: GlobalProfile
 ): ValidationResult {
   const missing = calculateMissingRequirements(track, profile);
