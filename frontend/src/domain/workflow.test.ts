@@ -7,6 +7,8 @@ import {
   deriveStepStatus,
   evaluateRequirements,
   finalizationGate,
+  subscriptionEvidenceRelevance,
+  subscriptionProductionCoverageStatus,
   statusLabel,
   stepStatuses,
   visibleConditionalFields,
@@ -87,13 +89,13 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.4",
+    workflowVersion: "1.6",
     profileSnapshot: structuredClone(profile),
     automation: emptyTrackAutomation(),
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.6", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.7", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     blockingDeviations: []
@@ -185,7 +187,7 @@ describe("missing requirements", () => {
     expect(finalizationGate(track, profile).valid).toBe(true);
   });
 
-  it("assigns the final export date only to the release step", () => {
+  it("assigns the last-editing date only to the release step", () => {
     const track = completeTrack();
     track.fields.finalExportDate = "";
 
@@ -194,17 +196,30 @@ describe("missing requirements", () => {
     );
   });
 
+  it("assigns the desktop-editing answer and details only to the release step", () => {
+    const track = completeTrack();
+    track.fields.postExportEditingPerformed = null;
+    let missing = calculateMissingRequirements(track, profile);
+    expect(missing).toContainEqual(expect.objectContaining({ id: "post-editing-answer", stepId: "release" }));
+    expect(missing.some((item) => item.id === "post-editing-answer" && item.stepId === "human_work")).toBe(false);
+
+    track.fields.postExportEditingPerformed = true;
+    track.fields.postExportEditingDetails = "";
+    missing = calculateMissingRequirements(track, profile);
+    expect(missing).toContainEqual(expect.objectContaining({ id: "post-editing-details", stepId: "release" }));
+  });
+
   it("mirrors each blocking native consistency issue once in its workflow step", () => {
     const track = completeTrack();
     track.automation.consistencyIssues = [{
-      code: "suno_generation_date_conflict",
-      message: "Abweichung zwischen Nutzerangabe und WAV-Metadaten erkannt.",
+      code: "suno_stored_metadata_mismatch",
+      message: "Gespeicherte und eingebettete Suno-Metadaten stimmen nicht überein.",
       stepId: "suno",
       blocking: true
     }];
 
     const matches = calculateMissingRequirements(track, profile)
-      .filter((item) => item.id === "consistency-suno_generation_date_conflict");
+      .filter((item) => item.id === "consistency-suno_stored_metadata_mismatch");
     expect(matches).toEqual([expect.objectContaining({ stepId: "suno" })]);
     expect(finalizationGate(track, profile).valid).toBe(false);
   });
@@ -290,6 +305,30 @@ describe("missing requirements", () => {
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("subscription-evidence");
     subscription.coverageEnd = "2026-07-02";
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("subscription-evidence");
+  });
+
+  it("combines adjacent subscription receipts and accepts a generation-only relevant receipt", () => {
+    const track = completeTrack();
+    track.fields.productionStartDate = "2026-07-18";
+    track.fields.productionEndDate = "2026-08-17";
+    track.fields.sunoFinalGenerationDate = "2026-08-17";
+    const july = evidence("subscription_payment");
+    july.sourceGlobalEvidenceId = "july";
+    july.coverageStart = "2026-07-14";
+    july.coverageEnd = "2026-08-13";
+    const august = evidence("subscription_payment");
+    august.sourceGlobalEvidenceId = "august";
+    august.coverageStart = "2026-08-14";
+    august.coverageEnd = "2026-09-13";
+
+    expect(subscriptionEvidenceRelevance(august, track.fields)).toEqual({
+      relevant: true,
+      coversProduction: false,
+      overlapsProduction: true,
+      coversGeneration: true
+    });
+    expect(subscriptionProductionCoverageStatus([july], track.fields)).toBe("NO");
+    expect(subscriptionProductionCoverageStatus([july, august], track.fields)).toBe("YES");
   });
 
   it("requires a verified generated disclosure artifact for AI artwork", () => {

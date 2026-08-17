@@ -41,7 +41,7 @@ The repository file [workflows/suno-track.toml](../../workflows/suno-track.toml)
 ```toml
 schema_version = 1
 id = "suno-track"
-version = "1.4"
+version = "1.6"
 name = "Suno Track Documentation"
 ```
 
@@ -136,9 +136,11 @@ Suno model and plan-at-creation remain unrestricted strings. The UI offers curre
 
 When a verified `suno_final_export` WAV contains bounded structured metadata with the `made with suno studio` marker and a valid `created` value, the native layer records the exact embedded timestamp and its evidence ID and SHA-256 origin. A valid embedded `id` is retained independently but is never required for date derivation or finalization. The application derives the calendar date from `created`; it does not treat the import time, file modification time, filename, or any other filesystem value as a generation fact.
 
-The derived date fills an empty final-generation date. It can also fill an empty production-end date only when `post_export_editing_performed = false` and the result does not precede the recorded production start. A positive or unanswered post-export-editing answer does not produce a production-end date. The exact download date is optional and never copied from `created`; the final export date remains a separate user-confirmed release fact.
+For an editable track, a valid derived date is authoritative for the final-generation date, production-end date, and optional download/export date. These values are assigned from `created` and remain read-only while that metadata date exists. Step 07 asks whether the WAV was edited again on the desktop PC: `No` derives and locks the last-editing date from `created`; `Yes` requires a user-confirmed last-editing date and the performed work. Without valid metadata, manual fallback remains available.
 
-An evidence-derived value retains its source hash. Replacing or removing that evidence reconciles only values still carrying that origin. A user-confirmed value is not silently overwritten; a contradiction between it and valid embedded metadata becomes a blocking consistency issue in the existing Suno or Track step. Malformed, incomplete, oversized, or ordinary WAV metadata is ignored without preventing a valid evidence import.
+Subscription receipts are individually relevant when their interval overlaps the production period or contains the final-generation date. The native gate evaluates all attached portable receipts together: their inclusive intervals must cover the production period without a gap, and at least one attached receipt must cover final generation.
+
+An evidence-derived value retains its source hash. Replacing the evidence updates both automatic dates, while removing it clears those system-owned values and makes the manual fallback inputs available again. Malformed, incomplete, oversized, or ordinary WAV metadata is ignored without preventing a valid evidence import.
 
 Every verified evidence pair with the same SHA-256 is reported by system verification. The dedicated release result is positive only when the final release audio and Suno final export are byte-identical; it does not rely on their names or timestamps.
 
@@ -178,7 +180,7 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 - every required evidence role has a present, contained, readable file;
 - instrumental, lyrics source/text, and selected `Lyrics` human work are mutually consistent;
 - original release and Suno-export filenames either match the documented title or have an explicit intentional-deviation confirmation;
-- every evidence-derived fact still matches the identified evidence ID, SHA-256, and embedded value, with no conflicting user-confirmed fact;
+- every evidence-derived fact still matches the identified evidence ID, SHA-256, and embedded value, and the authoritative date fields match that fact;
 - a commercial track's recorded final-generation date is inside verified selected subscription coverage;
 - commercial intent has both subscription evidence and a portable copy of globally registered archived terms/rights evidence or the explicit `Terms evidence not available` status;
 - every policy-required artwork disclosure has `generated_disclosure` provenance, the supported generator version, the exact configured text, a verified AI-original source ID, and bytes identical to final artwork;
@@ -203,7 +205,7 @@ Every track and certificate stores both `workflow_id` and `workflow_version`. A 
 
 ```text
 Finalized with workflow 1.0
-Current workflow version: 1.4
+Current workflow version: 1.6
 ```
 
 Re-evaluation is explicit. Until the stored track version matches the current workflow, new managed documents, hashes, and certificates are blocked so a certificate cannot name an older workflow while applying newer rules. Re-evaluation creates new working state and, after successful acceptance, a new revision; it never rewrites the meaning of an archived `1.0` result.
@@ -218,8 +220,8 @@ Re-evaluation is explicit. Until the stored track version matches the current wo
 | `REQ-WFL-004` | `FAIL`, `BLOCKED`, `NOT VERIFIED`, missing evidence, stale documents, and hash failure block finalization. | [ATP-0008](../atp/active/ATP-0008-finalization-gate.md) |
 | `REQ-WFL-005` | A workflow version change never retroactively mutates a finalized certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
 | `REQ-WFL-006` | A finalized snapshot remains read-only and navigable; an explicit archived revision is required before editing or refinalization, and a post-finalization mismatch invalidates the current certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
-| `REQ-WFL-007` | Native finalization blocks contradictory instrumental or evidence-derived facts, stale derivation origins, unconfirmed filename deviations, uncovered commercial generation dates, and missing commercial terms status. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
-| `REQ-WFL-008` | Valid structured Suno WAV metadata can derive only the final-generation date and the conditionally applicable production-end date; it never invents a download date or mutates a finalized snapshot. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
+| `REQ-WFL-007` | Native finalization blocks contradictory instrumental facts, stale derivation origins, unconfirmed filename deviations, uncovered commercial generation dates, and missing commercial terms status. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
+| `REQ-WFL-008` | Valid structured Suno WAV metadata authoritatively derives the final-generation and production-end dates; it never invents a download date or mutates a finalized snapshot. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
 
 ## Verification
 
@@ -253,6 +255,8 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Raised the workflow to 1.6 for derived download/last-editing dates, the Step-07 desktop-editing decision, and joint subscription-period coverage. | Project team |
+| 2026-08-17 | Raised the workflow to 1.5 so a valid Suno metadata date authoritatively fills and locks production end and final generation, while manual fallback is available only without metadata. | Project team |
 | 2026-08-17 | Raised the workflow to 1.4 for evidence-derived Suno WAV metadata, conditional date automation, byte-identity verification, consistency blockers, and revision-only legacy analysis. | Project team |
 | 2026-08-16 | Advanced the workflow to 1.2 for conditional code-audio post-processing and the required human-change selection on AI-assisted artwork; retained unrestricted Suno model and plan strings. | Project team |
 | 2026-08-16 | Advanced the workflow to 1.1 and required generated WAV/MP3 evidence together with source code for a positive code-based-generation answer. | Project team |

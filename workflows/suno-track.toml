@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.4"
+version = "1.6"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -34,7 +34,7 @@ order = 4
 name = "04 Human Work"
 required = true
 when = "always"
-description = "Lyrics, Suno style prompt, and only the confirmed human and post-export editing work."
+description = "Lyrics, Suno style prompt, and only the confirmed human editing work."
 
 [[steps]]
 id = "artwork"
@@ -58,7 +58,7 @@ order = 7
 name = "07 Release"
 required = true
 when = "always"
-description = "Final release audio, selected release notes, and export facts."
+description = "Final release audio, selected release notes, and the documented last-editing decision."
 
 [[steps]]
 id = "evidence_licenses"
@@ -341,11 +341,11 @@ missing_message = "Der Suno-Tarif bei Erstellung fehlt."
 
 [[requirements]]
 key = "suno.final_export_date"
-step_id = "suno"
+step_id = "release"
 kind = "field"
 required = true
 when = "always"
-missing_message = "Das Datum des finalen Exports fehlt."
+missing_message = "Das Datum der letzten Bearbeitung fehlt."
 
 [[requirements]]
 key = "suno.final_export"
@@ -422,19 +422,19 @@ missing_message = "Die tatsächlich ausgeführten menschlichen Bearbeitungsschri
 
 [[requirements]]
 key = "human_work.post_export_editing_performed"
-step_id = "human_work"
+step_id = "release"
 kind = "field"
 required = true
 when = "always"
-missing_message = "Die Angabe zur Bearbeitung nach dem Export fehlt."
+missing_message = "Die Angabe, ob die Datei auf dem Desktop-PC bearbeitet wurde, fehlt."
 
 [[requirements]]
 key = "human_work.post_export_editing_details"
-step_id = "human_work"
+step_id = "release"
 kind = "field"
 required = true
 when = "post_export_editing"
-missing_message = "Die Bearbeitungsschritte nach dem Export fehlen."
+missing_message = "Die Bearbeitungsschritte auf dem Desktop-PC fehlen."
 
 [[requirements]]
 key = "artwork.origin"
@@ -565,7 +565,7 @@ step_id = "evidence_licenses"
 kind = "evidence"
 required = true
 when = "commercial_use"
-missing_message = "Die portable Kopie des ausgewählten Abo-Nachweises fehlt im Track."
+missing_message = "Die zugeordneten Abo-Nachweise decken den Produktionszeitraum nicht lückenlos ab."
 evidence_role = "subscription_payment"
 
 [[requirements]]
@@ -574,7 +574,7 @@ step_id = "evidence_licenses"
 kind = "field"
 required = true
 when = "commercial_use"
-missing_message = "Der ausgewählte Abo-Nachweis deckt das Datum der finalen Suno-Generation nicht nachweisbar ab."
+missing_message = "Die zugeordneten Abo-Nachweise decken das Datum der finalen Suno-Generation nicht nachweisbar ab."
 
 [[requirements]]
 key = "evidence_licenses.terms_or_unavailable"

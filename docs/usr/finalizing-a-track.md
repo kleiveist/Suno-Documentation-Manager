@@ -44,7 +44,7 @@ The gate requires:
 - every required evidence role to contain a real readable file;
 - the explicit instrumental answer to agree with lyrics source/text and selected human work;
 - the actual release and Suno-export filenames to match the title or have an explicit intentional-deviation confirmation;
-- user-confirmed dates, evidence-derived dates, and their recorded evidence/hash origins to have no unresolved contradiction;
+- evidence-derived dates and their recorded evidence/hash origins to match the current Suno export;
 - the concrete final-generation date of a commercial track to fall inside selected subscription coverage; and
 - commercial tracks to include archived Suno terms/rights evidence or the explicit status `Terms evidence not available`;
 - all generated documents to match current facts, evidence metadata, and template versions;
@@ -79,9 +79,11 @@ The Suno final export, final release audio, and final artwork are each singular.
 
 When you import a Suno final-export WAV, the application checks its bounded structured metadata. A recognized `made with suno studio` value with valid `created` and `id` fields appears in the evidence details as evidence-derived metadata. The application does not add new editable generation-time or ID questions.
 
-The calendar part of `created` fills an empty final-generation date. It fills an empty production-end date only after you explicitly answer that no post-export editing occurred; the date must not be earlier than production start. If editing did occur, record the real production end yourself. The exact download date is optional and stays empty unless you actually know it. The application never substitutes the embedded creation time, import time, or a filesystem timestamp for a download date or final export date.
+The calendar part of `created` is authoritative for the final-generation date in Step 03, the production-end date in Step 01, and the optional download/export date in Step 03. As long as a valid metadata date exists, these values are filled automatically and shown read-only. Step 07 asks whether the WAV was edited again on the desktop PC. Choose `No` to derive and lock the last-editing date from the WAV; choose `Yes` to enter the actual date and confirmed editing work yourself. You can enter manual fallback dates when no valid metadata date is available. The application never substitutes an import or filesystem timestamp.
 
-Check the origin shown next to an automatic value. Replacing or removing the Suno export updates or removes only facts that still carry that evidence origin. A conflicting value you confirmed manually is preserved and shown as a blocker for you to resolve. An ordinary WAV without the structured marker remains usable evidence and does not create generation facts.
+Check the origin shown next to an automatic value. Replacing the Suno export updates every applicable automatic date; removing it clears the evidence-derived values and restores manual fallback inputs. An ordinary WAV without the structured marker remains usable evidence and does not create generation facts.
+
+For commercial tracks, attach each globally registered receipt whose interval overlaps production or covers final generation. A single receipt need not cover everything: adjacent intervals are combined, but the full production period must remain gap-free and final generation must fall inside at least one attached interval. The list marks partial production overlap as `TEILWEISE` instead of rejecting that receipt.
 
 The overview also reports hash-based byte identity. `Release identical to Suno export` means the verified release audio and Suno final export have exactly the same SHA-256; matching names or dates alone do not produce that result. Identity is a technical observation, not a legal conclusion and not a requirement that the files must be identical after documented editing.
 
@@ -142,7 +144,7 @@ SunoDM_DOCUMENTATION_CERTIFICATE.pdf
 └── CERTIFICATE_SHA256.txt
 ```
 
-`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` format 4.0 is an A4, A–J technical representation of the same finalized snapshot. It separates the documented title from both original filenames; gives a compact final-Suno summary with the final-generation date, its fact origin, metadata-detection result, and release/export byte identity; renders every source branch with N/A where appropriate; records only selected human work; exposes artwork answers; and lists subscription coverage, archived terms, optional external timestamp evidence, provenance, lineage, and full SHA-256 values. The Certificate ID and `Seite X / Y` appear on every page. It is technical documentation, not legal or governmental certification.
+`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` format 4.1 is an A4, A–J technical representation of the same finalized snapshot. It separates the documented title from both original filenames; gives a compact final-Suno summary with fact origins for derived dates and release/export byte identity; renders every source branch with N/A where appropriate; records only selected human work; exposes artwork answers; and lists joint subscription coverage, archived terms, optional external timestamp evidence, provenance, lineage, and full SHA-256 values. The Certificate ID and `Seite X / Y` appear on every page. It is technical documentation, not legal or governmental certification.
 
 During finalization, the progress view distinguishes native gate validation, snapshot collection, transaction protection, certificate/manifest generation, certificate verification, the complete SHA-256 reread, and the final database commit. File names, byte counts, file counts, and elapsed time remain visible while the filesystem work runs outside the Tauri main thread.
 
@@ -150,7 +152,7 @@ After the verified native result is committed, a certificate summary opens autom
 
 Review the certificate ID, track, artist, workflow and application versions, timestamp, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, earlier revision references, and final status. Expected success status is `DOCUMENTATION COMPLETE`.
 
-Review manifest schema 3 and confirm that paths are track-root-relative. `documented_facts` contains the full user-facing track-fact snapshot; each evidence item includes the original import filename, path, size, full hash, import timestamp, provenance, lineage, technical audio facts, and structured embedded metadata when present. The dedicated `evidence_derived_metadata` section retains the selected Suno timestamp and ID, while `system_verification` records detection, fact origins, every byte-identical evidence pair, the release/export identity result, unambiguous role relationships, explicit global-evidence-to-track relationships, and consistency issues. The current terms importer records the selected PDF and system-derived file facts only; external timestamps still include issuer, timestamp, referenced hash, and artifact. No field is fetched from a network or inferred from a filename.
+Review manifest schema 4 and confirm that paths are track-root-relative. `documented_facts` contains the full user-facing track-fact snapshot; each evidence item includes the original import filename, path, size, full hash, import timestamp, provenance, lineage, technical audio facts, and structured embedded metadata when present. The dedicated `evidence_derived_metadata` section retains the selected Suno timestamp and ID, while `system_verification` records detection, all date origins, joint production/final-generation subscription coverage, every byte-identical evidence pair, the release/export identity result, unambiguous role relationships, explicit global-evidence-to-track relationships, and consistency issues. The current terms importer records the selected PDF and system-derived file facts only; external timestamps still include issuer, timestamp, referenced hash, and artifact. No field is fetched from a network or inferred from a filename.
 
 Project/version ID and legacy manually entered generation-ID/time fields are not requested and are not finalization requirements. A valid generation ID and timestamp embedded in the WAV remain attached to that evidence and can appear in the machine-readable manifest without becoming editable form fields. Compatibility fields from older local records are ignored by the current workflow.
 
@@ -214,6 +216,8 @@ Executed results and remaining manual checks are recorded in [ATP-0007](../atp/a
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Documented workflow 1.6 derived download/last-editing dates, Step-07 desktop editing, joint subscription coverage, and the 1.7/4/4.1 artifact versions. | Project team |
+| 2026-08-17 | Documented workflow 1.5 authoritative read-only dates in Steps 01 and 03, with manual fallback only when no valid Suno metadata date exists. | Project team |
 | 2026-08-17 | Documented Suno WAV metadata review, conditional date derivation, optional download date, consistency blockers, byte identity, revision-only analysis, and the 1.4/1.6/3/4.0 artifact versions. | Project team |
 | 2026-08-15 | Added finalization progress and the automatic, reusable certificate-summary dialog. | Project team |
 | 2026-08-16 | Documented workflow 1.3 gates and certificate 3.0 final-generation, terms, timestamp, origin-label, and disclaimer content. | Project team |

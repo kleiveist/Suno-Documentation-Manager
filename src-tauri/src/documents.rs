@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.6";
+pub const TEMPLATE_VERSION: &str = "1.7";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -601,12 +601,12 @@ fn render(
         ));
     }
     confirmed_work.push_str(&format!(
-        "- Post-export editing performed: {}\n",
+        "- Desktop-PC editing after the Suno WAV: {}\n",
         yes_no(f.post_export_editing_performed)
     ));
     if f.post_export_editing_performed == Some(true) {
         confirmed_work.push_str(&format!(
-            "- Confirmed post-export work: {}\n",
+            "- Confirmed desktop-PC editing work: {}\n",
             english_guided_list(&f.post_export_editing_details, POST_EXPORT_CHOICES)
         ));
     }
@@ -800,7 +800,7 @@ fn render(
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nFinal generation date: {}\nDownload/export date: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nFinal export date: {}\nActual Suno export filename: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nFinal generation date: {}\nDownload/export date: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nLast editing date: {}\nActual Suno export filename: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
             value_or_missing(&f.suno_project_url),
             value_or_missing(&f.suno_final_generation_date),
@@ -824,7 +824,7 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Final export date: {}\n- Final generation date: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Last editing date: {}\n- Final generation date: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
@@ -860,11 +860,16 @@ fn render(
     values.insert(
         "04_LICENSES/suno_account_and_license.md".into(),
         format!(
-            "{}# Suno account, subscription, and archived terms evidence\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Plan at creation: {}\n- Workspace subscription start date: {}\n- Commercial use intended: {}\n- Final generation date: {}\n- Selected subscription evidence covers the recorded final-generation date: {}\n- Terms evidence not available: {}\n\n## Archived service-terms evidence\n\n{}\nThis page records supplied account facts and locally archived evidence only. It does not confirm rights ownership, license validity, legality, or non-infringement.\n",
+            "{}# Suno account, subscription, and archived terms evidence\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Plan at creation: {}\n- Workspace subscription start date: {}\n- Commercial use intended: {}\n- Final generation date: {}\n- Assigned subscription evidence jointly covers the production period: {}\n- Assigned subscription evidence covers the recorded final-generation date: {}\n- Terms evidence not available: {}\n\n## Archived service-terms evidence\n\n{}\nThis page records supplied account facts and locally archived evidence only. It does not confirm rights ownership, license validity, legality, or non-infringement.\n",
             marker(), value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
             value_or_missing(&profile.subscription_start_date), if f.commercial_use_intended { "Yes" } else { "No" },
             value_or_missing(&f.suno_final_generation_date),
+            match crate::workflow::subscription_production_coverage(track, evidence) {
+                crate::workflow::CoverageStatus::Yes => "YES",
+                crate::workflow::CoverageStatus::No => "NO",
+                crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
+            },
             match crate::workflow::subscription_generation_coverage(track, evidence) {
                 crate::workflow::CoverageStatus::Yes => "YES",
                 crate::workflow::CoverageStatus::No => "NO",

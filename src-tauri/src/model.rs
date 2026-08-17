@@ -620,6 +620,10 @@ pub struct TrackFieldOrigins {
     pub suno_final_generation_date: Option<EvidenceDerivedField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub production_end_date: Option<EvidenceDerivedField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suno_download_export_date: Option<EvidenceDerivedField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_export_date: Option<EvidenceDerivedField>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -655,6 +659,8 @@ pub struct ConsistencyIssue {
 pub struct TrackAutomation {
     pub final_generation_origin: FactOrigin,
     pub production_end_origin: FactOrigin,
+    pub download_export_origin: FactOrigin,
+    pub final_export_origin: FactOrigin,
     pub suno_metadata_detected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suno_created_timestamp: Option<String>,

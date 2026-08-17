@@ -79,7 +79,7 @@ describe("demo track library", () => {
 });
 
 describe("demo evidence controls", () => {
-  it("models Suno-WAV metadata as automatic facts without filling the download date", async () => {
+  it("models Suno-WAV metadata as automatic generation, production, download and no-editing facts", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
@@ -97,16 +97,38 @@ describe("demo evidence controls", () => {
     }));
     expect(updated!.fields.sunoFinalGenerationDate).toBe("2026-08-17");
     expect(updated!.fields.productionEndDate).toBe("2026-08-17");
-    expect(updated!.fields.sunoDownloadExportDate).toBe("");
+    expect(updated!.fields.sunoDownloadExportDate).toBe("2026-08-17");
+    expect(updated!.fields.finalExportDate).toBe("2026-08-17");
     expect(updated!.automation).toEqual(expect.objectContaining({
       finalGenerationOrigin: "evidence_derived_metadata",
       productionEndOrigin: "evidence_derived_metadata",
+      downloadExportOrigin: "evidence_derived_metadata",
+      finalExportOrigin: "evidence_derived_metadata",
       sunoMetadataDetected: true,
       releaseIdenticalToSunoExport: true
     }));
   });
 
-  it("keeps a user date on metadata conflict and revokes automatic production end after editing", async () => {
+  it("uses a manual last-editing date after confirmed desktop editing", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await settle(api.updateTrack("cosmic-pulse", { postExportEditingPerformed: false }));
+    await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
+
+    const edited = await settle(api.updateTrack("cosmic-pulse", {
+      postExportEditingPerformed: true,
+      postExportEditingDetails: "Mastering",
+      finalExportDate: "2026-08-19"
+    }));
+
+    expect(edited.fields.finalExportDate).toBe("2026-08-19");
+    expect(edited.automation.finalExportOrigin).toBe("user_confirmed_fact");
+    expect(edited.fields.sunoDownloadExportDate).toBe("2026-08-17");
+    expect(edited.automation.downloadExportOrigin).toBe("evidence_derived_metadata");
+  });
+
+  it("replaces fallback dates with metadata and keeps both dates automatic after editing", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
@@ -116,21 +138,19 @@ describe("demo evidence controls", () => {
     }));
     const imported = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
 
-    expect(imported!.fields.sunoFinalGenerationDate).toBe("2026-08-16");
-    expect(imported!.automation.consistencyIssues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "suno_generation_date_conflict", blocking: true })
-    ]));
+    expect(imported!.fields.sunoFinalGenerationDate).toBe("2026-08-17");
     expect(imported!.fields.productionEndDate).toBe("2026-08-17");
+    expect(imported!.automation.consistencyIssues).toEqual([]);
 
     const edited = await settle(api.updateTrack("cosmic-pulse", {
       postExportEditingPerformed: true,
       postExportEditingDetails: "Mastering"
     }));
-    expect(edited.fields.productionEndDate).toBe("");
-    expect(edited.automation.productionEndOrigin).toBe("not_documented");
+    expect(edited.fields.productionEndDate).toBe("2026-08-17");
+    expect(edited.automation.productionEndOrigin).toBe("evidence_derived_metadata");
   });
 
-  it("does not overwrite automatic dates that are changed in a user patch", async () => {
+  it("rejects submitted date overrides while valid Suno metadata exists", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
@@ -142,25 +162,22 @@ describe("demo evidence controls", () => {
       productionEndDate: "2026-08-18"
     }));
 
-    expect(patched.fields.sunoFinalGenerationDate).toBe("2026-08-16");
-    expect(patched.fields.productionEndDate).toBe("2026-08-18");
-    expect(patched.automation.finalGenerationOrigin).toBe("user_confirmed_fact");
-    expect(patched.automation.productionEndOrigin).toBe("user_confirmed_fact");
-    expect(patched.automation.consistencyIssues.map((issue) => issue.code)).toEqual(expect.arrayContaining([
-      "suno_generation_date_conflict",
-      "production_end_date_conflict"
-    ]));
+    expect(patched.fields.sunoFinalGenerationDate).toBe("2026-08-17");
+    expect(patched.fields.productionEndDate).toBe("2026-08-17");
+    expect(patched.automation.finalGenerationOrigin).toBe("evidence_derived_metadata");
+    expect(patched.automation.productionEndOrigin).toBe("evidence_derived_metadata");
+    expect(patched.automation.consistencyIssues).toEqual([]);
 
     const edited = await settle(api.updateTrack("cosmic-pulse", {
       postExportEditingPerformed: true,
       postExportEditingDetails: "Mastering",
       productionEndDate: "2026-08-19"
     }));
-    expect(edited.fields.productionEndDate).toBe("2026-08-19");
-    expect(edited.automation.productionEndOrigin).toBe("user_confirmed_fact");
+    expect(edited.fields.productionEndDate).toBe("2026-08-17");
+    expect(edited.automation.productionEndOrigin).toBe("evidence_derived_metadata");
   });
 
-  it("clears an automatic production end when the embedded date predates production start", async () => {
+  it("keeps the metadata date authoritative when other track dates change", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
@@ -169,14 +186,27 @@ describe("demo evidence controls", () => {
     expect(imported!.automation.productionEndOrigin).toBe("evidence_derived_metadata");
 
     const updated = await settle(api.updateTrack("cosmic-pulse", {
-      productionStartDate: "2026-08-18"
+      productionStartDate: "2026-08-10"
     }));
 
-    expect(updated.fields.productionEndDate).toBe("");
-    expect(updated.automation.productionEndOrigin).toBe("not_documented");
-    expect(updated.automation.consistencyIssues).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "production_end_date_conflict" })
-    ]));
+    expect(updated.fields.productionEndDate).toBe("2026-08-17");
+    expect(updated.automation.productionEndOrigin).toBe("evidence_derived_metadata");
+  });
+
+  it("accepts manual date fallbacks only when no metadata date exists", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+
+    const updated = await settle(api.updateTrack("cosmic-pulse", {
+      sunoFinalGenerationDate: "2026-08-16",
+      productionEndDate: "2026-08-18"
+    }));
+
+    expect(updated.fields.sunoFinalGenerationDate).toBe("2026-08-16");
+    expect(updated.fields.productionEndDate).toBe("2026-08-18");
+    expect(updated.automation.finalGenerationOrigin).toBe("user_confirmed_fact");
+    expect(updated.automation.productionEndOrigin).toBe("user_confirmed_fact");
   });
 
   it("replaces one selected record and previews present image evidence", async () => {

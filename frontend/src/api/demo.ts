@@ -4,6 +4,7 @@ import {
   evaluateRequirements,
   finalizationGate,
   stepStatuses,
+  subscriptionEvidenceRelevance,
   WORKFLOW_ID,
   WORKFLOW_VERSION
 } from "../domain/workflow";
@@ -180,7 +181,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.6",
+      templateVersion: "1.7",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -196,14 +197,12 @@ function makeTrack(
   return track;
 }
 
-type AutomaticFieldSnapshot = Pick<TrackDetail["fields"], "sunoFinalGenerationDate" | "productionEndDate">;
-
-function refresh(track: TrackDetail, previousFields?: AutomaticFieldSnapshot): void {
+function refresh(track: TrackDetail): void {
   track.title = track.fields.title;
   track.coverEvidenceId = track.evidence.find((item) =>
     item.role === "final_artwork" && item.verified && Boolean(item.sha256) && !item.verificationError
   )?.id;
-  refreshAutomation(track, previousFields);
+  refreshAutomation(track);
   const profile = track.profileSnapshot;
   const missing = calculateMissingRequirements(track, profile);
   track.steps = stepStatuses(track, profile);
@@ -217,84 +216,67 @@ function refresh(track: TrackDetail, previousFields?: AutomaticFieldSnapshot): v
 
 function reconcileAutomaticDate(
   currentValue: string,
-  previousValue: string | undefined,
   previousOrigin: FactOrigin,
   derivedValue: string,
-  permitted: boolean
+  previousDerivedValue = derivedValue
 ): { value: string; origin: FactOrigin } {
-  let origin = previousOrigin;
-
-  // A field that differs from the value held while it was system-owned was
-  // changed by the user. It must no longer be overwritten during this refresh.
-  if (origin === "evidence_derived_metadata" && previousValue !== undefined && currentValue !== previousValue) {
-    origin = currentValue.trim() ? "user_confirmed_fact" : "not_documented";
-  }
-
-  if (!permitted || !derivedValue) {
-    if (origin === "evidence_derived_metadata") currentValue = "";
+  if (!derivedValue) {
+    if (previousOrigin === "evidence_derived_metadata" && currentValue === previousDerivedValue) currentValue = "";
     return {
       value: currentValue,
       origin: currentValue.trim() ? "user_confirmed_fact" : "not_documented"
     };
   }
-  if (origin === "evidence_derived_metadata") {
-    return { value: derivedValue, origin };
-  }
-  if (!currentValue.trim()) {
-    return { value: derivedValue, origin: "evidence_derived_metadata" };
-  }
-  return { value: currentValue, origin: "user_confirmed_fact" };
+  return { value: derivedValue, origin: "evidence_derived_metadata" };
 }
 
-function refreshAutomation(track: TrackDetail, previousFields?: AutomaticFieldSnapshot): void {
+function refreshAutomation(track: TrackDetail): void {
   const previous = track.automation;
   const suno = track.evidence.find((item) =>
     item.role === "suno_final_export" && item.verified && Boolean(item.sha256) && !item.verificationError
       && Boolean(item.metadata?.sunoStudioDetected)
   );
   const createdDate = suno?.metadata?.sunoCreatedDate?.trim() ?? "";
+  const previousCreatedDate = previous.sunoCreatedTimestamp?.slice(0, 10) ?? "";
   const issues: ConsistencyIssue[] = [];
   const editable = track.status !== "FINALIZED" && track.status !== "SUPERSEDED";
-  const productionDateIsPlausible = Boolean(createdDate)
-    && (!track.fields.productionStartDate.trim() || createdDate >= track.fields.productionStartDate);
-  const productionEndPermitted = track.fields.postExportEditingPerformed === false && productionDateIsPlausible;
   const finalGeneration = editable
     ? reconcileAutomaticDate(
         track.fields.sunoFinalGenerationDate,
-        previousFields?.sunoFinalGenerationDate,
         previous.finalGenerationOrigin,
         createdDate,
-        Boolean(createdDate)
+        previousCreatedDate
       )
     : { value: track.fields.sunoFinalGenerationDate, origin: previous.finalGenerationOrigin };
   const productionEnd = editable
     ? reconcileAutomaticDate(
         track.fields.productionEndDate,
-        previousFields?.productionEndDate,
         previous.productionEndOrigin,
         createdDate,
-        productionEndPermitted
+        previousCreatedDate
       )
     : { value: track.fields.productionEndDate, origin: previous.productionEndOrigin };
+  const downloadExport = editable
+    ? reconcileAutomaticDate(
+        track.fields.sunoDownloadExportDate,
+        previous.downloadExportOrigin,
+        createdDate,
+        previousCreatedDate
+      )
+    : { value: track.fields.sunoDownloadExportDate, origin: previous.downloadExportOrigin };
+  const finalExport = editable
+    ? reconcileAutomaticDate(
+        track.fields.finalExportDate,
+        previous.finalExportOrigin,
+        track.fields.postExportEditingPerformed === false ? createdDate : "",
+        previousCreatedDate
+      )
+    : { value: track.fields.finalExportDate, origin: previous.finalExportOrigin };
 
   track.fields.sunoFinalGenerationDate = finalGeneration.value;
   track.fields.productionEndDate = productionEnd.value;
-  if (createdDate && track.fields.sunoFinalGenerationDate && track.fields.sunoFinalGenerationDate !== createdDate) {
-    issues.push({
-      code: "suno_generation_date_conflict",
-      message: "Abweichung zwischen Nutzerangabe und WAV-Metadaten erkannt.",
-      stepId: "suno",
-      blocking: true
-    });
-  }
-  if (productionEndPermitted && track.fields.productionEndDate && track.fields.productionEndDate !== createdDate) {
-    issues.push({
-      code: "production_end_date_conflict",
-      message: "Das dokumentierte Produktionsende weicht vom erkannten Suno-Erzeugungsdatum ab.",
-      stepId: "track",
-      blocking: true
-    });
-  }
+  track.fields.sunoDownloadExportDate = downloadExport.value;
+  track.fields.finalExportDate = finalExport.value;
 
   const pairs: ByteIdenticalPair[] = [];
   const verified = track.evidence.filter((item) => item.verified && Boolean(item.sha256) && !item.verificationError);
@@ -313,6 +295,8 @@ function refreshAutomation(track: TrackDetail, previousFields?: AutomaticFieldSn
   track.automation = {
     finalGenerationOrigin: finalGeneration.origin,
     productionEndOrigin: productionEnd.origin,
+    downloadExportOrigin: downloadExport.origin,
+    finalExportOrigin: finalExport.origin,
     sunoMetadataDetected: Boolean(suno?.metadata?.sunoStudioDetected),
     sunoCreatedTimestamp: suno?.metadata?.sunoCreatedTimestamp || undefined,
     sunoId: suno?.metadata?.sunoId || undefined,
@@ -339,6 +323,9 @@ export function createDemoApi(): DesktopApi {
 
   const attachGlobalToTrack = (track: TrackDetail, item: GlobalEvidenceItem): void => {
     if (track.evidence.some((entry) => entry.sourceGlobalEvidenceId === item.id)) return;
+    if (item.role === "subscription_payment" && !subscriptionEvidenceRelevance(item, track.fields).relevant) {
+      throw new Error("Der ausgewählte Abo-Nachweis überschneidet weder den Produktionszeitraum noch deckt er die Finalgeneration ab.");
+    }
     track.evidence.push({
       ...clone(item),
       id: crypto.randomUUID(),
@@ -391,7 +378,7 @@ export function createDemoApi(): DesktopApi {
           { id: "human_work", number: "04", label: "Menschliche Arbeit", description: "Lyrics und bestätigte Bearbeitungen", required: true },
           { id: "artwork", number: "05", label: "Artwork", description: "Entstehung und Content-Check", required: true },
           { id: "ai_transparency", number: "06", label: "KI-Transparenz", description: "Projektinterne Disclosure-Policy", required: true },
-          { id: "release", number: "07", label: "Release", description: "Finaler Export und Release-Dateien", required: true },
+          { id: "release", number: "07", label: "Release", description: "Letzte Bearbeitung und Release-Dateien", required: true },
           { id: "evidence_licenses", number: "08", label: "Evidence & Lizenzen", description: "Nachweise vollständig zuordnen", required: true },
           { id: "integrity", number: "09", label: "Integrität", description: "Dokumente, SHA-256 und Verifikation", required: true },
           { id: "finalize", number: "10", label: "Finalisieren", description: "Gate prüfen und Zertifikat erzeugen", required: true }
@@ -561,10 +548,6 @@ export function createDemoApi(): DesktopApi {
       await wait();
       const track = mutableTrack(trackId);
       const previousTitle = track.fields.title;
-      const previousAutomaticFields: AutomaticFieldSnapshot = {
-        sunoFinalGenerationDate: track.fields.sunoFinalGenerationDate,
-        productionEndDate: track.fields.productionEndDate
-      };
       track.fields = { ...track.fields, ...clone(patch) };
       if (patch.title !== undefined) {
         track.relativePath = trackRelativePath(track.library, patch.title);
@@ -579,7 +562,7 @@ export function createDemoApi(): DesktopApi {
         }
       }
       track.documents.current = false;
-      refresh(track, previousAutomaticFields);
+      refresh(track);
       return clone(track);
     },
     async adoptLegacyProfile(trackId) {
@@ -705,7 +688,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.6",
+        templateVersion: "1.7",
         files: documentFiles
       };
       track.integrity.generated = false;

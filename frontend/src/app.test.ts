@@ -8,6 +8,7 @@ import {
   canCreateTrackRevision,
   factOriginLabel,
   finalizedTrackPresentation,
+  isAutomaticDateReadonly,
   isTrackContentLocked,
   missingProfileFields,
   normalizeGuidedTrackFields,
@@ -112,6 +113,9 @@ describe("navigation", () => {
     expect(factOriginLabel("evidence_derived_metadata")).toBe("Automatisch aus Suno-WAV erkannt");
     expect(factOriginLabel("user_confirmed_fact")).toBe("Nutzerangabe");
     expect(factOriginLabel("not_documented")).toBe("Noch nicht dokumentiert");
+    expect(isAutomaticDateReadonly("evidence_derived_metadata")).toBe(true);
+    expect(isAutomaticDateReadonly("user_confirmed_fact")).toBe(false);
+    expect(isAutomaticDateReadonly("not_documented")).toBe(false);
   });
 
   it("summarizes metadata, integrity, coverage and warnings compactly", () => {
@@ -125,7 +129,7 @@ describe("navigation", () => {
       progress: 0,
       missingCount: 1,
       workflowId: "suno-track",
-      workflowVersion: "1.4",
+      workflowVersion: "1.6",
       fields: { ...emptyTrackFields(), commercialUseIntended: false },
       profileSnapshot: emptyProfile,
       automation: {
@@ -135,7 +139,7 @@ describe("navigation", () => {
       },
       evidence: [],
       steps: [],
-      documents: { generated: false, current: false, templateVersion: "1.6", files: [] },
+      documents: { generated: false, current: false, templateVersion: "1.7", files: [] },
       integrity: { generated: true, verified: true, fileCount: 0, verifiedCount: 0, mismatchFiles: [] },
       blockingDeviations: [],
       certificate: { valid: false }
@@ -325,21 +329,21 @@ describe("navigation", () => {
         workflowVersion: "1.0",
         certificate: { valid: true, workflowVersion: "1.0" }
       },
-      { id: "suno-track", version: "1.4" }
+      { id: "suno-track", version: "1.6" }
     );
 
     expect(presentation).toEqual({
-      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.4",
+      message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.6",
       action: "re-evaluate-track"
     });
     expect(workflowUpgradePresentation(
       {
         status: "FINALIZED",
         workflowId: "suno-track",
-        workflowVersion: "1.4",
-        certificate: { valid: true, workflowVersion: "1.4" }
+        workflowVersion: "1.6",
+        certificate: { valid: true, workflowVersion: "1.6" }
       },
-      { id: "suno-track", version: "1.4" }
+      { id: "suno-track", version: "1.6" }
     )).toBeNull();
 
     expect(workflowUpgradePresentation(
@@ -349,9 +353,9 @@ describe("navigation", () => {
         workflowVersion: "1.0",
         certificate: { valid: true, workflowVersion: "1.0" }
       },
-      { id: "suno-track", version: "1.4" }
+      { id: "suno-track", version: "1.6" }
     )).toEqual({
-      message: "Superseded snapshot uses workflow suno-track 1.0 / Current workflow suno-track 1.4"
+      message: "Superseded snapshot uses workflow suno-track 1.0 / Current workflow suno-track 1.6"
     });
   });
 
@@ -363,11 +367,11 @@ describe("navigation", () => {
       certificate: { valid: false }
     };
 
-    expect(workflowUpgradeFinalizationBlocker(track, { id: "suno-track", version: "1.4" }))
+    expect(workflowUpgradeFinalizationBlocker(track, { id: "suno-track", version: "1.6" }))
       .toContain("ausdrücklich mit dem aktuellen Workflow neu bewertet");
     expect(workflowUpgradeFinalizationBlocker(
-      { ...track, workflowVersion: "1.4" },
-      { id: "suno-track", version: "1.4" }
+      { ...track, workflowVersion: "1.6" },
+      { id: "suno-track", version: "1.6" }
     )).toBeNull();
   });
 });

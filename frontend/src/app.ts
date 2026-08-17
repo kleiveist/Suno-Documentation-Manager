@@ -10,6 +10,9 @@ import {
   finalizationGate,
   statusLabel,
   stepStatuses,
+  subscriptionEvidenceRelevance,
+  subscriptionGenerationCoverageStatus,
+  subscriptionProductionCoverageStatus,
   visibleConditionalFields,
   WORKFLOW_STEPS
 } from "./domain/workflow";
@@ -397,6 +400,10 @@ export function factOriginLabel(origin: FactOrigin): string {
   if (origin === "evidence_derived_metadata") return "Automatisch aus Suno-WAV erkannt";
   if (origin === "user_confirmed_fact") return "Nutzerangabe";
   return "Noch nicht dokumentiert";
+}
+
+export function isAutomaticDateReadonly(origin: FactOrigin): boolean {
+  return origin === "evidence_derived_metadata";
 }
 
 export const MAIN_NAVIGATION: ReadonlyArray<{ id: MainView; label: string; iconName: "dashboard" | "tracks" | "current" | "workspace" | "settings" }> = [
@@ -896,7 +903,7 @@ export class SunoDocumentationApp {
     const seconds = String(operation.elapsedSeconds % 60).padStart(2, "0");
     const activeStep = configuration.thresholds.reduce<number>((result, threshold, index) => percent >= threshold ? index : result, 0);
     const tip = configuration.tips[Math.floor(operation.elapsedSeconds / 5) % configuration.tips.length];
-    return `<div class="busy-layer busy-layer--operation" data-operation-kind="${operation.kind}" role="status" aria-live="polite" aria-busy="true">
+    return `<div class="busy-layer busy-layer--operation" data-operation-kind="${operation.kind}" data-operation-theme="${this.state.theme}" role="status" aria-live="polite" aria-busy="true">
       <section class="operation-progress operation-progress--${operation.kind}" aria-label="${escapeHtml(configuration.title)}">
         <header><div><p class="overline">${escapeHtml(configuration.eyebrow)}</p><h2>${escapeHtml(configuration.title)}</h2></div><time data-operation-value="elapsed" datetime="PT${operation.elapsedSeconds}S">${minutes}:${seconds}</time></header>
         <div class="operation-stage">
@@ -1569,7 +1576,7 @@ export class SunoDocumentationApp {
           ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("thirdPartySampleSource", "Sample-Quelle", draft.thirdPartySampleSource, sampleSourceChoices, true)}${this.guidedSingleChoiceField("thirdPartySampleOwnership", "Lizenz / Rechte", draft.thirdPartySampleOwnership, sampleRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
         break;
       case "suno":
-        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtCreation, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.automatedDateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, track.automation.finalGenerationOrigin)}${this.dateFieldWithHelp("sunoDownloadExportDate", "Download-/Exportdatum (optional)", draft.sunoDownloadExportDate, "Leer lassen, wenn dieses Datum nicht zuverlässig dokumentiert ist.")}</div>
+        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtCreation, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.automatedDateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, track.automation.finalGenerationOrigin)}${this.automatedDateField("sunoDownloadExportDate", "Download-/Exportdatum (optional)", draft.sunoDownloadExportDate, track.automation.downloadExportOrigin, false, "Kein gültiges Datum in den WAV-Metadaten erkannt – die manuelle Angabe bleibt optional.")}</div>
           <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
         body += this.filenameConfirmation(track, "suno_final_export", "sunoExportFilenameDifferenceConfirmed", draft.sunoExportFilenameDifferenceConfirmed, "Suno-Export");
         break;
@@ -1578,9 +1585,7 @@ export class SunoDocumentationApp {
           ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Verwendeter Lyrics-Text", "Nur die tatsächlich in Suno verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
           ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat.", draft.humanEditingPerformed)}
-          ${conditional.has("humanEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("humanEditingDetails", "Bestätigte Schritte", draft.humanEditingDetails, humanWorkChoices, true)}</div>` : ""}
-          ${this.boolQuestion("postExportEditingPerformed", "Nach dem Suno-Export weiter bearbeitet?", "Bearbeitung der exportierten Audiodatei.", draft.postExportEditingPerformed)}
-          ${conditional.has("postExportEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("postExportEditingDetails", "Bestätigte Nachbearbeitungsschritte", draft.postExportEditingDetails, postExportWorkChoices, true)}</div>` : ""}`;
+          ${conditional.has("humanEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("humanEditingDetails", "Bestätigte Schritte", draft.humanEditingDetails, humanWorkChoices, true)}</div>` : ""}`;
         break;
       case "artwork":
         body = `<div class="policy-card artwork-factual-notice">${icon("info")}<div><p class="overline">Nur relevante Angaben</p><h4>Faktische Dokumentation</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div></div><div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.textField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, true) : ""}</div>
@@ -1594,9 +1599,30 @@ export class SunoDocumentationApp {
           ${conditional.has("disclosure") ? `<div class="field-grid two-col">${this.textField("disclosureText", "Sichtbarer Hinweis", "AI-assisted", draft.disclosureText, true)}${track.profileSnapshot.artworkTransparencyPolicy === "per_artwork" ? this.boolQuestion("disclosureApplied", "Sichtbaren Hinweis anwenden?", "Bei Ja muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied) : `<div class="read-only-field"><span>Status</span><strong>${draft.disclosureApplied ? "Lokal erzeugt" : "Noch nicht erzeugt"}</strong></div>`}</div><button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Hinweis lokal erzeugen</button>` : `<div class="neutral-message">${icon("check")}<div><strong>AI Transparency ist für diesen Track deaktiviert.</strong><span>${contentCheckAllNegative(draft) ? "Alle drei Content-Checks wurden mit Nein beantwortet." : "Grundlage: Artwork-Angabe und aktive Workspace-Policy."}</span></div></div>`}`;
         break;
       case "release":
-        body = `<div class="field-grid two-col">${this.dateField("finalExportDate", "Finaler Export", draft.finalExportDate, true)}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, releaseNoteChoices)}</div>
+        {
+          const metadataDate = track.automation.sunoMetadataDetected && track.automation.sunoCreatedTimestamp
+            ? track.automation.sunoCreatedTimestamp.slice(0, 10)
+            : "";
+          const noDesktopEditing = draft.postExportEditingPerformed === false;
+          const metadataControlsLastEditing = noDesktopEditing && Boolean(metadataDate);
+          const finalDateOrigin: FactOrigin = metadataControlsLastEditing
+            ? "evidence_derived_metadata"
+            : track.automation.finalExportOrigin === "evidence_derived_metadata"
+              ? "not_documented"
+              : track.automation.finalExportOrigin;
+          const finalDateValue = metadataControlsLastEditing
+            ? metadataDate
+            : track.automation.finalExportOrigin === "evidence_derived_metadata"
+              ? ""
+              : draft.finalExportDate;
+          body = `${this.boolQuestion("postExportEditingPerformed", "Wurde die Datei noch einmal auf dem Desktop-PC bearbeitet?", "Bei Ja dokumentierst du das Datum der letzten Bearbeitung selbst. Bei Nein übernimmt die App das erkannte Datum aus der Suno-WAV.", draft.postExportEditingPerformed)}
+          ${conditional.has("postExportEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("postExportEditingDetails", "Bestätigte Bearbeitungsschritte auf dem Desktop-PC", draft.postExportEditingDetails, postExportWorkChoices, true)}</div>` : ""}
+          ${draft.postExportEditingPerformed === null
+            ? `<div class="neutral-message">${icon("info")}<div><strong>Datum der letzten Bearbeitung</strong><span>Beantworte zuerst die Ja-/Nein-Frage.</span></div></div>`
+            : `<div class="field-grid two-col">${this.automatedDateField("finalExportDate", "Datum der letzten Bearbeitung", finalDateValue, finalDateOrigin, true, "Kein gültiges WAV-Metadatum erkannt – bitte Datum manuell dokumentieren.")}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, releaseNoteChoices)}</div>`}
           <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Der ursprüngliche Quelldateiname wird getrennt vom verwalteten Pfad dokumentiert. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Finale Release-Audiodatei importieren"], ["release_mp3", "Zusätzliche MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
-        body += this.filenameConfirmation(track, "release_wav", "releaseFilenameDifferenceConfirmed", draft.releaseFilenameDifferenceConfirmed, "Release-Datei");
+          body += this.filenameConfirmation(track, "release_wav", "releaseFilenameDifferenceConfirmed", draft.releaseFilenameDifferenceConfirmed, "Release-Datei");
+        }
         break;
     }
     const locked = isTrackContentLocked(track.status);
@@ -1647,27 +1673,17 @@ export class SunoDocumentationApp {
 
   private renderGlobalEvidencePicker(track: TrackDetail, locked = false): string {
     const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
-    const attached = track.evidence.some((item) => item.role === "subscription_payment" && item.verified && Boolean(item.sha256)
-      && Boolean(item.coverageStart) && Boolean(item.coverageEnd)
-      && item.coverageStart! <= track.fields.productionStartDate && item.coverageEnd! >= track.fields.productionEndDate
-      && Boolean(track.fields.sunoFinalGenerationDate)
-      && item.coverageStart! <= track.fields.sunoFinalGenerationDate && item.coverageEnd! >= track.fields.sunoFinalGenerationDate);
-    const recordedCoverage = track.evidence.find((item) => item.role === "subscription_payment" && item.verified);
-    const coverageStatus = !track.fields.sunoFinalGenerationDate || !recordedCoverage?.coverageStart || !recordedCoverage.coverageEnd
-      ? "NOT VERIFIED"
-      : recordedCoverage.coverageStart <= track.fields.sunoFinalGenerationDate && recordedCoverage.coverageEnd >= track.fields.sunoFinalGenerationDate
-        ? "YES"
-        : "NO";
-    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum und Finalgeneration</h4><p>Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner. Final-generation coverage: <strong>${coverageStatus}</strong>. Dies ist ausschließlich ein Datumsabgleich, keine Rechteaussage.</p></div>${subscriptions.length ? `<div>${subscriptions.map((item) => {
-      const coversProduction = Boolean(item.coverageStart) && Boolean(item.coverageEnd)
-        && Boolean(track.fields.productionStartDate) && Boolean(track.fields.productionEndDate)
-        && item.coverageStart! <= track.fields.productionStartDate
-        && item.coverageEnd! >= track.fields.productionEndDate;
-      const coversGeneration = Boolean(track.fields.sunoFinalGenerationDate)
-        && item.coverageStart! <= track.fields.sunoFinalGenerationDate
-        && item.coverageEnd! >= track.fields.sunoFinalGenerationDate;
-      const covers = coversProduction && coversGeneration;
-      return `<article class="${covers ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · Produktion: ${coversProduction ? "YES" : "NO"} · Finalgeneration: ${coversGeneration ? "YES" : track.fields.sunoFinalGenerationDate ? "NO" : "NOT VERIFIED"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !covers ? "disabled" : ""}>${attached ? "Zugeordnet" : covers ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
+    const attachedIds = new Set(track.evidence
+      .filter((item) => item.role === "subscription_payment")
+      .map((item) => item.sourceGlobalEvidenceId)
+      .filter((value): value is string => Boolean(value)));
+    const productionCoverage = subscriptionProductionCoverageStatus(track.evidence, track.fields);
+    const generationCoverage = subscriptionGenerationCoverageStatus(track.evidence, track.fields);
+    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum und Finalgeneration</h4><p>Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner. Produktionszeitraum: <strong>${productionCoverage.replace("_", " ")}</strong> · Finalgeneration: <strong>${generationCoverage.replace("_", " ")}</strong>. Mehrere lückenlos anschließende Abrechnungszeiträume werden gemeinsam gewertet. Dies ist ausschließlich ein Datumsabgleich, keine Rechteaussage.</p></div>${subscriptions.length ? `<div>${subscriptions.map((item) => {
+      const coverage = subscriptionEvidenceRelevance(item, track.fields);
+      const attached = attachedIds.has(item.id);
+      const productionLabel = coverage.coversProduction ? "YES" : coverage.overlapsProduction ? "TEILWEISE" : "NO";
+      return `<article class="${coverage.relevant || attached ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · Produktion: ${productionLabel} · Finalgeneration: ${coverage.coversGeneration ? "YES" : track.fields.sunoFinalGenerationDate ? "NO" : "NOT VERIFIED"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !coverage.relevant ? "disabled" : ""}>${attached ? "Zugeordnet" : coverage.relevant ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
     }).join("")}</div>` : `<p class="empty-inline">Noch keine globale Abo-Evidence. Registriere sie unter Einstellungen.</p>`}</section>`;
   }
 
@@ -1830,13 +1846,11 @@ export class SunoDocumentationApp {
     return this.textField(name, label, "", value, required, "date");
   }
 
-  private dateFieldWithHelp(name: string, label: string, value: string, help: string): string {
-    return `<label class="field"><span class="field-label">${escapeHtml(label)}</span><input type="date" name="${escapeHtml(name)}" value="${escapeHtml(value)}"><small class="field-caption">${escapeHtml(help)}</small></label>`;
-  }
-
-  private automatedDateField(name: string, label: string, value: string, origin: FactOrigin): string {
-    const automated = origin === "evidence_derived_metadata";
-    return `<label class="field ${automated ? "field--automated" : ""}"><span class="field-label">${escapeHtml(label)}${automated ? "" : " *"}</span><span class="field-input-wrap"><input type="date" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${automated ? "readonly aria-readonly=\"true\"" : "required"}>${automated ? `<i title="Evidence-derived metadata">${icon("check")}</i>` : ""}</span><small class="field-caption">${escapeHtml(factOriginLabel(origin))}</small></label>`;
+  private automatedDateField(name: string, label: string, value: string, origin: FactOrigin, required = true, fallbackCaption?: string): string {
+    const automated = isAutomaticDateReadonly(origin);
+    const requirement = !automated && required ? "required" : "";
+    const caption = automated ? factOriginLabel(origin) : fallbackCaption ?? factOriginLabel(origin);
+    return `<label class="field ${automated ? "field--automated" : ""}"><span class="field-label">${escapeHtml(label)}${!automated && required ? " *" : ""}</span><span class="field-input-wrap"><input type="date" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${automated ? "readonly aria-readonly=\"true\"" : requirement}>${automated ? `<i title="Evidence-derived metadata">${icon("check")}</i>` : ""}</span><small class="field-caption">${escapeHtml(caption)}</small></label>`;
   }
 
   private textArea(name: string, label: string, placeholder: string, value: string, required = false): string {

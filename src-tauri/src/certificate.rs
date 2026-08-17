@@ -20,7 +20,7 @@ pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md"
 pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "4.0";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "4.1";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -301,7 +301,7 @@ fn generate_impl(
     let automatic_global_relationships =
         automatic_global_track_relationships(&track.id, &evidence_values);
     let manifest = json!({
-        "schema_version": 3,
+        "schema_version": 4,
         "track": {
             "id": track.id,
             "title": track.fields.title,
@@ -357,12 +357,15 @@ fn generate_impl(
         },
         "system_verification": {
             "subscription_final_generation_coverage": crate::workflow::subscription_generation_coverage(track, evidence),
+            "subscription_production_coverage": crate::workflow::subscription_production_coverage(track, evidence),
             "release_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav),
             "suno_export_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport),
             "external_timestamp_evidence_exists": evidence.iter().any(|item| item.role == EvidenceRole::ExternalTimestamp && item.verified),
             "fact_origins": {
                 "final_suno_generation_date": automation.final_generation_origin,
                 "production_end_date": automation.production_end_origin,
+                "download_export_date": automation.download_export_origin,
+                "last_editing_date": automation.final_export_origin,
             },
             "suno_metadata_detected": automation.suno_metadata_detected,
             "release_identical_to_suno_export": automation.release_identical_to_suno_export,
@@ -420,7 +423,16 @@ fn generate_impl(
             crate::workflow::CoverageStatus::No => "NO",
             crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
         };
+    let production_coverage =
+        match crate::workflow::subscription_production_coverage(track, evidence) {
+            crate::workflow::CoverageStatus::Yes => "YES",
+            crate::workflow::CoverageStatus::No => "NO",
+            crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
+        };
     let final_generation_origin = fact_origin_label(automation.final_generation_origin);
+    let download_export_origin = fact_origin_label(automation.download_export_origin);
+    let last_editing_origin = fact_origin_label(automation.final_export_origin);
+    let last_editing_date = documented(&track.fields.final_export_date);
     let suno_metadata_detected = yes_no(automation.suno_metadata_detected);
     let release_identical_to_suno_export = yes_no(automation.release_identical_to_suno_export);
     let lyrics = if track.fields.instrumental_track == Some(true) {
@@ -468,7 +480,7 @@ fn generate_impl(
         archived_revisions.join(", ")
     };
     let certificate = format!(
-        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Status: **DOCUMENTATION COMPLETE**\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Origin: **{final_generation_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Download/export date [User-confirmed fact]: {}\n- Project URL [User-confirmed fact]: {}\n- Model [User-confirmed fact]: {}\n- Plan [User-confirmed fact]: {}\n\n## D. Source provenance\n\n- External audio uploaded: {}\n- Own audio uploaded: {}\n- Code-based generation: {}\n- Third-party samples uploaded: {}\n\n## E. Human contribution\n\n- Lyrics: {lyrics}\n- Lyrics source: {}\n- Confirmed human editing: {}\n- Confirmed post-export editing: {}\n\n## F. AI Usage\n\n- Suno style prompt: {}\n- Artwork origin: {}\n- AI image service: {}\n\n## G. Artwork content checks\n\n- Real person: {}\n- Real event: {}\n- Trademark/logo: {}\n\n## H. License and rights evidence\n\n- Selected subscription evidence covers the recorded final-generation date: **{generation_coverage}**\n- Terms evidence: {}\n- Terms evidence not available [User-confirmed fact]: {}\n- External timestamp evidence: {}\n\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## J. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## Certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, and **System verification**.\n",
+        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Status: **DOCUMENTATION COMPLETE**\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Origin: **{final_generation_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Download/export date [{download_export_origin}]: {}\n- Project URL [User-confirmed fact]: {}\n- Model [User-confirmed fact]: {}\n- Plan [User-confirmed fact]: {}\n\n## D. Source provenance\n\n- External audio uploaded: {}\n- Own audio uploaded: {}\n- Code-based generation: {}\n- Third-party samples uploaded: {}\n\n## E. Human contribution\n\n- Lyrics: {lyrics}\n- Lyrics source: {}\n- Confirmed human editing: {}\n- Desktop-PC editing after the Suno WAV: {}\n\n## F. AI Usage\n\n- Suno style prompt: {}\n- Artwork origin: {}\n- AI image service: {}\n\n## G. Artwork content checks\n\n- Real person: {}\n- Real event: {}\n- Trademark/logo: {}\n\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period: **{production_coverage}**\n- Assigned subscription evidence covers the recorded final-generation date: **{generation_coverage}**\n- Terms evidence: {}\n- Terms evidence not available [User-confirmed fact]: {}\n- External timestamp evidence: {}\n\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## J. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## Certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, and **System verification**.\n",
         env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
@@ -960,7 +972,7 @@ fn certificate_format_requires_pdf(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(CERTIFICATE_FORMAT_VERSION | "3.0" | "2.0") => {
+        Some(CERTIFICATE_FORMAT_VERSION | "4.0" | "3.0" | "2.0") => {
             if !hashes.contains_key(PDF_FILE) {
                 return Err(AppError::Validation(
                     "This certificate format requires the root-level technical PDF hash.".into(),
@@ -1247,7 +1259,7 @@ mod tests {
         let manifest_path = workspace.path().join("manifest.json");
         let hashes = BTreeMap::from([(PDF_FILE.into(), DIGEST.into())]);
 
-        for version in ["2.0", "3.0", CERTIFICATE_FORMAT_VERSION] {
+        for version in ["2.0", "3.0", "4.0", CERTIFICATE_FORMAT_VERSION] {
             fs::write(
                 &manifest_path,
                 format!("{{\"certificate\":{{\"format_version\":\"{version}\"}}}}\n"),

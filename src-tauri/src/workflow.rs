@@ -4,7 +4,7 @@ use crate::model::{
     BlockingDeviation, ByteIdenticalPair, ConsistencyIssue, EvidenceDerivedField, EvidenceItem,
     EvidenceRole, FactOrigin, Profile, StepState, StepStatus, TrackAutomation, TrackRecord,
 };
-use chrono::Utc;
+use chrono::{Days, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -501,21 +501,7 @@ fn requirement_met(
 ) -> bool {
     match requirement.kind.as_str() {
         "evidence" if requirement.key == "evidence_licenses.portable_copy" => {
-            evidence.iter().any(|item| {
-                item.role == EvidenceRole::SubscriptionPayment
-                    && item.verified
-                    && item.sha256.is_some()
-                    && item.verification_error.is_none()
-                    && item.source_global_evidence_id.is_some()
-                    && item
-                        .coverage_start
-                        .as_deref()
-                        .is_some_and(|start| start <= track.fields.production_start_date.as_str())
-                    && item
-                        .coverage_end
-                        .as_deref()
-                        .is_some_and(|end| end >= track.fields.production_end_date.as_str())
-            })
+            subscription_production_coverage(track, evidence) == CoverageStatus::Yes
         }
         "evidence" if requirement.key == "artwork.final" && disclosure_required(track, profile) => {
             let disclosed_hashes = evidence
@@ -685,6 +671,81 @@ pub fn subscription_generation_coverage(
     }
 }
 
+pub fn subscription_production_coverage(
+    track: &TrackRecord,
+    evidence: &[EvidenceItem],
+) -> CoverageStatus {
+    let Ok(production_start) =
+        NaiveDate::parse_from_str(track.fields.production_start_date.trim(), "%Y-%m-%d")
+    else {
+        return CoverageStatus::NotVerified;
+    };
+    let Ok(production_end) =
+        NaiveDate::parse_from_str(track.fields.production_end_date.trim(), "%Y-%m-%d")
+    else {
+        return CoverageStatus::NotVerified;
+    };
+    if production_end < production_start {
+        return CoverageStatus::NotVerified;
+    }
+
+    let subscriptions = evidence
+        .iter()
+        .filter(|item| {
+            verified_role(item, EvidenceRole::SubscriptionPayment)
+                && item.source_global_evidence_id.is_some()
+        })
+        .collect::<Vec<_>>();
+    if subscriptions.is_empty()
+        || subscriptions.iter().any(|item| {
+            item.coverage_start.as_deref().is_none_or(str::is_empty)
+                || item.coverage_end.as_deref().is_none_or(str::is_empty)
+        })
+    {
+        return CoverageStatus::NotVerified;
+    }
+
+    let mut ranges = Vec::with_capacity(subscriptions.len());
+    for item in subscriptions {
+        let Ok(start) = NaiveDate::parse_from_str(
+            item.coverage_start.as_deref().unwrap_or_default(),
+            "%Y-%m-%d",
+        ) else {
+            return CoverageStatus::NotVerified;
+        };
+        let Ok(end) =
+            NaiveDate::parse_from_str(item.coverage_end.as_deref().unwrap_or_default(), "%Y-%m-%d")
+        else {
+            return CoverageStatus::NotVerified;
+        };
+        if end < start {
+            return CoverageStatus::NotVerified;
+        }
+        ranges.push((start, end));
+    }
+    ranges.sort_by_key(|range| range.0);
+
+    let mut covered_until = production_start.pred_opt().unwrap_or(production_start);
+    for (start, end) in ranges {
+        if end < production_start || start > production_end {
+            continue;
+        }
+        let next_uncovered = covered_until
+            .checked_add_days(Days::new(1))
+            .unwrap_or(covered_until);
+        if start > next_uncovered {
+            break;
+        }
+        if end > covered_until {
+            covered_until = end;
+        }
+        if covered_until >= production_end {
+            return CoverageStatus::Yes;
+        }
+    }
+    CoverageStatus::No
+}
+
 pub fn original_evidence_file_name<'a>(
     evidence: &'a [EvidenceItem],
     role: EvidenceRole,
@@ -710,6 +771,16 @@ pub fn automation_summary(track: &TrackRecord, evidence: &[EvidenceItem]) -> Tra
         track.field_origins.production_end_date.as_ref(),
         suno,
     );
+    let download_export_origin = fact_origin(
+        &track.fields.suno_download_export_date,
+        track.field_origins.suno_download_export_date.as_ref(),
+        suno,
+    );
+    let final_export_origin = fact_origin(
+        &track.fields.final_export_date,
+        track.field_origins.final_export_date.as_ref(),
+        suno,
+    );
     let byte_identical_pairs = byte_identical_pairs(evidence);
     let release_identical_to_suno_export = byte_identical_pairs.iter().any(|pair| {
         matches!(
@@ -721,6 +792,8 @@ pub fn automation_summary(track: &TrackRecord, evidence: &[EvidenceItem]) -> Tra
     TrackAutomation {
         final_generation_origin,
         production_end_origin,
+        download_export_origin,
+        final_export_origin,
         suno_metadata_detected: suno.is_some_and(|item| item.metadata.suno_studio_detected),
         suno_created_timestamp: suno
             .map(|item| item.metadata.suno_created_timestamp.trim())
@@ -769,30 +842,6 @@ pub fn consistency_issues(track: &TrackRecord, evidence: &[EvidenceItem]) -> Vec
     let suno = relevant_suno_export(evidence);
     if let Some(item) = suno {
         let metadata = &item.metadata;
-        if !metadata.suno_created_date.trim().is_empty()
-            && !track.fields.suno_final_generation_date.trim().is_empty()
-            && track.fields.suno_final_generation_date.trim() != metadata.suno_created_date.trim()
-        {
-            issues.push(issue(
-                "suno_generation_date_conflict",
-                "Abweichung zwischen Benutzerangabe und WAV-Metadaten erkannt.",
-                "suno",
-            ));
-        }
-        let production_date_is_plausible = track.fields.production_start_date.trim().is_empty()
-            || metadata.suno_created_date.as_str() >= track.fields.production_start_date.as_str();
-        if track.fields.post_export_editing_performed == Some(false)
-            && production_date_is_plausible
-            && !metadata.suno_created_date.trim().is_empty()
-            && !track.fields.production_end_date.trim().is_empty()
-            && track.fields.production_end_date.trim() != metadata.suno_created_date.trim()
-        {
-            issues.push(issue(
-                "production_end_date_conflict",
-                "Das dokumentierte Produktionsende weicht vom erkannten Suno-Erzeugungsdatum ab.",
-                "track",
-            ));
-        }
         let embedded_suno_values = metadata
             .embedded_metadata
             .iter()
@@ -832,6 +881,14 @@ pub fn consistency_issues(track: &TrackRecord, evidence: &[EvidenceItem]) -> Vec
         (
             "production_end_origin_stale",
             track.field_origins.production_end_date.as_ref(),
+        ),
+        (
+            "download_export_origin_stale",
+            track.field_origins.suno_download_export_date.as_ref(),
+        ),
+        (
+            "final_export_origin_stale",
+            track.field_origins.final_export_date.as_ref(),
         ),
     ] {
         if origin.is_some_and(|origin| !derived_origin_matches(origin, suno)) {
@@ -1157,19 +1214,12 @@ mod tests {
     }
 
     #[test]
-    fn metadata_conflict_is_dynamic_and_blocks_the_existing_suno_step() {
+    fn generation_date_differences_do_not_create_manual_conflict_issues() {
         let mut track = disclosure_track("none", None);
         track.fields.suno_final_generation_date = "2026-08-16".into();
         let evidence = vec![suno_export("2026-08-17")];
         let issues = consistency_issues(&track, &evidence);
-        assert!(issues.iter().any(|issue| {
-            issue.code == "suno_generation_date_conflict"
-                && issue.step_id == "suno"
-                && issue.blocking
-        }));
-
-        track.fields.suno_final_generation_date = "2026-08-17".into();
-        assert!(!consistency_issues(&track, &evidence)
+        assert!(!issues
             .iter()
             .any(|issue| issue.code == "suno_generation_date_conflict"));
     }
@@ -1254,18 +1304,13 @@ mod tests {
     }
 
     #[test]
-    fn production_end_conflict_applies_only_to_confirmed_no_post_editing() {
+    fn production_end_differences_do_not_create_manual_conflict_issues() {
         let mut track = disclosure_track("none", None);
         track.fields.production_start_date = "2026-08-01".into();
         track.fields.production_end_date = "2026-08-18".into();
         track.fields.post_export_editing_performed = Some(false);
         let evidence = vec![suno_export("2026-08-17")];
 
-        assert!(consistency_issues(&track, &evidence).iter().any(|issue| {
-            issue.code == "production_end_date_conflict" && issue.step_id == "track"
-        }));
-
-        track.fields.post_export_editing_performed = Some(true);
         assert!(!consistency_issues(&track, &evidence)
             .iter()
             .any(|issue| issue.code == "production_end_date_conflict"));
@@ -1364,6 +1409,30 @@ mod tests {
         assert_eq!(
             subscription_generation_coverage(&track, &[]),
             CoverageStatus::NotVerified
+        );
+    }
+
+    #[test]
+    fn adjacent_subscription_receipts_jointly_cover_the_production_period() {
+        let mut track = disclosure_track("none", None);
+        track.fields.production_start_date = "2026-07-18".into();
+        track.fields.production_end_date = "2026-08-17".into();
+        let mut july = verified_evidence(EvidenceRole::SubscriptionPayment);
+        july.source_global_evidence_id = Some("july".into());
+        july.coverage_start = Some("2026-07-14".into());
+        july.coverage_end = Some("2026-08-13".into());
+        let mut august = verified_evidence(EvidenceRole::SubscriptionPayment);
+        august.source_global_evidence_id = Some("august".into());
+        august.coverage_start = Some("2026-08-14".into());
+        august.coverage_end = Some("2026-09-13".into());
+
+        assert_eq!(
+            subscription_production_coverage(&track, &[july.clone()]),
+            CoverageStatus::No
+        );
+        assert_eq!(
+            subscription_production_coverage(&track, &[july, august]),
+            CoverageStatus::Yes
         );
     }
 
@@ -1532,14 +1601,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_4_configuration_is_accepted() {
+    fn valid_version_1_6_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.4");
+        validate_config(&config).expect("valid workflow 1.6");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.4");
+        assert_eq!(config.version, "1.6");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
@@ -1551,6 +1620,13 @@ mod tests {
             .requirements
             .iter()
             .any(|requirement| requirement.key == "suno.download_export_date"));
+        assert!(config.requirements.iter().any(|requirement| {
+            requirement.key == "suno.final_export_date" && requirement.step_id == "release"
+        }));
+        assert!(config.requirements.iter().any(|requirement| {
+            requirement.key == "human_work.post_export_editing_performed"
+                && requirement.step_id == "release"
+        }));
     }
 
     #[test]

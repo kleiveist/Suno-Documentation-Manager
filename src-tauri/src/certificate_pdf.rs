@@ -303,7 +303,7 @@ fn validate_rendered_text(
         ),
         ("production start", fields.production_start_date.as_str()),
         ("production end", fields.production_end_date.as_str()),
-        ("final export date", fields.final_export_date.as_str()),
+        ("last editing date", fields.final_export_date.as_str()),
         ("Suno model", fields.suno_model.as_str()),
         ("Suno project URL", fields.suno_project_url.as_str()),
         (
@@ -574,7 +574,13 @@ fn render_track_data(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'
             documented(&fields.production_start_date),
         ),
         TableRow::plain("Production end", documented(&fields.production_end_date)),
-        TableRow::plain("Final export date", documented(&fields.final_export_date)),
+        TableRow::plain(
+            format!(
+                "Last editing date [{}]",
+                fact_origin_label(snapshot.automation.final_export_origin)
+            ),
+            documented(&fields.final_export_date),
+        ),
         TableRow::plain(
             "Commercial use intended",
             yes_no(Some(fields.commercial_use_intended)),
@@ -609,7 +615,10 @@ fn render_final_suno_generation(layout: &mut PdfLayout, snapshot: &CertificatePd
             yes_no_bool(snapshot.automation.release_identical_to_suno_export),
         ),
         TableRow::plain(
-            "Download/export date [User-confirmed fact]",
+            format!(
+                "Download/export date [{}]",
+                fact_origin_label(snapshot.automation.download_export_origin)
+            ),
             documented(&fields.suno_download_export_date),
         ),
     ];
@@ -755,11 +764,11 @@ fn render_human_contribution(layout: &mut PdfLayout, snapshot: &CertificatePdfSn
     }
     if fields.post_export_editing_performed == Some(true) {
         rows.push(TableRow::plain(
-            "Selected post-export work [User-confirmed fact]",
+            "Selected desktop-PC editing [User-confirmed fact]",
             documented(&fields.post_export_editing_details),
         ));
     } else {
-        rows.push(TableRow::plain("Selected post-export work", "N/A"));
+        rows.push(TableRow::plain("Selected desktop-PC editing", "N/A"));
     }
     if !fields.human_artwork_process_operations.is_empty() {
         rows.push(TableRow::plain(
@@ -910,6 +919,7 @@ fn render_artwork_checks(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapsh
 fn render_license_and_rights(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'_>) {
     layout.section_title("H. License and rights evidence");
     let coverage = subscription_coverage(snapshot);
+    let production_coverage = subscription_production_coverage(snapshot);
     let terms = snapshot
         .evidence
         .iter()
@@ -920,7 +930,7 @@ fn render_license_and_rights(layout: &mut PdfLayout, snapshot: &CertificatePdfSn
         .iter()
         .any(|item| item.role == EvidenceRole::ExternalTimestamp);
     layout.write_wrapped(
-        &format!("Selected subscription evidence covers the recorded final-generation date: {coverage} [System verification]"),
+        &format!("Assigned subscription evidence jointly covers the production period: {production_coverage}; final-generation date: {coverage} [System verification]"),
         LEFT_MM,
         RIGHT_MM - LEFT_MM,
         7.6,
@@ -1331,32 +1341,34 @@ fn branch_value(answer: Option<bool>, value: &str) -> &str {
 }
 
 fn subscription_coverage(snapshot: &CertificatePdfSnapshot<'_>) -> &'static str {
-    let date = snapshot.track.fields.suno_final_generation_date.trim();
-    if date.is_empty() {
-        return "NOT VERIFIED";
-    }
-    let items = snapshot
+    let evidence = snapshot
         .evidence
         .iter()
-        .filter(|item| item.role == EvidenceRole::SubscriptionPayment)
+        .map(|item| (*item).clone())
         .collect::<Vec<_>>();
-    if items.is_empty()
-        || items.iter().any(|item| {
-            item.coverage_start.as_deref().is_none_or(str::is_empty)
-                || item.coverage_end.as_deref().is_none_or(str::is_empty)
-        })
-    {
-        return "NOT VERIFIED";
-    }
-    if items.iter().any(|item| {
-        item.coverage_start
-            .as_deref()
-            .is_some_and(|start| start <= date)
-            && item.coverage_end.as_deref().is_some_and(|end| end >= date)
-    }) {
-        "YES"
-    } else {
-        "NO"
+    coverage_status_label(workflow::subscription_generation_coverage(
+        snapshot.track,
+        &evidence,
+    ))
+}
+
+fn subscription_production_coverage(snapshot: &CertificatePdfSnapshot<'_>) -> &'static str {
+    let evidence = snapshot
+        .evidence
+        .iter()
+        .map(|item| (*item).clone())
+        .collect::<Vec<_>>();
+    coverage_status_label(workflow::subscription_production_coverage(
+        snapshot.track,
+        &evidence,
+    ))
+}
+
+fn coverage_status_label(status: workflow::CoverageStatus) -> &'static str {
+    match status {
+        workflow::CoverageStatus::Yes => "YES",
+        workflow::CoverageStatus::No => "NO",
+        workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
     }
 }
 

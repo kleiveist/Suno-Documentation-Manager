@@ -954,21 +954,14 @@ impl WorkspaceApp {
                 AppError::Validation("Global evidence has no coverage end.".into())
             })?;
             validate_date_range("Subscription coverage", start, end)?;
-            if start > track.fields.production_start_date.as_str()
-                || end < track.fields.production_end_date.as_str()
-            {
+            let overlaps_production = start <= track.fields.production_end_date.as_str()
+                && end >= track.fields.production_start_date.as_str();
+            let covers_generation = !track.fields.suno_final_generation_date.trim().is_empty()
+                && start <= track.fields.suno_final_generation_date.as_str()
+                && end >= track.fields.suno_final_generation_date.as_str();
+            if !overlaps_production && !covers_generation {
                 return Err(AppError::Validation(
-                    "The selected subscription evidence does not cover the full production period."
-                        .into(),
-                ));
-            }
-            if track.fields.commercial_use_intended
-                && !track.fields.suno_final_generation_date.trim().is_empty()
-                && (start > track.fields.suno_final_generation_date.as_str()
-                    || end < track.fields.suno_final_generation_date.as_str())
-            {
-                return Err(AppError::Validation(
-                    "The selected subscription evidence does not cover the recorded final-generation date."
+                    "The selected subscription evidence neither overlaps the recorded production period nor covers the recorded final-generation date."
                         .into(),
                 ));
             }
@@ -2156,6 +2149,8 @@ impl WorkspaceApp {
         }
 
         let mut track = self.persistence.track(id)?;
+        let evidence = self.persistence.evidence(id)?;
+        reconcile_evidence_derived_fields(&mut track, &evidence);
         track.workflow_id = current.id.clone();
         track.workflow_version = current.version.clone();
         track.status = TrackStatus::Active;
@@ -3260,9 +3255,9 @@ fn mark_content_changed(track: &mut TrackRecord) {
     track.integrity = IntegrityState::default();
 }
 
-/// Reconciles only facts that SunoDM previously populated itself. Existing
-/// user values are never overwritten: a differing embedded date is surfaced
-/// by the workflow consistency gate instead.
+/// Treats a valid date from the current verified Suno export as authoritative
+/// for the Suno and production facts. The last-editing date follows the WAV
+/// only after the user confirms that no desktop editing took place.
 fn reconcile_evidence_derived_fields(track: &mut TrackRecord, evidence: &[EvidenceItem]) -> bool {
     let suno = evidence.iter().find(|item| {
         item.role == EvidenceRole::SunoFinalExport
@@ -3284,17 +3279,24 @@ fn reconcile_evidence_derived_fields(track: &mut TrackRecord, evidence: &[Eviden
         &mut track.fields.suno_final_generation_date,
         &mut track.field_origins.suno_final_generation_date,
         derived.as_ref(),
-        true,
     );
-    let production_date_is_plausible = derived.as_ref().is_some_and(|value| {
-        track.fields.production_start_date.trim().is_empty()
-            || value.value.as_str() >= track.fields.production_start_date.as_str()
-    });
     changed |= reconcile_derived_value(
         &mut track.fields.production_end_date,
         &mut track.field_origins.production_end_date,
         derived.as_ref(),
-        track.fields.post_export_editing_performed == Some(false) && production_date_is_plausible,
+    );
+    changed |= reconcile_derived_value(
+        &mut track.fields.suno_download_export_date,
+        &mut track.field_origins.suno_download_export_date,
+        derived.as_ref(),
+    );
+    let final_export_derived = (track.fields.post_export_editing_performed == Some(false))
+        .then_some(derived.as_ref())
+        .flatten();
+    changed |= reconcile_derived_value(
+        &mut track.fields.final_export_date,
+        &mut track.field_origins.final_export_date,
+        final_export_derived,
     );
     changed
 }
@@ -3303,7 +3305,6 @@ fn reconcile_derived_value(
     field: &mut String,
     origin: &mut Option<EvidenceDerivedField>,
     derived: Option<&EvidenceDerivedField>,
-    permitted: bool,
 ) -> bool {
     let previous_field = field.clone();
     let previous_origin = origin.clone();
@@ -3317,11 +3318,12 @@ fn reconcile_derived_value(
         *origin = None;
     }
 
-    if let Some(value) = derived.filter(|_| permitted) {
-        if origin.is_some() || field.trim().is_empty() {
-            *field = value.value.clone();
-            *origin = Some(value.clone());
-        }
+    if let Some(value) = derived {
+        // Valid metadata wins over a submitted fallback value. The UI also
+        // renders these fields read-only, while this assignment enforces the
+        // same invariant for every native caller.
+        *field = value.value.clone();
+        *origin = Some(value.clone());
     } else {
         if origin
             .as_ref()
@@ -3880,7 +3882,7 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
     for (name, value) in [
         ("Production start", fields.production_start_date.as_str()),
         ("Production end", fields.production_end_date.as_str()),
-        ("Final export date", fields.final_export_date.as_str()),
+        ("Last editing date", fields.final_export_date.as_str()),
         (
             "Final generation date",
             fields.suno_final_generation_date.as_str(),
@@ -3901,10 +3903,10 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
     }
     if !fields.final_export_date.is_empty() && !fields.production_start_date.is_empty() {
         let start = parse_date("Production start", &fields.production_start_date)?;
-        let export = parse_date("Final export date", &fields.final_export_date)?;
+        let export = parse_date("Last editing date", &fields.final_export_date)?;
         if export < start {
             return Err(AppError::Validation(
-                "Final export date cannot be before production start.".into(),
+                "Last editing date cannot be before production start.".into(),
             ));
         }
     }
@@ -7018,7 +7020,7 @@ mod tests {
         assert!(manifest.contains("sourceGlobalEvidenceId"));
         let manifest_json: serde_json::Value =
             serde_json::from_str(&manifest).expect("manifest JSON");
-        assert_eq!(manifest_json["schema_version"].as_u64(), Some(3));
+        assert_eq!(manifest_json["schema_version"].as_u64(), Some(4));
         assert_eq!(
             manifest_json["evidence_derived_metadata"]["suno_created_timestamp"].as_str(),
             Some("2026-08-02T06:38:06Z")
@@ -7030,6 +7032,14 @@ mod tests {
         assert_eq!(
             manifest_json["system_verification"]["fact_origins"]["final_suno_generation_date"]
                 .as_str(),
+            Some("evidence_derived_metadata")
+        );
+        assert_eq!(
+            manifest_json["system_verification"]["fact_origins"]["download_export_date"].as_str(),
+            Some("evidence_derived_metadata")
+        );
+        assert_eq!(
+            manifest_json["system_verification"]["fact_origins"]["last_editing_date"].as_str(),
             Some("evidence_derived_metadata")
         );
         assert_eq!(
@@ -7045,7 +7055,8 @@ mod tests {
         assert!(markdown.contains("Final generation date [Evidence-derived metadata]: 2026-08-02"));
         assert!(markdown.contains("Suno Studio metadata detected: **YES**"));
         assert!(markdown.contains("Release identical to Suno final export: **YES**"));
-        assert!(markdown.contains("Download/export date [User-confirmed fact]: Not documented"));
+        assert!(markdown.contains("Download/export date [Evidence-derived metadata]: 2026-08-02"));
+        assert!(markdown.contains("Last editing date [Evidence-derived metadata]: 2026-08-02"));
         assert!(!markdown.contains("2026-08-02T06:38:06Z"));
         assert!(!markdown.contains(P0_SUNO_ID));
     }
@@ -7451,7 +7462,7 @@ mod tests {
     }
 
     #[test]
-    fn global_subscription_evidence_requires_pdf_signature_and_covering_dates() {
+    fn global_subscription_evidence_requires_pdf_signature_and_relevant_dates() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
@@ -7498,8 +7509,22 @@ mod tests {
                 Some("2026-08-31".into()),
             )
             .expect("valid global PDF with narrow coverage");
+        app.attach_global_evidence(&track.id, &narrow.evidence.id)
+            .expect("partially overlapping subscription may be combined with another receipt");
+
+        let irrelevant_pdf = fixtures.join("irrelevant-subscription.pdf");
+        fs::write(&irrelevant_pdf, b"%PDF-1.7\nirrelevant\n%%EOF\n")
+            .expect("irrelevant subscription PDF");
+        let irrelevant = app
+            .register_global_evidence(
+                EvidenceRole::SubscriptionPayment,
+                &irrelevant_pdf,
+                Some("2026-09-01".into()),
+                Some("2026-09-30".into()),
+            )
+            .expect("valid but irrelevant global evidence");
         assert!(matches!(
-            app.attach_global_evidence(&track.id, &narrow.evidence.id),
+            app.attach_global_evidence(&track.id, &irrelevant.evidence.id),
             Err(AppError::Validation(_))
         ));
 
@@ -7520,7 +7545,9 @@ mod tests {
         let portable = attached
             .evidence
             .iter()
-            .find(|item| item.role == EvidenceRole::SubscriptionPayment)
+            .find(|item| {
+                item.source_global_evidence_id.as_deref() == Some(covering.evidence.id.as_str())
+            })
             .expect("subscription evidence attached");
         assert!(portable.verified);
         assert_eq!(
@@ -8818,13 +8845,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_upgrade_archives_finalized_v14_and_requires_fresh_v15_outputs() {
+    fn workflow_upgrade_archives_finalized_v16_and_requires_fresh_v17_outputs() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
         let finalized =
             finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
-        assert_eq!(finalized.workflow_version, "1.4");
+        assert_eq!(finalized.workflow_version, "1.6");
         let track_root = app.root().join(&finalized.relative_path);
         let certificate_before = certificate_file_snapshot(&track_root);
         let hashes_before =
@@ -8841,17 +8868,17 @@ mod tests {
             )
             .expect("stored old-workflow override");
 
-        let workflow_v15 = workflow::config_with_version_for_test("1.5")
-            .expect("test-only workflow 1.5 configuration");
+        let workflow_v17 = workflow::config_with_version_for_test("1.7")
+            .expect("test-only workflow 1.7 configuration");
         let upgraded = app
-            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v15)
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v17)
             .expect("explicit workflow reevaluation")
             .track
             .expect("upgraded track detail");
 
         assert_eq!(upgraded.status, TrackStatus::Active);
         assert_eq!(upgraded.workflow_id, "suno-track");
-        assert_eq!(upgraded.workflow_version, "1.5");
+        assert_eq!(upgraded.workflow_version, "1.7");
         assert!(!upgraded.documents.current);
         assert!(!upgraded.integrity.generated);
         assert!(!upgraded.integrity.verified);
@@ -8890,7 +8917,7 @@ mod tests {
         }
 
         assert!(matches!(
-            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v15),
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v17),
             Err(AppError::Validation(_))
         ));
         assert_eq!(
@@ -9057,7 +9084,7 @@ mod tests {
     }
 
     #[test]
-    fn p0_suno_import_persists_exact_metadata_and_only_derives_generation_date() {
+    fn p0_suno_import_persists_exact_metadata_and_derives_authoritative_dates() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         let track = p0_track(&app, "P0 Metadata Import", None, false);
@@ -9105,8 +9132,16 @@ mod tests {
             imported.automation.final_generation_origin,
             FactOrigin::EvidenceDerivedMetadata
         );
-        assert!(imported.fields.production_end_date.is_empty());
-        assert!(imported.fields.suno_download_export_date.is_empty());
+        assert_eq!(imported.fields.production_end_date, "2026-08-17");
+        assert_eq!(
+            imported.automation.production_end_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(imported.fields.suno_download_export_date, "2026-08-17");
+        assert_eq!(
+            imported.automation.download_export_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
         assert!(imported.fields.final_export_date.is_empty());
     }
 
@@ -9132,6 +9167,8 @@ mod tests {
 
         assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
         assert_eq!(imported.fields.production_end_date, "2026-08-17");
+        assert_eq!(imported.fields.suno_download_export_date, "2026-08-17");
+        assert_eq!(imported.fields.final_export_date, "2026-08-17");
         assert_eq!(
             imported.automation.production_end_origin,
             FactOrigin::EvidenceDerivedMetadata
@@ -9149,7 +9186,7 @@ mod tests {
     }
 
     #[test]
-    fn p0_post_editing_never_leaves_an_automatic_production_end() {
+    fn p0_metadata_date_remains_authoritative_when_post_export_editing_changes() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         let raw = p0_suno_comment("2026-08-17T06:38:06Z");
@@ -9165,10 +9202,12 @@ mod tests {
             )
             .expect("import after editing answer");
         assert_eq!(edited_first.fields.suno_final_generation_date, "2026-08-17");
-        assert!(edited_first.fields.production_end_date.is_empty());
+        assert_eq!(edited_first.fields.production_end_date, "2026-08-17");
+        assert_eq!(edited_first.fields.suno_download_export_date, "2026-08-17");
+        assert!(edited_first.fields.final_export_date.is_empty());
         assert_eq!(
             edited_first.automation.production_end_origin,
-            FactOrigin::NotDocumented
+            FactOrigin::EvidenceDerivedMetadata
         );
 
         let automated_first = p0_track(&app, "P0 Editing After Import", Some(false), false);
@@ -9182,6 +9221,7 @@ mod tests {
             )
             .expect("derive production end before editing answer changes");
         assert_eq!(automated_first.fields.production_end_date, "2026-08-17");
+        assert_eq!(automated_first.fields.final_export_date, "2026-08-17");
 
         let editing_enabled = app
             .update_track(
@@ -9193,10 +9233,30 @@ mod tests {
                 },
             )
             .expect("record post-export editing");
-        assert!(editing_enabled.fields.production_end_date.is_empty());
+        assert_eq!(editing_enabled.fields.production_end_date, "2026-08-17");
+        assert!(editing_enabled.fields.final_export_date.is_empty());
+        assert_eq!(
+            editing_enabled.automation.final_export_origin,
+            FactOrigin::NotDocumented
+        );
+
+        let editing_date = app
+            .update_track(
+                &automated_first.id,
+                TrackPatch {
+                    final_export_date: Some("2026-08-19".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("record the actual desktop editing date");
+        assert_eq!(editing_date.fields.final_export_date, "2026-08-19");
+        assert_eq!(
+            editing_date.automation.final_export_origin,
+            FactOrigin::UserConfirmedFact
+        );
         assert_eq!(
             editing_enabled.automation.production_end_origin,
-            FactOrigin::NotDocumented
+            FactOrigin::EvidenceDerivedMetadata
         );
 
         let manual_end = app
@@ -9207,11 +9267,11 @@ mod tests {
                     ..TrackPatch::default()
                 },
             )
-            .expect("record actual post-mastering end");
-        assert_eq!(manual_end.fields.production_end_date, "2026-08-20");
+            .expect("attempt a manual production-end override");
+        assert_eq!(manual_end.fields.production_end_date, "2026-08-17");
         assert_eq!(
             manual_end.automation.production_end_origin,
-            FactOrigin::UserConfirmedFact
+            FactOrigin::EvidenceDerivedMetadata
         );
     }
 
@@ -9303,7 +9363,7 @@ mod tests {
     }
 
     #[test]
-    fn p0_manual_generation_conflict_is_preserved_and_blocks_the_workflow() {
+    fn p0_metadata_date_replaces_a_manual_fallback_without_a_conflict() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         let track = p0_track(&app, "P0 Manual Conflict", None, false);
@@ -9322,34 +9382,43 @@ mod tests {
 
         let imported = app
             .import_evidence_from(&manual.id, EvidenceRole::SunoFinalExport, &source)
-            .expect("import conflicting metadata without overwrite");
+            .expect("import authoritative metadata");
 
-        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-16");
+        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(imported.fields.production_end_date, "2026-08-17");
         assert_eq!(
             imported.automation.final_generation_origin,
-            FactOrigin::UserConfirmedFact
+            FactOrigin::EvidenceDerivedMetadata
         );
-        let conflict = imported
+        assert_eq!(
+            imported.automation.production_end_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert!(!imported
             .automation
             .consistency_issues
             .iter()
-            .find(|issue| issue.code == "suno_generation_date_conflict")
-            .expect("generation-date conflict");
-        assert!(conflict.blocking);
-        assert_eq!(
-            conflict.message,
-            "Abweichung zwischen Benutzerangabe und WAV-Metadaten erkannt."
-        );
-        assert!(imported
+            .any(|issue| matches!(
+                issue.code.as_str(),
+                "suno_generation_date_conflict" | "production_end_date_conflict"
+            )));
+
+        let overridden = app
+            .update_track(
+                &manual.id,
+                TrackPatch {
+                    suno_final_generation_date: Some("2026-08-15".into()),
+                    production_end_date: Some("2026-08-20".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("native reconciliation rejects submitted overrides");
+        assert_eq!(overridden.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(overridden.fields.production_end_date, "2026-08-17");
+        assert!(!overridden
             .missing_items
             .iter()
-            .any(|item| item == &conflict.message));
-        let validation = app.validate_track(&manual.id).expect("workflow validation");
-        assert!(!validation.valid);
-        assert!(validation
-            .missing_items
-            .iter()
-            .any(|item| item == &conflict.message));
+            .any(|item| item.contains("Suno-Erzeugungsdatum")));
     }
 
     #[test]
@@ -9398,8 +9467,8 @@ mod tests {
             .expect("replace current Suno export");
         assert_eq!(second.fields.suno_final_generation_date, "2026-08-18");
         assert_eq!(second.fields.production_end_date, "2026-08-18");
-        assert_eq!(second.fields.suno_download_export_date, "2026-08-21");
-        assert_eq!(second.fields.final_export_date, "2026-08-22");
+        assert_eq!(second.fields.suno_download_export_date, "2026-08-18");
+        assert_eq!(second.fields.final_export_date, "2026-08-18");
         assert_eq!(
             second.automation.final_generation_origin,
             FactOrigin::EvidenceDerivedMetadata
@@ -9417,10 +9486,11 @@ mod tests {
                     ..TrackPatch::default()
                 },
             )
-            .expect("manual production end override");
+            .expect("attempt manual production end override");
+        assert_eq!(manual_end.fields.production_end_date, "2026-08-18");
         assert_eq!(
             manual_end.automation.production_end_origin,
-            FactOrigin::UserConfirmedFact
+            FactOrigin::EvidenceDerivedMetadata
         );
         let third_source = directory.path().join("replace-third.wav");
         fs::write(
@@ -9438,13 +9508,13 @@ mod tests {
             .expect("replace current Suno export again");
 
         assert_eq!(third.fields.suno_final_generation_date, "2026-08-19");
-        assert_eq!(third.fields.production_end_date, "2026-08-20");
+        assert_eq!(third.fields.production_end_date, "2026-08-19");
         assert_eq!(
             third.automation.production_end_origin,
-            FactOrigin::UserConfirmedFact
+            FactOrigin::EvidenceDerivedMetadata
         );
-        assert_eq!(third.fields.suno_download_export_date, "2026-08-21");
-        assert_eq!(third.fields.final_export_date, "2026-08-22");
+        assert_eq!(third.fields.suno_download_export_date, "2026-08-19");
+        assert_eq!(third.fields.final_export_date, "2026-08-19");
         assert_eq!(
             third
                 .evidence
@@ -9494,14 +9564,22 @@ mod tests {
             .expect("remove current Suno export");
         assert!(removed.fields.suno_final_generation_date.is_empty());
         assert!(removed.fields.production_end_date.is_empty());
-        assert_eq!(removed.fields.suno_download_export_date, "2026-08-21");
-        assert_eq!(removed.fields.final_export_date, "2026-08-22");
+        assert!(removed.fields.suno_download_export_date.is_empty());
+        assert!(removed.fields.final_export_date.is_empty());
         assert_eq!(
             removed.automation.final_generation_origin,
             FactOrigin::NotDocumented
         );
         assert_eq!(
             removed.automation.production_end_origin,
+            FactOrigin::NotDocumented
+        );
+        assert_eq!(
+            removed.automation.download_export_origin,
+            FactOrigin::NotDocumented
+        );
+        assert_eq!(
+            removed.automation.final_export_origin,
             FactOrigin::NotDocumented
         );
 
@@ -9522,21 +9600,32 @@ mod tests {
         let manual_id = p0_evidence(&manual_track, EvidenceRole::SunoFinalExport)
             .id
             .clone();
-        app.update_track(
-            &manual_track.id,
-            TrackPatch {
-                production_end_date: Some("2026-08-20".into()),
-                ..TrackPatch::default()
-            },
-        )
-        .expect("manual end override");
         let removed_manual = app
             .remove_evidence(&manual_track.id, &manual_id)
-            .expect("remove export with manual end");
+            .expect("remove export before recording a fallback");
         assert!(removed_manual.fields.suno_final_generation_date.is_empty());
-        assert_eq!(removed_manual.fields.production_end_date, "2026-08-20");
+        assert!(removed_manual.fields.production_end_date.is_empty());
+        let manual_fallback = app
+            .update_track(
+                &manual_track.id,
+                TrackPatch {
+                    suno_final_generation_date: Some("2026-08-17".into()),
+                    production_end_date: Some("2026-08-20".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("record manual fallbacks without metadata");
         assert_eq!(
-            removed_manual.automation.production_end_origin,
+            manual_fallback.fields.suno_final_generation_date,
+            "2026-08-17"
+        );
+        assert_eq!(manual_fallback.fields.production_end_date, "2026-08-20");
+        assert_eq!(
+            manual_fallback.automation.final_generation_origin,
+            FactOrigin::UserConfirmedFact
+        );
+        assert_eq!(
+            manual_fallback.automation.production_end_origin,
             FactOrigin::UserConfirmedFact
         );
     }
@@ -9897,6 +9986,48 @@ mod tests {
     }
 
     #[test]
+    fn active_v15_reevaluation_adopts_authoritative_metadata_dates() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "Active 1.5 Metadata Upgrade", None, false);
+        let source = directory.path().join("active-v15.wav");
+        fs::write(
+            &source,
+            p0_pcm_wav(Some(&p0_suno_comment("2026-08-17T06:38:06Z"))),
+        )
+        .expect("Suno WAV");
+        app.import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &source)
+            .expect("initial metadata import");
+
+        let mut stale = app.persistence.track(&track.id).expect("stored track");
+        stale.workflow_version = "1.5".into();
+        stale.fields.suno_final_generation_date = "2026-08-16".into();
+        stale.fields.production_end_date = "2026-08-18".into();
+        stale.field_origins = Default::default();
+        app.persistence
+            .save_track(&stale)
+            .expect("seed 1.5 fallback dates");
+
+        let upgraded = app
+            .re_evaluate_track(&track.id)
+            .expect("explicit 1.6 reevaluation")
+            .track
+            .expect("reevaluated track");
+
+        assert_eq!(upgraded.workflow_version, "1.6");
+        assert_eq!(upgraded.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(upgraded.fields.production_end_date, "2026-08-17");
+        assert_eq!(
+            upgraded.automation.final_generation_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(
+            upgraded.automation.production_end_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+    }
+
+    #[test]
     fn outdated_workflow_blocks_new_outputs_until_explicit_reevaluation() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
@@ -9930,7 +10061,7 @@ mod tests {
             .expect("explicit reevaluation")
             .track
             .expect("reevaluated track");
-        assert_eq!(upgraded.workflow_version, "1.4");
+        assert_eq!(upgraded.workflow_version, "1.6");
     }
 
     #[test]

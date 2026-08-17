@@ -140,6 +140,8 @@ export interface ConsistencyIssue {
 export interface TrackAutomation {
   finalGenerationOrigin: FactOrigin;
   productionEndOrigin: FactOrigin;
+  downloadExportOrigin: FactOrigin;
+  finalExportOrigin: FactOrigin;
   sunoMetadataDetected: boolean;
   sunoCreatedTimestamp?: string;
   sunoId?: string;
@@ -403,6 +405,8 @@ export function emptyTrackAutomation(): TrackAutomation {
   return {
     finalGenerationOrigin: "not_documented",
     productionEndOrigin: "not_documented",
+    downloadExportOrigin: "not_documented",
+    finalExportOrigin: "not_documented",
     sunoMetadataDetected: false,
     releaseIdenticalToSunoExport: false,
     byteIdenticalPairs: [],

@@ -21,7 +21,7 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.4";
+export const WORKFLOW_VERSION = "1.6";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
@@ -30,7 +30,7 @@ export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "human_work", number: "04", shortLabel: "Human Work", title: "Menschliche Arbeit", description: "Lyrics und bestätigte Bearbeitungen", required: true },
   { id: "artwork", number: "05", shortLabel: "Artwork", title: "Artwork", description: "Entstehung und Content-Check", required: true },
   { id: "ai_transparency", number: "06", shortLabel: "AI-Hinweis", title: "KI-Transparenz", description: "Projektinterne Disclosure-Policy", required: true },
-  { id: "release", number: "07", shortLabel: "Release", title: "Release", description: "Finaler Export und Release-Dateien", required: true },
+  { id: "release", number: "07", shortLabel: "Release", title: "Release", description: "Letzte Bearbeitung und Release-Dateien", required: true },
   { id: "evidence_licenses", number: "08", shortLabel: "Evidence", title: "Evidence & Lizenzen", description: "Nachweise vollständig zuordnen", required: true },
   { id: "integrity", number: "09", shortLabel: "Integrität", title: "Integrität", description: "Dokumente, SHA-256 und Verifikation", required: true },
   { id: "finalize", number: "10", shortLabel: "Abschluss", title: "Finalisieren", description: "Gate prüfen und Zertifikat erzeugen", required: true }
@@ -69,14 +69,75 @@ const filenameRequirementMet = (
   const fileName = originalFileName(evidence, role);
   return Boolean(fileName) && (filenameMatchesDocumentedTitle(title, fileName) || confirmed === true);
 };
-const generationCoverageStatus = (evidence: EvidenceItem[], fields: TrackFields): "YES" | "NO" | "NOT_VERIFIED" => {
+export type SubscriptionCoverageStatus = "YES" | "NO" | "NOT_VERIFIED";
+
+const subscriptionItems = (evidence: EvidenceItem[], portableOnly = false): EvidenceItem[] => evidence.filter((item) =>
+  hasEvidence([item], "subscription_payment") && (!portableOnly || Boolean(item.sourceGlobalEvidenceId))
+);
+
+export const subscriptionGenerationCoverageStatus = (evidence: EvidenceItem[], fields: TrackFields): SubscriptionCoverageStatus => {
   if (!fields.sunoFinalGenerationDate) return "NOT_VERIFIED";
-  const items = evidence.filter((item) => hasEvidence([item], "subscription_payment"));
+  const items = subscriptionItems(evidence);
   if (!items.length || items.some((item) => !item.coverageStart || !item.coverageEnd)) return "NOT_VERIFIED";
   return items.some((item) => item.coverageStart! <= fields.sunoFinalGenerationDate && item.coverageEnd! >= fields.sunoFinalGenerationDate)
     ? "YES"
     : "NO";
 };
+
+const isoDay = (value: string | undefined): number | null => {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const milliseconds = Date.parse(`${value}T00:00:00Z`);
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString().slice(0, 10) !== value) return null;
+  return Math.floor(milliseconds / 86_400_000);
+};
+
+export const subscriptionProductionCoverageStatus = (evidence: EvidenceItem[], fields: TrackFields): SubscriptionCoverageStatus => {
+  const productionStart = isoDay(fields.productionStartDate);
+  const productionEnd = isoDay(fields.productionEndDate);
+  if (productionStart === null || productionEnd === null || productionEnd < productionStart) return "NOT_VERIFIED";
+  const items = subscriptionItems(evidence, true);
+  if (!items.length || items.some((item) => !item.coverageStart || !item.coverageEnd)) return "NOT_VERIFIED";
+  const ranges = items
+    .map((item) => [isoDay(item.coverageStart), isoDay(item.coverageEnd)] as const)
+    .filter((range): range is readonly [number, number] => range[0] !== null && range[1] !== null && range[1] >= range[0])
+    .sort((left, right) => left[0] - right[0]);
+  if (ranges.length !== items.length) return "NOT_VERIFIED";
+  let nextUncovered = productionStart;
+  for (const [start, end] of ranges) {
+    if (end < productionStart || start > productionEnd) continue;
+    if (start > nextUncovered) break;
+    nextUncovered = Math.max(nextUncovered, end + 1);
+    if (nextUncovered > productionEnd) return "YES";
+  }
+  return "NO";
+};
+
+export interface SubscriptionEvidenceRelevance {
+  relevant: boolean;
+  coversProduction: boolean;
+  overlapsProduction: boolean;
+  coversGeneration: boolean;
+}
+
+export function subscriptionEvidenceRelevance(
+  item: Pick<EvidenceItem, "coverageStart" | "coverageEnd">,
+  fields: TrackFields
+): SubscriptionEvidenceRelevance {
+  const start = item.coverageStart ?? "";
+  const end = item.coverageEnd ?? "";
+  const coversProduction = Boolean(start && end && fields.productionStartDate && fields.productionEndDate)
+    && start <= fields.productionStartDate && end >= fields.productionEndDate;
+  const overlapsProduction = Boolean(start && end && fields.productionStartDate && fields.productionEndDate)
+    && start <= fields.productionEndDate && end >= fields.productionStartDate;
+  const coversGeneration = Boolean(start && end && fields.sunoFinalGenerationDate)
+    && start <= fields.sunoFinalGenerationDate && end >= fields.sunoFinalGenerationDate;
+  return {
+    relevant: overlapsProduction || coversGeneration,
+    coversProduction,
+    overlapsProduction,
+    coversGeneration
+  };
+}
 const localDisclosureArtifacts = (evidence: EvidenceItem[], fields: TrackFields): EvidenceItem[] =>
   evidence.filter((item) =>
     item.role === "ai_artwork_edited"
@@ -112,19 +173,7 @@ const hasDisclosedFinalArtwork = (evidence: EvidenceItem[], fields: TrackFields)
 const isAiArtwork = (fields: TrackFields): boolean =>
   fields.artworkOrigin === "ai_generated" || fields.artworkOrigin === "ai_assisted";
 const hasCoveringSubscriptionEvidence = (evidence: EvidenceItem[], fields: TrackFields): boolean =>
-  evidence.some((item) =>
-    item.role === "subscription_payment"
-    && item.verified
-    && Boolean(item.sha256)
-    && !item.verificationError
-    && Boolean(item.sourceGlobalEvidenceId)
-    && Boolean(item.coverageStart)
-    && Boolean(item.coverageEnd)
-    && Boolean(fields.productionStartDate)
-    && Boolean(fields.productionEndDate)
-    && item.coverageStart! <= fields.productionStartDate
-    && item.coverageEnd! >= fields.productionEndDate
-  );
+  subscriptionProductionCoverageStatus(evidence, fields) === "YES";
 
 export function visibleConditionalFields(fields: TrackFields, profile: GlobalProfile): Set<string> {
   const visible = new Set<string>();
@@ -251,8 +300,8 @@ export function evaluateRequirements(
   add("suno-style-prompt", "human_work", "In Suno verwendeter Style-Prompt", hasText(fields.sunoStylePrompt));
   add("human-editing-answer", "human_work", "Angabe zu menschlicher Bearbeitung", fields.humanEditingPerformed !== null);
   if (fields.humanEditingPerformed === true) add("human-editing-details", "human_work", "Bestätigte menschliche Bearbeitungsschritte", hasText(fields.humanEditingDetails));
-  add("post-editing-answer", "human_work", "Angabe zur Nachbearbeitung nach Export", fields.postExportEditingPerformed !== null);
-  if (fields.postExportEditingPerformed === true) add("post-editing-details", "human_work", "Bearbeitungsschritte nach Export", hasText(fields.postExportEditingDetails));
+  add("post-editing-answer", "release", "Angabe zur Bearbeitung auf dem Desktop-PC", fields.postExportEditingPerformed !== null);
+  if (fields.postExportEditingPerformed === true) add("post-editing-details", "release", "Bearbeitungsschritte auf dem Desktop-PC", hasText(fields.postExportEditingDetails));
 
   add("artwork-origin", "artwork", "Entstehungsart des Artworks", Boolean(fields.artworkOrigin));
   if (fields.artworkOrigin === "ai_assisted") {
@@ -299,12 +348,12 @@ export function evaluateRequirements(
     }
   }
 
-  add("export-date", "release", "Datum des finalen Exports", hasText(fields.finalExportDate));
+  add("export-date", "release", "Datum der letzten Bearbeitung", hasText(fields.finalExportDate));
   add("release-wav", "release", "Finale Release-Audiodatei", hasEvidence(evidence, "release_wav"), "release_wav");
   add("release-filename", "release", "Release-Dateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "release_wav", fields.title, fields.releaseFilenameDifferenceConfirmed), "release_wav");
   if (fields.commercialUseIntended) {
     add("subscription-evidence", "evidence_licenses", "Abo-/Zahlungsnachweis für den Produktionszeitraum", hasCoveringSubscriptionEvidence(evidence, fields), "subscription_payment");
-    add("subscription-generation-coverage", "evidence_licenses", "Abo-Nachweis deckt das Datum der finalen Generation ab", generationCoverageStatus(evidence, fields) === "YES", "subscription_payment");
+    add("subscription-generation-coverage", "evidence_licenses", "Abo-Nachweis deckt das Datum der finalen Generation ab", subscriptionGenerationCoverageStatus(evidence, fields) === "YES", "subscription_payment");
     const hasTermsEvidence = hasEvidence(evidence, "suno_terms_rights");
     add("terms-evidence", "evidence_licenses", "Suno-Nutzungsbedingungen oder ausdrücklich 'Terms evidence not available' (nicht beides)", hasTermsEvidence ? fields.sunoTermsEvidenceNotAvailable !== true : fields.sunoTermsEvidenceNotAvailable === true, hasTermsEvidence ? undefined : "suno_terms_rights");
   }
