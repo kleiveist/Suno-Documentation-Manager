@@ -28,6 +28,12 @@
   --shadow-large: 0 30px 90px rgb(23 23 20 / 16%);
   --radius: 16px;
 }
+.modal-import-button { margin-right: auto; }
+.folder-import-preview { display: grid; gap: 7px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; background: color-mix(in srgb, var(--paper) 85%, var(--accent) 15%); }
+.folder-import-preview > small, .folder-import-tracks small { color: var(--muted); }
+.folder-import-tracks { display: grid; gap: 7px; }
+.folder-import-tracks > div { display: grid; gap: 2px; }
+.folder-import-preview .warning { color: #9b5d00; }
 
 * { box-sizing: border-box; }
 html { min-width: 320px; min-height: 100%; }

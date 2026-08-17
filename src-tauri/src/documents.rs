@@ -1254,7 +1254,7 @@ mod tests {
             "Source-code evidence: 02_SUNO/generator.py",
             "Code-generated audio evidence: 02_SUNO/generated.wav",
             "Confirmed human work: Timing and cuts, Loudness adjustment",
-            "Confirmed post-export work: Editing and cuts, Mastering",
+            "Confirmed desktop-PC editing work: Editing and cuts, Mastering",
             "Release notes: Original Suno version, Radio edit",
         ] {
             assert!(

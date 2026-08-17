@@ -19,6 +19,8 @@ import {
   type ByteIdenticalPair,
   type ConsistencyIssue,
   type EvidenceItem,
+  type FolderImportExecutionInput,
+  type FolderImportProposal,
   type EvidenceRole,
   type FactOrigin,
   type GlobalProfile,
@@ -495,6 +497,13 @@ export function createDemoApi(): DesktopApi {
       tracks.set(id, track);
       if (workspace) workspace.trackCount = tracks.size;
       return clone(track);
+    },
+    async scanImportFolder(): Promise<FolderImportProposal | null> {
+      await wait();
+      return null;
+    },
+    async executeFolderImport(_input: FolderImportExecutionInput): Promise<TrackDetail[]> {
+      throw new Error("Der Ordner-Import ist nur in der Desktop-App verfügbar.");
     },
     async loadTrack(trackId: string) {
       await wait();

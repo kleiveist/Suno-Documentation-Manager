@@ -188,6 +188,7 @@ describe("navigation", () => {
       scanResult: { discovered: 1, indexed: 1, unchanged: 0, warnings: [] },
       albums: ["Old Album"],
       showNewTrack: true,
+      folderImport: null,
       showTrackLibrary: true,
       showSubscriptionEvidence: true,
       evidencePreview: {
@@ -213,6 +214,7 @@ describe("navigation", () => {
       scanResult: null,
       albums: [],
       showNewTrack: false,
+      folderImport: null,
       showTrackLibrary: false,
       showSubscriptionEvidence: false,
       evidencePreview: null,

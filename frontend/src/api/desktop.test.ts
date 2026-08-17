@@ -78,6 +78,31 @@ describe("runtime selection", () => {
     expect(invokeMock).toHaveBeenCalledWith("create_track", { input });
   });
 
+  it("uses narrow native commands for folder scan and confirmed import settings", async () => {
+    const proposal = {
+      sourcePath: "/source/Awakening",
+      kind: "single" as const,
+      tracks: [],
+      unassignedFiles: []
+    };
+    const input = {
+      sourcePath: proposal.sourcePath,
+      expectedKind: proposal.kind,
+      singleTrackTitle: "Awakening",
+      singleTrackLibrary: { section: "album" as const, albumTitle: "Chosen Album" },
+      productionStartDate: "",
+      commercialUseIntended: false
+    };
+    invokeMock.mockResolvedValueOnce(proposal).mockResolvedValueOnce([]);
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await expect(api.scanImportFolder()).resolves.toEqual(proposal);
+    await expect(api.executeFolderImport(input)).resolves.toEqual([]);
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "scan_import_folder", undefined);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "execute_folder_import", { input });
+  });
+
   it("maps physical album listing and creation to narrow native commands", async () => {
     invokeMock.mockResolvedValue(["Gravity Drift"]);
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);

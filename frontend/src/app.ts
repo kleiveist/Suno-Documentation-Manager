@@ -21,6 +21,7 @@ import {
   type EvidenceItem,
   type EvidencePreview,
   type EvidenceMetadata,
+  type FolderImportProposal,
   type GlobalEvidenceItem,
   type EvidenceRole,
   type FactOrigin,
@@ -90,6 +91,7 @@ interface AppState {
   operationProgress: ActiveOperationProgress | null;
   sidebarOpen: boolean;
   showNewTrack: boolean;
+  folderImport: FolderImportProposal | null;
   showTrackLibrary: boolean;
   showSubscriptionEvidence: boolean;
   evidencePreview: EvidencePreview | null;
@@ -102,7 +104,7 @@ export type WorkspaceScopedUiState = Pick<
   AppState,
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" | "albums" |
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
-  | "showCertificatePopup"
+  | "showCertificatePopup" | "folderImport"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -115,6 +117,7 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     scanResult: null,
     albums: [],
     showNewTrack: false,
+    folderImport: null,
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
     evidencePreview: null,
@@ -457,10 +460,10 @@ export function workflowUpgradeFinalizationBlocker(
 
 const evidenceRoles: EvidenceRole[] = [
   "suno_final_export", "suno_project_zip", "suno_screenshot",
-  "release_wav", "release_mp3", "release_mp4", "release_artwork", "ai_artwork_original",
+  "release_wav", "release_mp3", "release_mp4", "release_artwork", "artwork_suno_original", "ai_artwork_original",
   "ai_artwork_edited", "human_edited_artwork", "final_artwork", "external_audio_file",
   "external_audio_license", "own_audio_file", "source_code_file", "code_generated_audio_file", "third_party_sample_file",
-  "third_party_sample_license", "external_timestamp", "other"
+  "third_party_sample_license", "external_timestamp", "lyrics", "style", "other"
 ];
 
 const externalAudioSourceChoices: readonly GuidedChoice[] = [
@@ -674,6 +677,7 @@ export class SunoDocumentationApp {
     operationProgress: null,
     sidebarOpen: false,
     showNewTrack: false,
+    folderImport: null,
     showTrackLibrary: false,
     showSubscriptionEvidence: false,
     evidencePreview: null,
@@ -947,6 +951,7 @@ export class SunoDocumentationApp {
       scanResult: this.state.scanResult,
       albums: this.state.albums,
       showNewTrack: this.state.showNewTrack,
+      folderImport: this.state.folderImport,
       showTrackLibrary: this.state.showTrackLibrary,
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
       evidencePreview: this.state.evidencePreview,
@@ -1158,16 +1163,38 @@ export class SunoDocumentationApp {
   }
 
   private renderNewTrackDialog(): string {
+    const proposal = this.state.folderImport;
+    const importedTrack = proposal?.tracks[0];
+    const library: TrackLibraryAssignment = proposal?.kind === "album"
+      ? { section: "album", albumTitle: proposal.albumTitle }
+      : { section: "single" };
+    const submitLabel = proposal
+      ? `${proposal.tracks.length} ${proposal.tracks.length === 1 ? "Track" : "Tracks"} importieren`
+      : "Track anlegen";
+    const creationFields = proposal?.kind === "album"
+      ? `<div class="read-only-field"><span>Ziel der Bibliothek</span><strong>${escapeHtml(proposal.albumTitle ?? "Unbenanntes Album")}</strong><small>Alle erkannten Tracks erhalten die normale Album-/Track-Struktur. Der Produktionsstart bleibt je Track offen.</small></div>`
+      : `${this.textField("title", "Track-Titel", "z. B. Cosmic Pulse", importedTrack?.title ?? "", true)}
+        ${this.dateField("productionStartDate", "Produktionsstart", proposal ? "" : new Date().toISOString().slice(0, 10), !proposal)}
+        ${this.renderTrackLibraryFields(library, "new-track")}`;
     return `<div class="modal-backdrop" data-action="close-modal"><section class="modal track-library-modal" role="dialog" aria-modal="true" aria-labelledby="new-track-title" data-modal-panel>
       <div class="modal-head"><div><p class="overline">Neues Projekt</p><h2 id="new-track-title">Track anlegen</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
       <form id="new-track-form" class="form-stack">
-        ${this.textField("title", "Track-Titel", "z. B. Cosmic Pulse", "", true)}
-        ${this.dateField("productionStartDate", "Produktionsstart", new Date().toISOString().slice(0, 10), true)}
-        ${this.renderTrackLibraryFields({ section: "single" }, "new-track")}
+        ${proposal ? this.renderFolderImportPreview(proposal) : ""}
+        ${creationFields}
         <label class="toggle-row"><span><strong>Kommerzielle Nutzung vorgesehen</strong><small>Wird als Track-Snapshot gespeichert.</small></span><input type="checkbox" name="commercialUseIntended" ${this.state.profile.defaultCommercialUse ? "checked" : ""}><i></i></label>
-        <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("plus")} Track anlegen</button></div>
+        <div class="modal-actions"><button type="button" class="button button--secondary modal-import-button" data-action="scan-folder-import">${icon("upload")} Ordner importieren</button><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("plus")} ${submitLabel}</button></div>
       </form>
     </section></div>`;
+  }
+
+  private renderFolderImportPreview(proposal: FolderImportProposal): string {
+    const heading = proposal.kind === "album"
+      ? `Album: ${escapeHtml(proposal.albumTitle ?? "Unbenannt")}`
+      : "Einzelner Track erkannt";
+    return `<section class="folder-import-preview"><p class="overline">Import erkannt</p><strong>${heading}</strong><small>${proposal.tracks.length} ${proposal.tracks.length === 1 ? "Track" : "Tracks"} erkannt · Produktionsstart bleibt offen, sofern er nicht dokumentiert ist.</small><div class="folder-import-tracks">${proposal.tracks.map((track) => {
+      const recognised = track.files.filter((file) => file.selected).map((file) => `${file.fileName} (${file.roles.join(", ")})`);
+      return `<div><strong>${escapeHtml(track.title)}</strong>${recognised.length ? `<small>${escapeHtml(recognised.join(" · "))}</small>` : "<small>Keine eindeutig zuordenbare Evidence erkannt.</small>"}${track.ambiguities.length ? `<small class="warning">⚠ ${escapeHtml(track.ambiguities.join(" · "))} – Auswahl bleibt offen</small>` : ""}${track.unassignedFiles.length ? `<small>Nicht zugeordnet: ${escapeHtml(track.unassignedFiles.join(", "))}</small>` : ""}</div>`;
+    }).join("")}</div>${proposal.unassignedFiles.length ? `<small>Nicht zugeordnet: ${escapeHtml(proposal.unassignedFiles.join(", "))}</small>` : ""}</section>`;
   }
 
   private renderTrackLibraryDialog(): string {
@@ -1575,11 +1602,14 @@ export class SunoDocumentationApp {
           ${this.boolQuestion("thirdPartySamplesUploaded", "Fremde Samples hochgeladen?", "Samples oder Loops, die von Dritten stammen.", draft.thirdPartySamplesUploaded)}
           ${conditional.has("thirdPartySampleSource") ? `<div class="conditional-panel"><div class="conditional-line"></div><div class="field-grid two-col">${this.guidedSingleChoiceField("thirdPartySampleSource", "Sample-Quelle", draft.thirdPartySampleSource, sampleSourceChoices, true)}${this.guidedSingleChoiceField("thirdPartySampleOwnership", "Lizenz / Rechte", draft.thirdPartySampleOwnership, sampleRightsChoices, true)}</div>${this.inlineEvidenceActions(track, [["third_party_sample_file", "Sample-Datei importieren"], ["third_party_sample_license", "Sample-Lizenz importieren"]])}</div>` : ""}`;
         break;
-      case "suno":
+      case "suno": {
+        const projectHint = track.evidence.find((item) => item.role === "suno_screenshot");
         body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtCreation, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.automatedDateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, track.automation.finalGenerationOrigin)}${this.automatedDateField("sunoDownloadExportDate", "Download-/Exportdatum (optional)", draft.sunoDownloadExportDate, track.automation.downloadExportOrigin, false, "Kein gültiges Datum in den WAV-Metadaten erkannt – die manuelle Angabe bleibt optional.")}</div>
-          <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
+          ${this.renderAutomaticSunoMetadata(track)}
+          <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${projectHint ? `<p class="field-help">Sunoprojekthinweis hinterlegt: <strong>${escapeHtml(projectHint.fileName)}</strong></p>` : ""}${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
         body += this.filenameConfirmation(track, "suno_final_export", "sunoExportFilenameDifferenceConfirmed", draft.sunoExportFilenameDifferenceConfirmed, "Suno-Export");
         break;
+      }
       case "human_work":
         body = `${this.boolQuestion("instrumentalTrack", "Ist dies ein Instrumentaltrack?", "Diese ausdrückliche Angabe wird gegen Lyrics-Quelle, Lyrics-Text und Human Work geprüft; Widersprüche werden nicht automatisch korrigiert.", draft.instrumentalTrack)}<div class="field-grid two-col">${singleChoiceFieldMarkup("lyricsSource", "Lyrics-Quelle", draft.lyricsSource, [["instrumental", "Instrumental – keine Lyrics"], ["human", "Menschlich geschrieben"], ["suno", "Von Suno erzeugt"], ["mixed", "Gemischt"]], true)}</div>
           ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Verwendeter Lyrics-Text", "Nur die tatsächlich in Suno verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
@@ -1589,6 +1619,7 @@ export class SunoDocumentationApp {
         break;
       case "artwork":
         body = `<div class="policy-card artwork-factual-notice">${icon("info")}<div><p class="overline">Nur relevante Angaben</p><h4>Faktische Dokumentation</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div></div><div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.textField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, true) : ""}</div>
+          <div class="form-section"><p class="field-label">Suno-Original-Artwork</p>${this.inlineEvidenceActions(track, [["artwork_suno_original", "Suno-Original importieren"]])}</div>
           ${conditional.has("humanArtworkProcessOperations") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkProcessOperations", "Menschlicher Arbeitsprozess", draft.humanArtworkProcessOperations, humanArtworkProcessChoices)}${this.textArea("humanArtworkProcessNotes", "Beschreibung / Ergänzungen", "Arbeitsprozess frei beschreiben oder die Auswahl ergänzen", draft.humanArtworkProcessNotes)}</div>` : ""}
           ${conditional.has("humanArtworkModifications") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkModifications", "Menschliche Änderungen", draft.humanArtworkModifications, aiArtworkHumanChangeChoices, true)}${conditional.has("customArtworkChange") ? this.textArea("customArtworkChange", "Sonstige menschliche Bearbeitung – Details", "Frei beschreibbare zusätzliche Änderung", draft.customArtworkChange) : ""}</div>` : ""}
           ${conditional.has("aiArtworkOriginal") ? `<div class="form-section"><p class="field-label">Originale KI-Ausgabe</p>${this.inlineEvidenceActions(track, [["ai_artwork_original", "KI-Original importieren"], ["ai_artwork_edited", "KI-bearbeitete Version importieren"], ["human_edited_artwork", "Menschlich bearbeitete Version importieren"]])}</div>` : ""}
@@ -1853,6 +1884,28 @@ export class SunoDocumentationApp {
     return `<label class="field ${automated ? "field--automated" : ""}"><span class="field-label">${escapeHtml(label)}${!automated && required ? " *" : ""}</span><span class="field-input-wrap"><input type="date" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${automated ? "readonly aria-readonly=\"true\"" : requirement}>${automated ? `<i title="Evidence-derived metadata">${icon("check")}</i>` : ""}</span><small class="field-caption">${escapeHtml(caption)}</small></label>`;
   }
 
+  private hasManualSunoDateOverriddenByMetadata(previous: TrackDetail, imported: TrackDetail): boolean {
+    const dates: Array<[string, string, FactOrigin, FactOrigin]> = [
+      [previous.fields.sunoFinalGenerationDate, imported.fields.sunoFinalGenerationDate, previous.automation.finalGenerationOrigin, imported.automation.finalGenerationOrigin],
+      [previous.fields.productionEndDate, imported.fields.productionEndDate, previous.automation.productionEndOrigin, imported.automation.productionEndOrigin],
+      [previous.fields.sunoDownloadExportDate, imported.fields.sunoDownloadExportDate, previous.automation.downloadExportOrigin, imported.automation.downloadExportOrigin],
+      [previous.fields.finalExportDate, imported.fields.finalExportDate, previous.automation.finalExportOrigin, imported.automation.finalExportOrigin]
+    ];
+    return dates.some(([before, after, previousOrigin, importedOrigin]) =>
+      Boolean(before) && before !== after
+        && previousOrigin !== "evidence_derived_metadata"
+        && importedOrigin === "evidence_derived_metadata"
+    );
+  }
+
+  private renderAutomaticSunoMetadata(track: TrackDetail): string {
+    const timestamp = track.automation.sunoCreatedTimestamp;
+    const sunoId = track.automation.sunoId;
+    if (!track.automation.sunoMetadataDetected || !timestamp || !sunoId) return "";
+
+    return `<section class="policy-card"><div>${icon("check")}<p class="overline">Automatisch aus Suno-WAV erkannt</p><h4>Aus Dateimetadaten</h4><dl><div><dt>Suno Studio</dt><dd>Ja</dd></div><div><dt>Download/Export</dt><dd>${escapeHtml(formatDate(track.fields.sunoDownloadExportDate))}</dd></div><div><dt>Suno ID</dt><dd><code>${escapeHtml(sunoId)}</code></dd></div></dl><details><summary>Technische Details</summary><p>Embedded Suno export timestamp: <code>${escapeHtml(timestamp)}</code></p></details></div></section>`;
+  }
+
   private textArea(name: string, label: string, placeholder: string, value: string, required = false): string {
     return `<label class="field field--wide"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><textarea name="${name}" placeholder="${escapeHtml(placeholder)}" ${required ? "required" : ""}>${escapeHtml(value)}</textarea></label>`;
   }
@@ -2087,7 +2140,17 @@ export class SunoDocumentationApp {
           this.state.showTrackLibrary = false;
           this.state.showSubscriptionEvidence = false;
           this.state.evidencePreview = null;
+          this.state.folderImport = null;
           this.state.showNewTrack = true;
+          this.render();
+        }
+        break;
+      }
+      case "scan-folder-import": {
+        const proposal = await this.withBusy("Ordner wird analysiert …", () => this.api.scanImportFolder());
+        if (proposal) {
+          this.state.folderImport = proposal;
+          this.showToast("info", "Ordner analysiert", `${proposal.tracks.length} ${proposal.tracks.length === 1 ? "Track" : "Tracks"} erkannt. Nur eindeutige Dateien werden übernommen.`);
           this.render();
         }
         break;
@@ -2101,7 +2164,7 @@ export class SunoDocumentationApp {
         this.state.showTrackLibrary = true;
         this.render();
         break;
-      case "close-modal": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.render(); break;
+      case "close-modal": this.state.showNewTrack = false; this.state.folderImport = null; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.render(); break;
       case "show-certificate-popup":
         if (this.requireTrack().certificate.valid && this.requireTrack().certificate.certificateId) {
           this.state.showCertificatePopup = true;
@@ -2181,6 +2244,32 @@ export class SunoDocumentationApp {
         this.state.view = "settings";
         this.showToast("error", "Track nicht angelegt", `Vervollständige zuerst: ${profileMissing.join(", ")}.`);
         this.render();
+        return;
+      }
+      const proposal = this.state.folderImport;
+      if (proposal) {
+        const data = new FormData(form);
+        const singleTrackLibrary = proposal.kind === "single" ? this.readTrackLibraryAssignment(form) : null;
+        if (proposal.kind === "single" && !singleTrackLibrary) return;
+        const tracks = await this.withBusy("Ordner wird in normale Track-Strukturen übernommen …", () => this.api.executeFolderImport({
+          sourcePath: proposal.sourcePath,
+          expectedKind: proposal.kind,
+          singleTrackTitle: proposal.kind === "single" ? String(data.get("title") ?? "") : undefined,
+          singleTrackLibrary: singleTrackLibrary ?? undefined,
+          productionStartDate: proposal.kind === "single" ? String(data.get("productionStartDate") ?? "") : "",
+          commercialUseIntended: data.get("commercialUseIntended") === "on"
+        }));
+        if (tracks?.length) {
+          this.applyTrack(tracks[0]);
+          this.state.tracks = await this.api.listTracks();
+          this.state.albums = await this.api.listAlbums();
+          this.state.showNewTrack = false;
+          this.state.folderImport = null;
+          this.state.view = "current";
+          this.state.activeStep = "track";
+          this.showToast("success", "Ordner importiert", `${tracks.length} ${tracks.length === 1 ? "Track wurde" : "Tracks wurden"} als unvollständige normale SunoDM-Struktur angelegt.`);
+          this.render();
+        }
         return;
       }
       const data = new FormData(form);
@@ -2433,6 +2522,9 @@ export class SunoDocumentationApp {
     if (imported) {
       if (role === "final_artwork") this.trackCoverCache.delete(track.id);
       this.applyTrack(imported);
+      const overriddenBySunoMetadata = role === "suno_final_export"
+        && imported.automation.sunoMetadataDetected
+        && this.hasManualSunoDateOverriddenByMetadata(track, imported);
       const sunoSummary = role === "suno_final_export" && imported.automation.sunoMetadataDetected
         ? ` Suno Studio und der eingebettete Erzeugungszeitpunkt wurden automatisch erkannt.${imported.automation.sunoId ? " Die technische Suno-ID wurde als Evidence erhalten." : ""}`
         : "";
@@ -2441,6 +2533,13 @@ export class SunoDocumentationApp {
         replaceEvidenceId ? "Evidence ersetzt" : "Evidence importiert",
         `${evidenceRoleLabel(role)} wurde kopiert, gehasht und dem Track zugeordnet.${replaceEvidenceId ? " Die vorherige Kopie wurde archiviert." : ""}${sunoSummary}`
       );
+      if (overriddenBySunoMetadata) {
+        this.showToast(
+          "info",
+          "Suno-Metadaten überschreiben Nutzerangabe",
+          "Abweichende Benutzerangabe durch Suno-WAV-Metadaten erkannt. Die technisch aus dem WAV gewonnene Information wird als Evidence-derived metadata verwendet."
+        );
+      }
     }
   }
 

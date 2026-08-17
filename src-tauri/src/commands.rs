@@ -1,5 +1,6 @@
 use crate::application::WorkspaceApp;
 use crate::error::{AppError, Result};
+use crate::folder_import::{FolderImportExecutionInput, FolderImportProposal};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
     EvidencePreview, EvidenceRole, GlobalEvidenceItem, OperationProgress, Profile, StepStatus,
@@ -160,6 +161,32 @@ pub fn create_album(state: State<'_, AppState>, title: String) -> Result<Vec<Str
 #[tauri::command]
 pub fn create_track(state: State<'_, AppState>, input: CreateTrackInput) -> Result<TrackDetail> {
     with_workspace(&state, |app| app.create_track(input))
+}
+
+#[tauri::command]
+pub fn scan_import_folder(state: State<'_, AppState>) -> Result<Option<FolderImportProposal>> {
+    let Some(source) = rfd::FileDialog::new()
+        .set_title("Musikprojekt-Ordner importieren")
+        .pick_folder()
+    else {
+        return Ok(None);
+    };
+    with_workspace(&state, |app| app.scan_folder_import(&source).map(Some))
+}
+
+#[tauri::command]
+pub async fn execute_folder_import(
+    state: State<'_, AppState>,
+    input: FolderImportExecutionInput,
+) -> Result<Vec<TrackDetail>> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || workspace.import_folder(input))
+        .await
+        .map_err(|error| AppError::Data(format!("Folder import task failed: {error}")))?
 }
 
 #[tauri::command]

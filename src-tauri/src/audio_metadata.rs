@@ -390,6 +390,9 @@ pub(crate) fn parse_suno_metadata(raw: &str) -> Option<ParsedSunoMetadata> {
         return None;
     }
     let created = created?;
+    if created.as_bytes().get(10) != Some(&b'T') {
+        return None;
+    }
     let timestamp = DateTime::parse_from_rfc3339(created).ok()?;
     let id = Uuid::parse_str(id?).ok()?;
     Some(ParsedSunoMetadata {

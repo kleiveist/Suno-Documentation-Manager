@@ -611,6 +611,14 @@ fn render_final_suno_generation(layout: &mut PdfLayout, snapshot: &CertificatePd
             yes_no_bool(snapshot.automation.suno_metadata_detected),
         ),
         TableRow::plain(
+            "Suno ID [Evidence-derived metadata]",
+            snapshot
+                .automation
+                .suno_id
+                .as_deref()
+                .unwrap_or("Not documented"),
+        ),
+        TableRow::plain(
             "Release identical to Suno final export",
             yes_no_bool(snapshot.automation.release_identical_to_suno_export),
         ),
@@ -2092,7 +2100,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_compact_suno_automation_without_raw_timestamp_or_technical_id() {
+    fn renders_suno_automation_with_evidence_derived_id_but_without_raw_timestamp() {
         let mut fixture = Fixture::new(1);
         fixture.track.fields.suno_final_generation_date = "2026-08-17".into();
         let release_hash = fixture.evidence[0]
@@ -2128,7 +2136,7 @@ mod tests {
         assert!(text.contains("Suno Studio metadata detected"));
         assert!(text.contains("Release identical to Suno final export"));
         assert!(!text.contains("2026-08-17T06:38:06Z"));
-        assert!(!text.contains("6c8a40fd-32bf-4c7b-ab59-23579ff95828"));
+        assert!(text.contains("6c8a40fd-32bf-4c7b-ab59-23579ff95828"));
     }
 
     #[test]

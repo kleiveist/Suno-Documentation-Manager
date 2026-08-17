@@ -61,6 +61,7 @@ pub enum EvidenceRole {
     ReleaseMp3,
     ReleaseMp4,
     ReleaseArtwork,
+    ArtworkSunoOriginal,
     AiArtworkOriginal,
     AiArtworkEdited,
     HumanEditedArtwork,
@@ -74,6 +75,8 @@ pub enum EvidenceRole {
     ThirdPartySampleLicense,
     SunoTermsRights,
     ExternalTimestamp,
+    Lyrics,
+    Style,
     Other,
 }
 
@@ -95,6 +98,7 @@ impl EvidenceRole {
             Self::ReleaseMp3 => "release_mp3",
             Self::ReleaseMp4 => "release_mp4",
             Self::ReleaseArtwork => "release_artwork",
+            Self::ArtworkSunoOriginal => "artwork_suno_original",
             Self::AiArtworkOriginal => "ai_artwork_original",
             Self::AiArtworkEdited => "ai_artwork_edited",
             Self::HumanEditedArtwork => "human_edited_artwork",
@@ -108,6 +112,8 @@ impl EvidenceRole {
             Self::ThirdPartySampleLicense => "third_party_sample_license",
             Self::SunoTermsRights => "suno_terms_rights",
             Self::ExternalTimestamp => "external_timestamp",
+            Self::Lyrics => "lyrics",
+            Self::Style => "style",
             Self::Other => "other",
         }
     }
@@ -121,6 +127,7 @@ impl EvidenceRole {
             | Self::ThirdPartySampleLicense
             | Self::SunoTermsRights => "04_LICENSES",
             Self::ReleaseArtwork
+            | Self::ArtworkSunoOriginal
             | Self::AiArtworkOriginal
             | Self::AiArtworkEdited
             | Self::HumanEditedArtwork
@@ -130,6 +137,7 @@ impl EvidenceRole {
             | Self::SourceCodeFile
             | Self::CodeGeneratedAudioFile
             | Self::ThirdPartySampleFile => "02_SUNO",
+            Self::Lyrics | Self::Style => "02_SUNO",
             Self::ExternalTimestamp | Self::Other => "03_DOCUMENTATION",
         }
     }
@@ -152,6 +160,7 @@ impl EvidenceRole {
                 "pdf", "txt", "md", "json", "html", "htm", "png", "jpg", "jpeg",
             ],
             Self::ReleaseArtwork
+            | Self::ArtworkSunoOriginal
             | Self::AiArtworkOriginal
             | Self::AiArtworkEdited
             | Self::HumanEditedArtwork
@@ -168,6 +177,7 @@ impl EvidenceRole {
                 "hrl", "fs", "fsx", "vb", "sql", "html", "htm", "css", "scss", "sass", "less",
                 "xml", "yaml", "yml", "toml", "json", "csv", "ipynb", "svg",
             ],
+            Self::Lyrics | Self::Style => &["txt", "md"],
             Self::Other => &[
                 "pdf", "png", "jpg", "jpeg", "txt", "md", "json", "zip", "wav", "mp3", "mp4",
             ],
@@ -399,7 +409,11 @@ impl TrackFields {
             self.third_party_sample_source.clear();
             self.third_party_sample_ownership.clear();
         }
-        if matches!(self.lyrics_source.as_str(), "" | "instrumental") {
+        // A folder import can know the exact lyric text before it can know
+        // whether the lyrics are human, Suno, or mixed. Keep that factual
+        // content pending while the source answer is still unknown; an
+        // explicit instrumental answer still clears it.
+        if self.lyrics_source == "instrumental" {
             self.lyrics_text.clear();
         }
         if self.human_editing_performed != Some(true) {

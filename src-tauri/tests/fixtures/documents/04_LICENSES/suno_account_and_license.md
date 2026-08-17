@@ -8,7 +8,8 @@
 - Workspace subscription start date: 2026-01-15
 - Commercial use intended: Yes
 - Final generation date: 2026-02-05
-- Selected subscription evidence covers the recorded final-generation date: NOT VERIFIED
+- Assigned subscription evidence jointly covers the production period: NOT VERIFIED
+- Assigned subscription evidence covers the recorded final-generation date: NOT VERIFIED
 - Terms evidence not available: Yes
 
 ## Archived service-terms evidence

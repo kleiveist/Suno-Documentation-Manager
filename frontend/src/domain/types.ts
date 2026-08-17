@@ -23,6 +23,7 @@ export type EvidenceRole =
   | "release_mp3"
   | "release_mp4"
   | "release_artwork"
+  | "artwork_suno_original"
   | "ai_artwork_original"
   | "ai_artwork_edited"
   | "human_edited_artwork"
@@ -36,6 +37,8 @@ export type EvidenceRole =
   | "third_party_sample_license"
   | "suno_terms_rights"
   | "external_timestamp"
+  | "lyrics"
+  | "style"
   | "other";
 
 export type ArtworkOrigin = "none" | "human" | "ai_generated" | "ai_assisted";
@@ -47,6 +50,39 @@ export type TrackLibrarySection = "single" | "album";
 export interface TrackLibraryAssignment {
   section: TrackLibrarySection;
   albumTitle?: string;
+}
+
+export type FolderImportKind = "single" | "album";
+
+export interface FolderImportFile {
+  fileName: string;
+  roles: string[];
+  selected: boolean;
+}
+
+export interface FolderImportTrackProposal {
+  title: string;
+  sourcePath: string;
+  files: FolderImportFile[];
+  ambiguities: string[];
+  unassignedFiles: string[];
+}
+
+export interface FolderImportProposal {
+  sourcePath: string;
+  kind: FolderImportKind;
+  albumTitle?: string;
+  tracks: FolderImportTrackProposal[];
+  unassignedFiles: string[];
+}
+
+export interface FolderImportExecutionInput {
+  sourcePath: string;
+  expectedKind: FolderImportKind;
+  singleTrackTitle?: string;
+  singleTrackLibrary?: TrackLibraryAssignment;
+  productionStartDate: string;
+  commercialUseIntended?: boolean;
 }
 
 export interface WorkspaceSummary {

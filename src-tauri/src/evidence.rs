@@ -560,6 +560,7 @@ fn managed_file_name(track_title: &str, role: &EvidenceRole, original: &str) -> 
         crate::security::slugify(track_title)?
     };
     let suffix = match role {
+        EvidenceRole::ArtworkSunoOriginal => Some("SUNO_ORIGINAL"),
         EvidenceRole::AiArtworkOriginal => Some("AI_ORIGINAL"),
         EvidenceRole::AiArtworkEdited => Some("AI_EDITED"),
         EvidenceRole::HumanEditedArtwork => Some("EDITED"),

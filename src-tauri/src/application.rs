@@ -2,6 +2,7 @@ use crate::certificate;
 use crate::documents;
 use crate::error::{AppError, Result};
 use crate::evidence;
+use crate::folder_import::{self, FolderImportExecutionInput, FolderImportProposal};
 use crate::integrity;
 use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
@@ -422,6 +423,105 @@ impl WorkspaceApp {
             }
         }
         self.load_track(&track.id)
+    }
+
+    pub fn scan_folder_import(&self, source: &Path) -> Result<FolderImportProposal> {
+        folder_import::plans(source).map(|(proposal, _)| proposal)
+    }
+
+    /// Imports only files with a unique, validated role into freshly created
+    /// ordinary tracks. The source directory is never written to.
+    pub fn import_folder(&self, input: FolderImportExecutionInput) -> Result<Vec<TrackDetail>> {
+        let (proposal, plans) = folder_import::plans(Path::new(&input.source_path))?;
+        if proposal.kind != input.expected_kind {
+            return Err(AppError::Validation(
+                "Der Quellordner hat sich seit der Vorschau geändert. Bitte erneut analysieren."
+                    .into(),
+            ));
+        }
+        let profile = self.profile()?;
+        let commercial_use_intended = input
+            .commercial_use_intended
+            .unwrap_or(profile.default_commercial_use);
+        let source_root = Path::new(&input.source_path)
+            .canonicalize()
+            .map_err(|error| AppError::io(&input.source_path, error))?;
+        let mut prepared = Vec::new();
+        let mut target_paths = HashSet::new();
+        for plan in plans {
+            let (title, production_start_date, library) = match proposal.kind {
+                folder_import::FolderImportKind::Single => (
+                    input
+                        .single_track_title
+                        .clone()
+                        .unwrap_or_else(|| plan.title.clone()),
+                    input.production_start_date.clone(),
+                    input.single_track_library.clone().unwrap_or_default(),
+                ),
+                folder_import::FolderImportKind::Album => (
+                    plan.title.clone(),
+                    String::new(),
+                    TrackLibraryPlacement {
+                        section: TrackLibrarySection::Album,
+                        album_title: proposal.album_title.clone(),
+                    },
+                ),
+            };
+            validate_track_title(&title)?;
+            validate_optional_date("Production start", &production_start_date)?;
+            let library = self.existing_album_spelling(normalize_track_library(library)?)?;
+            let relative_path = physical_track_relative(&library, &title)?;
+            let target = self.root.join(&relative_path);
+            if target.starts_with(&source_root) {
+                return Err(AppError::Validation(
+                    "Der Ziel-Track würde innerhalb des ausgewählten Quellordners liegen. Wähle einen getrennten Quellordner, damit die Quelle unverändert bleibt."
+                        .into(),
+                ));
+            }
+            if !target_paths.insert(relative_path.clone())
+                || target.exists()
+                || self
+                    .persistence
+                    .track_by_relative_path(&relative_path)?
+                    .is_some()
+            {
+                return Err(AppError::Collision(relative_path));
+            }
+            prepared.push((
+                plan,
+                CreateTrackInput {
+                    title,
+                    production_start_date,
+                    commercial_use_intended,
+                    library,
+                },
+            ));
+        }
+
+        let mut imported = Vec::new();
+        for (plan, create_input) in prepared {
+            let created = self.create_track(create_input)?;
+            let mut track = created;
+            for assignment in plan.assignments {
+                track = self.import_evidence_with_metadata_from(
+                    &track.id,
+                    assignment.role,
+                    &assignment.source,
+                    EvidenceMetadata::default(),
+                )?;
+            }
+            if plan.lyrics.is_some() || plan.style.is_some() || plan.has_source_code {
+                let patch = TrackPatch {
+                    lyrics_text: plan.lyrics,
+                    suno_style_prompt: plan.style,
+                    code_based_generation: plan.has_source_code.then_some(true),
+                    ..Default::default()
+                };
+                track = self.update_track(&track.id, patch)?;
+            }
+            imported.push(track);
+        }
+        Ok(imported)
     }
 
     pub fn list_tracks(&self) -> Result<Vec<TrackSummary>> {
@@ -2981,7 +3081,7 @@ impl WorkspaceApp {
             } else {
                 track.integrity.clone()
             };
-        if !immutable_snapshot {
+        if !immutable_snapshot || !inspected_integrity.verified {
             track.integrity = inspected_integrity.clone();
         }
         if inspect_finalized && track.status == TrackStatus::Finalized {
@@ -4537,6 +4637,240 @@ mod tests {
         }
     }
 
+    fn source_file_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        walkdir::WalkDir::new(root)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| {
+                let relative = entry
+                    .path()
+                    .strip_prefix(root)
+                    .expect("relative source file")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (
+                    relative,
+                    fs::read(entry.path()).expect("source fixture bytes"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn folder_import_single_uses_selected_library_and_keeps_incomplete_facts_open() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let source = directory.path().join("Awakening");
+        fs::create_dir(&source).expect("source directory");
+        fs::write(source.join("Awakening.mp3"), b"ID3audio").expect("MP3 fixture");
+        fs::write(source.join("Awakening.mp4"), b"\0\0\0\x0cftypisom").expect("MP4 fixture");
+        fs::write(source.join("Awakening.wav"), b"RIFF\x04\0\0\0WAVE").expect("WAV fixture");
+        fs::write(source.join("Awakening.jpeg"), b"\xff\xd8\xffimage").expect("JPEG fixture");
+        fs::write(
+            source.join("Awakening_AI_ORIGINAL.png"),
+            b"\x89PNG\r\n\x1a\noriginal",
+        )
+        .expect("AI original fixture");
+        fs::write(
+            source.join("Awakening_AI_EDITED.png"),
+            b"\x89PNG\r\n\x1a\nedited",
+        )
+        .expect("AI edited fixture");
+        fs::write(
+            source.join("Bildschirmfoto_20260817_141059.png"),
+            b"\x89PNG\r\n\x1a\nscreenshot",
+        )
+        .expect("screenshot fixture");
+        fs::write(source.join("SpaceWideToWide1.rb"), b"play 60\n").expect("source-code fixture");
+        fs::write(source.join("Lyrics.txt"), b"First line\nSecond line\n").expect("lyrics fixture");
+        fs::write(source.join("Style.txt"), b"dreamy synthwave\n").expect("style fixture");
+        let before = source_file_snapshot(&source);
+
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let imported = app
+            .import_folder(FolderImportExecutionInput {
+                source_path: source.display().to_string(),
+                expected_kind: folder_import::FolderImportKind::Single,
+                single_track_title: Some("Awakening".into()),
+                single_track_library: Some(TrackLibraryPlacement {
+                    section: TrackLibrarySection::Album,
+                    album_title: Some("Chosen Album".into()),
+                }),
+                production_start_date: String::new(),
+                commercial_use_intended: Some(false),
+            })
+            .expect("folder import");
+
+        assert_eq!(imported.len(), 1);
+        let track = &imported[0];
+        assert_eq!(track.relative_path, "Chosen Album/Awakening");
+        assert_eq!(track.library.section, TrackLibrarySection::Album);
+        assert_eq!(track.fields.production_start_date, "");
+        assert_ne!(track.status, TrackStatus::Finalized);
+        assert_eq!(track.fields.code_based_generation, Some(true));
+        assert_eq!(track.fields.external_audio_uploaded, None);
+        assert_eq!(track.fields.own_audio_uploaded, None);
+        assert_eq!(track.fields.third_party_samples_uploaded, None);
+        assert_eq!(track.fields.human_editing_performed, None);
+        assert_eq!(track.fields.lyrics_text, "First line\nSecond line\n");
+        assert!(track.fields.lyrics_source.is_empty());
+        assert_eq!(track.fields.suno_style_prompt, "dreamy synthwave\n");
+        for role in [
+            EvidenceRole::ReleaseMp3,
+            EvidenceRole::ReleaseMp4,
+            EvidenceRole::ReleaseWav,
+            EvidenceRole::ArtworkSunoOriginal,
+            EvidenceRole::AiArtworkOriginal,
+            EvidenceRole::AiArtworkEdited,
+            EvidenceRole::SunoScreenshot,
+            EvidenceRole::SourceCodeFile,
+            EvidenceRole::Lyrics,
+            EvidenceRole::Style,
+        ] {
+            assert!(
+                track.evidence.iter().any(|item| item.role == role),
+                "missing imported role {role:?}"
+            );
+        }
+        let track_root = workspace.join(&track.relative_path);
+        for folder in TRACK_FOLDERS {
+            assert!(track_root.join(folder).is_dir(), "missing {folder}");
+        }
+        assert!(track_root.join(".summary/track.json").is_file());
+        assert_eq!(source_file_snapshot(&source), before);
+        assert_eq!(track.steps.len(), 10);
+        assert!(track.missing_count > 0);
+    }
+
+    #[test]
+    fn folder_import_album_creates_normal_tracks_and_leaves_root_files_unassigned() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let source = directory.path().join("The Final Protocol");
+        fs::create_dir(&source).expect("album source");
+        for title in ["Awakening", "Boot Sequence", "LastWarnung"] {
+            let track = source.join(title);
+            fs::create_dir(&track).expect("track source");
+            fs::write(track.join(format!("{title}.mp3")), b"ID3audio").expect("track media");
+        }
+        fs::write(source.join("signed_contract.pdf"), b"%PDF-contract").expect("root fixture");
+        let before = source_file_snapshot(&source);
+
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let imported = app
+            .import_folder(FolderImportExecutionInput {
+                source_path: source.display().to_string(),
+                expected_kind: folder_import::FolderImportKind::Album,
+                single_track_title: Some("ignored".into()),
+                single_track_library: Some(TrackLibraryPlacement::default()),
+                production_start_date: "2026-08-01".into(),
+                commercial_use_intended: Some(false),
+            })
+            .expect("album folder import");
+
+        assert_eq!(imported.len(), 3);
+        for track in &imported {
+            assert!(track.relative_path.starts_with("The Final Protocol/"));
+            assert_eq!(track.library.section, TrackLibrarySection::Album);
+            assert_eq!(
+                track.library.album_title.as_deref(),
+                Some("The Final Protocol")
+            );
+            assert!(track.fields.production_start_date.is_empty());
+            assert_ne!(track.status, TrackStatus::Finalized);
+            assert!(track
+                .evidence
+                .iter()
+                .any(|item| item.role == EvidenceRole::ReleaseMp3));
+            assert!(!track
+                .evidence
+                .iter()
+                .any(|item| item.metadata.original_file_name == "signed_contract.pdf"));
+            for folder in TRACK_FOLDERS {
+                assert!(workspace.join(&track.relative_path).join(folder).is_dir());
+            }
+            assert!(workspace
+                .join(&track.relative_path)
+                .join(".summary/track.json")
+                .is_file());
+        }
+        assert_eq!(source_file_snapshot(&source), before);
+    }
+
+    #[test]
+    fn folder_import_suno_wav_derives_timestamp_id_and_byte_identity_without_questions() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let source = directory.path().join("Metadata Track");
+        fs::create_dir(&source).expect("source directory");
+        let raw = p0_suno_comment("2026-08-17T06:38:06Z");
+        fs::write(source.join("Metadata Track.wav"), p0_pcm_wav(Some(&raw)))
+            .expect("Suno WAV fixture");
+
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let imported = app
+            .import_folder(FolderImportExecutionInput {
+                source_path: source.display().to_string(),
+                expected_kind: folder_import::FolderImportKind::Single,
+                single_track_title: Some("Metadata Track".into()),
+                single_track_library: Some(TrackLibraryPlacement::default()),
+                production_start_date: String::new(),
+                commercial_use_intended: Some(false),
+            })
+            .expect("folder import");
+        let track = &imported[0];
+
+        assert_eq!(track.fields.suno_download_export_date, "2026-08-17");
+        assert_eq!(track.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(track.fields.production_end_date, "2026-08-17");
+        assert_eq!(
+            track.automation.download_export_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(
+            track.automation.suno_created_timestamp.as_deref(),
+            Some("2026-08-17T06:38:06Z")
+        );
+        assert_eq!(track.automation.suno_id.as_deref(), Some(P0_SUNO_ID));
+        assert!(track.automation.release_identical_to_suno_export);
+        let suno = track
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::SunoFinalExport)
+            .expect("Suno evidence");
+        assert_eq!(suno.metadata.suno_id, P0_SUNO_ID);
+        assert_eq!(suno.metadata.suno_created_timestamp, "2026-08-17T06:38:06Z");
+        assert!(suno.sha256.as_deref().is_some_and(|hash| hash.len() == 64));
+    }
+
+    #[test]
+    fn folder_import_rejects_a_target_inside_the_source_before_creating_a_track() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        fs::write(workspace.join("Source.mp3"), b"ID3audio").expect("source media");
+        let before = source_file_snapshot(&workspace);
+
+        let result = app.import_folder(FolderImportExecutionInput {
+            source_path: workspace.display().to_string(),
+            expected_kind: folder_import::FolderImportKind::Single,
+            single_track_title: Some("Unsafe Nested Target".into()),
+            single_track_library: Some(TrackLibraryPlacement::default()),
+            production_start_date: String::new(),
+            commercial_use_intended: Some(false),
+        });
+
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        assert!(app.list_tracks().expect("track list").is_empty());
+        assert_eq!(source_file_snapshot(&workspace), before);
+    }
+
     fn prepare_ready_track(app: &WorkspaceApp, fixture_root: &Path, title: &str) -> TrackDetail {
         let created = app
             .create_track(CreateTrackInput {
@@ -4557,6 +4891,7 @@ mod tests {
                     suno_final_generation_date: Some("2026-08-02".into()),
                     suno_download_export_date: Some("2026-08-03".into()),
                     suno_plan_at_creation: Some("Pro".into()),
+                    production_end_date: Some("2026-08-03".into()),
                     final_export_date: Some("2026-08-03".into()),
                     instrumental_track: Some(true),
                     lyrics_source: Some("instrumental".into()),
@@ -5662,7 +5997,7 @@ mod tests {
     }
 
     #[test]
-    fn older_track_json_defaults_to_single_library_section() {
+    fn older_track_json_defaults_to_single_library_section_without_rewriting_it() {
         let legacy_input: CreateTrackInput = serde_json::from_value(serde_json::json!({
             "title": "Legacy API Input",
             "productionStartDate": "2026-08-01",
@@ -5722,12 +6057,12 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("materialized track JSON");
-        assert_eq!(
+        assert!(
             serde_json::from_str::<serde_json::Value>(&materialized_json)
                 .expect("materialized JSON")
-                .pointer("/library/section")
-                .and_then(serde_json::Value::as_str),
-            Some("single")
+                .pointer("/library")
+                .is_none(),
+            "loading a legacy record must not rewrite its JSON merely to add defaults"
         );
     }
 
@@ -5814,7 +6149,7 @@ mod tests {
     }
 
     #[test]
-    fn library_reclassification_preserves_finalized_track_state_and_files() {
+    fn library_reclassification_preserves_active_track_state_and_files() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
@@ -5834,7 +6169,7 @@ mod tests {
         .expect("track sentinel");
 
         let mut record = app.persistence.track(&created.id).expect("stored track");
-        record.status = TrackStatus::Finalized;
+        record.status = TrackStatus::Active;
         record.documents = DocumentState {
             generated: true,
             current: true,
@@ -5875,8 +6210,8 @@ mod tests {
                     album_title: Some("  Preserved Album  ".into()),
                 },
             )
-            .expect("finalized album reassignment");
-        assert_eq!(album.status, TrackStatus::Finalized);
+            .expect("active album reassignment");
+        assert_eq!(album.status, TrackStatus::Active);
         assert_eq!(album.updated_at, "2026-08-01T12:04:00Z");
         assert_eq!(album.library.section, TrackLibrarySection::Album);
         assert_eq!(
@@ -5900,7 +6235,7 @@ mod tests {
                     album_title: Some("must be cleared".into()),
                 },
             )
-            .expect("finalized single reassignment");
+            .expect("active single reassignment");
         assert_eq!(single.library, TrackLibraryPlacement::default());
         let single_record = app.persistence.track(&created.id).expect("stored single");
         assert_eq!(
@@ -6906,7 +7241,7 @@ mod tests {
             .expect("release evidence import");
         assert_eq!(automated.fields.suno_final_generation_date, "2026-08-02");
         assert_eq!(automated.fields.production_end_date, "2026-08-02");
-        assert!(automated.fields.suno_download_export_date.is_empty());
+        assert_eq!(automated.fields.suno_download_export_date, "2026-08-02");
         assert_eq!(
             automated.automation.final_generation_origin,
             FactOrigin::EvidenceDerivedMetadata
@@ -7029,6 +7364,25 @@ mod tests {
             manifest_json["evidence_derived_metadata"]["suno_id"].as_str(),
             Some(P0_SUNO_ID)
         );
+        let manifest_suno = manifest_json["evidence"]
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item["role"].as_str() == Some("suno_final_export"))
+            })
+            .expect("Suno final export manifest record");
+        assert_eq!(
+            manifest_suno["metadata"]["sunoId"].as_str(),
+            Some(P0_SUNO_ID)
+        );
+        assert_eq!(
+            manifest_suno["metadata"]["sunoCreatedTimestamp"].as_str(),
+            Some("2026-08-02T06:38:06Z")
+        );
+        assert!(manifest_suno["sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64));
         assert_eq!(
             manifest_json["system_verification"]["fact_origins"]["final_suno_generation_date"]
                 .as_str(),
@@ -7054,11 +7408,14 @@ mod tests {
             .expect("Markdown certificate");
         assert!(markdown.contains("Final generation date [Evidence-derived metadata]: 2026-08-02"));
         assert!(markdown.contains("Suno Studio metadata detected: **YES**"));
+        assert!(markdown.contains(&format!(
+            "Suno ID [Evidence-derived metadata]: {P0_SUNO_ID}"
+        )));
         assert!(markdown.contains("Release identical to Suno final export: **YES**"));
         assert!(markdown.contains("Download/export date [Evidence-derived metadata]: 2026-08-02"));
         assert!(markdown.contains("Last editing date [Evidence-derived metadata]: 2026-08-02"));
         assert!(!markdown.contains("2026-08-02T06:38:06Z"));
-        assert!(!markdown.contains(P0_SUNO_ID));
+        assert!(markdown.contains(P0_SUNO_ID));
     }
 
     #[test]
@@ -8988,6 +9345,16 @@ mod tests {
         post_export_editing: Option<bool>,
         commercial_use_intended: bool,
     ) -> TrackDetail {
+        if app
+            .profile()
+            .expect("P0 profile")
+            .artist_name
+            .trim()
+            .is_empty()
+        {
+            app.update_profile(complete_profile())
+                .expect("P0 profile setup");
+        }
         let created = app
             .create_track(CreateTrackInput {
                 title: title.into(),
@@ -9731,6 +10098,11 @@ mod tests {
         app.persistence
             .save_evidence(&ready.id, &legacy_evidence)
             .expect("seed pre-metadata evidence row");
+        let mut legacy_track = app.persistence.track(&ready.id).expect("stored track");
+        legacy_track.field_origins = Default::default();
+        app.persistence
+            .save_track(&legacy_track)
+            .expect("seed pre-metadata track row");
 
         app.generate_documents(&ready.id, false)
             .expect("legacy-compatible documents");
@@ -10034,6 +10406,7 @@ mod tests {
         let created = p0_track(&app, "Outdated Workflow", None, false);
         let mut stale = app.persistence.track(&created.id).expect("stored track");
         stale.workflow_version = "1.3".into();
+        stale.fields.production_end_date = "2026-08-01".into();
         app.persistence
             .save_track(&stale)
             .expect("seed old workflow");

@@ -4,6 +4,8 @@ import { createDemoApi } from "./demo";
 import type {
   ActionResult,
   EvidencePreview,
+  FolderImportExecutionInput,
+  FolderImportProposal,
   EvidenceMetadata,
   EvidenceRole,
   DocumentPreview,
@@ -43,6 +45,8 @@ export interface DesktopApi {
   listAlbums(): Promise<string[]>;
   createAlbum(title: string): Promise<string[]>;
   createTrack(input: TrackCreateInput): Promise<TrackDetail>;
+  scanImportFolder(): Promise<FolderImportProposal | null>;
+  executeFolderImport(input: FolderImportExecutionInput): Promise<TrackDetail[]>;
   loadTrack(trackId: string): Promise<TrackDetail>;
   loadTrackCover(trackId: string): Promise<TrackCoverPreview | null>;
   updateTrackLibrary(trackId: string, library: TrackLibraryAssignment): Promise<TrackDetail>;
@@ -188,6 +192,19 @@ class TauriDesktopApi implements DesktopApi {
 
   createTrack(input: TrackCreateInput): Promise<TrackDetail> {
     return command("create_track", { input });
+  }
+
+  async scanImportFolder(): Promise<FolderImportProposal | null> {
+    try {
+      return await command<FolderImportProposal | null>("scan_import_folder");
+    } catch (error) {
+      if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
+      throw error;
+    }
+  }
+
+  executeFolderImport(input: FolderImportExecutionInput): Promise<TrackDetail[]> {
+    return command("execute_folder_import", { input });
   }
 
   loadTrack(trackId: string): Promise<TrackDetail> {

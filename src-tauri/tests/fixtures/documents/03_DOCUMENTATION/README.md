@@ -1,7 +1,7 @@
 <!-- suno-documentation-manager:template-v1 -->
 # Track documentation: Golden Signal
 
-Template version: `1.6`
+Template version: `1.7`
 Workflow: `suno-track-documentation` version `1.3`
 
 ## Snapshot
@@ -12,7 +12,7 @@ Workflow: `suno-track-documentation` version `1.3`
 - Suno plan at creation: Pro
 - Commercial use intended: Yes
 - Production period: 2026-02-03 to 2026-02-05
-- Final export date: 2026-02-06
+- Last editing date: 2026-02-06
 - Final generation date: 2026-02-05
 - Actual release filename: Not recorded
 - Actual Suno export filename: Not recorded
@@ -30,7 +30,7 @@ Workflow: `suno-track-documentation` version `1.3`
 
 - Human editing performed: Yes
 - Confirmed human work: Timing and cuts, EQ
-- Post-export editing performed: No
+- Desktop-PC editing after the Suno WAV: No
 - Release notes: Streaming master
 
 ## Workflow status

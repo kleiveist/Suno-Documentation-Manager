@@ -9,6 +9,7 @@ mod commands;
 mod documents;
 mod error;
 mod evidence;
+mod folder_import;
 mod integrity;
 mod model;
 mod persistence;
@@ -34,6 +35,8 @@ fn main() {
             commands::list_albums,
             commands::create_album,
             commands::create_track,
+            commands::scan_import_folder,
+            commands::execute_folder_import,
             commands::load_track,
             commands::load_track_cover,
             commands::update_track,

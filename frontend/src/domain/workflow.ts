@@ -468,6 +468,7 @@ export function evidenceRoleLabel(role: EvidenceRole): string {
     release_mp3: "Release-MP3",
     release_mp4: "Release-MP4",
     release_artwork: "Release-Artwork",
+    artwork_suno_original: "Suno-Original-Artwork",
     ai_artwork_original: "KI-Artwork Original",
     ai_artwork_edited: "KI-Artwork bearbeitet",
     human_edited_artwork: "Menschlich bearbeitetes Artwork",
@@ -481,6 +482,8 @@ export function evidenceRoleLabel(role: EvidenceRole): string {
     third_party_sample_license: "Lizenz für fremde Samples",
     suno_terms_rights: "Suno-Nutzungsbedingungen / Rechteinformationen",
     external_timestamp: "Externer Zeitstempelnachweis",
+    lyrics: "Lyrics-Datei",
+    style: "Style-/Prompt-Datei",
     other: "Sonstiger Nachweis"
   };
   return labels[role];
@@ -496,6 +499,7 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     release_mp3: "MP3",
     release_mp4: "MP4 oder M4V",
     release_artwork: "PNG oder JPG",
+    artwork_suno_original: "PNG oder JPG",
     ai_artwork_original: "PNG oder JPG",
     ai_artwork_edited: "PNG oder JPG",
     human_edited_artwork: "PNG oder JPG",
@@ -509,6 +513,8 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     third_party_sample_license: "PDF, PNG, JPG, TXT oder Markdown",
     suno_terms_rights: "PDF",
     external_timestamp: "PDF, TXT, Markdown, JSON, HTML, PNG oder JPG",
+    lyrics: "TXT oder Markdown",
+    style: "TXT oder Markdown",
     other: "PDF, Bild, Text, ZIP, WAV, MP3 oder MP4"
   };
   return types[role];
