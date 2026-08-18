@@ -197,6 +197,19 @@ pub struct WorkspaceSummary {
     pub last_scanned_at: Option<String>,
 }
 
+/// The primary language used when a new technical certificate is finalized.
+///
+/// The application UI remains German for now; this setting controls the
+/// certificate artifacts only. Keeping the compact ISO-like values on the
+/// wire makes the persisted profile and the TypeScript DTO unambiguous.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CertificateLanguage {
+    De,
+    #[default]
+    En,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
@@ -209,6 +222,11 @@ pub struct Profile {
     pub default_ai_image_service: String,
     pub artwork_transparency_policy: String,
     pub disclosure_text: String,
+    /// Added after the first persisted profile schema. A field-level default
+    /// keeps all pre-language workspaces readable and preserves their former
+    /// English-certificate behaviour.
+    #[serde(default)]
+    pub certificate_language: CertificateLanguage,
 }
 
 impl Default for Profile {
@@ -223,7 +241,27 @@ impl Default for Profile {
             default_ai_image_service: String::new(),
             artwork_transparency_policy: "always".into(),
             disclosure_text: "AI-assisted".into(),
+            certificate_language: CertificateLanguage::En,
         }
+    }
+}
+
+impl Profile {
+    /// Returns whether a profile change affects documents, validation, or the
+    /// embedded profile snapshot of an editable track. Certificate language is
+    /// deliberately excluded: it is read afresh at finalization and recorded
+    /// in the immutable certificate state, so changing only that setting must
+    /// not force document and hash regeneration.
+    pub fn same_track_documentation_profile(&self, other: &Self) -> bool {
+        self.artist_name == other.artist_name
+            && self.suno_profile_name == other.suno_profile_name
+            && self.suno_handle == other.suno_handle
+            && self.suno_plan == other.suno_plan
+            && self.subscription_start_date == other.subscription_start_date
+            && self.default_commercial_use == other.default_commercial_use
+            && self.default_ai_image_service == other.default_ai_image_service
+            && self.artwork_transparency_policy == other.artwork_transparency_policy
+            && self.disclosure_text == other.disclosure_text
     }
 }
 
@@ -879,6 +917,8 @@ pub struct EvidenceDerivedField {
 #[serde(rename_all = "camelCase", default)]
 pub struct TrackFieldOrigins {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub suno_final_generation_id: Option<EvidenceDerivedField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub suno_final_generation_date: Option<EvidenceDerivedField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub production_end_date: Option<EvidenceDerivedField>,
@@ -919,6 +959,8 @@ pub struct ConsistencyIssue {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackAutomation {
+    #[serde(default)]
+    pub final_generation_id_origin: FactOrigin,
     pub final_generation_origin: FactOrigin,
     pub production_end_origin: FactOrigin,
     pub download_export_origin: FactOrigin,
@@ -1029,6 +1071,29 @@ impl Default for DocumentState {
     }
 }
 
+/// Ephemeral choices supplied when the finalization transaction starts.
+///
+/// The primary language intentionally lives in the workspace profile. The
+/// server resolves and freezes that value together with this per-action
+/// bilingual flag once finalization succeeds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FinalizeOptions {
+    pub bilingual: bool,
+}
+
+/// Resolved presentation choices for one immutable certificate set.
+///
+/// `FinalizeOptions` carries only the transient UI switch. The application
+/// combines it with the current workspace setting before certificate
+/// generation, so this value is also ready to be recorded in the manifest.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CertificateRenderOptions {
+    pub language: CertificateLanguage,
+    pub bilingual: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateState {
@@ -1036,6 +1101,13 @@ pub struct CertificateState {
     pub certificate_id: Option<String>,
     pub finalized_at: Option<String>,
     pub workflow_version: Option<String>,
+    /// The actual language used to render this immutable certificate set.
+    #[serde(default)]
+    pub certificate_language: CertificateLanguage,
+    /// Whether the immutable certificate set contains both supported
+    /// languages in addition to its configured primary language.
+    #[serde(default)]
+    pub bilingual: bool,
     pub invalidated_at: Option<String>,
     pub invalidation_reason: Option<String>,
 }
@@ -1244,6 +1316,37 @@ mod tests {
             serde_json::to_value(TimestampReferencedArtifact::EvidenceManifest)
                 .expect("timestamp artifact"),
             "evidence_manifest"
+        );
+    }
+
+    #[test]
+    fn legacy_profile_and_certificate_state_default_to_english_rendering() {
+        let profile: Profile = serde_json::from_value(serde_json::json!({
+            "artistName": "Legacy Artist",
+            "sunoProfileName": "legacy-profile",
+            "sunoHandle": "@legacy",
+            "sunoPlan": "Pro",
+            "subscriptionStartDate": "2026-01-01",
+            "defaultCommercialUse": true,
+            "defaultAiImageService": "Legacy tool",
+            "artworkTransparencyPolicy": "always",
+            "disclosureText": "AI-assisted"
+        }))
+        .expect("pre-language profile remains readable");
+        let certificate: CertificateState = serde_json::from_value(serde_json::json!({
+            "valid": true,
+            "certificateId": "SDM-legacy",
+            "finalizedAt": "2026-08-18T00:00:00Z",
+            "workflowVersion": "1.7"
+        }))
+        .expect("pre-language certificate state remains readable");
+
+        assert_eq!(profile.certificate_language, CertificateLanguage::En);
+        assert_eq!(certificate.certificate_language, CertificateLanguage::En);
+        assert!(!certificate.bilingual);
+        assert_eq!(
+            serde_json::to_value(CertificateLanguage::De).expect("certificate language"),
+            "de"
         );
     }
 

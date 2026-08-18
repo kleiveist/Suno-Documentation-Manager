@@ -25,6 +25,7 @@ import {
   type FolderImportProposal,
   type EvidenceRole,
   type FactOrigin,
+  type FinalizeOptions,
   type GlobalProfile,
   type GlobalEvidenceItem,
   type OperationProgress,
@@ -246,6 +247,18 @@ function refresh(track: TrackDetail): void {
   track.updatedAt = now();
 }
 
+function sameTrackDocumentationProfile(left: GlobalProfile, right: GlobalProfile): boolean {
+  return left.artistName === right.artistName
+    && left.sunoProfileName === right.sunoProfileName
+    && left.sunoHandle === right.sunoHandle
+    && left.sunoPlan === right.sunoPlan
+    && left.subscriptionStartDate === right.subscriptionStartDate
+    && left.defaultCommercialUse === right.defaultCommercialUse
+    && left.defaultAiImageService === right.defaultAiImageService
+    && left.artworkTransparencyPolicy === right.artworkTransparencyPolicy
+    && left.disclosureText === right.disclosureText;
+}
+
 function reconcileAutomaticDate(
   currentValue: string,
   previousOrigin: FactOrigin,
@@ -262,6 +275,29 @@ function reconcileAutomaticDate(
   return { value: derivedValue, origin: "evidence_derived_metadata" };
 }
 
+function reconcileAutomaticGenerationId(
+  currentValue: string,
+  previousOrigin: FactOrigin,
+  derivedValue: string,
+  previousDerivedValue = derivedValue
+): { value: string; origin: FactOrigin } {
+  if (previousOrigin === "evidence_derived_metadata" && currentValue !== previousDerivedValue) {
+    previousOrigin = "user_confirmed_fact";
+  }
+  if (previousOrigin === "evidence_derived_metadata") {
+    return derivedValue
+      ? { value: derivedValue, origin: "evidence_derived_metadata" }
+      : { value: "", origin: "not_documented" };
+  }
+  if (!currentValue.trim() && derivedValue) {
+    return { value: derivedValue, origin: "evidence_derived_metadata" };
+  }
+  return {
+    value: currentValue,
+    origin: currentValue.trim() ? "user_confirmed_fact" : "not_documented"
+  };
+}
+
 function refreshAutomation(track: TrackDetail): void {
   const previous = track.automation;
   const suno = track.evidence.find((item) =>
@@ -269,7 +305,9 @@ function refreshAutomation(track: TrackDetail): void {
       && Boolean(item.metadata?.sunoStudioDetected)
   );
   const createdDate = suno?.metadata?.sunoCreatedDate?.trim() ?? "";
+  const sunoId = suno?.metadata?.sunoId?.trim() ?? "";
   const previousCreatedDate = previous.sunoCreatedTimestamp?.slice(0, 10) ?? "";
+  const previousSunoId = previous.sunoId ?? "";
   const issues: ConsistencyIssue[] = [];
   const editable = track.status !== "FINALIZED" && track.status !== "SUPERSEDED";
   const finalGeneration = editable
@@ -280,6 +318,14 @@ function refreshAutomation(track: TrackDetail): void {
         previousCreatedDate
       )
     : { value: track.fields.sunoFinalGenerationDate, origin: previous.finalGenerationOrigin };
+  const finalGenerationId = editable
+    ? reconcileAutomaticGenerationId(
+        track.fields.sunoFinalGenerationId,
+        previous.finalGenerationIdOrigin,
+        sunoId,
+        previousSunoId
+      )
+    : { value: track.fields.sunoFinalGenerationId, origin: previous.finalGenerationIdOrigin };
   const productionEnd = editable
     ? reconcileAutomaticDate(
         track.fields.productionEndDate,
@@ -306,6 +352,7 @@ function refreshAutomation(track: TrackDetail): void {
     : { value: track.fields.finalExportDate, origin: previous.finalExportOrigin };
 
   track.fields.sunoFinalGenerationDate = finalGeneration.value;
+  track.fields.sunoFinalGenerationId = finalGenerationId.value;
   track.fields.productionEndDate = productionEnd.value;
   track.fields.sunoDownloadExportDate = downloadExport.value;
   track.fields.finalExportDate = finalExport.value;
@@ -325,6 +372,7 @@ function refreshAutomation(track: TrackDetail): void {
     || (pair.leftRole === "release_wav" && pair.rightRole === "suno_final_export")
   );
   track.automation = {
+    finalGenerationIdOrigin: finalGenerationId.origin,
     finalGenerationOrigin: finalGeneration.origin,
     productionEndOrigin: productionEnd.origin,
     downloadExportOrigin: downloadExport.origin,
@@ -446,6 +494,7 @@ export function createDemoApi(): DesktopApi {
       profile = clone(next);
       for (const track of tracks.values()) {
         if (track.status === "FINALIZED" || track.status === "SUPERSEDED") continue;
+        if (sameTrackDocumentationProfile(track.profileSnapshot, profile)) continue;
         track.profileSnapshot = clone(profile);
         track.documents.current = false;
         refresh(track);
@@ -829,7 +878,7 @@ export function createDemoApi(): DesktopApi {
       const track = get(trackId);
       return finalizationGate(track, track.profileSnapshot);
     },
-    async finalizeTrack(trackId, onProgress) {
+    async finalizeTrack(trackId, options?: FinalizeOptions, onProgress?) {
       const track = mutableTrack(trackId);
       const gate = finalizationGate(track, track.profileSnapshot);
       if (!gate.valid) throw new Error(`Finalisierung blockiert: ${[...gate.missingItems, ...gate.blockingItems].join(", ")}`);
@@ -848,7 +897,14 @@ export function createDemoApi(): DesktopApi {
       ]);
       track.status = "FINALIZED";
       const certificateId = `SDM-${new Date().getFullYear()}-${track.id.slice(0, 8).toUpperCase()}`;
-      track.certificate = { valid: true, certificateId, finalizedAt: now(), workflowVersion: WORKFLOW_VERSION };
+      track.certificate = {
+        valid: true,
+        certificateId,
+        finalizedAt: now(),
+        workflowVersion: WORKFLOW_VERSION,
+        certificateLanguage: profile.certificateLanguage,
+        bilingual: options?.bilingual ?? false
+      };
       track.finalizationAnchors = [
         { artifact: "evidence_manifest", label: "Evidence manifest (recommended timestamp anchor)", relativePath: "06_CERTIFICATE/EVIDENCE_MANIFEST.json", sha256: "a".repeat(64) },
         { artifact: "sha256sums", label: "Track SHA-256 manifest", relativePath: "03_DOCUMENTATION/SHA256SUMS.txt", sha256: "b".repeat(64) },

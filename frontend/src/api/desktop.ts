@@ -10,6 +10,7 @@ import type {
   EvidenceMetadata,
   EvidenceRole,
   DocumentPreview,
+  FinalizeOptions,
   GlobalProfile,
   GlobalEvidenceItem,
   OperationProgress,
@@ -69,7 +70,7 @@ export interface DesktopApi {
   calculateHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   validateTrack(trackId: string): Promise<ValidationResult>;
-  finalizeTrack(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
+  finalizeTrack(trackId: string, options?: FinalizeOptions, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   attachExternalTimestamp(trackId: string, input: ExternalTimestampInput): Promise<TrackDetail | null>;
   invalidateCertificate(trackId: string): Promise<ActionResult>;
   createRevision(trackId: string): Promise<ActionResult>;
@@ -289,8 +290,12 @@ class TauriDesktopApi implements DesktopApi {
     return command("validate_track", { trackId });
   }
 
-  finalizeTrack(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult> {
-    return command("finalize_track", { trackId, onProgress: progressChannel(onProgress) });
+  finalizeTrack(trackId: string, options?: FinalizeOptions, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+    return command("finalize_track", {
+      trackId,
+      ...(options ? { options } : {}),
+      onProgress: progressChannel(onProgress)
+    });
   }
 
   async attachExternalTimestamp(trackId: string, input: ExternalTimestampInput): Promise<TrackDetail | null> {

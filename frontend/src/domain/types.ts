@@ -55,6 +55,7 @@ export type SunoLyricsContentSource = "human" | "ai" | "mixed";
 export type DisclosurePolicy = "always" | "per_artwork" | "none";
 export type SubscriptionBillingCycle = "monthly" | "annual";
 export type TrackLibrarySection = "single" | "album";
+export type CertificateLanguage = "de" | "en";
 
 export type ExternalTimestampType =
   | "qualified_electronic_timestamp_user_declared"
@@ -127,6 +128,7 @@ export interface GlobalProfile {
   defaultAiImageService: string;
   artworkTransparencyPolicy: DisclosurePolicy;
   disclosureText: string;
+  certificateLanguage: CertificateLanguage;
 }
 
 export interface EvidenceItem {
@@ -202,6 +204,7 @@ export interface ConsistencyIssue {
 }
 
 export interface TrackAutomation {
+  finalGenerationIdOrigin: FactOrigin;
   finalGenerationOrigin: FactOrigin;
   productionEndOrigin: FactOrigin;
   downloadExportOrigin: FactOrigin;
@@ -265,8 +268,15 @@ export interface CertificateState {
   certificateId?: string;
   finalizedAt?: string;
   workflowVersion?: string;
+  certificateLanguage?: CertificateLanguage;
+  bilingual?: boolean;
   invalidatedAt?: string;
   invalidationReason?: string;
+}
+
+/** Transient choices used only for the current finalization transaction. */
+export interface FinalizeOptions {
+  bilingual: boolean;
 }
 
 export interface ExternalTimestampInput {
@@ -500,7 +510,8 @@ export const emptyProfile: GlobalProfile = {
   defaultCommercialUse: true,
   defaultAiImageService: "",
   artworkTransparencyPolicy: "always",
-  disclosureText: "AI-assisted"
+  disclosureText: "AI-assisted",
+  certificateLanguage: "en"
 };
 
 export function emptyEvidenceMetadata(): EvidenceMetadata {
@@ -537,6 +548,7 @@ export function emptyEvidenceMetadata(): EvidenceMetadata {
 
 export function emptyTrackAutomation(): TrackAutomation {
   return {
+    finalGenerationIdOrigin: "not_documented",
     finalGenerationOrigin: "not_documented",
     productionEndOrigin: "not_documented",
     downloadExportOrigin: "not_documented",

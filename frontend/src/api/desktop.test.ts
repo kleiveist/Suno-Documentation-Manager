@@ -255,11 +255,24 @@ describe("runtime selection", () => {
     });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
 
-    await api.finalizeTrack("track-1", progress);
+    await api.finalizeTrack("track-1", undefined, progress);
 
     expect(progress).toHaveBeenCalledWith(expect.objectContaining({ stage: "generating_certificate" }));
     expect(invokeMock).toHaveBeenCalledWith("finalize_track", {
       trackId: "track-1",
+      onProgress: expect.anything()
+    });
+  });
+
+  it("passes transient bilingual finalization options to the certificate command", async () => {
+    invokeMock.mockResolvedValue({ message: "finalized" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.finalizeTrack("track-1", { bilingual: true });
+
+    expect(invokeMock).toHaveBeenCalledWith("finalize_track", {
+      trackId: "track-1",
+      options: { bilingual: true },
       onProgress: expect.anything()
     });
   });

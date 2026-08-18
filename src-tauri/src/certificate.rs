@@ -2,9 +2,10 @@ use crate::certificate_pdf::{self, CertificatePdfSnapshot};
 use crate::error::{AppError, Result};
 use crate::integrity::HASH_FILE;
 use crate::model::{
-    BlockingDeviation, DocumentationAnswer, EvidenceItem, EvidenceMetadata, EvidenceProvenance,
-    EvidenceRole, FactOrigin, Profile, StepState, StepStatus, SunoLyricsContentSource,
-    SunoLyricsContentType, TrackFields, TrackRecord,
+    BlockingDeviation, CertificateLanguage, CertificateRenderOptions, DocumentationAnswer,
+    EvidenceItem, EvidenceMetadata, EvidenceProvenance, EvidenceRole, FactOrigin, Profile,
+    StepState, StepStatus, SunoLyricsContentSource, SunoLyricsContentType, TrackFields,
+    TrackRecord,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
@@ -22,6 +23,521 @@ pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
 pub const CERTIFICATE_FORMAT_VERSION: &str = "5.0";
+
+/// Return a certificate label in the configured output language. Bilingual
+/// certificates deliberately retain both labels in the same immutable file,
+/// so no parallel PDF name or hash set is needed.
+pub(crate) fn localized_certificate_label(
+    options: CertificateRenderOptions,
+    english: &str,
+) -> String {
+    let german = german_certificate_label(english);
+    localized_certificate_variant(options, &german, english, " / ")
+}
+
+/// Return a prose paragraph in the configured output language. Newlines keep
+/// the two language versions visually separate in a bilingual certificate.
+pub(crate) fn localized_certificate_paragraph(
+    options: CertificateRenderOptions,
+    english: &str,
+) -> String {
+    let german = german_certificate_paragraph(english);
+    localized_certificate_variant(options, &german, english, "\n")
+}
+
+/// Translate only certificate-owned Markdown labels and prose. Values supplied
+/// by the user or captured from evidence remain byte-for-byte unchanged.
+fn localized_markdown_certificate(
+    english_certificate: &str,
+    options: CertificateRenderOptions,
+) -> String {
+    if !matches!(options.language, CertificateLanguage::De) && !options.bilingual {
+        return english_certificate.to_owned();
+    }
+
+    let german = english_certificate
+        .lines()
+        .map(german_markdown_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !options.bilingual {
+        return german;
+    }
+
+    match options.language {
+        CertificateLanguage::De => {
+            format!("{german}\n\n---\n\n# English certificate\n\n{english_certificate}")
+        }
+        CertificateLanguage::En => {
+            format!("{english_certificate}\n\n---\n\n# Deutsche Fassung\n\n{german}")
+        }
+    }
+}
+
+fn german_markdown_line(line: &str) -> String {
+    for prefix in ["#### ", "### ", "## ", "# ", "> "] {
+        if let Some(value) = line.strip_prefix(prefix) {
+            return format!("{prefix}{}", german_certificate_paragraph(value));
+        }
+    }
+    if let Some(value) = line.strip_prefix("- ") {
+        if let Some((label, field_value)) = value.split_once(": ") {
+            return format!("- {}: {field_value}", german_certificate_label(label));
+        }
+        return format!("- {}", german_certificate_label(value));
+    }
+    german_certificate_paragraph(line)
+}
+
+fn localized_certificate_variant(
+    options: CertificateRenderOptions,
+    german: &str,
+    english: &str,
+    separator: &str,
+) -> String {
+    if options.bilingual && german != english {
+        return match options.language {
+            CertificateLanguage::De => format!("{german}{separator}{english}"),
+            CertificateLanguage::En => format!("{english}{separator}{german}"),
+        };
+    }
+    match options.language {
+        CertificateLanguage::De => german.to_owned(),
+        CertificateLanguage::En => english.to_owned(),
+    }
+}
+
+fn german_certificate_paragraph(english: &str) -> String {
+    let translated = match english {
+        "Technical documentation only — not a legal or governmental certification." => {
+            "Ausschließlich technische Dokumentation — keine rechtliche oder behördliche Zertifizierung."
+        }
+        "Finalized technical snapshot – not a legal certification" => {
+            "Finalisierter technischer Snapshot – keine rechtliche Zertifizierung"
+        }
+        "Finalized technical documentation, evidence, and integrity snapshot" => {
+            "Finalisierter technischer Snapshot für Dokumentation, Evidence und Integrität"
+        }
+        "This is a factual coverage and archive status only; it is not a rights determination." => {
+            "Dies ist ausschließlich ein sachlicher Abdeckungs- und Archivstatus; er stellt keine Rechtefeststellung dar."
+        }
+        "Post-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot." => {
+            "Nach der Finalisierung angehängte Zeitstempelnachweise werden in einem separaten Nachtrag dokumentiert und verändern diesen technischen Finalisierungssnapshot nicht."
+        }
+        "For long-term evidentiary preservation, an external timestamp can be added after technical finalization." => {
+            "Zur langfristigen Beweissicherung kann nach der technischen Finalisierung ein externer Zeitstempel angehängt werden."
+        }
+        "No archived terms evidence recorded." => {
+            "Keine archivierte Evidence zu Nutzungsbedingungen dokumentiert."
+        }
+        "No external timestamp evidence recorded." => {
+            "Kein externer Zeitstempelnachweis dokumentiert."
+        }
+        "This certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks." => {
+            "Dieses Zertifikat bestätigt die erfassten Eingaben, den finalisierten Snapshot, registrierte Evidence, dokumentierte Herkunft, SHA-256-Werte und konfigurierte Workflow-Prüfungen."
+        }
+        "It does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification." => {
+            "Es bestätigt **nicht** Urheberschaft, Rechteinhaberschaft, Nichtverletzung, Rechtmäßigkeit, Lizenzgültigkeit, gerichtlichen Beweiswert, gesetzliche Konformität oder eine behördliche Zertifizierung."
+        }
+        "Origin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**." => {
+            "Verwendete Herkunftskennzeichnungen: **Vom Nutzer bestätigte Angabe**, **Aus Evidenzmetadaten**, **Systemprüfung** und **Systemwert**."
+        }
+        "No AI Act compliance, legal necessity, or legal safety determination is made." => {
+            "Es wird keine Feststellung zur AI-Act-Konformität, rechtlichen Erforderlichkeit oder rechtlichen Sicherheit getroffen."
+        }
+        "No AI Act compliance, legal necessity, legal safety, or other legal determination is made." => {
+            "Es wird keine Feststellung zur AI-Act-Konformität, rechtlichen Erforderlichkeit, rechtlichen Sicherheit oder einer sonstigen rechtlichen Bewertung getroffen."
+        }
+        "External timestamp evidence at technical finalization: NOT RECORDED" => {
+            "Externer Zeitstempelnachweis bei technischer Finalisierung: NICHT ERFASST"
+        }
+        "Origin labels: User-confirmed fact / Evidence-derived metadata / System verification / System value." => {
+            "Herkunftskennzeichnungen: Vom Nutzer bestätigte Angabe / Aus Evidenzmetadaten / Systemprüfung / Systemwert."
+        }
+        "This technical certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks. It does not confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification." => {
+            "Dieses technische Zertifikat bestätigt die erfassten Eingaben, den finalisierten Snapshot, registrierte Evidence, dokumentierte Herkunft, SHA-256-Werte und konfigurierte Workflow-Prüfungen. Es bestätigt weder Urheberschaft noch Rechteinhaberschaft, Nichtverletzung, Rechtmäßigkeit, Lizenzgültigkeit, gerichtlichen Beweiswert, gesetzliche Konformität oder eine behördliche Zertifizierung."
+        }
+        "This retained historical data is unclassified legacy data and is not a Vocal Lyrics claim." => {
+            "Diese erhaltenen historischen Daten sind nicht klassifizierte Legacy-Daten und keine Aussage zu Vocal Lyrics."
+        }
+        "Factual archive and coverage status only. No rights ownership, license validity, legality, or non-infringement conclusion is made." => {
+            "Ausschließlich sachlicher Archiv- und Abdeckungsstatus. Es wird keine Feststellung zu Rechteinhaberschaft, Lizenzgültigkeit, Rechtmäßigkeit oder Nichtverletzung getroffen."
+        }
+        "Post-finalization technical evidence record – no legal qualification asserted" => {
+            "Technischer Evidenzdatensatz nach der Finalisierung – keine rechtliche Qualifizierung behauptet"
+        }
+        "The application records the external timestamp evidence and its referenced hash. It does not independently determine the timestamp's legal qualification unless explicitly technically verified." => {
+            "Die Anwendung dokumentiert den externen Zeitstempelnachweis und seinen referenzierten Hash. Sie bestimmt dessen rechtliche Qualifizierung nicht selbstständig, sofern diese nicht ausdrücklich technisch verifiziert wurde."
+        }
+        _ => return german_certificate_label(english),
+    };
+    translated.to_owned()
+}
+
+fn german_certificate_label(english: &str) -> String {
+    let mut translated = english.to_owned();
+    for (source, target) in [
+        (
+            "SunoDM – Technical Documentation and Evidence Certificate",
+            "SunoDM – Technisches Dokumentations- und Evidenzzertifikat",
+        ),
+        (
+            "SunoDM Technical Documentation and Evidence Certificate",
+            "SunoDM Technisches Dokumentations- und Evidenzzertifikat",
+        ),
+        (
+            "A. Certificate / Snapshot Identity",
+            "A. Zertifikats- / Snapshot-Identität",
+        ),
+        ("B. Track identity", "B. Track-Identität"),
+        ("C. Final Suno Generation", "C. Finale Suno-Erzeugung"),
+        ("D. Source provenance", "D. Herkunft der Quellen"),
+        ("E. Human contribution", "E. Menschlicher Beitrag"),
+        (
+            "F. Suno Lyrics / Structure Field – Suno Structure / Generation Instructions",
+            "F. Suno-Lyrics-/Strukturfeld – Suno-Struktur- / Erzeugungsanweisungen",
+        ),
+        (
+            "F. Suno Lyrics / Structure Field – Vocal Lyrics",
+            "F. Suno-Lyrics-/Strukturfeld – Vocal Lyrics",
+        ),
+        (
+            "F.1 Unclassified legacy lyrics data",
+            "F.1 Nicht klassifizierte historische Lyrics-Daten",
+        ),
+        (
+            "G.1 AI Transparency Assessment – Audio",
+            "G.1 KI-Transparenzbewertung – Audio",
+        ),
+        (
+            "G.2 AI Transparency Assessment – Artwork",
+            "G.2 KI-Transparenzbewertung – Artwork",
+        ),
+        (
+            "G. AI Transparency Assessment",
+            "G. KI-Transparenzbewertung",
+        ),
+        (
+            "H. License and rights evidence",
+            "H. Lizenz- und Rechte-Evidence",
+        ),
+        (
+            "I. External Timestamp Evidence",
+            "I. Externe Zeitstempel-Evidence",
+        ),
+        ("J. Evidence register", "J. Evidenzregister"),
+        (
+            "K. Integrity anchors and workflow",
+            "K. Integritätsanker und Workflow",
+        ),
+        ("K. Integrity anchors", "K. Integritätsanker"),
+        (
+            "K.1 Configured workflow checks",
+            "K.1 Konfigurierte Workflow-Prüfungen",
+        ),
+        (
+            "L. Technical certificate statement",
+            "L. Erklärung zum technischen Zertifikat",
+        ),
+        (
+            "Configured documentation requirements for this step were satisfied.",
+            "Die konfigurierten Dokumentationsanforderungen für diesen Schritt wurden erfüllt.",
+        ),
+        (
+            "configured documentation requirements completed",
+            "konfigurierte Dokumentationsanforderungen abgeschlossen",
+        ),
+        (
+            "Historical user data; not a plan-at-generation claim",
+            "Historische Nutzerdaten; keine Aussage zum Tarif bei der Erzeugung",
+        ),
+        ("Evidence-derived metadata", "Aus Evidenzmetadaten"),
+        ("User-confirmed fact", "Vom Nutzer bestätigte Angabe"),
+        ("System verification", "Systemprüfung"),
+        ("System value", "Systemwert"),
+        (
+            "Actual Suno export filename",
+            "Tatsächlicher Dateiname des Suno-Exports",
+        ),
+        (
+            "Actual release filename",
+            "Tatsächlicher Dateiname der Veröffentlichung",
+        ),
+        (
+            "Final generation date origin",
+            "Herkunft des Datums der finalen Erzeugung",
+        ),
+        ("Final generation date", "Datum der finalen Erzeugung"),
+        ("Final generation ID", "ID der finalen Erzeugung"),
+        (
+            "Final-generation date covered",
+            "Datum der finalen Erzeugung abgedeckt",
+        ),
+        ("Finalized at", "Finalisiert am"),
+        ("Finalization timestamp", "Zeitpunkt der Finalisierung"),
+        ("Final result", "Endergebnis"),
+        ("Suno project URL", "Suno-Projekt-URL"),
+        (
+            "Suno Studio metadata detected",
+            "Suno-Studio-Metadaten erkannt",
+        ),
+        (
+            "Metadata detection origin",
+            "Herkunft der Metadatenerkennung",
+        ),
+        ("Metadata origin", "Metadatenherkunft"),
+        ("Suno plan at generation", "Suno-Tarif bei der Erzeugung"),
+        ("Suno model", "Suno-Modell"),
+        (
+            "Download/export date origin",
+            "Herkunft des Download-/Exportdatums",
+        ),
+        ("Download/export date", "Download-/Exportdatum"),
+        (
+            "Release identical to Suno final export",
+            "Release identisch mit finalem Suno-Export",
+        ),
+        ("Release identity origin", "Herkunft der Release-Identität"),
+        (
+            "Assigned subscription evidence jointly covers the production period",
+            "Zugeordnete Abo-Evidence deckt den Produktionszeitraum gemeinsam ab",
+        ),
+        (
+            "Terms evidence not available",
+            "Evidence zu Nutzungsbedingungen nicht verfügbar",
+        ),
+        (
+            "Terms evidence exists",
+            "Evidence zu Nutzungsbedingungen vorhanden",
+        ),
+        (
+            "Terms evidence IDs",
+            "IDs der Evidence zu Nutzungsbedingungen",
+        ),
+        (
+            "Archived service-terms evidence",
+            "Archivierte Evidence zu Nutzungsbedingungen",
+        ),
+        (
+            "External timestamp evidence at technical finalization",
+            "Externer Zeitstempelnachweis bei technischer Finalisierung",
+        ),
+        ("Evidence file count", "Anzahl der Evidence-Dateien"),
+        ("Previous revision archives", "Archive früherer Revisionen"),
+        ("Blocking deviations", "Blockierende Abweichungen"),
+        (
+            "Mandatory steps completed",
+            "Abgeschlossene Pflichtschritte",
+        ),
+        ("N/A steps with reasons", "N/A-Schritte mit Begründungen"),
+        ("Application version", "Anwendungsversion"),
+        ("Certificate schema", "Zertifikatsschema"),
+        ("Certificate version", "Zertifikatsversion"),
+        ("Certificate ID", "Zertifikats-ID"),
+        ("Page", "Seite"),
+        ("Documentation status", "Dokumentationsstatus"),
+        ("Documented title", "Dokumentierter Titel"),
+        ("Track identity", "Track-Identität"),
+        ("Track", "Track"),
+        ("Artist", "Künstler/in"),
+        ("Production start", "Produktionsbeginn"),
+        ("Production end", "Produktionsende"),
+        ("Last editing date", "Datum der letzten Bearbeitung"),
+        ("Commercial use intended", "Kommerzielle Nutzung vorgesehen"),
+        ("Suno profile", "Suno-Profil"),
+        ("Suno handle", "Suno-Benutzername"),
+        ("External audio uploaded", "Externes Audio hochgeladen"),
+        ("Own audio uploaded", "Eigenes Audio hochgeladen"),
+        (
+            "Third-party samples uploaded",
+            "Samples Dritter hochgeladen",
+        ),
+        ("Third-party samples", "Samples Dritter"),
+        ("Code-based generation", "Codebasierte Erzeugung"),
+        ("Source-code evidence", "Evidence zum Quellcode"),
+        (
+            "Code-generated audio evidence",
+            "Evidence zu codegeneriertem Audio",
+        ),
+        (
+            "Code-audio post-processing operations",
+            "Nachbearbeitungsschritte für codegeneriertes Audio",
+        ),
+        (
+            "Code-audio post-processing",
+            "Nachbearbeitung für codegeneriertes Audio",
+        ),
+        (
+            "External audio provenance statement",
+            "Herkunftsangabe zu externem Audio",
+        ),
+        ("External audio source", "Quelle des externen Audios"),
+        (
+            "Own audio provenance statement",
+            "Herkunftsangabe zu eigenem Audio",
+        ),
+        ("Own audio source", "Quelle des eigenen Audios"),
+        (
+            "Third-party sample provenance statement",
+            "Herkunftsangabe zu Samples Dritter",
+        ),
+        ("Third-party sample source", "Quelle der Samples Dritter"),
+        (
+            "Other code-audio post-processing note",
+            "Sonstige Anmerkung zur Nachbearbeitung des codegenerierten Audios",
+        ),
+        (
+            "Human editing performed",
+            "Menschliche Bearbeitung durchgeführt",
+        ),
+        (
+            "Confirmed human editing",
+            "Bestätigte menschliche Bearbeitung",
+        ),
+        (
+            "Desktop-PC editing after the Suno WAV",
+            "Desktop-PC-Bearbeitung nach dem Suno-WAV",
+        ),
+        (
+            "Confirmed desktop-PC editing",
+            "Bestätigte Desktop-PC-Bearbeitung",
+        ),
+        (
+            "Confirmed human artwork process",
+            "Bestätigter menschlicher Artwork-Prozess",
+        ),
+        (
+            "Human artwork process notes",
+            "Anmerkungen zum menschlichen Artwork-Prozess",
+        ),
+        (
+            "Confirmed human artwork modifications",
+            "Bestätigte menschliche Artwork-Änderungen",
+        ),
+        (
+            "Other human artwork change",
+            "Sonstige menschliche Artwork-Änderung",
+        ),
+        ("Instrumental track", "Instrumentaltrack"),
+        ("Vocal lyrics present", "Vocal Lyrics vorhanden"),
+        (
+            "Structure instructions present",
+            "Strukturanweisungen vorhanden",
+        ),
+        (
+            "Suno lyrics/structure field content",
+            "Inhalt des Suno-Lyrics-/Strukturfelds",
+        ),
+        ("Content types", "Inhaltstypen"),
+        ("Content source", "Inhaltsquelle"),
+        ("Other content type", "Sonstiger Inhaltstyp"),
+        ("Exact Suno field text", "Exakter Text des Suno-Felds"),
+        ("Legacy source value", "Historischer Quellenwert"),
+        ("Legacy text", "Historischer Text"),
+        ("Classification", "Klassifizierung"),
+        ("Generative AI used", "Generative KI verwendet"),
+        ("AI system", "KI-System"),
+        ("AI-assisted audio elements", "KI-assistierte Audioelemente"),
+        ("AI-generated audio elements", "KI-generierte Audioelemente"),
+        (
+            "Real person voice intentionally imitated",
+            "Stimme einer realen Person absichtlich imitiert",
+        ),
+        (
+            "Real person's identity intentionally represented",
+            "Identität einer realen Person absichtlich dargestellt",
+        ),
+        (
+            "Real event represented as authentic recording",
+            "Reales Ereignis als authentische Aufnahme dargestellt",
+        ),
+        (
+            "Real location / institution / event presented as authentic AI recording",
+            "Realer Ort / Institution / Ereignis als authentische KI-Aufnahme dargestellt",
+        ),
+        ("Disclosure applied", "Hinweis angewendet"),
+        ("Disclosure locations", "Orte des Hinweises"),
+        ("Disclosure text", "Hinweistext"),
+        ("Disclosure reason / note", "Grund / Anmerkung zum Hinweis"),
+        (
+            "Deepfake-related indicator summary",
+            "Zusammenfassung zu Deepfake-bezogenen Indikatoren",
+        ),
+        ("Suno style prompt", "Suno-Style-Prompt"),
+        ("Artwork origin", "Herkunft des Artworks"),
+        ("AI image service", "KI-Bilddienst"),
+        ("Human artwork process", "Menschlicher Artwork-Prozess"),
+        ("Human artwork changes", "Menschliche Artwork-Änderungen"),
+        ("Depicts real person", "Reale Person dargestellt"),
+        ("Real-person note", "Anmerkung zur realen Person"),
+        ("Depicts real event", "Reales Ereignis dargestellt"),
+        ("Real-event note", "Anmerkung zum realen Ereignis"),
+        ("Trademark/logo note", "Anmerkung zu Marke/Logo"),
+        ("Trademark/logo", "Marke/Logo"),
+        ("Artwork disclosure applied", "Artwork-Hinweis angewendet"),
+        ("Artwork disclosure text", "Artwork-Hinweistext"),
+        ("Subscription evidence", "Abo-Evidence"),
+        ("Terms document", "Dokument zu Nutzungsbedingungen"),
+        ("Evidence ID", "Evidence-ID"),
+        ("Original filename", "Ursprünglicher Dateiname"),
+        ("Original file name", "Ursprünglicher Dateiname"),
+        ("Managed filename", "Verwalteter Dateiname"),
+        ("File name", "Dateiname"),
+        ("Relative path", "Relativer Pfad"),
+        ("Document title", "Dokumenttitel"),
+        ("Provider/source", "Anbieter/Quelle"),
+        ("Source URL", "Quell-URL"),
+        ("Retrieval date", "Abrufdatum"),
+        ("Effective date", "Gültigkeitsdatum"),
+        (
+            "Applicable production period",
+            "Anwendbarer Produktionszeitraum",
+        ),
+        ("Factual note", "Sachliche Anmerkung"),
+        ("Imported at", "Importiert am"),
+        ("Provenance", "Herkunft"),
+        (
+            "Source global evidence ID",
+            "ID der globalen Ausgangs-Evidence",
+        ),
+        ("Derived from evidence ID", "Abgeleitet von Evidence-ID"),
+        ("Generator version", "Generatorversion"),
+        ("Generated disclosure text", "Generierter Hinweistext"),
+        ("Coverage start", "Abdeckungsbeginn"),
+        ("Coverage end", "Abdeckungsende"),
+        (
+            "Phase-two attachment policy",
+            "Richtlinie für Phase-zwei-Anhänge",
+        ),
+        (
+            "Post-finalization addendum; phase-one snapshot remains unchanged",
+            "Nachtrag nach Finalisierung; Snapshot der ersten Phase bleibt unverändert",
+        ),
+        ("Release audio SHA-256", "SHA-256 des Release-Audios"),
+        ("Final artwork SHA-256", "SHA-256 des finalen Artworks"),
+        ("Previous revision count", "Anzahl früherer Revisionen"),
+        ("Generated by", "Erzeugt von"),
+        ("Workflow version", "Workflow-Version"),
+        ("Workflow ID", "Workflow-ID"),
+        ("Workflow", "Workflow"),
+        ("Meaning", "Bedeutung"),
+        ("PASS definition", "PASS-Definition"),
+        ("Role", "Rolle"),
+        ("Size (bytes)", "Größe (Bytes)"),
+        (
+            "Evidence register (continuation)",
+            "Evidenzregister (Fortsetzung)",
+        ),
+        ("(continuation)", "(Fortsetzung)"),
+        ("NOT RECORDED", "NICHT ERFASST"),
+        ("NOT DOCUMENTED", "NICHT DOKUMENTIERT"),
+        ("NOT VERIFIED", "NICHT VERIFIZIERT"),
+        ("DOCUMENTATION COMPLETE", "DOKUMENTATION ABGESCHLOSSEN"),
+    ] {
+        translated = translated.replace(source, target);
+    }
+    translated
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -218,6 +734,7 @@ pub fn generate(
     certificate_id: &str,
     finalized_at: &str,
     transaction_id: &str,
+    render_options: CertificateRenderOptions,
 ) -> Result<()> {
     generate_impl(
         track_root,
@@ -229,6 +746,7 @@ pub fn generate(
         certificate_id,
         finalized_at,
         transaction_id,
+        render_options,
         #[cfg(test)]
         None,
     )
@@ -255,6 +773,7 @@ pub(crate) fn generate_with_failure(
     certificate_id: &str,
     finalized_at: &str,
     transaction_id: &str,
+    render_options: CertificateRenderOptions,
     failure: CertificateGenerationFailure,
 ) -> Result<()> {
     generate_impl(
@@ -267,6 +786,7 @@ pub(crate) fn generate_with_failure(
         certificate_id,
         finalized_at,
         transaction_id,
+        render_options,
         Some(failure),
     )
 }
@@ -282,6 +802,7 @@ fn generate_impl(
     certificate_id: &str,
     finalized_at: &str,
     transaction_id: &str,
+    render_options: CertificateRenderOptions,
     #[cfg(test)] failure: Option<CertificateGenerationFailure>,
 ) -> Result<()> {
     let hash_manifest = contained_path(track_root, Path::new(HASH_FILE), true)?;
@@ -406,6 +927,7 @@ fn generate_impl(
         "certificate": {
             "id": certificate_id,
             "format_version": CERTIFICATE_FORMAT_VERSION,
+            "rendering": render_options,
             "status": "DOCUMENTATION COMPLETE",
             "status_meaning": "configured documentation requirements completed",
             "workflow_pass_meaning": "Configured documentation requirements for this step were satisfied.",
@@ -438,6 +960,7 @@ fn generate_impl(
             "suno_export_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport),
             "external_timestamp_at_technical_finalization": "NOT RECORDED",
             "fact_origins": {
+                "final_suno_generation_id": automation.final_generation_id_origin,
                 "final_suno_generation_date": automation.final_generation_origin,
                 "production_end_date": automation.production_end_origin,
                 "download_export_date": automation.download_export_origin,
@@ -513,11 +1036,11 @@ fn generate_impl(
             crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
         };
     let final_generation_origin = fact_origin_label(automation.final_generation_origin);
+    let final_generation_id_origin = fact_origin_label(automation.final_generation_id_origin);
     let download_export_origin = fact_origin_label(automation.download_export_origin);
     let last_editing_origin = fact_origin_label(automation.final_export_origin);
     let last_editing_date = documented(&track.fields.final_export_date);
     let suno_metadata_detected = yes_no(automation.suno_metadata_detected);
-    let suno_id = automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED");
     let release_identical_to_suno_export = yes_no(automation.release_identical_to_suno_export);
     let evidence_register_md = evidence_register_markdown(&evidence_values);
     let terms = evidence_values
@@ -546,8 +1069,8 @@ fn generate_impl(
     } else {
         archived_revisions.join(", ")
     };
-    let certificate = format!(
-        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- User final generation ID [User-confirmed fact]: {}\n- Suno ID [Evidence-derived metadata]: {suno_id}\n- Suno project URL [User-confirmed fact]: {}\n- Suno project/version ID [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: **NOT RECORDED**\n- No external timestamp evidence recorded.\n{}\nPost-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot.\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
+    let english_certificate = format!(
+        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- Final generation ID [{final_generation_id_origin}]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: **NOT RECORDED**\n- No external timestamp evidence recorded.\n{}\nPost-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot.\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
         env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
@@ -556,7 +1079,6 @@ fn generate_impl(
         documented(&track.fields.suno_final_generation_date),
         documented(&track.fields.suno_final_generation_id),
         documented(&track.fields.suno_project_url),
-        documented(&track.fields.suno_project_version_id),
         documented(&track.fields.suno_download_export_date),
         if automation.suno_metadata_detected {
             "Evidence-derived metadata"
@@ -579,7 +1101,7 @@ fn generate_impl(
             &na_steps
         }
     );
-    let certificate = certificate.replacen(
+    let english_certificate = english_certificate.replacen(
         &format!(
             "- Suno plan at generation [User-confirmed fact]: {}\n",
             documented(&track.fields.suno_plan_at_generation)
@@ -587,6 +1109,7 @@ fn generate_impl(
         &suno_plan_md,
         1,
     );
+    let certificate = localized_markdown_certificate(&english_certificate, render_options);
     let certificate_sha = sha256_bytes(certificate.as_bytes());
 
     #[cfg(test)]
@@ -609,6 +1132,7 @@ fn generate_impl(
         sha256sums_sha256: &hash_manifest_sha,
         evidence_manifest_sha256: &manifest_sha,
         markdown_certificate_sha256: &certificate_sha,
+        render_options,
     })?;
     let pdf_sha = sha256_bytes(&pdf);
     let certificate_hashes = format!(
@@ -1642,6 +2166,35 @@ mod tests {
         let sums = workspace.path().join("SHA256SUMS.txt");
         fs::write(&sums, content).expect("write SHA256SUMS fixture");
         parse_hashes(&sums)
+    }
+
+    #[test]
+    fn markdown_certificate_uses_selected_language_or_both_languages() {
+        let english = "# SunoDM Technical Documentation and Evidence Certificate\n\n## C. Final Suno Generation\n\n- Final generation ID [Evidence-derived metadata]: `generation-id`\n";
+        let german = localized_markdown_certificate(
+            english,
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: false,
+            },
+        );
+        assert!(german.contains("# SunoDM Technisches Dokumentations- und Evidenzzertifikat"));
+        assert!(german.contains("## C. Finale Suno-Erzeugung"));
+        assert!(
+            german.contains("- ID der finalen Erzeugung [Aus Evidenzmetadaten]: `generation-id`")
+        );
+        assert!(!german.contains("## C. Final Suno Generation"));
+
+        let bilingual = localized_markdown_certificate(
+            english,
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: true,
+            },
+        );
+        assert!(bilingual.contains("# English certificate"));
+        assert!(bilingual.contains("## C. Finale Suno-Erzeugung"));
+        assert!(bilingual.contains("## C. Final Suno Generation"));
     }
 
     #[test]

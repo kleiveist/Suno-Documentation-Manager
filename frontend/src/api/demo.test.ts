@@ -7,19 +7,49 @@ async function settle<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
-async function finalizeGravity(api: ReturnType<typeof createDemoApi>) {
+async function finalizeGravity(api: ReturnType<typeof createDemoApi>, bilingual = false) {
   await settle(api.updateTrack("gravity", {
     sunoExportFilenameDifferenceConfirmed: true
   }));
   await settle(api.generateDocuments("gravity", false));
   await settle(api.calculateHashes("gravity"));
   await settle(api.verifyHashes("gravity"));
-  return settle(api.finalizeTrack("gravity"));
+  return settle(api.finalizeTrack("gravity", { bilingual }));
 }
 
 afterEach(() => vi.useRealTimers());
 
 describe("demo track library", () => {
+  it("keeps editable track documents and hashes current when only certificate language changes", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const before = await settle(api.loadTrack("gravity"));
+    const profile = await settle(api.getProfile());
+
+    await settle(api.updateProfile({ ...profile, certificateLanguage: "de" }));
+
+    const after = await settle(api.loadTrack("gravity"));
+    expect(after.profileSnapshot.certificateLanguage).toBe("en");
+    expect(after.documents).toEqual(before.documents);
+    expect(after.integrity).toEqual(before.integrity);
+  });
+
+  it("records the selected primary language and bilingual switch at finalization", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const profile = await settle(api.getProfile());
+    await settle(api.updateProfile({ ...profile, certificateLanguage: "de" }));
+
+    const finalized = await finalizeGravity(api, true);
+
+    expect(finalized.track?.certificate).toEqual(expect.objectContaining({
+      certificateLanguage: "de",
+      bilingual: true
+    }));
+  });
+
   it("does not prefill a new track's generation plan from the global profile", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -112,10 +142,12 @@ describe("demo evidence controls", () => {
       sunoId: "6c8a40fd-32bf-4c7b-ab59-23579ff95828"
     }));
     expect(updated!.fields.sunoFinalGenerationDate).toBe("2026-08-17");
+    expect(updated!.fields.sunoFinalGenerationId).toBe("6c8a40fd-32bf-4c7b-ab59-23579ff95828");
     expect(updated!.fields.productionEndDate).toBe("2026-08-17");
     expect(updated!.fields.sunoDownloadExportDate).toBe("2026-08-17");
     expect(updated!.fields.finalExportDate).toBe("2026-08-17");
     expect(updated!.automation).toEqual(expect.objectContaining({
+      finalGenerationIdOrigin: "evidence_derived_metadata",
       finalGenerationOrigin: "evidence_derived_metadata",
       productionEndOrigin: "evidence_derived_metadata",
       downloadExportOrigin: "evidence_derived_metadata",
@@ -123,6 +155,20 @@ describe("demo evidence controls", () => {
       sunoMetadataDetected: true,
       releaseIdenticalToSunoExport: true
     }));
+  });
+
+  it("never replaces a pre-existing manual final generation ID", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await settle(api.updateTrack("cosmic-pulse", {
+      sunoFinalGenerationId: "manual-generation-id"
+    }));
+
+    const imported = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
+
+    expect(imported!.fields.sunoFinalGenerationId).toBe("manual-generation-id");
+    expect(imported!.automation.finalGenerationIdOrigin).toBe("user_confirmed_fact");
   });
 
   it("uses a manual last-editing date after confirmed desktop editing", async () => {

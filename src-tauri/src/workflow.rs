@@ -1,9 +1,11 @@
 use crate::audio_metadata::{has_suno_studio_marker, parse_suno_metadata};
 use crate::error::{AppError, Result};
+#[cfg(test)]
+use crate::model::DocumentationAnswer;
 use crate::model::{
-    BlockingDeviation, ByteIdenticalPair, ConsistencyIssue, DocumentationAnswer,
-    EvidenceDerivedField, EvidenceItem, EvidenceRole, FactOrigin, Profile, StepState, StepStatus,
-    SunoLyricsContentType, TrackAutomation, TrackRecord,
+    BlockingDeviation, ByteIdenticalPair, ConsistencyIssue, EvidenceDerivedField, EvidenceItem,
+    EvidenceRole, FactOrigin, Profile, StepState, StepStatus, SunoLyricsContentType,
+    TrackAutomation, TrackRecord,
 };
 use chrono::{Days, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -778,6 +780,11 @@ pub fn original_evidence_file_name<'a>(
 
 pub fn automation_summary(track: &TrackRecord, evidence: &[EvidenceItem]) -> TrackAutomation {
     let suno = relevant_suno_export(evidence);
+    let final_generation_id_origin = suno_id_fact_origin(
+        &track.fields.suno_final_generation_id,
+        track.field_origins.suno_final_generation_id.as_ref(),
+        suno,
+    );
     let final_generation_origin = fact_origin(
         &track.fields.suno_final_generation_date,
         track.field_origins.suno_final_generation_date.as_ref(),
@@ -807,6 +814,7 @@ pub fn automation_summary(track: &TrackRecord, evidence: &[EvidenceItem]) -> Tra
         )
     });
     TrackAutomation {
+        final_generation_id_origin,
         final_generation_origin,
         production_end_origin,
         download_export_origin,
@@ -888,6 +896,19 @@ pub fn consistency_issues(track: &TrackRecord, evidence: &[EvidenceItem]) -> Vec
                 "suno",
             ));
         }
+    }
+
+    if track
+        .field_origins
+        .suno_final_generation_id
+        .as_ref()
+        .is_some_and(|origin| !derived_suno_id_origin_matches(origin, suno))
+    {
+        issues.push(issue(
+            "suno_generation_id_origin_stale",
+            "Die gespeicherte Evidence-Herkunft verweist nicht mehr auf den aktuellen Suno-Export.",
+            "suno",
+        ));
     }
 
     for (code, origin) in [
@@ -1003,12 +1024,43 @@ fn fact_origin(
     }
 }
 
+fn suno_id_fact_origin(
+    value: &str,
+    origin: Option<&EvidenceDerivedField>,
+    suno: Option<&EvidenceItem>,
+) -> FactOrigin {
+    if value.trim().is_empty() {
+        FactOrigin::NotDocumented
+    } else if origin
+        .is_some_and(|origin| origin.value == value && derived_suno_id_origin_matches(origin, suno))
+    {
+        FactOrigin::EvidenceDerivedMetadata
+    } else {
+        FactOrigin::UserConfirmedFact
+    }
+}
+
 fn derived_origin_matches(origin: &EvidenceDerivedField, suno: Option<&EvidenceItem>) -> bool {
     suno.is_some_and(|item| {
         origin.evidence_id == item.id
             && origin.evidence_sha256 == item.sha256.clone().unwrap_or_default()
             && origin.original_value == item.metadata.suno_created_timestamp
             && origin.value == item.metadata.suno_created_date
+    })
+}
+
+fn derived_suno_id_origin_matches(
+    origin: &EvidenceDerivedField,
+    suno: Option<&EvidenceItem>,
+) -> bool {
+    suno.is_some_and(|item| {
+        origin.evidence_id == item.id
+            && origin.evidence_sha256 == item.sha256.clone().unwrap_or_default()
+            && origin.original_value == item.metadata.suno_id
+            && origin.value == item.metadata.suno_id
+            && item.metadata.suno_studio_detected
+            && parse_suno_metadata(&item.metadata.suno_raw_metadata)
+                .is_some_and(|parsed| parsed.id == item.metadata.suno_id)
     })
 }
 

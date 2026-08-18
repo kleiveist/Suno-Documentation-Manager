@@ -6,14 +6,14 @@ use crate::external_timestamp;
 use crate::folder_import::{self, FolderImportExecutionInput, FolderImportProposal};
 use crate::integrity;
 use crate::model::{
-    ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
-    DocumentPreview, DocumentState, EvidenceDerivedField, EvidenceItem, EvidenceMetadata,
-    EvidencePreview, EvidenceProvenance, EvidenceRole, ExternalTimestampInput,
-    ExternalTimestampRecord, FinalizationAnchor, GlobalEvidenceItem, IntegrityState,
-    LegacyCandidate, OperationProgress, Profile, StepState, StepStatus, SubscriptionBillingCycle,
-    TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch,
-    TrackPatchRequest, TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan,
-    WorkspaceSummary,
+    ActionResult, BlockingDeviation, CertificateRenderOptions, CertificateState, CreateTrackInput,
+    DeviationInput, DocumentPreview, DocumentState, EvidenceDerivedField, EvidenceItem,
+    EvidenceMetadata, EvidencePreview, EvidenceProvenance, EvidenceRole, ExternalTimestampInput,
+    ExternalTimestampRecord, FinalizationAnchor, FinalizeOptions, GlobalEvidenceItem,
+    IntegrityState, LegacyCandidate, OperationProgress, Profile, StepState, StepStatus,
+    SubscriptionBillingCycle, TrackCoverPreview, TrackDetail, TrackLibraryPlacement,
+    TrackLibrarySection, TrackPatch, TrackPatchRequest, TrackRecord, TrackStatus, TrackSummary,
+    ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -104,7 +104,9 @@ impl WorkspaceApp {
             if matches!(
                 track.status,
                 TrackStatus::Finalized | TrackStatus::Superseded
-            ) || track.profile_snapshot == *profile
+            ) || track
+                .profile_snapshot
+                .same_track_documentation_profile(profile)
             {
                 continue;
             }
@@ -1919,25 +1921,62 @@ impl WorkspaceApp {
 
     #[cfg(test)]
     pub fn finalize_track(&self, id: &str) -> Result<ActionResult> {
-        self.finalize_track_with_progress(id, &mut |_| {})
+        self.finalize_track_with_options(id, FinalizeOptions::default())
     }
 
+    #[cfg(test)]
+    pub fn finalize_track_with_options(
+        &self,
+        id: &str,
+        options: FinalizeOptions,
+    ) -> Result<ActionResult> {
+        self.finalize_track_with_options_and_progress(id, options, &mut |_| {})
+    }
+
+    #[cfg(test)]
     pub fn finalize_track_with_progress(
         &self,
         id: &str,
         on_progress: &mut impl FnMut(OperationProgress),
     ) -> Result<ActionResult> {
-        self.finalize_track_impl(
+        self.finalize_track_with_options_and_progress(id, FinalizeOptions::default(), on_progress)
+    }
+
+    pub fn finalize_track_with_options_and_progress(
+        &self,
+        id: &str,
+        options: FinalizeOptions,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
+        self.finalize_track_impl_with_options(
             id,
+            options,
             #[cfg(test)]
             None,
             on_progress,
         )
     }
 
+    #[cfg(test)]
     fn finalize_track_impl(
         &self,
         id: &str,
+        #[cfg(test)] failure: Option<FinalizationFailure>,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
+        self.finalize_track_impl_with_options(
+            id,
+            FinalizeOptions::default(),
+            #[cfg(test)]
+            failure,
+            on_progress,
+        )
+    }
+
+    fn finalize_track_impl_with_options(
+        &self,
+        id: &str,
+        options: FinalizeOptions,
         #[cfg(test)] failure: Option<FinalizationFailure>,
         on_progress: &mut impl FnMut(OperationProgress),
     ) -> Result<ActionResult> {
@@ -1965,6 +2004,14 @@ impl WorkspaceApp {
         });
         // Re-read all state after validation so the certificate uses exactly the gate input.
         track = self.persistence.track(id)?;
+        // Certificate language is intentionally resolved from the current
+        // workspace setting rather than the editable track profile snapshot.
+        // A language-only settings update must not invalidate documents or
+        // hashes; the selected value is frozen below with the final snapshot.
+        let certificate_render_options = CertificateRenderOptions {
+            language: self.profile()?.certificate_language,
+            bilingual: options.bilingual,
+        };
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
         let stored = self.persistence.stored_steps(id)?;
@@ -2009,6 +2056,7 @@ impl WorkspaceApp {
             "transaction_id": transaction_id,
             "track_id": track.id,
             "certificate_id": certificate_id,
+            "certificate_render_options": certificate_render_options,
             "started_at": now(),
         }))?;
         on_progress(OperationProgress {
@@ -2034,6 +2082,7 @@ impl WorkspaceApp {
                 &certificate_id,
                 &finalized_at,
                 &transaction_id,
+                certificate_render_options,
                 certificate_failure,
             ),
             None => certificate::generate(
@@ -2046,6 +2095,7 @@ impl WorkspaceApp {
                 &certificate_id,
                 &finalized_at,
                 &transaction_id,
+                certificate_render_options,
             ),
         };
         #[cfg(not(test))]
@@ -2059,6 +2109,7 @@ impl WorkspaceApp {
             &certificate_id,
             &finalized_at,
             &transaction_id,
+            certificate_render_options,
         );
         if let Err(error) = publication {
             if directory_is_empty_or_missing(&live_certificate).unwrap_or(false)
@@ -2117,6 +2168,8 @@ impl WorkspaceApp {
             certificate_id: Some(certificate_id),
             finalized_at: Some(finalized_at),
             workflow_version: Some(track.workflow_version.clone()),
+            certificate_language: certificate_render_options.language,
+            bilingual: certificate_render_options.bilingual,
             invalidated_at: None,
             invalidation_reason: None,
         };
@@ -3593,8 +3646,25 @@ fn reconcile_evidence_derived_fields(track: &mut TrackRecord, evidence: &[Eviden
         evidence_id: item.id.clone(),
         evidence_sha256: item.sha256.clone().unwrap_or_default(),
     });
+    let derived_id = suno.and_then(|item| {
+        let id = item.metadata.suno_id.trim();
+        (!id.is_empty()).then(|| EvidenceDerivedField {
+            value: id.to_owned(),
+            // The structured UUID is already normalized by the strict WAV
+            // parser. Keeping it as the original value lets us distinguish
+            // this ID-specific origin from the timestamp-derived date facts.
+            original_value: id.to_owned(),
+            evidence_id: item.id.clone(),
+            evidence_sha256: item.sha256.clone().unwrap_or_default(),
+        })
+    });
 
-    let mut changed = reconcile_derived_value(
+    let mut changed = reconcile_evidence_derived_id(
+        &mut track.fields.suno_final_generation_id,
+        &mut track.field_origins.suno_final_generation_id,
+        derived_id.as_ref(),
+    );
+    changed |= reconcile_derived_value(
         &mut track.fields.suno_final_generation_date,
         &mut track.field_origins.suno_final_generation_date,
         derived.as_ref(),
@@ -3651,6 +3721,53 @@ fn reconcile_derived_value(
             field.clear();
         }
         *origin = None;
+    }
+
+    *field != previous_field || *origin != previous_origin
+}
+
+/// Unlike the date facts, a final-generation ID entered by the user is never
+/// replaced by WAV metadata. An automatic ID is nevertheless kept tied to its
+/// exact evidence so replacement and removal update or clear only that
+/// system-owned value.
+fn reconcile_evidence_derived_id(
+    field: &mut String,
+    origin: &mut Option<EvidenceDerivedField>,
+    derived: Option<&EvidenceDerivedField>,
+) -> bool {
+    let previous_field = field.clone();
+    let previous_origin = origin.clone();
+
+    // A changed automatic value is a user-confirmed override. The frontend
+    // sends a full draft, so equality (rather than patch presence) is the only
+    // reliable way to preserve automatic ownership across unrelated saves.
+    if origin
+        .as_ref()
+        .is_some_and(|recorded| field != &recorded.value)
+    {
+        *origin = None;
+    }
+
+    match (origin.as_ref(), derived) {
+        // Only values previously owned by this automation follow a replacement
+        // or are cleared when the Suno evidence disappears.
+        (Some(_), Some(value)) => {
+            *field = value.value.clone();
+            *origin = Some(value.clone());
+        }
+        (Some(recorded), None) => {
+            if field == &recorded.value {
+                field.clear();
+            }
+            *origin = None;
+        }
+        // A non-empty field without an automatic origin is a manual value and
+        // must never be overwritten. A blank field is intentionally filled.
+        (None, Some(value)) if field.trim().is_empty() => {
+            *field = value.value.clone();
+            *origin = Some(value.clone());
+        }
+        _ => {}
     }
 
     *field != previous_field || *origin != previous_origin
@@ -4742,6 +4859,7 @@ fn validate_required_production_range(track: &TrackRecord) -> Result<()> {
     )
 }
 
+#[cfg(test)]
 fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     apply_patch_with_explicit_nulls(fields, patch, &[]);
 }
@@ -5014,8 +5132,8 @@ fn apply_patch_with_explicit_nulls(
 mod tests {
     use super::*;
     use crate::model::{
-        DocumentationAnswer, EmbeddedMetadata, FactOrigin, SunoLyricsContentSource,
-        SunoLyricsContentType, TimestampReferencedArtifact, TimestampType,
+        CertificateLanguage, DocumentationAnswer, EmbeddedMetadata, FactOrigin, FinalizeOptions,
+        SunoLyricsContentSource, SunoLyricsContentType, TimestampReferencedArtifact, TimestampType,
     };
     use crate::workflow::CoverageStatus;
     use std::collections::BTreeMap;
@@ -5039,6 +5157,7 @@ mod tests {
             default_ai_image_service: "Local Tool".into(),
             artwork_transparency_policy: "always".into(),
             disclosure_text: "AI-assisted".into(),
+            certificate_language: CertificateLanguage::En,
         }
     }
 
@@ -5949,6 +6068,76 @@ mod tests {
         assert!(readme.contains("- Suno profile: updated-profile"));
         assert!(readme.contains("- Suno handle: @updated"));
         assert!(!readme.contains("Artist: Not documented"));
+    }
+
+    #[test]
+    fn certificate_language_change_preserves_open_outputs_and_freezes_finalization_options() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let original_profile = complete_profile();
+        app.update_profile(original_profile.clone())
+            .expect("original profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("ready-fixtures"),
+            "Language-only Profile Update",
+        );
+        let before = app.load_track(&ready.id).expect("ready track");
+        let documents_before = serde_json::to_value(&before.documents).expect("document state");
+        let integrity_before = serde_json::to_value(&before.integrity).expect("integrity state");
+        assert!(before.documents.current);
+        assert!(before.integrity.verified);
+
+        let mut german_profile = original_profile.clone();
+        german_profile.certificate_language = CertificateLanguage::De;
+        app.update_profile(german_profile.clone())
+            .expect("language-only profile update");
+
+        let unchanged = app.load_track(&ready.id).expect("unchanged ready track");
+        assert_eq!(app.profile().expect("saved profile"), german_profile);
+        assert_eq!(unchanged.profile_snapshot, original_profile);
+        assert_eq!(
+            serde_json::to_value(&unchanged.documents).expect("document state after update"),
+            documents_before
+        );
+        assert_eq!(
+            serde_json::to_value(&unchanged.integrity).expect("integrity state after update"),
+            integrity_before
+        );
+
+        let finalized = app
+            .finalize_track_with_options(&ready.id, FinalizeOptions { bilingual: true })
+            .expect("finalization with bilingual option")
+            .track
+            .expect("finalized detail");
+        assert_eq!(
+            finalized.certificate.certificate_language,
+            CertificateLanguage::De
+        );
+        assert!(finalized.certificate.bilingual);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                app.root()
+                    .join(&finalized.relative_path)
+                    .join(certificate::MANIFEST_FILE),
+            )
+            .expect("finalized evidence manifest"),
+        )
+        .expect("manifest JSON");
+        assert_eq!(manifest["certificate"]["rendering"]["language"], "de");
+        assert_eq!(manifest["certificate"]["rendering"]["bilingual"], true);
+
+        let mut english_profile = german_profile;
+        english_profile.certificate_language = CertificateLanguage::En;
+        app.update_profile(english_profile)
+            .expect("subsequent language-only profile update");
+        let frozen = app.load_track(&ready.id).expect("frozen finalized track");
+        assert_eq!(frozen.status, TrackStatus::Finalized);
+        assert_eq!(
+            frozen.certificate.certificate_language,
+            CertificateLanguage::De
+        );
+        assert!(frozen.certificate.bilingual);
     }
 
     #[test]
@@ -7150,6 +7339,8 @@ mod tests {
             certificate_id: Some("SDM-library-preservation".into()),
             finalized_at: Some("2026-08-01T12:03:00Z".into()),
             workflow_version: Some(record.workflow_version.clone()),
+            certificate_language: CertificateLanguage::En,
+            bilingual: false,
             invalidated_at: None,
             invalidation_reason: None,
         };
@@ -8062,6 +8253,8 @@ mod tests {
             certificate_id: Some("SDM-test".into()),
             finalized_at: Some("2026-08-13T12:00:00Z".into()),
             workflow_version: Some(record.workflow_version.clone()),
+            certificate_language: CertificateLanguage::En,
+            bilingual: false,
             invalidated_at: None,
             invalidation_reason: None,
         };
@@ -8260,11 +8453,19 @@ mod tests {
             .import_evidence_from(&updated.id, EvidenceRole::ReleaseWav, &release_master)
             .expect("release evidence import");
         assert_eq!(automated.fields.suno_final_generation_date, "2026-08-02");
+        assert_eq!(
+            automated.fields.suno_final_generation_id,
+            "generation-end-to-end"
+        );
         assert_eq!(automated.fields.production_end_date, "2026-08-02");
         assert_eq!(automated.fields.suno_download_export_date, "2026-08-02");
         assert_eq!(
             automated.automation.final_generation_origin,
             FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(
+            automated.automation.final_generation_id_origin,
+            FactOrigin::UserConfirmedFact
         );
         assert!(automated.automation.release_identical_to_suno_export);
         app.update_track(
@@ -8460,6 +8661,10 @@ mod tests {
                 .as_deref()
                 .expect("persisted finalization timestamp"),
             "normalized-snapshot-reproduction",
+            CertificateRenderOptions {
+                language: persisted_snapshot.certificate.certificate_language,
+                bilingual: persisted_snapshot.certificate.bilingual,
+            },
         )
         .expect("re-render identical normalized snapshot");
         for relative in [
@@ -8516,6 +8721,11 @@ mod tests {
             .as_str()
             .is_some_and(|hash| hash.len() == 64));
         assert_eq!(
+            manifest_json["system_verification"]["fact_origins"]["final_suno_generation_id"]
+                .as_str(),
+            Some("user_confirmed_fact")
+        );
+        assert_eq!(
             manifest_json["system_verification"]["fact_origins"]["final_suno_generation_date"]
                 .as_str(),
             Some("evidence_derived_metadata")
@@ -8539,15 +8749,17 @@ mod tests {
         let markdown = fs::read_to_string(track_root.join(certificate::CERTIFICATE_FILE))
             .expect("Markdown certificate");
         assert!(markdown.contains("Final generation date [Evidence-derived metadata]: 2026-08-02"));
+        assert!(
+            markdown.contains("Final generation ID [User-confirmed fact]: generation-end-to-end")
+        );
         assert!(markdown.contains("Suno Studio metadata detected: **YES**"));
-        assert!(markdown.contains(&format!(
-            "Suno ID [Evidence-derived metadata]: {P0_SUNO_ID}"
-        )));
+        assert!(!markdown.contains("Suno project/version ID"));
+        assert!(!markdown.contains("project-end-to-end-v1"));
         assert!(markdown.contains("Release identical to Suno final export: **YES**"));
         assert!(markdown.contains("Download/export date [Evidence-derived metadata]: 2026-08-02"));
         assert!(markdown.contains("Last editing date [User-confirmed fact]: 2026-08-03"));
         assert!(!markdown.contains("2026-08-02T06:38:06Z"));
-        assert!(markdown.contains(P0_SUNO_ID));
+        assert!(!markdown.contains(P0_SUNO_ID));
         assert!(markdown.contains("Suno plan at generation [User-confirmed fact]: Pro"));
         assert!(markdown.contains("Instrumental track [User-confirmed fact]: YES"));
         assert!(markdown.contains("Vocal lyrics present [User-confirmed fact]: NO"));
@@ -10490,9 +10702,15 @@ mod tests {
     }
 
     const P0_SUNO_ID: &str = "6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+    const P0_SECOND_SUNO_ID: &str = "7d9b51ae-43cf-4d8c-bc6a-3468a00a6929";
+    const P0_THIRD_SUNO_ID: &str = "8ea062bf-54d0-4e9d-cd7b-4579b11b7a3a";
 
     fn p0_suno_comment(timestamp: &str) -> String {
-        format!("made with suno studio; created={timestamp}; id={P0_SUNO_ID}")
+        p0_suno_comment_with_id(timestamp, P0_SUNO_ID)
+    }
+
+    fn p0_suno_comment_with_id(timestamp: &str, id: &str) -> String {
+        format!("made with suno studio; created={timestamp}; id={id}")
     }
 
     /// Test-only RIFF encoder. It intentionally does not call any production
@@ -10698,6 +10916,11 @@ mod tests {
         assert_eq!(evidence.metadata.suno_created_date, "2026-08-17");
         assert_eq!(evidence.metadata.suno_id, P0_SUNO_ID);
         assert_eq!(evidence.metadata.suno_raw_metadata, raw);
+        assert_eq!(imported.fields.suno_final_generation_id, P0_SUNO_ID);
+        assert_eq!(
+            imported.automation.final_generation_id_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
         assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
         assert_eq!(
             imported.automation.final_generation_origin,
@@ -10714,6 +10937,135 @@ mod tests {
             FactOrigin::EvidenceDerivedMetadata
         );
         assert!(imported.fields.final_export_date.is_empty());
+    }
+
+    #[test]
+    fn p0_final_generation_id_follows_wav_only_while_system_owned() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        let track = p0_track(&app, "P0 Automatic Generation ID", Some(false), false);
+        let first_source = directory.path().join("automatic-id-first.wav");
+        fs::write(
+            &first_source,
+            p0_pcm_wav(Some(&p0_suno_comment_with_id(
+                "2026-08-17T06:38:06Z",
+                P0_SUNO_ID,
+            ))),
+        )
+        .expect("first Suno WAV");
+        let imported = app
+            .import_evidence_from(&track.id, EvidenceRole::SunoFinalExport, &first_source)
+            .expect("import automatic ID");
+        let evidence_id = p0_evidence(&imported, EvidenceRole::SunoFinalExport)
+            .id
+            .clone();
+        assert_eq!(imported.fields.suno_final_generation_id, P0_SUNO_ID);
+        assert_eq!(
+            imported.automation.final_generation_id_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+
+        let replacement_source = directory.path().join("automatic-id-replacement.wav");
+        fs::write(
+            &replacement_source,
+            p0_pcm_wav(Some(&p0_suno_comment_with_id(
+                "2026-08-18T06:38:06Z",
+                P0_SECOND_SUNO_ID,
+            ))),
+        )
+        .expect("replacement Suno WAV");
+        let replaced = app
+            .replace_evidence_from(
+                &track.id,
+                &evidence_id,
+                EvidenceRole::SunoFinalExport,
+                &replacement_source,
+            )
+            .expect("replace automatic ID");
+        assert_eq!(replaced.fields.suno_final_generation_id, P0_SECOND_SUNO_ID);
+        assert_eq!(
+            replaced.automation.final_generation_id_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+
+        let overridden = app
+            .update_track(
+                &track.id,
+                TrackPatch {
+                    suno_final_generation_id: Some("manually-confirmed-generation-id".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("record manual ID");
+        assert_eq!(
+            overridden.fields.suno_final_generation_id,
+            "manually-confirmed-generation-id"
+        );
+        assert_eq!(
+            overridden.automation.final_generation_id_origin,
+            FactOrigin::UserConfirmedFact
+        );
+
+        let third_source = directory.path().join("automatic-id-third.wav");
+        fs::write(
+            &third_source,
+            p0_pcm_wav(Some(&p0_suno_comment_with_id(
+                "2026-08-19T06:38:06Z",
+                P0_THIRD_SUNO_ID,
+            ))),
+        )
+        .expect("third Suno WAV");
+        let preserved = app
+            .replace_evidence_from(
+                &track.id,
+                &evidence_id,
+                EvidenceRole::SunoFinalExport,
+                &third_source,
+            )
+            .expect("replace while manual ID exists");
+        assert_eq!(
+            preserved.fields.suno_final_generation_id,
+            "manually-confirmed-generation-id"
+        );
+        assert_eq!(
+            preserved.automation.final_generation_id_origin,
+            FactOrigin::UserConfirmedFact
+        );
+
+        let manual_track = p0_track(&app, "P0 Preexisting Generation ID", Some(false), false);
+        let manual_track = app
+            .update_track(
+                &manual_track.id,
+                TrackPatch {
+                    suno_final_generation_id: Some("preexisting-manual-id".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect("record preexisting manual ID");
+        let manual_source = directory.path().join("manual-id.wav");
+        fs::write(
+            &manual_source,
+            p0_pcm_wav(Some(&p0_suno_comment_with_id(
+                "2026-08-17T06:38:06Z",
+                P0_SUNO_ID,
+            ))),
+        )
+        .expect("manual-ID Suno WAV");
+        let preserved_manual = app
+            .import_evidence_from(
+                &manual_track.id,
+                EvidenceRole::SunoFinalExport,
+                &manual_source,
+            )
+            .expect("import alongside manual ID");
+        assert_eq!(
+            preserved_manual.fields.suno_final_generation_id,
+            "preexisting-manual-id"
+        );
+        assert_eq!(
+            preserved_manual.automation.final_generation_id_origin,
+            FactOrigin::UserConfirmedFact
+        );
     }
 
     #[test]
@@ -10866,6 +11218,7 @@ mod tests {
         assert!(evidence.metadata.suno_created_date.is_empty());
         assert!(evidence.metadata.suno_id.is_empty());
         assert!(evidence.metadata.suno_raw_metadata.is_empty());
+        assert!(imported.fields.suno_final_generation_id.is_empty());
         assert!(imported.fields.suno_final_generation_date.is_empty());
         assert!(imported.fields.production_end_date.is_empty());
         assert_eq!(
@@ -11133,10 +11486,15 @@ mod tests {
         let removed = app
             .remove_evidence(&track.id, &evidence_id)
             .expect("remove current Suno export");
+        assert!(removed.fields.suno_final_generation_id.is_empty());
         assert!(removed.fields.suno_final_generation_date.is_empty());
         assert!(removed.fields.production_end_date.is_empty());
         assert!(removed.fields.suno_download_export_date.is_empty());
         assert!(removed.fields.final_export_date.is_empty());
+        assert_eq!(
+            removed.automation.final_generation_id_origin,
+            FactOrigin::NotDocumented
+        );
         assert_eq!(
             removed.automation.final_generation_origin,
             FactOrigin::NotDocumented

@@ -283,6 +283,7 @@ describe("navigation", () => {
         sizeBytes: 42
       },
       showCertificatePopup: true,
+      certificateBilingual: true,
       termsMetadataDialog: { evidenceId: null, metadata: emptyEvidenceMetadata() },
       showExternalTimestampDialog: true,
       query: "old workspace query",
@@ -305,6 +306,7 @@ describe("navigation", () => {
       showSubscriptionEvidence: false,
       evidencePreview: null,
       showCertificatePopup: false,
+      certificateBilingual: false,
       termsMetadataDialog: null,
       showExternalTimestampDialog: false,
       query: "",

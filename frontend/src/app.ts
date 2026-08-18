@@ -25,6 +25,7 @@ import {
   type EvidenceMetadata,
   type ExternalTimestampInput,
   type ExternalTimestampRecord,
+  type FinalizeOptions,
   type FolderImportProposal,
   type GlobalEvidenceItem,
   type EvidenceRole,
@@ -101,6 +102,7 @@ interface AppState {
   showSubscriptionEvidence: boolean;
   evidencePreview: EvidencePreview | null;
   showCertificatePopup: boolean;
+  certificateBilingual: boolean;
   termsMetadataDialog: { evidenceId: string | null; metadata: EvidenceMetadata } | null;
   showExternalTimestampDialog: boolean;
   theme: ColorTheme;
@@ -112,7 +114,7 @@ export type WorkspaceScopedUiState = Pick<
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" | "albums" |
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
   | "showCertificatePopup" | "folderImport"
-  | "termsMetadataDialog" | "showExternalTimestampDialog"
+  | "certificateBilingual" | "termsMetadataDialog" | "showExternalTimestampDialog"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -130,6 +132,7 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     showSubscriptionEvidence: false,
     evidencePreview: null,
     showCertificatePopup: false,
+    certificateBilingual: false,
     termsMetadataDialog: null,
     showExternalTimestampDialog: false,
     query: "",
@@ -777,6 +780,7 @@ export class SunoDocumentationApp {
     showSubscriptionEvidence: false,
     evidencePreview: null,
     showCertificatePopup: false,
+    certificateBilingual: false,
     termsMetadataDialog: null,
     showExternalTimestampDialog: false,
     theme: "light",
@@ -1053,6 +1057,7 @@ export class SunoDocumentationApp {
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
       evidencePreview: this.state.evidencePreview,
       showCertificatePopup: this.state.showCertificatePopup,
+      certificateBilingual: this.state.certificateBilingual,
       termsMetadataDialog: this.state.termsMetadataDialog,
       showExternalTimestampDialog: this.state.showExternalTimestampDialog,
       query: this.state.query,
@@ -1764,7 +1769,7 @@ export class SunoDocumentationApp {
         break;
       case "suno": {
         const projectHint = track.evidence.find((item) => item.role === "suno_screenshot");
-        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtGeneration", "Suno-Tarif bei der finalen Generation", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtGeneration, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.textField("sunoProjectVersionId", "Suno Project / Version ID (optional)", "Nur dokumentieren, wenn bekannt", draft.sunoProjectVersionId)}${this.textField("sunoFinalGenerationId", "Final generation ID (optional)", "Benutzerbestätigte ID, falls bekannt", draft.sunoFinalGenerationId)}${this.automatedDateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, track.automation.finalGenerationOrigin)}${this.automatedDateField("sunoDownloadExportDate", "Download-/Exportdatum (optional)", draft.sunoDownloadExportDate, track.automation.downloadExportOrigin, false, "Kein gültiges Datum in den WAV-Metadaten erkannt – die manuelle Angabe bleibt optional.")}</div>
+        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtGeneration", "Suno-Tarif bei der finalen Generation", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtGeneration, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.automatedTextField("sunoFinalGenerationId", "Final generation ID (optional)", "Wird aus gültigen Suno-WAV-Metadaten übernommen", draft.sunoFinalGenerationId, track.automation.finalGenerationIdOrigin)}${this.automatedDateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, track.automation.finalGenerationOrigin)}${this.automatedDateField("sunoDownloadExportDate", "Download-/Exportdatum (optional)", draft.sunoDownloadExportDate, track.automation.downloadExportOrigin, false, "Kein gültiges Datum in den WAV-Metadaten erkannt – die manuelle Angabe bleibt optional.")}</div>
           ${legacySunoPlanNoticeMarkup(draft.legacySunoPlanAtCreation)}
           ${this.renderAutomaticSunoMetadata(track)}
           <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${projectHint ? `<p class="field-help">Sunoprojekthinweis hinterlegt: <strong>${escapeHtml(projectHint.fileName)}</strong></p>` : ""}${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
@@ -1962,6 +1967,9 @@ export class SunoDocumentationApp {
     const superseded = track.status === "SUPERSEDED";
     const locked = isTrackContentLocked(track.status);
     const ready = localGate.valid && !workflowBlocker;
+    const configuredCertificateLanguage = this.state.profile.certificateLanguage === "de" ? "Deutsch" : "Englisch";
+    const finalizedCertificateLanguage = track.certificate.certificateLanguage === "de" ? "Deutsch" : "Englisch";
+    const finalizedCertificateLanguages = track.certificate.bilingual ? "Deutsch und Englisch" : finalizedCertificateLanguage;
     const heading = superseded
       ? "Ersetzter Snapshot – nur lesbar"
       : finalized
@@ -1983,6 +1991,7 @@ export class SunoDocumentationApp {
       <div class="finalize-mark ${ready && !locked ? "is-ready" : ""}">${icon(ready && !locked ? "certificate" : "lock")}</div>
       <p class="overline">Track Documentation Completion Certificate</p><h3>${heading}</h3><p>${summary}</p>
       ${blockers.length ? `<ul class="gate-list">${blockers.map((item) => `<li>${icon("alert")}<span>${escapeHtml(item)}</span></li>`).join("")}</ul>` : `<ul class="gate-list gate-list--success"><li>${icon("check")}<span>Pflichtschritte erfüllt</span></li><li>${icon("check")}<span>Evidence vollständig</span></li><li>${icon("check")}<span>Dokumente aktuell</span></li><li>${icon("check")}<span>SHA-256 vollständig verifiziert</span></li></ul>`}
+      ${locked ? track.certificate.valid ? `<div class="technical-note">${icon("info")}<p><strong>Zertifikatsausgabe:</strong> ${finalizedCertificateLanguages}${track.certificate.bilingual ? " (zweisprachig)" : ""}.</p></div>` : "" : `<label class="toggle-row"><span><strong>Zweisprachiges Zertifikat</strong><small>Primärsprache: ${configuredCertificateLanguage}. Bei Aktivierung enthält das Zertifikat zusätzlich die jeweils andere Sprache.</small></span><input type="checkbox" data-certificate-bilingual aria-label="Zweisprachiges Zertifikat erzeugen" ${this.state.certificateBilingual ? "checked" : ""}><i aria-hidden="true"></i></label>`}
       ${locked
         ? track.certificate.valid && track.certificate.certificateId
           ? `<button class="button button--finalize" data-action="show-certificate-popup">${icon("certificate")} Zertifikat anzeigen</button>`
@@ -2024,11 +2033,12 @@ export class SunoDocumentationApp {
     const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
     const terms = this.state.globalEvidence.filter((item) => item.role === "suno_terms_rights");
     return `<div class="page-content settings-page">
-      <div class="page-lead"><div><p class="overline">Workspace-Stammdaten</p><h2>Globale Angaben</h2><p>Diese Werte werden einmal gespeichert und als tatsächlicher Snapshot in jedes Track-Dokument übernommen.</p></div></div>
+      <div class="page-lead"><div><p class="overline">Workspace-Stammdaten</p><h2>Globale Angaben</h2><p>Dokumentationsdaten werden als Track-Snapshot übernommen. Die Zertifikatssprache gilt für künftige Finalisierungen und verändert bestehende Snapshots nicht.</p></div></div>
       <form id="profile-form" class="panel settings-form">
         <div class="settings-section"><div class="settings-section-copy"><span>01</span><div><h3>Artist & Suno</h3><p>Nur produktionsrelevante Profildaten – keine privaten Kontaktdaten.</p></div></div><div class="field-grid two-col">${this.textField("artistName", "Künstlername", "Künstlername", profile.artistName, true)}${this.textField("sunoProfileName", "Suno-Profilname", "Profilname", profile.sunoProfileName, true)}${this.textField("sunoHandle", "Suno-Benutzername", "@handle", profile.sunoHandle, true)}${this.suggestedTextField("sunoPlan", "Suno-Tarif", "z. B. Premier oder eigener Wert", profile.sunoPlan, sunoPlanSuggestions, true)}${this.dateField("subscriptionStartDate", "Abo-Startdatum", profile.subscriptionStartDate, true)}</div></div>
         <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.suggestedTextField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. ChatGPT / OpenAI oder eigener Wert", profile.defaultAiImageService, aiSystemSuggestions)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
         <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
+        <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
         <div class="form-save settings-save"><span>${icon("shield")} Stammdaten verbleiben in der lokalen Workspace-Datenbank.</span><button class="button button--primary" type="submit">${icon("check")} Einstellungen speichern</button></div>
       </form>
       <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
@@ -2093,6 +2103,14 @@ export class SunoDocumentationApp {
     const requirement = !automated && required ? "required" : "";
     const caption = automated ? factOriginLabel(origin) : fallbackCaption ?? factOriginLabel(origin);
     return `<label class="field ${automated ? "field--automated" : ""}"><span class="field-label">${escapeHtml(label)}${!automated && required ? " *" : ""}</span><span class="field-input-wrap"><input type="date" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${automated ? "readonly aria-readonly=\"true\"" : requirement}>${automated ? `<i title="Evidence-derived metadata">${icon("check")}</i>` : ""}</span><small class="field-caption">${escapeHtml(caption)}</small></label>`;
+  }
+
+  private automatedTextField(name: string, label: string, placeholder: string, value: string, origin: FactOrigin): string {
+    const automated = isAutomaticDateReadonly(origin);
+    const caption = automated
+      ? factOriginLabel(origin)
+      : "Manuelle Angabe; wird nur bei leerem Feld aus gültigen Suno-WAV-Metadaten ergänzt.";
+    return `<label class="field ${automated ? "field--automated" : ""}"><span class="field-label">${escapeHtml(label)}</span><span class="field-input-wrap"><input type="text" name="${escapeHtml(name)}" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(value)}" ${automated ? "readonly aria-readonly=\"true\"" : ""}>${automated ? `<i title="Evidence-derived metadata">${icon("check")}</i>` : ""}</span><small class="field-caption">${escapeHtml(caption)}</small></label>`;
   }
 
   private hasManualSunoDateOverriddenByMetadata(previous: TrackDetail, imported: TrackDetail): boolean {
@@ -2649,7 +2667,8 @@ export class SunoDocumentationApp {
         sunoHandle: String(data.get("sunoHandle") ?? ""), sunoPlan: String(data.get("sunoPlan") ?? ""),
         subscriptionStartDate: String(data.get("subscriptionStartDate") ?? ""), defaultCommercialUse: data.get("defaultCommercialUse") === "true",
         defaultAiImageService: String(data.get("defaultAiImageService") ?? ""), artworkTransparencyPolicy: String(data.get("artworkTransparencyPolicy")) as GlobalProfile["artworkTransparencyPolicy"],
-        disclosureText: String(data.get("disclosureText") ?? "AI-assisted")
+        disclosureText: String(data.get("disclosureText") ?? "AI-assisted"),
+        certificateLanguage: data.get("certificateLanguage") === "de" ? "de" : "en"
       };
       const saved = await this.withBusy("Stammdaten werden gespeichert …", () => this.api.updateProfile(profile));
       if (saved) {
@@ -2673,6 +2692,11 @@ export class SunoDocumentationApp {
 
   private handleChange(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+    if (input.matches("[data-certificate-bilingual]") && input instanceof HTMLInputElement) {
+      this.state.certificateBilingual = input.checked;
+      this.render();
+      return;
+    }
     const libraryForm = input.closest<HTMLFormElement>("#new-track-form, #track-library-form");
     if (libraryForm && input.name === "librarySection") {
       this.syncTrackLibraryFields(libraryForm);
@@ -2956,13 +2980,15 @@ export class SunoDocumentationApp {
     const validation = await this.withBusy("Finalisierungs-Gate wird nativ geprüft …", () => this.api.validateTrack(track.id));
     if (!validation) return;
     if (!validation.valid) { this.showToast("error", "Finalisierung blockiert", [...validation.missingItems, ...validation.blockingItems].join(" · ")); return; }
+    const options: FinalizeOptions = { bilingual: this.state.certificateBilingual };
     const result = await this.withOperationProgress(
       "finalization",
       "Unveränderlicher Snapshot und Zertifikat werden erzeugt …",
-      (onProgress) => this.api.finalizeTrack(track.id, onProgress)
+      (onProgress) => this.api.finalizeTrack(track.id, options, onProgress)
     );
     if (result) {
       if (result.track) this.applyTrack(result.track); else await this.refreshTracks();
+      this.state.certificateBilingual = false;
       this.state.trackTab = "certificate"; this.state.activeStep = null;
       this.state.showCertificatePopup = Boolean(
         this.state.track?.certificate.valid && this.state.track.certificate.certificateId

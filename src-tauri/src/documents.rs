@@ -1056,14 +1056,13 @@ fn render(
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nFinal generation date [{}]: {}\nUser final generation ID [User-confirmed fact]: {}\nSuno ID [Evidence-derived metadata]: {}\nSuno project URL [User-confirmed fact]: {}\nSuno project/version ID [User-confirmed fact]: {}\nDownload/export date [{}]: {}\nSuno Studio metadata detected [System verification]: {}\nMetadata origin: {}\nSuno model [User-confirmed fact]: {}\nSuno plan at generation [User-confirmed fact]: {}\nLegacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\nRelease identical to Suno final export [System verification]: {}\nProduction start: {}\nProduction end: {}\nLast editing date: {}\nActual Suno export filename: {}\nInstrumental track [User-confirmed fact]: {}\nVocal lyrics present [User-confirmed fact]: {}\nSuno lyrics/structure field content [User-confirmed fact]: {}\nContent types [User-confirmed fact]: {}\nContent source [User-confirmed fact]: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nFinal generation date [{}]: {}\nFinal generation ID [{}]: {}\nSuno project URL [User-confirmed fact]: {}\nDownload/export date [{}]: {}\nSuno Studio metadata detected [System verification]: {}\nMetadata origin: {}\nSuno model [User-confirmed fact]: {}\nSuno plan at generation [User-confirmed fact]: {}\nLegacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\nRelease identical to Suno final export [System verification]: {}\nProduction start: {}\nProduction end: {}\nLast editing date: {}\nActual Suno export filename: {}\nInstrumental track [User-confirmed fact]: {}\nVocal lyrics present [User-confirmed fact]: {}\nSuno lyrics/structure field content [User-confirmed fact]: {}\nContent types [User-confirmed fact]: {}\nContent source [User-confirmed fact]: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
             fact_origin_label(automation.final_generation_origin),
             value_or_missing(&f.suno_final_generation_date),
+            fact_origin_label(automation.final_generation_id_origin),
             value_or_missing(&f.suno_final_generation_id),
-            automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED"),
             value_or_missing(&f.suno_project_url),
-            value_or_missing(&f.suno_project_version_id),
             fact_origin_label(automation.download_export_origin),
             value_or_missing(&f.suno_download_export_date),
             if automation.suno_metadata_detected { "YES" } else { "NO" },
@@ -1094,7 +1093,7 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at generation: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Last editing date: {}\n- Final generation date [{}]: {}\n- User final generation ID: {}\n- Evidence-derived Suno ID: {}\n- Suno project URL: {}\n- Suno project/version ID: {}\n- Download/export date [{}]: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n- Instrumental track: {}\n- Vocal lyrics present: {}\n- Suno lyrics/structure field content: {}\n{}{}\n## Workflow status\n\n- Documentation status meaning: configured documentation requirements completed.\n- PASS means: Configured documentation requirements for this step were satisfied.\n- The authoritative evaluated step results are stored in the completion certificate after finalization.\n\n## External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: NOT RECORDED\n- No external timestamp evidence recorded.\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at generation: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Last editing date: {}\n- Final generation date [{}]: {}\n- Final generation ID [{}]: {}\n- Suno project URL: {}\n- Download/export date [{}]: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n- Instrumental track: {}\n- Vocal lyrics present: {}\n- Suno lyrics/structure field content: {}\n{}{}\n## Workflow status\n\n- Documentation status meaning: configured documentation requirements completed.\n- PASS means: Configured documentation requirements for this step were satisfied.\n- The authoritative evaluated step results are stored in the completion certificate after finalization.\n\n## External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: NOT RECORDED\n- No external timestamp evidence recorded.\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_generation),
@@ -1104,10 +1103,9 @@ fn render(
             value_or_missing(&f.final_export_date),
             fact_origin_label(automation.final_generation_origin),
             value_or_missing(&f.suno_final_generation_date),
+            fact_origin_label(automation.final_generation_id_origin),
             value_or_missing(&f.suno_final_generation_id),
-            automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED"),
             value_or_missing(&f.suno_project_url),
-            value_or_missing(&f.suno_project_version_id),
             fact_origin_label(automation.download_export_origin),
             value_or_missing(&f.suno_download_export_date),
             crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav).unwrap_or("NOT RECORDED"),
@@ -1124,11 +1122,11 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/AI_USAGE.md".into(),
         format!(
-            "{}# AI usage\n\n## Final Suno Generation\n\n- Final generation date [{}]: {}\n- User final generation ID [User-confirmed fact]: {}\n- Suno ID [Evidence-derived metadata]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Suno project/version ID [User-confirmed fact]: {}\n- Download/export date [{}]: {}\n- Suno Studio metadata detected [System verification]: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Release identical to Suno final export [System verification]: {}\n- Instrumental track [User-confirmed fact]: {}\n- Vocal lyrics present [User-confirmed fact]: {}\n- Suno lyrics/structure field content [User-confirmed fact]: {}\n- Content types [User-confirmed fact]: {}\n- Content source [User-confirmed fact]: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## AI Transparency Assessment – Audio\n\n{}\nNo AI Act compliance, legal necessity, or legal safety determination is made.\n\n## AI Transparency Assessment – Artwork\n\n{}",
+            "{}# AI usage\n\n## Final Suno Generation\n\n- Final generation date [{}]: {}\n- Final generation ID [{}]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Download/export date [{}]: {}\n- Suno Studio metadata detected [System verification]: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Release identical to Suno final export [System verification]: {}\n- Instrumental track [User-confirmed fact]: {}\n- Vocal lyrics present [User-confirmed fact]: {}\n- Suno lyrics/structure field content [User-confirmed fact]: {}\n- Content types [User-confirmed fact]: {}\n- Content source [User-confirmed fact]: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## AI Transparency Assessment – Audio\n\n{}\nNo AI Act compliance, legal necessity, or legal safety determination is made.\n\n## AI Transparency Assessment – Artwork\n\n{}",
             marker(), fact_origin_label(automation.final_generation_origin),
-            value_or_missing(&f.suno_final_generation_date), value_or_missing(&f.suno_final_generation_id),
-            automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED"), value_or_missing(&f.suno_project_url),
-            value_or_missing(&f.suno_project_version_id), fact_origin_label(automation.download_export_origin),
+            value_or_missing(&f.suno_final_generation_date), fact_origin_label(automation.final_generation_id_origin),
+            value_or_missing(&f.suno_final_generation_id), value_or_missing(&f.suno_project_url),
+            fact_origin_label(automation.download_export_origin),
             value_or_missing(&f.suno_download_export_date), if automation.suno_metadata_detected { "YES" } else { "NO" },
             value_or_missing(&f.suno_model), value_or_missing(&f.suno_plan_at_generation),
             value_or_missing(&f.legacy_suno_plan_at_creation),
@@ -1311,6 +1309,7 @@ mod tests {
             default_ai_image_service: "Example Image Service".into(),
             artwork_transparency_policy: "always".into(),
             disclosure_text: "AI-assisted".into(),
+            certificate_language: crate::model::CertificateLanguage::En,
         };
 
         let evidence = vec![
@@ -1406,6 +1405,9 @@ mod tests {
         );
         assert!(combined.contains("Suno Structure / Generation Instructions"));
         assert!(combined.contains("Vocal lyrics present [User-confirmed fact]: NO"));
+        assert!(combined.contains("Final generation ID [User-confirmed fact]: generation-golden"));
+        assert!(!combined.contains("Suno project/version ID"));
+        assert!(!combined.contains("project-version-golden"));
         assert!(combined
             .contains("External timestamp evidence at technical finalization: NOT RECORDED"));
 

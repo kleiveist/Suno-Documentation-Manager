@@ -3,10 +3,10 @@ use crate::error::{AppError, Result};
 use crate::folder_import::{FolderImportExecutionInput, FolderImportProposal};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
-    EvidencePreview, EvidenceRole, ExternalTimestampInput, GlobalEvidenceItem, OperationProgress,
-    Profile, StepStatus, SubscriptionBillingCycle, TrackCoverPreview, TrackDetail,
-    TrackLibraryPlacement, TrackPatchRequest, TrackSummary, ValidationResult, WorkspaceScan,
-    WorkspaceSummary,
+    EvidencePreview, EvidenceRole, ExternalTimestampInput, FinalizeOptions, GlobalEvidenceItem,
+    OperationProgress, Profile, StepStatus, SubscriptionBillingCycle, TrackCoverPreview,
+    TrackDetail, TrackLibraryPlacement, TrackPatchRequest, TrackSummary, ValidationResult,
+    WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
@@ -483,6 +483,7 @@ pub fn validate_track(state: State<'_, AppState>, track_id: String) -> Result<Va
 pub async fn finalize_track(
     state: State<'_, AppState>,
     track_id: String,
+    options: Option<FinalizeOptions>,
     on_progress: Channel<OperationProgress>,
 ) -> Result<ActionResult> {
     let workspace = state
@@ -491,9 +492,13 @@ pub async fn finalize_track(
         .cloned()
         .ok_or(AppError::NoWorkspace)?;
     tauri::async_runtime::spawn_blocking(move || {
-        workspace.finalize_track_with_progress(&track_id, &mut |progress| {
-            let _ = on_progress.send(progress);
-        })
+        workspace.finalize_track_with_options_and_progress(
+            &track_id,
+            options.unwrap_or_default(),
+            &mut |progress| {
+                let _ = on_progress.send(progress);
+            },
+        )
     })
     .await
     .map_err(|error| AppError::Data(format!("Finalization task failed: {error}")))?
