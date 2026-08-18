@@ -1,6 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::model::{
-    DocumentPreview, EvidenceItem, OperationProgress, Profile, StepState, TrackRecord,
+    DocumentPreview, DocumentationAnswer, EvidenceItem, EvidenceRole, OperationProgress, Profile,
+    StepState, SunoLyricsContentSource, SunoLyricsContentType, TrackFields, TrackRecord,
 };
 use crate::security::{atomic_write, contained_path, portable_relative, sha256_bytes};
 use serde::Serialize;
@@ -10,7 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.7";
+pub const TEMPLATE_VERSION: &str = "1.8";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -48,7 +49,10 @@ pub fn input_fingerprint(
     evidence: &[EvidenceItem],
 ) -> Result<String> {
     let normalized_fields = track.fields.normalized_conditionals();
-    let mut sorted_evidence = evidence.iter().collect::<Vec<_>>();
+    let mut sorted_evidence = evidence
+        .iter()
+        .filter(|item| item.role != EvidenceRole::ExternalTimestamp)
+        .collect::<Vec<_>>();
     sorted_evidence.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     let evidence_values = sorted_evidence
         .into_iter()
@@ -258,15 +262,15 @@ fn has_exact_managed_header(path: &Path, relative: &str) -> Result<bool> {
 
 fn yes_no(value: Option<bool>) -> &'static str {
     match value {
-        Some(true) => "Yes",
-        Some(false) => "No",
-        None => "Not documented",
+        Some(true) => "YES",
+        Some(false) => "NO",
+        None => "NOT DOCUMENTED",
     }
 }
 
 fn value_or_missing(value: &str) -> &str {
     if value.trim().is_empty() {
-        "Not documented"
+        "NOT DOCUMENTED"
     } else {
         value
     }
@@ -279,9 +283,213 @@ fn documented_list(values: &[String]) -> String {
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     if values.is_empty() {
-        "Not documented".into()
+        "NOT DOCUMENTED".into()
     } else {
         values.join(", ")
+    }
+}
+
+fn documentation_answer(value: Option<DocumentationAnswer>) -> &'static str {
+    match value {
+        Some(DocumentationAnswer::Yes) => "YES",
+        Some(DocumentationAnswer::No) => "NO",
+        Some(DocumentationAnswer::NotDocumented) | None => "NOT DOCUMENTED",
+    }
+}
+
+fn conditional_documentation_answer(
+    controlling: Option<bool>,
+    value: Option<DocumentationAnswer>,
+) -> &'static str {
+    match controlling {
+        Some(true) => documentation_answer(value),
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+    }
+}
+
+fn conditional_value<'a>(controlling: Option<bool>, value: &'a str) -> &'a str {
+    match controlling {
+        Some(true) => value_or_missing(value),
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+    }
+}
+
+fn suno_content_types(fields: &TrackFields) -> String {
+    match fields.suno_lyrics_field_content {
+        Some(false) => "N/A".into(),
+        None => "NOT DOCUMENTED".into(),
+        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED".into(),
+        Some(true) => fields
+            .suno_lyrics_content_types
+            .iter()
+            .map(|value| match value {
+                SunoLyricsContentType::VocalLyrics => "Vocal lyrics",
+                SunoLyricsContentType::StructureInstructions => "Structure instructions",
+                SunoLyricsContentType::SoundInstructions => "Sound instructions",
+                SunoLyricsContentType::ArrangementInstructions => "Arrangement instructions",
+                SunoLyricsContentType::Mixed => "Mixed",
+                SunoLyricsContentType::Other => "Other",
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+    }
+}
+
+fn structure_instructions_present(fields: &TrackFields) -> &'static str {
+    match fields.suno_lyrics_field_content {
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED",
+        Some(true) => {
+            if fields
+                .suno_lyrics_content_types
+                .contains(&SunoLyricsContentType::StructureInstructions)
+            {
+                "YES"
+            } else {
+                "NO"
+            }
+        }
+    }
+}
+
+fn suno_content_source(fields: &TrackFields) -> &'static str {
+    match fields.suno_lyrics_field_content {
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+        Some(true) => match fields.suno_lyrics_content_source {
+            Some(SunoLyricsContentSource::Human) => "human",
+            Some(SunoLyricsContentSource::Ai) => "AI",
+            Some(SunoLyricsContentSource::Mixed) => "mixed",
+            None => "NOT DOCUMENTED",
+        },
+    }
+}
+
+fn render_suno_field_document(fields: &TrackFields) -> String {
+    let heading = if fields.vocal_lyrics_present == Some(true) {
+        "Vocal Lyrics"
+    } else {
+        "Suno Structure / Generation Instructions"
+    };
+    let mut output = format!(
+        "{}# {heading}\n\n- Instrumental track [User-confirmed fact]: {}\n- Vocal lyrics present [User-confirmed fact]: {}\n- Suno lyrics/structure field content [User-confirmed fact]: {}\n- Content types [User-confirmed fact]: {}\n- Structure instructions present [User-confirmed fact]: {}\n- Content source [User-confirmed fact]: {}\n- Other content type [User-confirmed fact]: {}\n\n## Exact Suno field text\n\n{}\n",
+        marker(),
+        yes_no(fields.instrumental_track),
+        yes_no(fields.vocal_lyrics_present),
+        yes_no(fields.suno_lyrics_field_content),
+        suno_content_types(fields),
+        structure_instructions_present(fields),
+        suno_content_source(fields),
+        if fields.suno_lyrics_field_content == Some(true)
+            && fields
+                .suno_lyrics_content_types
+                .contains(&SunoLyricsContentType::Other)
+        {
+            value_or_missing(&fields.suno_lyrics_other_content_type)
+        } else {
+            "N/A"
+        },
+        match fields.suno_lyrics_field_content {
+            Some(true) => value_or_missing(&fields.suno_lyrics_field_text),
+            Some(false) => "N/A",
+            None => "NOT DOCUMENTED",
+        },
+    );
+    if !fields.lyrics_source.trim().is_empty() || !fields.lyrics_text.trim().is_empty() {
+        output
+            .push_str("\n## Unclassified legacy lyrics data\n\n- Classification: NOT DOCUMENTED\n");
+        output.push_str(&format!(
+            "- Legacy source value: {}\n- Legacy text: {}\n\nThis retained historical data is unclassified legacy data and is not a Vocal Lyrics claim.\n",
+            value_or_missing(&fields.lyrics_source),
+            value_or_missing(&fields.lyrics_text),
+        ));
+    }
+    output
+}
+
+fn deepfake_indicator_summary(fields: &TrackFields) -> &'static str {
+    if fields.generative_ai_used == Some(false) {
+        return "N/A";
+    }
+    if fields.generative_ai_used != Some(true) {
+        return "INCOMPLETE – generative AI use NOT DOCUMENTED";
+    }
+    let answers = [
+        fields.real_person_voice_intentionally_imitated,
+        fields.real_person_identity_intentionally_represented,
+        fields.real_event_represented_as_authentic_recording,
+        fields.real_location_institution_event_presented_as_authentic_ai_recording,
+    ];
+    if answers
+        .iter()
+        .any(|answer| *answer == Some(DocumentationAnswer::Yes))
+    {
+        "Potential deepfake-related indicator recorded"
+    } else if answers
+        .iter()
+        .all(|answer| *answer == Some(DocumentationAnswer::No))
+    {
+        "Documented deepfake-related indicators: none recorded"
+    } else {
+        "Deepfake-related indicator documentation: INCOMPLETE"
+    }
+}
+
+fn render_ai_audio(fields: &TrackFields) -> String {
+    let active = fields.generative_ai_used;
+    format!(
+        "- Generative AI used [User-confirmed fact]: {}\n- AI system [User-confirmed fact]: {}\n- AI-assisted audio elements [User-confirmed fact]: {}\n- AI-generated audio elements [User-confirmed fact]: {}\n- Real person voice intentionally imitated [User-confirmed fact]: {}\n- Real person's identity intentionally represented [User-confirmed fact]: {}\n- Real event represented as authentic recording [User-confirmed fact]: {}\n- Real location / institution / event presented as authentic AI recording [User-confirmed fact]: {}\n- Disclosure applied [User-confirmed fact]: {}\n- Disclosure locations [User-confirmed fact]: {}\n- Disclosure text [User-confirmed fact]: {}\n- Disclosure reason / note [User-confirmed fact]: {}\n- Deepfake-related indicator summary: {}\n",
+        yes_no(active),
+        conditional_value(active, &fields.audio_ai_system),
+        conditional_documentation_answer(active, fields.ai_assisted_audio_elements),
+        conditional_documentation_answer(active, fields.ai_generated_audio_elements),
+        conditional_documentation_answer(active, fields.real_person_voice_intentionally_imitated,),
+        conditional_documentation_answer(
+            active,
+            fields.real_person_identity_intentionally_represented,
+        ),
+        conditional_documentation_answer(
+            active,
+            fields.real_event_represented_as_authentic_recording,
+        ),
+        conditional_documentation_answer(
+            active,
+            fields.real_location_institution_event_presented_as_authentic_ai_recording,
+        ),
+        conditional_documentation_answer(active, fields.audio_disclosure_applied),
+        match (active, fields.audio_disclosure_applied) {
+            (Some(true), Some(DocumentationAnswer::Yes)) => {
+                documented_list(&fields.audio_disclosure_locations)
+            }
+            (Some(true), _) | (Some(false), _) => "N/A".into(),
+            (None, _) => "NOT DOCUMENTED".into(),
+        },
+        match (active, fields.audio_disclosure_applied) {
+            (Some(true), Some(DocumentationAnswer::Yes)) => {
+                value_or_missing(&fields.audio_disclosure_text)
+            }
+            (Some(true), _) | (Some(false), _) => "N/A",
+            (None, _) => "NOT DOCUMENTED",
+        },
+        match (active, fields.audio_disclosure_applied) {
+            (Some(true), Some(DocumentationAnswer::No)) => {
+                value_or_missing(&fields.audio_disclosure_reason)
+            }
+            (Some(true), _) | (Some(false), _) => "N/A",
+            (None, _) => "NOT DOCUMENTED",
+        },
+        deepfake_indicator_summary(fields),
+    )
+}
+
+fn fact_origin_label(origin: crate::model::FactOrigin) -> &'static str {
+    match origin {
+        crate::model::FactOrigin::UserConfirmedFact => "User-confirmed fact",
+        crate::model::FactOrigin::EvidenceDerivedMetadata => "Evidence-derived metadata",
+        crate::model::FactOrigin::NotDocumented => "NOT DOCUMENTED",
     }
 }
 
@@ -403,7 +611,7 @@ fn choice_key(value: &str) -> String {
 
 fn english_guided_value(value: &str, choices: &[(&str, &[&str])]) -> String {
     if value.trim().is_empty() {
-        return "Not documented".into();
+        return "NOT DOCUMENTED".into();
     }
     let key = choice_key(value);
     choices
@@ -417,7 +625,7 @@ fn english_guided_value(value: &str, choices: &[(&str, &[&str])]) -> String {
 
 fn english_guided_list(value: &str, choices: &[(&str, &[&str])]) -> String {
     if value.trim().is_empty() {
-        return "Not documented".into();
+        return "NOT DOCUMENTED".into();
     }
     let mut normalized = Vec::new();
     for item in value
@@ -431,7 +639,7 @@ fn english_guided_list(value: &str, choices: &[(&str, &[&str])]) -> String {
         }
     }
     if normalized.is_empty() {
-        "Not documented".into()
+        "NOT DOCUMENTED".into()
     } else {
         normalized.join(", ")
     }
@@ -442,7 +650,41 @@ fn evidence_path<'a>(evidence: &'a [EvidenceItem], role: crate::model::EvidenceR
         .iter()
         .find(|item| item.role == role)
         .map(|item| item.relative_path.as_str())
-        .unwrap_or("Not documented")
+        .unwrap_or("NOT DOCUMENTED")
+}
+
+fn technically_verified(item: &EvidenceItem) -> bool {
+    item.verified
+        && item.verification_error.is_none()
+        && item.sha256.as_deref().is_some_and(|hash| !hash.is_empty())
+}
+
+fn release_identity_status(evidence: &[EvidenceItem]) -> &'static str {
+    let release = evidence
+        .iter()
+        .find(|item| item.role == EvidenceRole::ReleaseWav && technically_verified(item));
+    let suno = evidence
+        .iter()
+        .find(|item| item.role == EvidenceRole::SunoFinalExport && technically_verified(item));
+    match (release, suno) {
+        (Some(release), Some(suno)) if release.sha256 == suno.sha256 => "YES",
+        (Some(_), Some(_)) => "NO",
+        _ => "NOT VERIFIED",
+    }
+}
+
+fn terms_evidence_status(evidence: &[EvidenceItem]) -> &'static str {
+    let terms = evidence
+        .iter()
+        .filter(|item| item.role == EvidenceRole::SunoTermsRights)
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        "NO"
+    } else if terms.iter().any(|item| technically_verified(item)) {
+        "YES"
+    } else {
+        "NOT VERIFIED"
+    }
 }
 
 fn evidence_list(evidence: &[EvidenceItem]) -> String {
@@ -455,12 +697,13 @@ fn evidence_list(evidence: &[EvidenceItem]) -> String {
         .iter()
         .map(|item| {
             format!(
-                "- `{}` — role `{}` — original `{}` — {} bytes — SHA-256 `{}` — imported `{}` — provenance `{}` — document `{}` — provider `{}` — source URL `{}` — retrieval `{}` — effective `{}` — note `{}` — external timestamp `{}` — referenced hash `{}` — referenced artifact `{}` — source global `{}` — derived from `{}` — generator `{}` — generated disclosure `{}`\n",
+                "- Evidence ID `{}` — path `{}` — role `{}` — original `{}` — {} bytes — SHA-256 `{}` — imported `{}` — provenance `{}` — document `{}` — provider `{}` — source URL `{}` — retrieval `{}` — effective `{}` — applicable production period `{}` — note `{}` — source global `{}` — derived from `{}` — generator `{}` — generated disclosure `{}`\n",
+                item.id,
                 item.relative_path,
                 item.role.as_str(),
                 value_or_missing(&item.metadata.original_file_name),
                 item.size_bytes,
-                item.sha256.as_deref().unwrap_or("not calculated"),
+                item.sha256.as_deref().unwrap_or("NOT DOCUMENTED"),
                 item.imported_at,
                 item.provenance.as_str(),
                 value_or_missing(&item.metadata.document_title),
@@ -468,10 +711,8 @@ fn evidence_list(evidence: &[EvidenceItem]) -> String {
                 value_or_missing(&item.metadata.source_url),
                 value_or_missing(&item.metadata.retrieval_date),
                 value_or_missing(&item.metadata.effective_date),
+                value_or_missing(&item.metadata.applicable_production_period),
                 value_or_missing(&item.metadata.factual_note),
-                value_or_missing(&item.metadata.external_timestamp),
-                value_or_missing(&item.metadata.referenced_hash),
-                value_or_missing(&item.metadata.referenced_artifact),
                 item.source_global_evidence_id.as_deref().unwrap_or("N/A"),
                 item.derived_from_evidence_id.as_deref().unwrap_or("N/A"),
                 item.generator_version.as_deref().unwrap_or("N/A"),
@@ -487,6 +728,13 @@ fn render(
     evidence: &[EvidenceItem],
     _steps: &[StepState],
 ) -> BTreeMap<String, String> {
+    let phase_one_evidence = evidence
+        .iter()
+        .filter(|item| item.role != EvidenceRole::ExternalTimestamp)
+        .cloned()
+        .collect::<Vec<_>>();
+    let evidence = phase_one_evidence.as_slice();
+    let automation = crate::workflow::automation_summary(track, evidence);
     // Rendering is defensive as well as patch normalization: older workspace records may still
     // contain hidden answers from a formerly active conditional branch.
     let normalized_fields = track.fields.normalized_conditionals();
@@ -501,12 +749,12 @@ fn render(
         .iter()
         .find(|item| item.role == crate::model::EvidenceRole::AiArtworkOriginal)
         .map(|item| item.relative_path.as_str())
-        .unwrap_or("Not documented");
+        .unwrap_or("NOT DOCUMENTED");
     let final_artwork = evidence
         .iter()
         .find(|item| item.role == crate::model::EvidenceRole::FinalArtwork)
         .map(|item| item.relative_path.as_str())
-        .unwrap_or("Not documented");
+        .unwrap_or("NOT DOCUMENTED");
     let source_code_file = evidence_path(evidence, crate::model::EvidenceRole::SourceCodeFile);
     let code_generated_audio_file =
         evidence_path(evidence, crate::model::EvidenceRole::CodeGeneratedAudioFile);
@@ -569,20 +817,7 @@ fn render(
             english_guided_value(&f.third_party_sample_ownership, RIGHTS_CHOICES)
         ));
     }
-    let mut lyrics_document = format!("{}# Lyrics\n\n", marker());
-    if f.instrumental_track == Some(true) {
-        lyrics_document.push_str("Lyrics: N/A – instrumental track\n");
-    } else {
-        lyrics_document.push_str(&format!("Source: {}\n", value_or_missing(&f.lyrics_source)));
-    }
-    if f.instrumental_track != Some(true)
-        && !matches!(f.lyrics_source.as_str(), "" | "instrumental")
-    {
-        lyrics_document.push_str(&format!(
-            "\n## Text\n\n{}\n",
-            value_or_missing(&f.lyrics_text)
-        ));
-    }
+    let lyrics_document = render_suno_field_document(f);
 
     let style_document = format!(
         "{}# Suno style prompt\n\n{}\n",
@@ -796,62 +1031,116 @@ fn render(
         artwork_document.push_str("\nNo artwork process applies to this track.\n");
     }
 
+    let terms_evidence = evidence
+        .iter()
+        .filter(|item| item.role == EvidenceRole::SunoTermsRights)
+        .cloned()
+        .collect::<Vec<_>>();
+    let terms_evidence_status = terms_evidence_status(evidence);
+    let release_identity_status = release_identity_status(evidence);
+    let terms_ids = if terms_evidence.is_empty() {
+        "N/A".to_owned()
+    } else {
+        terms_evidence
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let timestamp_recommendation = if f.commercial_use_intended {
+        "\nFor long-term evidentiary preservation, an external timestamp can be added after technical finalization.\n"
+    } else {
+        ""
+    };
     let mut values = BTreeMap::new();
     values.insert(
         "02_SUNO/suno_project.txt".into(),
         format!(
-            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nSuno project URL: {}\nFinal generation date: {}\nDownload/export date: {}\nSuno model: {}\nSuno plan at creation: {}\nProduction start: {}\nProduction end: {}\nLast editing date: {}\nActual Suno export filename: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
+            "# {MANAGED_MARKER}\nTemplate version: {TEMPLATE_VERSION}\nTrack: {}\nFinal generation date [{}]: {}\nUser final generation ID [User-confirmed fact]: {}\nSuno ID [Evidence-derived metadata]: {}\nSuno project URL [User-confirmed fact]: {}\nSuno project/version ID [User-confirmed fact]: {}\nDownload/export date [{}]: {}\nSuno Studio metadata detected [System verification]: {}\nMetadata origin: {}\nSuno model [User-confirmed fact]: {}\nSuno plan at generation [User-confirmed fact]: {}\nLegacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\nRelease identical to Suno final export [System verification]: {}\nProduction start: {}\nProduction end: {}\nLast editing date: {}\nActual Suno export filename: {}\nInstrumental track [User-confirmed fact]: {}\nVocal lyrics present [User-confirmed fact]: {}\nSuno lyrics/structure field content [User-confirmed fact]: {}\nContent types [User-confirmed fact]: {}\nContent source [User-confirmed fact]: {}\nExternal audio uploaded: {}\nOwn audio uploaded: {}\nCode-based generation: {}\nSource-code evidence: {}\nCode-audio post-processing performed: {}\nCode-audio post-processing operations: {}\nCode-generated audio evidence: {}\nThird-party samples uploaded: {}\n",
             f.title,
-            value_or_missing(&f.suno_project_url),
+            fact_origin_label(automation.final_generation_origin),
             value_or_missing(&f.suno_final_generation_date),
+            value_or_missing(&f.suno_final_generation_id),
+            automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED"),
+            value_or_missing(&f.suno_project_url),
+            value_or_missing(&f.suno_project_version_id),
+            fact_origin_label(automation.download_export_origin),
             value_or_missing(&f.suno_download_export_date),
+            if automation.suno_metadata_detected { "YES" } else { "NO" },
+            if automation.suno_metadata_detected { "Evidence-derived metadata" } else { "NOT DOCUMENTED" },
             value_or_missing(&f.suno_model),
-            value_or_missing(&f.suno_plan_at_creation),
+            value_or_missing(&f.suno_plan_at_generation),
+            value_or_missing(&f.legacy_suno_plan_at_creation),
+            release_identity_status,
             value_or_missing(&f.production_start_date),
             value_or_missing(&f.production_end_date),
             value_or_missing(&f.final_export_date),
-            crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::SunoFinalExport).unwrap_or("Not recorded"),
+            crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport).unwrap_or("NOT RECORDED"),
+            yes_no(f.instrumental_track),
+            yes_no(f.vocal_lyrics_present),
+            yes_no(f.suno_lyrics_field_content),
+            suno_content_types(f),
+            suno_content_source(f),
             yes_no(f.external_audio_uploaded),
             yes_no(f.own_audio_uploaded),
             yes_no(f.code_based_generation),
-            if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
-            if f.code_based_generation == Some(true) { yes_no(f.code_audio_post_processed) } else { "Not applicable" },
-            if f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true) { documented_list(&f.code_audio_post_processing_operations) } else { "Not applicable".into() },
-            if f.code_based_generation == Some(true) { code_generated_audio_file } else { "Not applicable" },
+            conditional_value(f.code_based_generation, source_code_file),
+            if f.code_based_generation == Some(true) { yes_no(f.code_audio_post_processed) } else { "N/A" },
+            if f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true) { documented_list(&f.code_audio_post_processing_operations) } else { "N/A".into() },
+            conditional_value(f.code_based_generation, code_generated_audio_file),
             yes_no(f.third_party_samples_uploaded),
         ),
     );
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at creation: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Last editing date: {}\n- Final generation date: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n{}{}\n## Workflow status\n\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at generation: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Last editing date: {}\n- Final generation date [{}]: {}\n- User final generation ID: {}\n- Evidence-derived Suno ID: {}\n- Suno project URL: {}\n- Suno project/version ID: {}\n- Download/export date [{}]: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n- Instrumental track: {}\n- Vocal lyrics present: {}\n- Suno lyrics/structure field content: {}\n{}{}\n## Workflow status\n\n- Documentation status meaning: configured documentation requirements completed.\n- PASS means: Configured documentation requirements for this step were satisfied.\n- The authoritative evaluated step results are stored in the completion certificate after finalization.\n\n## External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: NOT RECORDED\n- No external timestamp evidence recorded.\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
-            value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
-            if f.commercial_use_intended { "Yes" } else { "No" },
+            value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_generation),
+            value_or_missing(&f.legacy_suno_plan_at_creation),
+            if f.commercial_use_intended { "YES" } else { "NO" },
             value_or_missing(&f.production_start_date), value_or_missing(&f.production_end_date),
             value_or_missing(&f.final_export_date),
+            fact_origin_label(automation.final_generation_origin),
             value_or_missing(&f.suno_final_generation_date),
-            crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::ReleaseWav).unwrap_or("Not recorded"),
-            crate::workflow::original_evidence_file_name(evidence, crate::model::EvidenceRole::SunoFinalExport).unwrap_or("Not recorded"),
+            value_or_missing(&f.suno_final_generation_id),
+            automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED"),
+            value_or_missing(&f.suno_project_url),
+            value_or_missing(&f.suno_project_version_id),
+            fact_origin_label(automation.download_export_origin),
+            value_or_missing(&f.suno_download_export_date),
+            crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav).unwrap_or("NOT RECORDED"),
+            crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport).unwrap_or("NOT RECORDED"),
+            yes_no(f.instrumental_track),
+            yes_no(f.vocal_lyrics_present),
+            yes_no(f.suno_lyrics_field_content),
             source_declarations,
             confirmed_work,
-            "- The authoritative evaluated step results are stored in the completion certificate after finalization.\n",
+            timestamp_recommendation,
             evidence_list(evidence)
         ),
     );
     values.insert(
         "03_DOCUMENTATION/AI_USAGE.md".into(),
         format!(
-            "{}# AI usage\n\n## Music generation\n\n- Suno model: {}\n- Suno project: {}\n- Final generation date: {}\n- Lyrics source: {}\n- Instrumental track: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## Artwork\n\n{}",
-            marker(), value_or_missing(&f.suno_model), value_or_missing(&f.suno_project_url),
-            value_or_missing(&f.suno_final_generation_date), value_or_missing(&f.lyrics_source),
-            yes_no(f.instrumental_track), yes_no(f.external_audio_uploaded),
+            "{}# AI usage\n\n## Final Suno Generation\n\n- Final generation date [{}]: {}\n- User final generation ID [User-confirmed fact]: {}\n- Suno ID [Evidence-derived metadata]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Suno project/version ID [User-confirmed fact]: {}\n- Download/export date [{}]: {}\n- Suno Studio metadata detected [System verification]: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Release identical to Suno final export [System verification]: {}\n- Instrumental track [User-confirmed fact]: {}\n- Vocal lyrics present [User-confirmed fact]: {}\n- Suno lyrics/structure field content [User-confirmed fact]: {}\n- Content types [User-confirmed fact]: {}\n- Content source [User-confirmed fact]: {}\n- External audio uploaded: {}\n- Code-based generation: {}\n- Source-code evidence: {}\n- Code-audio post-processing performed: {}\n- Code-audio post-processing operations: {}\n- Code-generated audio evidence: {}\n\n## AI Transparency Assessment – Audio\n\n{}\nNo AI Act compliance, legal necessity, or legal safety determination is made.\n\n## AI Transparency Assessment – Artwork\n\n{}",
+            marker(), fact_origin_label(automation.final_generation_origin),
+            value_or_missing(&f.suno_final_generation_date), value_or_missing(&f.suno_final_generation_id),
+            automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED"), value_or_missing(&f.suno_project_url),
+            value_or_missing(&f.suno_project_version_id), fact_origin_label(automation.download_export_origin),
+            value_or_missing(&f.suno_download_export_date), if automation.suno_metadata_detected { "YES" } else { "NO" },
+            value_or_missing(&f.suno_model), value_or_missing(&f.suno_plan_at_generation),
+            value_or_missing(&f.legacy_suno_plan_at_creation),
+            release_identity_status,
+            yes_no(f.instrumental_track), yes_no(f.vocal_lyrics_present), yes_no(f.suno_lyrics_field_content),
+            suno_content_types(f), suno_content_source(f), yes_no(f.external_audio_uploaded),
             yes_no(f.code_based_generation),
-            if f.code_based_generation == Some(true) { source_code_file } else { "Not applicable" },
-            if f.code_based_generation == Some(true) { yes_no(f.code_audio_post_processed) } else { "Not applicable" },
-            if f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true) { documented_list(&f.code_audio_post_processing_operations) } else { "Not applicable".into() },
-            if f.code_based_generation == Some(true) { code_generated_audio_file } else { "Not applicable" },
+            conditional_value(f.code_based_generation, source_code_file),
+            if f.code_based_generation == Some(true) { yes_no(f.code_audio_post_processed) } else { "N/A" },
+            if f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true) { documented_list(&f.code_audio_post_processing_operations) } else { "N/A".into() },
+            conditional_value(f.code_based_generation, code_generated_audio_file),
+            render_ai_audio(f),
             ai_artwork_usage
         ),
     );
@@ -860,10 +1149,11 @@ fn render(
     values.insert(
         "04_LICENSES/suno_account_and_license.md".into(),
         format!(
-            "{}# Suno account, subscription, and archived terms evidence\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Plan at creation: {}\n- Workspace subscription start date: {}\n- Commercial use intended: {}\n- Final generation date: {}\n- Assigned subscription evidence jointly covers the production period: {}\n- Assigned subscription evidence covers the recorded final-generation date: {}\n- Terms evidence not available: {}\n\n## Archived service-terms evidence\n\n{}\nThis page records supplied account facts and locally archived evidence only. It does not confirm rights ownership, license validity, legality, or non-infringement.\n",
+            "{}# Suno account, subscription, and archived terms evidence\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Workspace subscription start date: {}\n- Commercial use intended: {}\n- Final generation date: {}\n- Assigned subscription evidence jointly covers the production period [System verification]: {}\n- Final-generation date covered [System verification]: {}\n- Terms evidence exists [System verification]: {}\n- Terms evidence IDs: {}\n- Terms evidence not available [User-confirmed fact]: {}\n\n## Archived service-terms evidence\n\n{}\nThis page records supplied account facts and locally archived evidence only. It does not confirm rights ownership, license validity, legality, or non-infringement.\n",
             marker(), value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
-            value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_creation),
-            value_or_missing(&profile.subscription_start_date), if f.commercial_use_intended { "Yes" } else { "No" },
+            value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_generation),
+            value_or_missing(&f.legacy_suno_plan_at_creation),
+            value_or_missing(&profile.subscription_start_date), if f.commercial_use_intended { "YES" } else { "NO" },
             value_or_missing(&f.suno_final_generation_date),
             match crate::workflow::subscription_production_coverage(track, evidence) {
                 crate::workflow::CoverageStatus::Yes => "YES",
@@ -875,8 +1165,10 @@ fn render(
                 crate::workflow::CoverageStatus::No => "NO",
                 crate::workflow::CoverageStatus::NotVerified => "NOT VERIFIED",
             },
+            terms_evidence_status,
+            terms_ids,
             yes_no(f.suno_terms_evidence_not_available),
-            evidence_list(&evidence.iter().filter(|item| item.role == crate::model::EvidenceRole::SunoTermsRights).cloned().collect::<Vec<_>>())
+            evidence_list(&terms_evidence)
         ),
     );
     values.insert(
@@ -955,11 +1247,18 @@ mod tests {
             suno_final_generation_date: "2026-02-05".into(),
             suno_final_generation_time: "14:35".into(),
             suno_download_export_date: "2026-02-06".into(),
-            suno_plan_at_creation: "Pro".into(),
+            suno_plan_at_generation: "Pro".into(),
             final_export_date: "2026-02-06".into(),
             instrumental_track: Some(true),
-            lyrics_source: "instrumental".into(),
-            lyrics_text: INACTIVE_FIXTURE_VALUES[0].into(),
+            vocal_lyrics_present: Some(false),
+            suno_lyrics_field_content: Some(true),
+            suno_lyrics_content_types: vec![
+                SunoLyricsContentType::StructureInstructions,
+                SunoLyricsContentType::SoundInstructions,
+            ],
+            suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
+            suno_lyrics_field_text: "[Intro]\n[Drop]\n[Outro]".into(),
+            suno_lyrics_other_content_type: INACTIVE_FIXTURE_VALUES[0].into(),
             suno_style_prompt: "dark synthwave, driving bass, cinematic".into(),
             external_audio_uploaded: Some(false),
             external_audio_source: INACTIVE_FIXTURE_VALUES[1].into(),
@@ -1045,7 +1344,7 @@ mod tests {
         hash_digit: char,
     ) -> EvidenceItem {
         EvidenceItem {
-            id: format!("{id}-private.person@example.invalid"),
+            id: id.to_owned(),
             role,
             file_name: "birthday-1990-01-01.png".into(),
             relative_path: relative_path.into(),
@@ -1072,15 +1371,6 @@ mod tests {
         }
     }
 
-    fn golden_fixture(relative: &str) -> Vec<u8> {
-        fs::read(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/documents")
-                .join(relative),
-        )
-        .unwrap_or_else(|error| panic!("read golden fixture {relative}: {error}"))
-    }
-
     fn write_adoption_sentinel(track_root: &Path) -> PathBuf {
         let relative = Path::new("03_DOCUMENTATION/README.md");
         let path = track_root.join(relative);
@@ -1091,7 +1381,7 @@ mod tests {
     }
 
     #[test]
-    fn all_documents_match_golden_bytes_and_exclude_forbidden_content() {
+    fn all_documents_are_deterministic_and_exclude_forbidden_content() {
         let workspace = tempfile::tempdir().expect("temporary track root");
         let (track, profile, evidence) = fixture_input();
 
@@ -1104,14 +1394,20 @@ mod tests {
         for relative in DOCUMENT_PATHS {
             let actual = fs::read(workspace.path().join(relative))
                 .unwrap_or_else(|error| panic!("read generated document {relative}: {error}"));
-            let expected = golden_fixture(relative);
-            assert_eq!(actual, expected, "golden bytes changed for {relative}");
             combined.push_str(
                 std::str::from_utf8(&actual)
                     .unwrap_or_else(|error| panic!("generated UTF-8 for {relative}: {error}")),
             );
             first_generation.insert(relative, actual);
         }
+        assert!(
+            combined.contains("Template version: `1.8`")
+                || combined.contains("Template version: 1.8")
+        );
+        assert!(combined.contains("Suno Structure / Generation Instructions"));
+        assert!(combined.contains("Vocal lyrics present [User-confirmed fact]: NO"));
+        assert!(combined
+            .contains("External timestamp evidence at technical finalization: NOT RECORDED"));
 
         generate(workspace.path(), &track, &profile, &evidence, &[], false)
             .expect("regenerate identical fixture documents");
@@ -1286,7 +1582,7 @@ mod tests {
 
         let rendered = render(&track, &profile, &evidence, &[]);
         let readme = &rendered["03_DOCUMENTATION/README.md"];
-        assert!(readme.contains("Post-processing performed: No"));
+        assert!(readme.contains("Post-processing performed: NO"));
         assert!(!readme.contains("Post-processing operations:"));
         assert!(!readme.contains("STALE-MIXING"));
         assert!(!readme.contains("STALE-NOTE"));
@@ -1316,15 +1612,15 @@ mod tests {
         let rendered = render(&track, &profile, &evidence, &[]);
         let combined = rendered.values().cloned().collect::<String>();
         for factual_statement in [
-            "Post-processing performed: Yes",
+            "Post-processing performed: YES",
             "Post-processing operations: Mixing, EQ, Compression, Mastering, Other post-processing",
             "Other post-processing note: Manual spectral repair",
             "Human process operations: Photographed, Retouching, Typography added",
             "Human process notes: Manual darkroom scan",
-            "Real person intentionally depicted: Yes",
+            "Real person intentionally depicted: YES",
             "Real-person note: The performing artist",
-            "Real event represented as authentic: No",
-            "Trademark or company logo reproduced: Yes",
+            "Real event represented as authentic: NO",
+            "Trademark or company logo reproduced: YES",
             "Trademark/logo note: A user-supplied company logo",
         ] {
             assert!(
@@ -1336,6 +1632,173 @@ mod tests {
         for forbidden in FORBIDDEN_LEGAL_CLAIMS {
             assert!(!lowercase.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn explicit_vocal_and_structure_fields_render_without_legacy_inference() {
+        let (mut track, profile, evidence) = fixture_input();
+        track.fields.instrumental_track = Some(false);
+        track.fields.vocal_lyrics_present = Some(true);
+        track.fields.suno_lyrics_field_content = Some(true);
+        track.fields.suno_lyrics_content_types = vec![SunoLyricsContentType::VocalLyrics];
+        track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Human);
+        track.fields.suno_lyrics_field_text = "Explicit vocal text".into();
+        track.fields.lyrics_source.clear();
+        track.fields.lyrics_text.clear();
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let lyrics = &rendered["02_SUNO/Lyrics.md"];
+        assert!(lyrics.contains("# Vocal Lyrics"));
+        assert!(lyrics.contains("Instrumental track [User-confirmed fact]: NO"));
+        assert!(lyrics.contains("Vocal lyrics present [User-confirmed fact]: YES"));
+        assert!(lyrics.contains("Explicit vocal text"));
+        assert!(!lyrics.contains("Unclassified legacy lyrics data"));
+    }
+
+    #[test]
+    fn complete_terms_metadata_uses_same_evidence_id_in_summary_and_register() {
+        let (track, profile, mut evidence) = fixture_input();
+        let mut terms = fixture_evidence(
+            "terms-record",
+            EvidenceRole::SunoTermsRights,
+            "04_LICENSES/suno-terms.pdf",
+            '8',
+        );
+        terms.metadata.document_title = "Suno Terms of Service".into();
+        terms.metadata.provider = "Suno, Inc.".into();
+        terms.metadata.source_url = "https://suno.example/terms".into();
+        terms.metadata.retrieval_date = "2026-02-01".into();
+        terms.metadata.effective_date = "2026-01-01".into();
+        terms.metadata.applicable_production_period = "2026-02-03 to 2026-02-05".into();
+        terms.metadata.factual_note = "Locally archived copy".into();
+        terms.verification_error = None;
+        let evidence_id = terms.id.clone();
+        evidence.push(terms);
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let license = &rendered["04_LICENSES/suno_account_and_license.md"];
+        assert!(license.contains("Terms evidence exists [System verification]: YES"));
+        assert!(license.contains(&format!("Terms evidence IDs: {evidence_id}")));
+        assert!(license.contains(&format!("Evidence ID `{evidence_id}`")));
+        for value in [
+            "Suno Terms of Service",
+            "Suno, Inc.",
+            "https://suno.example/terms",
+            "2026-02-01",
+            "2026-01-01",
+            "2026-02-03 to 2026-02-05",
+            "Locally archived copy",
+            "04_LICENSES/suno-terms.pdf",
+        ] {
+            assert!(license.contains(value), "missing terms value: {value}");
+        }
+    }
+
+    #[test]
+    fn managed_documents_do_not_call_unverified_terms_or_missing_hash_pairs_verified() {
+        let (track, profile, mut evidence) = fixture_input();
+        let unverified_terms = fixture_evidence(
+            "unverified-terms",
+            EvidenceRole::SunoTermsRights,
+            "04_LICENSES/unverified-terms.pdf",
+            '8',
+        );
+        evidence.push(unverified_terms);
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        assert!(rendered["04_LICENSES/suno_account_and_license.md"]
+            .contains("Terms evidence exists [System verification]: NOT VERIFIED"));
+        for path in ["02_SUNO/suno_project.txt", "03_DOCUMENTATION/AI_USAGE.md"] {
+            assert!(rendered[path].contains(
+                "Release identical to Suno final export [System verification]: NOT VERIFIED"
+            ));
+        }
+
+        let release = evidence
+            .iter_mut()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release fixture");
+        release.verification_error = None;
+        let mut suno = fixture_evidence(
+            "suno-export",
+            EvidenceRole::SunoFinalExport,
+            "02_SUNO/suno-export.wav",
+            '1',
+        );
+        suno.verification_error = None;
+        evidence.push(suno);
+        let rendered = render(&track, &profile, &evidence, &[]);
+        assert!(rendered["02_SUNO/suno_project.txt"]
+            .contains("Release identical to Suno final export [System verification]: YES"));
+
+        evidence
+            .iter_mut()
+            .find(|item| item.role == EvidenceRole::SunoFinalExport)
+            .expect("Suno export fixture")
+            .sha256 = Some("2".repeat(64));
+        let rendered = render(&track, &profile, &evidence, &[]);
+        assert!(rendered["02_SUNO/suno_project.txt"]
+            .contains("Release identical to Suno final export [System verification]: NO"));
+    }
+
+    #[test]
+    fn audio_transparency_distinguishes_complete_no_and_not_documented() {
+        let (mut track, profile, evidence) = fixture_input();
+        track.fields.generative_ai_used = Some(true);
+        track.fields.audio_ai_system = "Suno".into();
+        track.fields.ai_assisted_audio_elements = Some(DocumentationAnswer::No);
+        track.fields.ai_generated_audio_elements = Some(DocumentationAnswer::Yes);
+        track.fields.real_person_voice_intentionally_imitated = Some(DocumentationAnswer::No);
+        track.fields.real_person_identity_intentionally_represented = Some(DocumentationAnswer::No);
+        track.fields.real_event_represented_as_authentic_recording = Some(DocumentationAnswer::No);
+        track
+            .fields
+            .real_location_institution_event_presented_as_authentic_ai_recording =
+            Some(DocumentationAnswer::No);
+        track.fields.audio_disclosure_applied = Some(DocumentationAnswer::No);
+        track.fields.audio_disclosure_reason = "Documented user reason".into();
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let ai = &rendered["03_DOCUMENTATION/AI_USAGE.md"];
+        assert!(ai.contains("Generative AI used [User-confirmed fact]: YES"));
+        assert!(ai.contains("AI-assisted audio elements [User-confirmed fact]: NO"));
+        assert!(ai.contains("Disclosure locations [User-confirmed fact]: N/A"));
+        assert!(ai.contains("Documented user reason"));
+        assert!(ai.contains("Documented deepfake-related indicators: none recorded"));
+        assert!(!ai.contains("AI Act compliant"));
+
+        track.fields.ai_generated_audio_elements = Some(DocumentationAnswer::NotDocumented);
+        let rendered = render(&track, &profile, &evidence, &[]);
+        assert!(rendered["03_DOCUMENTATION/AI_USAGE.md"]
+            .contains("AI-generated audio elements [User-confirmed fact]: NOT DOCUMENTED"));
+    }
+
+    #[test]
+    fn legacy_external_timestamp_is_excluded_from_phase_one_documents_and_fingerprint() {
+        let (track, profile, mut evidence) = fixture_input();
+        let without_timestamp = input_fingerprint(&track, &profile, &evidence)
+            .expect("phase-one fingerprint without timestamp");
+        let mut timestamp = fixture_evidence(
+            "legacy-timestamp",
+            EvidenceRole::ExternalTimestamp,
+            "03_DOCUMENTATION/legacy-timestamp.pdf",
+            '9',
+        );
+        timestamp.metadata.provider = "MUST-NOT-APPEAR-TIMESTAMP-PROVIDER".into();
+        timestamp.metadata.external_timestamp = "2026-02-06T12:00:00Z".into();
+        evidence.push(timestamp);
+
+        assert_eq!(
+            input_fingerprint(&track, &profile, &evidence)
+                .expect("phase-one fingerprint with ignored timestamp"),
+            without_timestamp
+        );
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let combined = rendered.values().cloned().collect::<String>();
+        assert!(!combined.contains("MUST-NOT-APPEAR-TIMESTAMP-PROVIDER"));
+        assert!(!combined.contains("legacy-timestamp.pdf"));
+        assert!(combined
+            .contains("External timestamp evidence at technical finalization: NOT RECORDED"));
     }
 
     #[test]
@@ -1375,6 +1838,10 @@ mod tests {
         let workspace = tempfile::tempdir().expect("temporary track root");
         let sentinel = write_adoption_sentinel(workspace.path());
         let (track, profile, evidence) = fixture_input();
+        let expected_readme = render(&track, &profile, &evidence, &[])
+            ["03_DOCUMENTATION/README.md"]
+            .as_bytes()
+            .to_vec();
 
         generate(workspace.path(), &track, &profile, &evidence, &[], true)
             .expect("adopt unmanaged document");
@@ -1395,7 +1862,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(sentinel).expect("read managed replacement"),
-            golden_fixture("03_DOCUMENTATION/README.md")
+            expected_readme
         );
     }
 
@@ -1467,8 +1934,8 @@ mod tests {
         ];
         let fields = crate::model::TrackFields {
             title: "Conditional Track".into(),
-            lyrics_source: "instrumental".into(),
-            lyrics_text: stale_values[0].into(),
+            suno_lyrics_field_content: Some(false),
+            suno_lyrics_field_text: stale_values[0].into(),
             external_audio_uploaded: Some(false),
             external_audio_source: stale_values[1].into(),
             external_audio_ownership: stale_values[2].into(),

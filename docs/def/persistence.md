@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-14 |
+| Last review | 2026-08-17 |
 | Audience | Product developers and recovery reviewers |
 | Related ATP | [ATP-0011: Local persistence and recovery](../atp/active/ATP-0011-local-persistence-and-recovery.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md) |
 
@@ -44,8 +44,8 @@ The product uses bounded authority rather than treating every copy as equally au
 | Album or single library placement | `.suno-doc/workspace.sqlite` track JSON | Missing or unrecoverable placement defaults to `single`; the portable track folder does not encode album membership |
 | Imported evidence and release assets | Track folder | Database references store role and root-relative path; file contents are not database blobs |
 | Generated documentation | Track folder | Regenerated only through explicit managed-document rules |
-| Final hashes, manifest, certificate, and archived revisions | Track folder | Treated as the authoritative finalized snapshot |
-| Registered reusable subscription and Suno terms evidence | `.suno-doc/global-evidence/` plus SQLite coverage or system-derived PDF file facts | Evidence is copied into each applicable track before finalization so the track remains self-contained |
+| Final hashes, manifest, certificate, timestamp addenda, and archived revisions | Track folder | Treated as the authoritative finalized snapshot and revision-bound post-finalization records |
+| Registered reusable subscription and Suno terms evidence | `.suno-doc/global-evidence/` plus SQLite coverage and factual descriptive metadata | Evidence is copied into each applicable track before finalization so the track remains self-contained |
 
 Deleting the database can lose unfinished form state or reusable global defaults. It must not make a complete finalized track folder impossible to inspect and verify.
 
@@ -71,19 +71,20 @@ After the user creates or opens a workspace, native code may create this reserve
 The database indexes at least these logical data sets:
 
 - workspace metadata and global profile values;
-- global-evidence records with materialized per-invoice coverage dates or system-derived Suno terms PDF facts;
+- global-evidence records with materialized per-invoice coverage dates or Suno Terms title/provider/retrieval and optional contextual metadata;
 - known tracks and their lifecycle status;
 - each track's `single` or named-album library placement;
 - workflow ID, workflow version, step states, applicability, and N/A reasons;
 - evidence roles, relative paths, media types, sizes, hashes, import metadata, provenance, and local derivation fields;
-- generated-document template versions and freshness markers; and
+- generated-document template versions and freshness markers;
+- external-timestamp records keyed to their track and finalized certificate ID; and
 - UI working state that is not part of a finalized certificate.
 
 Large media, PDFs, archives, and generated portable artifacts remain files. SQLite stores metadata and references, not duplicate binary evidence payloads.
 
 ## Schema and migrations
 
-The current SQLite schema version is `4`, stored in `PRAGMA user_version`. Schema version 2 added evidence provenance and disclosure-lineage columns. Schema version 3 added `metadata_json` to each track-evidence record for original import filename and role-specific metadata. Schema version 4 added the same conservative field to workspace-global evidence. Existing values remain readable for compatibility, but the current Suno terms importer asks for no manual metadata and records only the original PDF filename in that object. Existing rows receive an empty object; no historical value is invented.
+The current SQLite schema version is `5`, stored in `PRAGMA user_version`. Schema version 2 added evidence provenance and disclosure-lineage columns. Schema version 3 added `metadata_json` to each track-evidence record for original import filename and role-specific metadata. Schema version 4 added the same conservative field to workspace-global evidence. Existing rows received an empty object; no historical title, provider, date, or source was invented. Schema version 5 adds `external_timestamp_records`, keyed by timestamp-record ID and indexed by track ID, certificate ID, import time, and record ID. The complete typed record is retained as JSON while the identifying columns support deterministic revision-bound lookup.
 
 | Column | Purpose |
 | --- | --- |
@@ -94,7 +95,13 @@ The current SQLite schema version is `4`, stored in `PRAGMA user_version`. Schem
 
 The version 1 to version 2 migration backfills evidence belonging to a track already marked `legacy` as `indexed_legacy`; all other old rows are conservatively `managed_copy`. It leaves derivation, generator, and generated-text fields empty because version 1 did not retain enough data to prove them. In particular, migration never upgrades an old row to `generated_disclosure` merely from its role, filename, or bytes.
 
-Track records are serialized in the existing `tracks.data_json` column. Album placement, code-audio post-processing answers/operation arrays, human artwork process arrays/notes, and AI-assisted human-change arrays/notes are additive typed JSON fields with safe defaults. Suno model and plan-at-creation remain strings. These fields add no table, column, index, or relation, so they do not advance `PRAGMA user_version` beyond `2`. Reading older JSON without them is backward-compatible; historical single-string artwork/change values deserialize conservatively as one-item arrays instead of being discarded. A later record save materializes normalized defaults. Relational layout changes still require an ordered schema migration.
+Track records are serialized in the existing `tracks.data_json` column. Album placement, code-audio post-processing answers/operation arrays, human artwork process arrays/notes, separate instrumental/vocal/Suno-field facts, and separate Audio/Artwork AI fields are additive typed JSON values with safe missing-field defaults. Suno model, plan at generation, and provider names remain strings.
+
+The former `lyricsSource` and `lyricsText` properties are read through legacy aliases and emitted under explicit legacy names. Their presence does not populate `vocalLyricsPresent`, `sunoLyricsFieldContent`, content types, or content source. Missing new answers deserialize as unknown/`NOT DOCUMENTED`, and no migration scans free text or bracketed instructions to infer meaning.
+
+The former `sunoPlanAtCreation` property is read only into the separate `legacySunoPlanAtCreation` compatibility value. It is not an alias for, copied into, or rendered as the new `sunoPlanAtGeneration` fact. For an older record without an explicitly confirmed `sunoPlanAtGeneration`, the plan at generation remains empty/`NOT DOCUMENTED` and continues to block any requirement that needs it until the user confirms the value in mutable state. The legacy value remains visible as historical user data without asserting that it was the plan used for the final generation. Reading an older record is therefore non-destructive; a later mutable save can materialize only answers actually supplied by the user. Finalized and superseded records are never rewritten merely to adopt the new names.
+
+Most of these JSON additions require no relational migration. Schema 5 advances `PRAGMA user_version` specifically because post-finalization timestamp records need their own certificate-bound table rather than entering the immutable pre-finalization track snapshot. Existing ordinary evidence rows that used the historical external-timestamp role are not silently promoted to this table or assigned to a certificate.
 
 An active managed final-audio record at the exact historical `01_RELEASE/suno_final_export.<supported extension>` path can be migrated lazily to the safe title-based filename when the target is unused. The operation updates the file and evidence path together and marks generated documents stale. It never applies to finalized or superseded snapshots, indexed legacy provenance, ambiguous paths, or collisions.
 
@@ -170,6 +177,27 @@ Before publishing a certificate set, finalization writes `.archive/finalization-
 
 A non-finalized or imported legacy track whose `06_CERTIFICATE/` contains historical files but has no application-created transaction marker remains untouched. The recovery path does not quarantine a certificate directory merely because the SQLite status is non-finalized. Separately, a finalized database record with a temporarily moved certificate directory can be restored from revision staging or its matching revision archive.
 
+### External timestamp attachment
+
+External timestamp attachment is a post-finalization transaction, not an ordinary track-evidence import and not part of the base certificate transaction:
+
+1. Require a currently valid `FINALIZED` track and bind the new record to its certificate ID.
+2. Verify the existing certificate and main integrity set before exposing or resolving anchors.
+3. Resolve the selected stable artifact inside the track root and calculate its actual SHA-256. A custom `Other` artifact is eligible only when its exact relative path and current digest are already an unchanged entry in the verified phase-one `03_DOCUMENTATION/SHA256SUMS.txt`; mere containment is insufficient.
+4. Validate and stream-copy the selected timestamp evidence into a unique contained staging directory while calculating its own SHA-256; never move or delete the source.
+5. Retain the user-declared provider, type, timestamp value, selected artifact, claimed SHA-256, optional external reference/URL/note, the calculated local artifact SHA-256, and the exact match result as distinct facts.
+6. Render the Markdown and PDF addenda, calculate their exact SHA-256 values, and write immutable sidecar-format-v1 `TIMESTAMP_RECORD.json`. The record pins `markdownSha256`, `pdfSha256`, and `integrityVerifiedAtPublication`; it deliberately excludes the current runtime `integrityVerified` result and `integrityIssues`. Write `TIMESTAMP_RECORD_SHA256.txt` over the record, copied evidence, Markdown, and PDF, excluding the hash list itself, and verify the complete staged set. On Unix, initialization synchronizes `.archive/timestamp-staging/` and its `.archive/` parent plus `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/` and its `06_CERTIFICATE/` parent; the completed per-record stage and staging parent are then synchronized before database registration. Non-Unix directory synchronization remains explicitly best effort because portable directory `fsync` is unavailable, while individual files remain atomically written and synchronized before rename.
+7. Register the certificate-bound record in SQLite while the complete sidecar still has pending staged state.
+8. Atomically publish that registered stage under `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/<timestamp-record-id>/`, synchronize the directory boundaries, and reverify both the live sidecar and unchanged phase-one certificate/integrity anchors.
+
+Failure before database registration removes only the uncommitted stage. A later publication failure removes the new sidecar and database row when both compensating actions succeed. After removing a live sidecar, the native service synchronizes its parent directory before deleting the SQLite registration; if that synchronization or another cleanup step fails, the registered record remains explicit for recovery rather than risking an unregistered live fact after power loss. The selected source and base finalization remain untouched. A claimed-hash mismatch is not hidden or promoted to success: the record persists `Referenced hash match: NO` for review. The operation verifies hash equality only; it does not validate a provider's identity, signature chain, timestamp authority, or legal qualification.
+
+The base `EVIDENCE_MANIFEST.json`, `SHA256SUMS.txt`, Markdown certificate, PDF certificate, and `CERTIFICATE_SHA256.txt` remain byte-identical. This ordering avoids a cycle in which adding timestamp evidence would change the artifact being timestamped. The timestamp record's own integrity list protects the addendum instead.
+
+Workspace startup reconciles timestamp publication by database identity. A valid stage with a matching registered row is verified and published; an unregistered abandoned stage is removed. An unexpected live sidecar without a registered row is rejected with a controlled error and is never auto-adopted, because its provider, type, timestamp, claimed hash, and other user-confirmed metadata have no authoritative registration. A registered sidecar already located in exactly one managed revision archive is treated as durably published there and is never restored into the current revision.
+
+Whenever a timestamped track is loaded, every registered current or archived record is independently resolved and reverified. Reverification requires the exact managed five-file sidecar set with regular non-symbolic files; byte-for-byte equality with the canonical immutable v1 JSON registered by the database; SHA-256 verification of the exact published record, evidence, Markdown, and PDF bytes; equality with the v1 record's pinned `markdownSha256` and `pdfSha256`; an unchanged referenced phase-one or archived artifact and correct stored match result; and an exact versioned `TIMESTAMP_RECORD_SHA256.txt`. Adding a runtime or trust field such as `integrityVerified` or a provider-qualification claim fails the immutable-record comparison even if someone recomputes the sidecar hash list. It deliberately does not re-render historical Markdown or PDF with the current renderer. An archived location additionally verifies that `revision.json.previous_certificate.certificateId` equals the timestamp record's Certificate ID; changing that binding makes the archived record's current integrity `NO`. The returned presentation record computes `integrityVerified` and concrete `integrityIssues` at load time without writing them into `TIMESTAMP_RECORD.json`. A current or archived sidecar failure remains visibly attached to that record, but it does not rewrite or invalidate the still-independent base certificate and main integrity result. Legacy format-v0 sidecars remain self-consistency verifiable without renderer equality and are not silently rewritten as v1.
+
 ## Relative paths and containment
 
 The workspace record can remember the user-selected root for the local application instance, but persisted track and manifest references use normalized paths relative to their owning root. Inputs containing absolute paths, `..`, invalid components, or symbolic-link components observed during validation are rejected before a write.
@@ -198,15 +226,19 @@ Files already moved into `.archive/removals/` by an explicit legacy-evidence rem
 
 ## Global evidence
 
-Reusable Suno subscription/payment evidence and archived Suno terms/rights evidence can be registered under `.suno-doc/global-evidence/`. Each registration represents exactly one selected file; a folder or multi-file selection does not become one combined record. Subscription records retain one evidenced billing period. The terms action opens the native picker immediately, accepts only a PDF whose bytes carry the PDF signature, and asks for no title, provider, URL, date, or note. The source is copied without being moved or deleted.
+Reusable Suno subscription/payment evidence and archived Suno terms/rights evidence can be registered under `.suno-doc/global-evidence/`. Each registration represents exactly one selected file; a folder or multi-file selection does not become one combined record. Subscription records retain one evidenced billing period. Terms registration accepts only a PDF whose bytes carry the PDF signature and retains its user-confirmed document title, provider/source, and retrieval date. Source URL, effective date, applicable production period, and a factual note are optional. Original filename, managed path, SHA-256, import time, and provenance remain system/evidence facts. The source is copied without being moved or deleted, and no value is fetched from a network.
 
-Global terms are automatically copied into every newly created or currently editable track with `global_copy` provenance and `sourceGlobalEvidenceId`. Existing finalized snapshots are not mutated; a subsequent revision can receive newer global terms. A manual per-track attach remains available as an idempotent recovery path.
+Global terms are automatically copied into every newly created or currently editable track with `global_copy` provenance and `sourceGlobalEvidenceId`. Updating descriptive metadata on the global record propagates the exact metadata to matching portable copies only while their tracks remain editable and marks affected documents/integrity stale. Existing finalized and superseded snapshots are not mutated; a subsequent revision can receive newer or corrected terms. A manual per-track attach remains available as an idempotent recovery path.
+
+For a commercially intended track, file presence alone is insufficient: document title, provider/source, and retrieval date must be non-empty. An older record with empty migrated metadata stays readable and blocks commercial completion until the user supplies those facts. Source URL and effective date may honestly remain `NOT DOCUMENTED`. The application records applicable periods and notes without deciding that Terms are valid, enforceable, or sufficient for commercial rights.
+
+Terms availability is an invariant, not a display preference. If a verified local `suno_terms_rights` record with a SHA-256 is attached, the native track-update API rejects a request to set `Terms evidence not available` to `YES` and preserves the prior values. If imported legacy state already contains that contradiction, workflow consistency reports a blocking `terms_evidence_availability_conflict`; Markdown and PDF certificate generation also reject the contradictory snapshot instead of publishing both statements.
 
 The user selects the cadence shown by that invoice (`monthly` or `annual`) and enters its factual coverage start date. The application derives one concrete inclusive coverage end for that record: the day before the next monthly payment date for `monthly`, or the day before the payment date twelve calendar months later for `annual`. It persists the resulting start and end dates rather than leaving the end as a calculation that may change later. The durable evidence fact is this materialized interval, not an instruction to repeat the cadence. The account-level subscription start date is a separate profile fact and is not substituted for the invoice coverage start.
 
 Cadence never creates recurring evidence or open-ended coverage. One monthly invoice evidences only its one materialized month, and one annual invoice evidences only its one materialized year. Additional periods require separately registered source invoices. A record must not be treated as covering cancellation, refund, partial-period, or later-renewal dates that the selected document does not actually support.
 
-A track selects a record only when its concrete interval covers the applicable production period. Before finalization the selected file is copied into the track evidence structure, collision-checked, hashed, marked `global_copy`, and linked to its workspace source record. Its exact `coverageStart` and `coverageEnd` values are included in the portable manifest with the track-relative file path. Recovery and review therefore use the materialized dates and do not extrapolate from cadence or require the workspace database to recalculate coverage.
+A track can attach an individually relevant record when its concrete interval overlaps production or contains final generation. Before finalization the selected file is copied into the track evidence structure, collision-checked, hashed, marked `global_copy`, and linked to its workspace source record. Its exact `coverageStart` and `coverageEnd` values are included in the portable manifest with the track-relative file path. The native gate then joins adjacent selected intervals and requires gap-free coverage of the production period plus at least one interval containing final generation. Recovery and review therefore use the materialized dates and do not extrapolate from cadence or require the workspace database to recalculate coverage. This is a date comparison only, not a rights or license-validity conclusion.
 
 Private email addresses, telephone numbers, birthdays, account credentials, and unrelated account details are neither required global fields nor copied into generated license documentation.
 
@@ -217,15 +249,18 @@ The application does not silently mutate a finalized snapshot. When an included 
 ```text
 .archive/revisions/<revision-id>/
 ├── revision.json
+├── SunoDM_DOCUMENTATION_CERTIFICATE.pdf
 ├── 03_DOCUMENTATION/
 │   └── SHA256SUMS.txt
 └── certificate/
     ├── DOCUMENTATION_CERTIFICATE.md
     ├── EVIDENCE_MANIFEST.json
-    └── CERTIFICATE_SHA256.txt
+    ├── CERTIFICATE_SHA256.txt
+    └── EXTERNAL_TIMESTAMPS/       # present only when attached to this revision
+        └── <timestamp-record-id>/
 ```
 
-The archived revision remains outside normal managed writes. Revision creation moves the live certificate directory as one directory and rolls it back if the SQLite status update fails. A new working revision can then update facts, evidence, documents, hashes, and certificate artifacts through the ordinary gate.
+The archived revision remains outside normal managed writes. Revision creation moves the live certificate directory, including all external-timestamp addenda, as one directory and rolls it back if the SQLite status update fails. Timestamp records stay associated with the archived certificate ID and are never reassigned to the new working revision. A new working revision can then update facts, evidence, documents, hashes, and certificate artifacts through the ordinary gate and may receive its own optional timestamp only after refinalization.
 
 User-managed workspace backup is a copy of the entire workspace, including `.suno-doc/`. A track-only backup remains portable but may omit unfinished UI state and reusable global defaults. The application does not provide remote backup in version 0.1.
 
@@ -243,7 +278,9 @@ Album membership is another workspace-index-only value. A track-only copy retain
 | `REQ-PER-006` | All durable portable references are track-root-relative and contain no local absolute path. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
 | `REQ-PER-007` | Evidence provenance and local disclosure lineage survive SQLite persistence and portable-manifest generation without being inferred from a role alone. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
 | `REQ-PER-008` | Each global subscription registration selects exactly one source file and materializes one inclusive coverage interval from its factual start and monthly/annual cadence; cadence is not recurring evidence. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
-| `REQ-PER-009` | Global Suno terms registration accepts one signature-checked PDF without manual metadata and places a portable hashed copy into each new or editable project without mutating finalized snapshots. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
+| `REQ-PER-009` | Global Suno Terms registration accepts one signature-checked PDF with title, provider/source, retrieval date, and optional factual context, and places the same hashed evidence/metadata into each new or editable project without mutating finalized snapshots. Verified local Terms evidence cannot be persisted or rendered together with an unavailable claim. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
+| `REQ-PER-010` | Schema 5 persists post-finalization timestamp records separately by track and certificate ID. Sidecar v1 is fully staged and parent-synchronized before database registration, then published; live-parent synchronization precedes any compensating database rollback. Startup recovers only registered pending state and never adopts an unregistered live sidecar. Current and archived records are reverified from exact immutable bytes and explicit revision-certificate binding, and `Other` anchors remain exact phase-one SHA256SUMS entries. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
+| `REQ-PER-011` | Legacy lyrics and plan-at-creation fields remain readable but never infer vocal/Suno-field semantics or satisfy the separate plan-at-generation fact; missing new semantics stay `NOT DOCUMENTED`. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
 
 ## Verification
 
@@ -266,6 +303,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 - Copying global evidence into multiple tracks deliberately duplicates files to preserve track portability.
 - The version 1 migration cannot reconstruct derivation that was not stored; non-legacy version 1 evidence is therefore backfilled conservatively as `managed_copy`.
 - Path containment is not descriptor-relative across the complete operation and does not protect a workspace from a hostile same-user concurrent writer.
+- Timestamp sidecar directory-entry durability uses explicit parent-directory `fsync` on Unix. Non-Unix platforms retain atomic, synchronized file writes but directory synchronization is best effort.
 
 ## Related documents
 
@@ -280,6 +318,9 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Documented sidecar-v1 immutable byte pinning, stage-before-registration publication and startup reconciliation, current/archived byte-based reverification, and the native Terms availability invariant. | Project team |
+| 2026-08-17 | Clarified that legacy plan-at-creation never populates plan at generation, restricted `Other` timestamp anchors to unchanged main-hash entries, and defined independent load-time sidecar integrity reporting. | Project team |
+| 2026-08-17 | Raised SQLite schema to 5 for certificate-bound external-timestamp records and documented their staged sidecar transaction, stable anchors, mismatch persistence, revision isolation, enriched Terms metadata, and non-inferential lyrics migration. | Project team |
 | 2026-08-16 | Documented additive workflow-field compatibility and the conservative managed release-name migration without a SQLite schema bump. | Project team |
 | 2026-08-14 | Defined workspace-index ownership, additive JSON compatibility, and index-loss behavior for track library placement. | Project team |
 | 2026-08-14 | Defined per-invoice cadence, single-file registration, materialized coverage dates, portability, and the no-extrapolation boundary. | Project team |

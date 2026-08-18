@@ -157,7 +157,8 @@ impl EvidenceRole {
             | Self::ThirdPartySampleLicense => &["pdf", "png", "jpg", "jpeg", "txt", "md"],
             Self::SunoTermsRights => &["pdf"],
             Self::ExternalTimestamp => &[
-                "pdf", "txt", "md", "json", "html", "htm", "png", "jpg", "jpeg",
+                "pdf", "txt", "md", "json", "html", "htm", "png", "jpg", "jpeg", "tsr", "tst",
+                "p7s",
             ],
             Self::ReleaseArtwork
             | Self::ArtworkSunoOriginal
@@ -257,6 +258,121 @@ where
     Option::<StringOrVec>::deserialize(deserializer).map(|value| value.map(string_or_vec))
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentationAnswer {
+    Yes,
+    No,
+    NotDocumented,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SunoLyricsContentType {
+    VocalLyrics,
+    StructureInstructions,
+    SoundInstructions,
+    ArrangementInstructions,
+    Mixed,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SunoLyricsContentSource {
+    Human,
+    Ai,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampType {
+    QualifiedElectronicTimestampUserDeclared,
+    ElectronicTimestamp,
+    ExternalIntegrityTimestamp,
+    Other,
+    NotDocumented,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampReferencedArtifact {
+    EvidenceManifest,
+    Sha256sums,
+    DocumentationCertificateMarkdown,
+    CertificatePdf,
+    FinalEvidencePackage,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalTimestampInput {
+    pub provider: String,
+    pub timestamp_type: TimestampType,
+    pub timestamp_value: String,
+    pub referenced_artifact: TimestampReferencedArtifact,
+    pub other_referenced_artifact: String,
+    pub referenced_sha256: String,
+    pub external_reference_id: String,
+    pub provider_verification_url: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalTimestampRecord {
+    pub id: String,
+    pub certificate_id: String,
+    /// Version of the immutable sidecar record and hash-list contract. Version
+    /// zero denotes records written before explicit artifact hashes were pinned.
+    #[serde(default)]
+    pub sidecar_format_version: u32,
+    pub provider: String,
+    pub timestamp_type: TimestampType,
+    pub timestamp_value: String,
+    pub referenced_artifact: TimestampReferencedArtifact,
+    pub referenced_artifact_path: String,
+    pub referenced_sha256: String,
+    pub actual_sha256: String,
+    pub referenced_hash_match: Option<bool>,
+    pub external_reference_id: String,
+    pub provider_verification_url: String,
+    pub note: String,
+    pub evidence_file_name: String,
+    pub evidence_sha256: String,
+    /// Hashes of the exact immutable addendum bytes as they were published.
+    /// These are deliberately verified without invoking the current renderer.
+    #[serde(default)]
+    pub markdown_sha256: String,
+    #[serde(default)]
+    pub pdf_sha256: String,
+    pub imported_at: String,
+    pub provenance: String,
+    pub record_relative_path: String,
+    pub markdown_relative_path: String,
+    pub pdf_relative_path: String,
+    pub hash_list_relative_path: String,
+    /// A publication-time fact recorded in the immutable sidecar. This is not
+    /// the current integrity result; `integrity_verified` is recomputed at load.
+    #[serde(default)]
+    pub integrity_verified_at_publication: bool,
+    #[serde(default)]
+    pub integrity_verified: bool,
+    #[serde(default)]
+    pub integrity_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalizationAnchor {
+    pub artifact: TimestampReferencedArtifact,
+    pub label: String,
+    pub relative_path: String,
+    pub sha256: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TrackFields {
@@ -270,10 +386,20 @@ pub struct TrackFields {
     pub suno_final_generation_date: String,
     pub suno_final_generation_time: String,
     pub suno_download_export_date: String,
-    pub suno_plan_at_creation: String,
+    pub suno_plan_at_generation: String,
+    #[serde(rename = "legacySunoPlanAtCreation", alias = "sunoPlanAtCreation")]
+    pub legacy_suno_plan_at_creation: String,
     pub final_export_date: String,
     pub instrumental_track: Option<bool>,
+    pub vocal_lyrics_present: Option<bool>,
+    pub suno_lyrics_field_content: Option<bool>,
+    pub suno_lyrics_content_types: Vec<SunoLyricsContentType>,
+    pub suno_lyrics_content_source: Option<SunoLyricsContentSource>,
+    pub suno_lyrics_field_text: String,
+    pub suno_lyrics_other_content_type: String,
+    #[serde(rename = "legacyLyricsSource", alias = "lyricsSource")]
     pub lyrics_source: String,
+    #[serde(rename = "legacyLyricsText", alias = "lyricsText")]
     pub lyrics_text: String,
     pub suno_style_prompt: String,
     pub external_audio_uploaded: Option<bool>,
@@ -314,6 +440,19 @@ pub struct TrackFields {
     pub trademark_notes: String,
     pub disclosure_applied: Option<bool>,
     pub disclosure_text: String,
+    pub generative_ai_used: Option<bool>,
+    pub audio_ai_system: String,
+    pub ai_assisted_audio_elements: Option<DocumentationAnswer>,
+    pub ai_generated_audio_elements: Option<DocumentationAnswer>,
+    pub real_person_voice_intentionally_imitated: Option<DocumentationAnswer>,
+    pub real_person_identity_intentionally_represented: Option<DocumentationAnswer>,
+    pub real_event_represented_as_authentic_recording: Option<DocumentationAnswer>,
+    pub real_location_institution_event_presented_as_authentic_ai_recording:
+        Option<DocumentationAnswer>,
+    pub audio_disclosure_applied: Option<DocumentationAnswer>,
+    pub audio_disclosure_locations: Vec<String>,
+    pub audio_disclosure_text: String,
+    pub audio_disclosure_reason: String,
     pub release_notes: String,
 }
 
@@ -330,9 +469,16 @@ impl Default for TrackFields {
             suno_final_generation_date: String::new(),
             suno_final_generation_time: String::new(),
             suno_download_export_date: String::new(),
-            suno_plan_at_creation: String::new(),
+            suno_plan_at_generation: String::new(),
+            legacy_suno_plan_at_creation: String::new(),
             final_export_date: String::new(),
             instrumental_track: None,
+            vocal_lyrics_present: None,
+            suno_lyrics_field_content: None,
+            suno_lyrics_content_types: Vec::new(),
+            suno_lyrics_content_source: None,
+            suno_lyrics_field_text: String::new(),
+            suno_lyrics_other_content_type: String::new(),
             lyrics_source: String::new(),
             lyrics_text: String::new(),
             suno_style_prompt: String::new(),
@@ -371,6 +517,18 @@ impl Default for TrackFields {
             trademark_notes: String::new(),
             disclosure_applied: None,
             disclosure_text: "AI-assisted".into(),
+            generative_ai_used: None,
+            audio_ai_system: String::new(),
+            ai_assisted_audio_elements: None,
+            ai_generated_audio_elements: None,
+            real_person_voice_intentionally_imitated: None,
+            real_person_identity_intentionally_represented: None,
+            real_event_represented_as_authentic_recording: None,
+            real_location_institution_event_presented_as_authentic_ai_recording: None,
+            audio_disclosure_applied: None,
+            audio_disclosure_locations: Vec::new(),
+            audio_disclosure_text: String::new(),
+            audio_disclosure_reason: String::new(),
             release_notes: String::new(),
         }
     }
@@ -409,12 +567,16 @@ impl TrackFields {
             self.third_party_sample_source.clear();
             self.third_party_sample_ownership.clear();
         }
-        // A folder import can know the exact lyric text before it can know
-        // whether the lyrics are human, Suno, or mixed. Keep that factual
-        // content pending while the source answer is still unknown; an
-        // explicit instrumental answer still clears it.
-        if self.lyrics_source == "instrumental" {
-            self.lyrics_text.clear();
+        if self.suno_lyrics_field_content == Some(false) {
+            self.suno_lyrics_content_types.clear();
+            self.suno_lyrics_content_source = None;
+            self.suno_lyrics_field_text.clear();
+            self.suno_lyrics_other_content_type.clear();
+        } else if !self
+            .suno_lyrics_content_types
+            .contains(&SunoLyricsContentType::Other)
+        {
+            self.suno_lyrics_other_content_type.clear();
         }
         if self.human_editing_performed != Some(true) {
             self.human_editing_details.clear();
@@ -459,6 +621,33 @@ impl TrackFields {
         if self.contains_trademark != Some(true) {
             self.trademark_notes.clear();
         }
+
+        if self.generative_ai_used == Some(false) {
+            self.audio_ai_system.clear();
+            self.ai_assisted_audio_elements = None;
+            self.ai_generated_audio_elements = None;
+            self.real_person_voice_intentionally_imitated = None;
+            self.real_person_identity_intentionally_represented = None;
+            self.real_event_represented_as_authentic_recording = None;
+            self.real_location_institution_event_presented_as_authentic_ai_recording = None;
+            self.audio_disclosure_applied = None;
+            self.audio_disclosure_locations.clear();
+            self.audio_disclosure_text.clear();
+            self.audio_disclosure_reason.clear();
+        } else if self.generative_ai_used == Some(true) {
+            match self.audio_disclosure_applied {
+                Some(DocumentationAnswer::Yes) => self.audio_disclosure_reason.clear(),
+                Some(DocumentationAnswer::No) => {
+                    self.audio_disclosure_locations.clear();
+                    self.audio_disclosure_text.clear();
+                }
+                Some(DocumentationAnswer::NotDocumented) | None => {
+                    self.audio_disclosure_locations.clear();
+                    self.audio_disclosure_text.clear();
+                    self.audio_disclosure_reason.clear();
+                }
+            }
+        }
     }
 
     pub fn normalized_conditionals(&self) -> Self {
@@ -497,10 +686,20 @@ pub struct TrackPatch {
     pub suno_final_generation_date: Option<String>,
     pub suno_final_generation_time: Option<String>,
     pub suno_download_export_date: Option<String>,
-    pub suno_plan_at_creation: Option<String>,
+    pub suno_plan_at_generation: Option<String>,
+    #[serde(rename = "legacySunoPlanAtCreation", alias = "sunoPlanAtCreation")]
+    pub legacy_suno_plan_at_creation: Option<String>,
     pub final_export_date: Option<String>,
     pub instrumental_track: Option<bool>,
+    pub vocal_lyrics_present: Option<bool>,
+    pub suno_lyrics_field_content: Option<bool>,
+    pub suno_lyrics_content_types: Option<Vec<SunoLyricsContentType>>,
+    pub suno_lyrics_content_source: Option<SunoLyricsContentSource>,
+    pub suno_lyrics_field_text: Option<String>,
+    pub suno_lyrics_other_content_type: Option<String>,
+    #[serde(rename = "legacyLyricsSource", alias = "lyricsSource")]
     pub lyrics_source: Option<String>,
+    #[serde(rename = "legacyLyricsText", alias = "lyricsText")]
     pub lyrics_text: Option<String>,
     pub suno_style_prompt: Option<String>,
     pub external_audio_uploaded: Option<bool>,
@@ -541,7 +740,52 @@ pub struct TrackPatch {
     pub trademark_notes: Option<String>,
     pub disclosure_applied: Option<bool>,
     pub disclosure_text: Option<String>,
+    pub generative_ai_used: Option<bool>,
+    pub audio_ai_system: Option<String>,
+    pub ai_assisted_audio_elements: Option<DocumentationAnswer>,
+    pub ai_generated_audio_elements: Option<DocumentationAnswer>,
+    pub real_person_voice_intentionally_imitated: Option<DocumentationAnswer>,
+    pub real_person_identity_intentionally_represented: Option<DocumentationAnswer>,
+    pub real_event_represented_as_authentic_recording: Option<DocumentationAnswer>,
+    pub real_location_institution_event_presented_as_authentic_ai_recording:
+        Option<DocumentationAnswer>,
+    pub audio_disclosure_applied: Option<DocumentationAnswer>,
+    pub audio_disclosure_locations: Option<Vec<String>>,
+    pub audio_disclosure_text: Option<String>,
+    pub audio_disclosure_reason: Option<String>,
     pub release_notes: Option<String>,
+}
+
+/// Transport wrapper that preserves the difference between an omitted patch
+/// property and an explicitly submitted JSON `null` value. Serde's ordinary
+/// `Option<T>` representation intentionally treats both cases as `None`, while
+/// the guided UI needs `null` to clear a previously documented nullable fact.
+#[derive(Debug, Clone)]
+pub struct TrackPatchRequest {
+    pub patch: TrackPatch,
+    pub explicit_null_fields: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for TrackPatchRequest {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("track patch must be a JSON object"))?;
+        let explicit_null_fields = object
+            .iter()
+            .filter(|(_, value)| value.is_null())
+            .map(|(name, _)| name.clone())
+            .collect();
+        let patch = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            patch,
+            explicit_null_fields,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,9 +818,9 @@ pub struct EvidenceItem {
     pub metadata: EvidenceMetadata,
 }
 
-/// Role-specific evidence metadata and compatibility fields. The current terms-PDF
-/// importer fills only the system-derived original filename; timestamp evidence
-/// still accepts its explicit factual fields. Empty values mean "not recorded".
+/// Role-specific evidence metadata and compatibility fields. The terms-PDF
+/// importer combines user-entered descriptive context with system-derived file
+/// properties. Empty values mean "not recorded".
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EvidenceMetadata {
@@ -587,10 +831,14 @@ pub struct EvidenceMetadata {
     pub source_url: String,
     pub retrieval_date: String,
     pub effective_date: String,
+    pub applicable_production_period: String,
     pub factual_note: String,
+    pub timestamp_type: String,
     pub external_timestamp: String,
     pub referenced_hash: String,
     pub referenced_artifact: String,
+    pub external_reference_id: String,
+    pub provider_verification_url: String,
     /// File properties captured by the native importer. These values are
     /// evidence-derived and never requested from the user.
     pub file_extension: String,
@@ -875,6 +1123,10 @@ pub struct TrackDetail {
     pub fields: TrackFields,
     pub steps: Vec<StepState>,
     pub evidence: Vec<EvidenceItem>,
+    #[serde(default)]
+    pub external_timestamps: Vec<ExternalTimestampRecord>,
+    #[serde(default)]
+    pub finalization_anchors: Vec<FinalizationAnchor>,
     pub documents: DocumentState,
     pub integrity: IntegrityState,
     pub certificate: CertificateState,
@@ -966,6 +1218,183 @@ mod tests {
         let serialized = serde_json::to_value(fields).expect("serialize migrated fields");
         assert!(serialized["humanArtworkModifications"].is_array());
         assert!(serialized["codeAudioPostProcessingOperations"].is_array());
+    }
+
+    #[test]
+    fn documentation_enums_use_stable_snake_case_values() {
+        assert_eq!(
+            serde_json::to_value(DocumentationAnswer::NotDocumented).expect("answer"),
+            "not_documented"
+        );
+        assert_eq!(
+            serde_json::to_value(SunoLyricsContentType::StructureInstructions)
+                .expect("content type"),
+            "structure_instructions"
+        );
+        assert_eq!(
+            serde_json::to_value(SunoLyricsContentSource::Ai).expect("content source"),
+            "ai"
+        );
+        assert_eq!(
+            serde_json::to_value(TimestampType::QualifiedElectronicTimestampUserDeclared)
+                .expect("timestamp type"),
+            "qualified_electronic_timestamp_user_declared"
+        );
+        assert_eq!(
+            serde_json::to_value(TimestampReferencedArtifact::EvidenceManifest)
+                .expect("timestamp artifact"),
+            "evidence_manifest"
+        );
+    }
+
+    #[test]
+    fn no_not_documented_and_not_applicable_remain_distinct_states() {
+        let mut fields = TrackFields::default();
+        let unanswered = serde_json::to_value(&fields).expect("unanswered fields");
+        assert!(unanswered["vocalLyricsPresent"].is_null());
+
+        fields.vocal_lyrics_present = Some(false);
+        fields.audio_disclosure_applied = Some(DocumentationAnswer::No);
+        let documented_no = serde_json::to_value(&fields).expect("documented no");
+        assert_eq!(documented_no["vocalLyricsPresent"], false);
+        assert_eq!(documented_no["audioDisclosureApplied"], "no");
+
+        fields.audio_disclosure_applied = Some(DocumentationAnswer::NotDocumented);
+        let not_documented = serde_json::to_value(&fields).expect("not documented");
+        assert_eq!(not_documented["audioDisclosureApplied"], "not_documented");
+        assert_eq!(
+            serde_json::to_value(StepStatus::NotApplicable).expect("not applicable"),
+            "N_A"
+        );
+    }
+
+    #[test]
+    fn historical_lyrics_and_plan_keys_remain_unclassified_legacy_values() {
+        let fields: TrackFields = serde_json::from_value(serde_json::json!({
+            "lyricsSource": "mixed",
+            "lyricsText": "Historical lyrics",
+            "sunoPlanAtCreation": "Pro"
+        }))
+        .expect("historical fields");
+
+        assert_eq!(fields.lyrics_source, "mixed");
+        assert_eq!(fields.lyrics_text, "Historical lyrics");
+        assert!(fields.suno_plan_at_generation.is_empty());
+        assert_eq!(fields.legacy_suno_plan_at_creation, "Pro");
+
+        let serialized = serde_json::to_value(fields).expect("serialize fields");
+        assert_eq!(serialized["legacyLyricsSource"], "mixed");
+        assert_eq!(serialized["legacyLyricsText"], "Historical lyrics");
+        assert_eq!(serialized["sunoPlanAtGeneration"], "");
+        assert_eq!(serialized["legacySunoPlanAtCreation"], "Pro");
+        assert!(serialized.get("lyricsSource").is_none());
+        assert!(serialized.get("lyricsText").is_none());
+        assert!(serialized.get("sunoPlanAtCreation").is_none());
+    }
+
+    #[test]
+    fn patch_request_distinguishes_explicit_null_from_an_omitted_field() {
+        let request: TrackPatchRequest = serde_json::from_value(serde_json::json!({
+            "generativeAiUsed": null,
+            "instrumentalTrack": null,
+            "title": "Updated title"
+        }))
+        .expect("track patch request");
+
+        assert_eq!(request.patch.title.as_deref(), Some("Updated title"));
+        assert!(request.patch.generative_ai_used.is_none());
+        assert!(request.patch.instrumental_track.is_none());
+        assert!(request
+            .explicit_null_fields
+            .contains(&"generativeAiUsed".to_owned()));
+        assert!(request
+            .explicit_null_fields
+            .contains(&"instrumentalTrack".to_owned()));
+        assert!(!request
+            .explicit_null_fields
+            .contains(&"vocalLyricsPresent".to_owned()));
+    }
+
+    #[test]
+    fn instrumental_normalization_preserves_legacy_and_structure_field_text() {
+        let mut fields = TrackFields {
+            instrumental_track: Some(true),
+            vocal_lyrics_present: Some(false),
+            suno_lyrics_field_content: Some(true),
+            suno_lyrics_content_types: vec![SunoLyricsContentType::StructureInstructions],
+            suno_lyrics_content_source: Some(SunoLyricsContentSource::Human),
+            suno_lyrics_field_text: "[Intro]\n[Instrumental]".into(),
+            suno_lyrics_other_content_type: "inactive note".into(),
+            lyrics_source: "instrumental".into(),
+            lyrics_text: "historical field value".into(),
+            ..TrackFields::default()
+        };
+
+        fields.normalize_conditionals();
+
+        assert_eq!(fields.lyrics_text, "historical field value");
+        assert_eq!(fields.suno_lyrics_field_text, "[Intro]\n[Instrumental]");
+        assert_eq!(
+            fields.suno_lyrics_content_types,
+            vec![SunoLyricsContentType::StructureInstructions]
+        );
+        assert!(fields.suno_lyrics_other_content_type.is_empty());
+    }
+
+    #[test]
+    fn inactive_new_lyrics_and_audio_branches_are_cleared_without_inventing_answers() {
+        let mut fields = TrackFields {
+            suno_lyrics_field_content: Some(false),
+            suno_lyrics_content_types: vec![SunoLyricsContentType::Other],
+            suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
+            suno_lyrics_field_text: "stale field text".into(),
+            suno_lyrics_other_content_type: "stale other type".into(),
+            generative_ai_used: Some(false),
+            audio_ai_system: "stale system".into(),
+            ai_assisted_audio_elements: Some(DocumentationAnswer::Yes),
+            audio_disclosure_applied: Some(DocumentationAnswer::No),
+            audio_disclosure_reason: "stale reason".into(),
+            ..TrackFields::default()
+        };
+
+        fields.normalize_conditionals();
+
+        assert!(fields.suno_lyrics_content_types.is_empty());
+        assert!(fields.suno_lyrics_content_source.is_none());
+        assert!(fields.suno_lyrics_field_text.is_empty());
+        assert!(fields.suno_lyrics_other_content_type.is_empty());
+        assert!(fields.audio_ai_system.is_empty());
+        assert!(fields.ai_assisted_audio_elements.is_none());
+        assert!(fields.audio_disclosure_applied.is_none());
+        assert!(fields.audio_disclosure_reason.is_empty());
+    }
+
+    #[test]
+    fn unanswered_controlling_questions_do_not_erase_pending_new_facts() {
+        let mut fields = TrackFields {
+            suno_lyrics_field_content: None,
+            suno_lyrics_field_text: "pending field text".into(),
+            generative_ai_used: None,
+            audio_ai_system: "pending system".into(),
+            ..TrackFields::default()
+        };
+
+        fields.normalize_conditionals();
+
+        assert_eq!(fields.suno_lyrics_field_text, "pending field text");
+        assert_eq!(fields.audio_ai_system, "pending system");
+    }
+
+    #[test]
+    fn external_timestamp_role_accepts_standard_timestamp_container_extensions() {
+        let extensions = EvidenceRole::ExternalTimestamp.allowed_extensions();
+        assert!(extensions.contains(&"tsr"));
+        assert!(extensions.contains(&"tst"));
+        assert!(extensions.contains(&"p7s"));
+        assert_eq!(
+            EvidenceRole::ExternalTimestamp.destination(),
+            "03_DOCUMENTATION"
+        );
     }
 
     #[test]

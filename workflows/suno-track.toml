@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.6"
+version = "1.7"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -34,7 +34,7 @@ order = 4
 name = "04 Human Work"
 required = true
 when = "always"
-description = "Lyrics, Suno style prompt, and only the confirmed human editing work."
+description = "Instrumental and vocal status, Suno lyrics/structure field content, style prompt, and confirmed human editing work."
 
 [[steps]]
 id = "artwork"
@@ -49,8 +49,8 @@ id = "ai_transparency"
 order = 6
 name = "06 AI Transparency"
 required = true
-when = "ai_transparency_required"
-description = "AI artwork service, project transparency policy, and visible disclosure result when applicable."
+when = "always"
+description = "Audio AI transparency plus the existing artwork transparency and disclosure checks."
 
 [[steps]]
 id = "release"
@@ -332,12 +332,12 @@ when = "always"
 missing_message = "Das Datum der finalen Suno-Generation fehlt."
 
 [[requirements]]
-key = "suno.plan_at_creation"
+key = "suno.plan_at_generation"
 step_id = "suno"
 kind = "field"
 required = true
 when = "always"
-missing_message = "Der Suno-Tarif bei Erstellung fehlt."
+missing_message = "Der Suno-Tarif bei der finalen Generation fehlt."
 
 [[requirements]]
 key = "suno.final_export_date"
@@ -365,14 +365,6 @@ when = "always"
 missing_message = "Der tatsächliche Suno-Exportdateiname fehlt, stimmt nicht mit dem dokumentierten Titel überein oder die Abweichung wurde nicht ausdrücklich bestätigt."
 
 [[requirements]]
-key = "human_work.lyrics_source"
-step_id = "human_work"
-kind = "field"
-required = true
-when = "always"
-missing_message = "Die Herkunft der Lyrics fehlt."
-
-[[requirements]]
 key = "human_work.instrumental_answer"
 step_id = "human_work"
 kind = "field"
@@ -381,20 +373,60 @@ when = "always"
 missing_message = "Die ausdrückliche Angabe, ob der Track instrumental ist, fehlt."
 
 [[requirements]]
+key = "human_work.vocal_lyrics_present"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die ausdrückliche Angabe, ob gesungene Lyrics vorhanden sind, fehlt."
+
+[[requirements]]
 key = "human_work.instrumental_consistency"
 step_id = "human_work"
 kind = "field"
 required = true
 when = "always"
-missing_message = "Die Instrumental-Angabe widerspricht der Lyrics-Quelle, dem Lyrics-Text oder der bestätigten menschlichen Arbeit 'Lyrics'. Bitte Angaben ausdrücklich korrigieren."
+missing_message = "Die Angaben zu Instrumentaltrack, vorhandenen Vocal Lyrics und dem explizit gewählten Suno-Feld-Inhaltstyp widersprechen einander. Bitte Angaben ausdrücklich korrigieren."
 
 [[requirements]]
-key = "human_work.human_lyrics_details"
+key = "human_work.suno_lyrics_field_content"
 step_id = "human_work"
 kind = "field"
 required = true
-when = "lyrics_text"
-missing_message = "Der tatsächlich verwendete Lyrics-Text fehlt."
+when = "always"
+missing_message = "Die ausdrückliche Angabe zum Inhalt des Suno-Lyrics-/Structure-Felds fehlt."
+
+[[requirements]]
+key = "human_work.suno_lyrics_content_types"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "suno_lyrics_field_content"
+missing_message = "Mindestens ein Inhaltstyp des Suno-Lyrics-/Structure-Felds fehlt."
+
+[[requirements]]
+key = "human_work.suno_lyrics_content_source"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "suno_lyrics_field_content"
+missing_message = "Die Quelle des Inhalts im Suno-Lyrics-/Structure-Feld fehlt."
+
+[[requirements]]
+key = "human_work.suno_lyrics_field_text"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "suno_lyrics_field_content"
+missing_message = "Der Inhalt des Suno-Lyrics-/Structure-Felds fehlt."
+
+[[requirements]]
+key = "human_work.suno_lyrics_other_content_type"
+step_id = "human_work"
+kind = "field"
+required = true
+when = "suno_lyrics_other_content_type"
+missing_message = "Die Beschreibung für den Inhaltstyp 'Other' fehlt."
 
 [[requirements]]
 key = "human_work.suno_style_prompt"
@@ -519,6 +551,94 @@ when = "trademark_or_logo"
 missing_message = "Die sachliche Notiz zur Marke oder zum Logo fehlt."
 
 [[requirements]]
+key = "ai_transparency.generative_ai_used"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "always"
+missing_message = "Die Angabe zur Verwendung generativer AI im Audio fehlt."
+
+[[requirements]]
+key = "ai_transparency.audio_ai_system"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Das für das Audio verwendete AI-System fehlt."
+
+[[requirements]]
+key = "ai_transparency.ai_assisted_audio_elements"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Die Angabe zu AI-assistierten Audioelementen fehlt."
+
+[[requirements]]
+key = "ai_transparency.ai_generated_audio_elements"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Die Angabe zu AI-generierten Audioelementen fehlt."
+
+[[requirements]]
+key = "ai_transparency.real_person_voice_intentionally_imitated"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Die Angabe zur absichtlichen Imitation der Stimme einer realen Person fehlt."
+
+[[requirements]]
+key = "ai_transparency.real_person_identity_intentionally_represented"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Die Angabe zur absichtlichen Darstellung der Identität einer realen Person fehlt."
+
+[[requirements]]
+key = "ai_transparency.real_event_represented_as_authentic_recording"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Die Angabe zur Darstellung eines realen Ereignisses als authentische Aufnahme fehlt."
+
+[[requirements]]
+key = "ai_transparency.real_location_institution_event_presented_as_authentic_ai_recording"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Die Angabe zur authentisch wirkenden AI-Aufnahme eines realen Orts, einer Institution oder eines Ereignisses fehlt."
+
+[[requirements]]
+key = "ai_transparency.audio_disclosure_decision"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "generative_ai_used"
+missing_message = "Die Entscheidung zur Audio-AI-Kennzeichnung fehlt oder ist für die beabsichtigte kommerzielle Nutzung nicht dokumentiert."
+
+[[requirements]]
+key = "ai_transparency.audio_disclosure_locations"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "audio_disclosure_yes"
+missing_message = "Mindestens ein Ort der Audio-AI-Kennzeichnung fehlt."
+
+[[requirements]]
+key = "ai_transparency.audio_disclosure_text"
+step_id = "ai_transparency"
+kind = "field"
+required = true
+when = "audio_disclosure_yes"
+missing_message = "Der verwendete Text der Audio-AI-Kennzeichnung fehlt."
+
+[[requirements]]
 key = "ai_transparency.image_service"
 step_id = "ai_transparency"
 kind = "field"
@@ -577,13 +697,12 @@ when = "commercial_use"
 missing_message = "Die zugeordneten Abo-Nachweise decken das Datum der finalen Suno-Generation nicht nachweisbar ab."
 
 [[requirements]]
-key = "evidence_licenses.terms_or_unavailable"
+key = "evidence_licenses.terms_complete"
 step_id = "evidence_licenses"
 kind = "field"
 required = true
 when = "commercial_use"
-missing_message = "Lokale Suno-Nutzungsbedingungen fehlen; alternativ muss 'Terms evidence not available' ausdrücklich dokumentiert werden."
-allow_explicit_unavailable = true
+missing_message = "Ein verifizierter lokaler Nachweis der Suno-Nutzungsbedingungen mit Titel, Anbieter und Abrufdatum fehlt."
 
 [[requirements]]
 key = "integrity.documents_current"

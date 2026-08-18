@@ -169,6 +169,11 @@ fn validate_signature(source: &Path, extension: &str) -> Result<()> {
         | "jl" | "ex" | "exs" | "erl" | "hrl" | "fs" | "fsx" | "vb" | "sql" | "html" | "htm"
         | "css" | "scss" | "sass" | "less" | "xml" | "yaml" | "yml" | "toml" | "csv" | "ipynb"
         | "svg" => valid_text_prefix(bytes),
+        // RFC 3161 responses and detached signature containers are opaque
+        // binary evidence. Their legal/cryptographic qualification is not
+        // inferred here; the dedicated timestamp workflow records and hashes
+        // the exact non-empty bytes.
+        "tsr" | "tst" | "p7s" => !bytes.is_empty(),
         _ => false,
     };
     if count == 0 || !matches {

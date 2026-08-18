@@ -17,10 +17,14 @@ import {
   WORKFLOW_STEPS
 } from "./domain/workflow";
 import {
+  emptyEvidenceMetadata,
   emptyProfile,
+  type DocumentationAnswer,
   type EvidenceItem,
   type EvidencePreview,
   type EvidenceMetadata,
+  type ExternalTimestampInput,
+  type ExternalTimestampRecord,
   type FolderImportProposal,
   type GlobalEvidenceItem,
   type EvidenceRole,
@@ -35,6 +39,7 @@ import {
   type TrackFields,
   type TrackLibraryAssignment,
   type TrackSummary,
+  type TimestampReferencedArtifact,
   type WorkflowDefinitionDto,
   type WorkspaceSummary
 } from "./domain/types";
@@ -96,6 +101,8 @@ interface AppState {
   showSubscriptionEvidence: boolean;
   evidencePreview: EvidencePreview | null;
   showCertificatePopup: boolean;
+  termsMetadataDialog: { evidenceId: string | null; metadata: EvidenceMetadata } | null;
+  showExternalTimestampDialog: boolean;
   theme: ColorTheme;
   toast: ToastState | null;
 }
@@ -105,6 +112,7 @@ export type WorkspaceScopedUiState = Pick<
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" | "albums" |
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
   | "showCertificatePopup" | "folderImport"
+  | "termsMetadataDialog" | "showExternalTimestampDialog"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -122,6 +130,8 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     showSubscriptionEvidence: false,
     evidencePreview: null,
     showCertificatePopup: false,
+    termsMetadataDialog: null,
+    showExternalTimestampDialog: false,
     query: "",
     trackFilter: "all",
     draftDirty: false
@@ -405,6 +415,68 @@ export function factOriginLabel(origin: FactOrigin): string {
   return "Noch nicht dokumentiert";
 }
 
+export function documentationAnswerLabel(value: DocumentationAnswer | null): string {
+  if (value === "yes") return "YES";
+  if (value === "no") return "NO";
+  if (value === "not_documented") return "NOT DOCUMENTED";
+  return "NOT ANSWERED";
+}
+
+export function generativeAiAudioDetailState(
+  value: boolean | null
+): "details_required" | "not_applicable" | "not_documented" {
+  if (value === true) return "details_required";
+  if (value === false) return "not_applicable";
+  return "not_documented";
+}
+
+export function externalTimestampMatchLabel(value: boolean | null): string {
+  return value === true ? "YES" : value === false ? "NO" : "NOT VERIFIED";
+}
+
+export function externalTimestampIntegrityPresentation(
+  record: Pick<ExternalTimestampRecord, "integrityVerified" | "integrityIssues">
+): { label: "VERIFIED" | "FAILED"; issues: string[] } {
+  return {
+    label: record.integrityVerified ? "VERIFIED" : "FAILED",
+    issues: record.integrityIssues.map((issue) => issue.trim()).filter(Boolean)
+  };
+}
+
+export function legacySunoPlanNoticeMarkup(value: string): string {
+  if (!value.trim()) return "";
+  return `<div class="legacy-data-notice">${icon("info")}<div><strong>Historischer Tarif bei Erstellung – keine Aussage zum Tarif bei der finalen Generation</strong><p>${escapeHtml(value)}</p><small>Dieser unverändert erhaltene Altwert füllt „Suno-Tarif bei der finalen Generation“ nicht aus und erfüllt die aktuelle Workflow-Anforderung nicht.</small></div></div>`;
+}
+
+export function externalTimestampTypeLabel(value: ExternalTimestampInput["timestampType"]): string {
+  return ({
+    qualified_electronic_timestamp_user_declared: "Qualified electronic timestamp – user declared",
+    electronic_timestamp: "Electronic timestamp",
+    external_integrity_timestamp: "External integrity timestamp",
+    other: "Other",
+    not_documented: "Not documented"
+  } as const)[value];
+}
+
+export function timestampArtifactLabel(value: TimestampReferencedArtifact): string {
+  return ({
+    evidence_manifest: "EVIDENCE_MANIFEST.json",
+    sha256sums: "SHA256SUMS.txt",
+    documentation_certificate_markdown: "DOCUMENTATION_CERTIFICATE.md",
+    certificate_pdf: "Certificate PDF",
+    final_evidence_package: "Final Evidence Package",
+    other: "Other"
+  } as const)[value];
+}
+
+export function termsMetadataComplete(metadata: Partial<EvidenceMetadata> | undefined): boolean {
+  return Boolean(
+    metadata?.documentTitle?.trim()
+    && metadata.provider?.trim()
+    && metadata.retrievalDate?.trim()
+  );
+}
+
 export function isAutomaticDateReadonly(origin: FactOrigin): boolean {
   return origin === "evidence_derived_metadata";
 }
@@ -463,7 +535,7 @@ const evidenceRoles: EvidenceRole[] = [
   "release_wav", "release_mp3", "release_mp4", "release_artwork", "artwork_suno_original", "ai_artwork_original",
   "ai_artwork_edited", "human_edited_artwork", "final_artwork", "external_audio_file",
   "external_audio_license", "own_audio_file", "source_code_file", "code_generated_audio_file", "third_party_sample_file",
-  "third_party_sample_license", "external_timestamp", "lyrics", "style", "other"
+  "third_party_sample_license", "lyrics", "style", "other"
 ];
 
 const externalAudioSourceChoices: readonly GuidedChoice[] = [
@@ -607,6 +679,29 @@ const sunoModelSuggestions = [
 
 const sunoPlanSuggestions = ["Free", "Pro", "Premier"] as const;
 
+const aiSystemSuggestions = [
+  "Suno", "ChatGPT / OpenAI", "Udio", "Stable Audio", "ElevenLabs"
+] as const;
+
+const sunoLyricsContentTypeChoices: readonly GuidedChoice[] = [
+  ["vocal_lyrics", "Vocal Lyrics"],
+  ["structure_instructions", "Strukturanweisungen, z. B. [Intro] oder [Drop]"],
+  ["sound_instructions", "Soundanweisungen"],
+  ["arrangement_instructions", "Arrangement-Anweisungen"],
+  ["mixed", "Gemischter Inhalt"],
+  ["other", "Sonstiger Inhalt"]
+];
+
+const audioDisclosureLocationChoices: readonly GuidedChoice[] = [
+  ["release metadata", "Release-Metadaten"],
+  ["distributor metadata", "Distributor-Metadaten"],
+  ["description", "Beschreibung"],
+  ["artwork", "Artwork"],
+  ["credits", "Credits"],
+  ["website", "Website"],
+  ["other", "Sonstiger Ort"]
+];
+
 const releaseNoteChoices: readonly GuidedChoice[] = [
   ["Original Suno version", "Originale Suno-Fassung"],
   ["Streaming master", "Streaming-Master"],
@@ -682,6 +777,8 @@ export class SunoDocumentationApp {
     showSubscriptionEvidence: false,
     evidencePreview: null,
     showCertificatePopup: false,
+    termsMetadataDialog: null,
+    showExternalTimestampDialog: false,
     theme: "light",
     toast: null
   };
@@ -956,6 +1053,8 @@ export class SunoDocumentationApp {
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
       evidencePreview: this.state.evidencePreview,
       showCertificatePopup: this.state.showCertificatePopup,
+      termsMetadataDialog: this.state.termsMetadataDialog,
+      showExternalTimestampDialog: this.state.showExternalTimestampDialog,
       query: this.state.query,
       trackFilter: this.state.trackFilter,
       draftDirty: this.draftDirty
@@ -1079,6 +1178,10 @@ export class SunoDocumentationApp {
         </main>
         ${this.state.showCertificatePopup
           ? this.renderCertificatePopupDialog()
+          : this.state.termsMetadataDialog
+            ? this.renderTermsMetadataDialog()
+            : this.state.showExternalTimestampDialog
+              ? this.renderExternalTimestampDialog()
           : this.state.showNewTrack
           ? this.renderNewTrackDialog()
           : this.state.showTrackLibrary
@@ -1256,6 +1359,61 @@ export class SunoDocumentationApp {
     </section></div>`;
   }
 
+  private renderTermsMetadataDialog(): string {
+    const dialog = this.state.termsMetadataDialog;
+    if (!dialog) return "";
+    const metadata = dialog.metadata;
+    const editing = Boolean(dialog.evidenceId);
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal evidence-metadata-modal" role="dialog" aria-modal="true" aria-labelledby="terms-metadata-title" data-modal-panel>
+      <div class="modal-head"><div><p class="overline">Terms-/Rights-Evidence</p><h2 id="terms-metadata-title">${editing ? "Beschreibende Metadaten bearbeiten" : "Nutzungsbedingungen registrieren"}</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
+      <form id="terms-metadata-form" class="form-stack">
+        <div class="evidence-guidance">${icon("info")}<p>Dokumentiere nur bekannte Fakten zur lokal archivierten Fassung. SunoDM ruft keine Internetdaten ab und bewertet weder Rechte noch rechtliche Wirksamkeit.</p></div>
+        <div class="field-grid two-col">
+          ${this.textField("documentTitle", "Dokumenttitel", "z. B. Suno Terms of Service", metadata.documentTitle, true)}
+          ${this.textField("provider", "Provider / Source", "Vom Benutzer dokumentierter Anbieter", metadata.provider, true)}
+          ${this.dateField("retrievalDate", "Abrufdatum", metadata.retrievalDate, true)}
+          ${this.textField("sourceUrl", "Source URL", "Optional", metadata.sourceUrl, false, "url")}
+          ${this.dateField("effectiveDate", "Effective Date", metadata.effectiveDate)}
+          ${this.textField("applicableProductionPeriod", "Anwendbarer Produktionszeitraum", "Optional; nur dokumentieren", metadata.applicableProductionPeriod)}
+        </div>
+        ${this.textArea("factualNote", "Sachlicher Hinweis", "Optionaler Kontext ohne rechtliche Schlussfolgerung", metadata.factualNote)}
+        <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon(editing ? "check" : "upload")} ${editing ? "Metadaten speichern" : "PDF auswählen und registrieren"}</button></div>
+      </form>
+    </section></div>`;
+  }
+
+  private renderExternalTimestampDialog(): string {
+    const track = this.state.track;
+    if (!track || track.status !== "FINALIZED") return "";
+    const allAnchorOptions: Array<[string, string]> = [
+      ["", "Bitte Integritätsanker auswählen"],
+      ...track.finalizationAnchors.map((anchor): [string, string] => [anchor.artifact, anchor.label]),
+      ["other", "Anderes Artefakt"]
+    ];
+    const anchorOptions = allAnchorOptions.filter(([value], index, values) =>
+      values.findIndex(([candidate]) => candidate === value) === index
+    );
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal timestamp-evidence-modal" role="dialog" aria-modal="true" aria-labelledby="timestamp-evidence-title" data-modal-panel>
+      <div class="modal-head"><div><p class="overline">Nachgelagerter Evidenzanhang</p><h2 id="timestamp-evidence-title">Externen Zeitstempel anhängen</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
+      <form id="external-timestamp-form" class="form-stack">
+        <div class="evidence-guidance">${icon("info")}<p>Der externe Nachweis wird an diesen finalisierten Zertifikatssnapshot gebunden. Der ursprüngliche Manifest-Anker bleibt unverändert; SunoDM bewertet die rechtliche Qualität des Zeitstempels nicht.</p></div>
+        <div class="timestamp-anchor-list">${track.finalizationAnchors.map((anchor) => `<article><strong>${escapeHtml(anchor.label)}</strong><small>${escapeHtml(anchor.relativePath)}</small><code>${escapeHtml(anchor.sha256)}</code></article>`).join("")}</div>
+        <div class="field-grid two-col">
+          ${this.textField("provider", "Timestamp provider / issuer", "Provider oder Aussteller", "", true)}
+          ${this.selectField("timestampType", "Timestamp type", "", [["", "Bitte auswählen"], ["qualified_electronic_timestamp_user_declared", "Qualified electronic timestamp – user declared"], ["electronic_timestamp", "Electronic timestamp"], ["external_integrity_timestamp", "External integrity timestamp"], ["other", "Other"], ["not_documented", "Not documented"]], true)}
+          ${this.textField("timestampValue", "Timestamp value", "Datum/Uhrzeit mit Zeitzone, soweit vorhanden", "")}
+          ${this.selectField("referencedArtifact", "Referenced artifact", "", anchorOptions, true)}
+          ${this.textField("referencedSha256", "Referenced SHA-256", "64-stelliger Hash aus dem externen Nachweis", "", true)}
+          ${this.textField("otherReferencedArtifact", "Anderes referenziertes Artefakt", "Nur bei Other", "")}
+          ${this.textField("externalReferenceId", "External reference ID", "Optional", "")}
+          ${this.textField("providerVerificationUrl", "Provider verification URL", "Optional", "", false, "url")}
+        </div>
+        ${this.textArea("note", "Sachliche Notiz", "Optional; keine rechtliche Bewertung", "")}
+        <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("upload")} Nachweisdatei auswählen und anhängen</button></div>
+      </form>
+    </section></div>`;
+  }
+
   private renderEvidencePreviewDialog(): string {
     const preview = this.state.evidencePreview;
     if (!preview) return "";
@@ -1295,6 +1453,7 @@ export class SunoDocumentationApp {
       <p class="overline">Track Documentation Completion Certificate</p>
       <h2 id="certificate-popup-title">Dokumentation erfolgreich finalisiert</h2>
       <span class="certificate-popup-result">${icon("check")} DOCUMENTATION COMPLETE</span>
+      <p class="certificate-popup-meaning"><strong>Meaning:</strong> configured documentation requirements completed.</p>
       <dl class="certificate-popup-facts">
         <div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div>
         <div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div>
@@ -1305,7 +1464,7 @@ export class SunoDocumentationApp {
         <div><dt>Evidence</dt><dd>${track.evidence.length} Dateien</dd></div>
         <div><dt>Blockierende Abweichungen</dt><dd>${openBlockingDeviations}</dd></div>
       </dl>
-      <p class="certificate-popup-note">Der lokale Zertifikatssatz wurde erzeugt und verifiziert. Er bestätigt den Abschluss des konfigurierten Dokumentations- und Integritätsworkflows, ist aber keine behördliche oder rechtliche Zertifizierung.</p>
+      <p class="certificate-popup-note">Der lokale Zertifikatssatz wurde erzeugt und verifiziert. PASS bedeutet ausschließlich: Configured documentation requirements for this step were satisfied. Dies ist keine behördliche oder rechtliche Zertifizierung.</p>
       <div class="modal-actions certificate-popup-actions"><button type="button" class="button button--secondary" data-action="close-modal">Schließen</button><button type="button" class="button button--primary" data-action="open-certificate-tab">${icon("certificate")} Vollständiges Zertifikat öffnen</button></div>
     </section></div>`;
   }
@@ -1471,6 +1630,7 @@ export class SunoDocumentationApp {
         </div>
         <div class="panel workflow-panel"><div class="panel-heading"><div><p class="overline">Geführter Ablauf</p><h3>10 Dokumentationsschritte</h3></div><span class="workflow-id">${escapeHtml(this.state.workflow?.id ?? track.workflowId)} · v${escapeHtml(this.state.workflow?.version ?? track.workflowVersion)}</span></div>
           <div class="step-list">${statuses.map((step, index) => this.renderStepRow(step.id, step.status, index)).join("")}</div>
+          <p class="workflow-pass-definition"><strong>PASS / Erfüllt:</strong> Configured documentation requirements for this step were satisfied.</p>
         </div>
       </section>
       <aside class="workflow-side">
@@ -1604,21 +1764,29 @@ export class SunoDocumentationApp {
         break;
       case "suno": {
         const projectHint = track.evidence.find((item) => item.role === "suno_screenshot");
-        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtCreation", "Tarif bei Erstellung", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtCreation, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.automatedDateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, track.automation.finalGenerationOrigin)}${this.automatedDateField("sunoDownloadExportDate", "Download-/Exportdatum (optional)", draft.sunoDownloadExportDate, track.automation.downloadExportOrigin, false, "Kein gültiges Datum in den WAV-Metadaten erkannt – die manuelle Angabe bleibt optional.")}</div>
+        body = `<div class="field-grid two-col">${this.suggestedTextField("sunoModel", "Suno-Modell", "z. B. v5.5 oder eigener Wert", draft.sunoModel, sunoModelSuggestions, true)}${this.suggestedTextField("sunoPlanAtGeneration", "Suno-Tarif bei der finalen Generation", "z. B. Premier oder historischer Tarif", draft.sunoPlanAtGeneration, sunoPlanSuggestions, true)}${this.textField("sunoProjectUrl", "Suno-Projekt-URL", "https://suno.com/song/…", draft.sunoProjectUrl, true, "url")}${this.textField("sunoProjectVersionId", "Suno Project / Version ID (optional)", "Nur dokumentieren, wenn bekannt", draft.sunoProjectVersionId)}${this.textField("sunoFinalGenerationId", "Final generation ID (optional)", "Benutzerbestätigte ID, falls bekannt", draft.sunoFinalGenerationId)}${this.automatedDateField("sunoFinalGenerationDate", "Datum der finalen Generation", draft.sunoFinalGenerationDate, track.automation.finalGenerationOrigin)}${this.automatedDateField("sunoDownloadExportDate", "Download-/Exportdatum (optional)", draft.sunoDownloadExportDate, track.automation.downloadExportOrigin, false, "Kein gültiges Datum in den WAV-Metadaten erkannt – die manuelle Angabe bleibt optional.")}</div>
+          ${legacySunoPlanNoticeMarkup(draft.legacySunoPlanAtCreation)}
           ${this.renderAutomaticSunoMetadata(track)}
           <div class="form-section"><p class="field-label">Suno-Projektnachweis</p>${projectHint ? `<p class="field-help">Sunoprojekthinweis hinterlegt: <strong>${escapeHtml(projectHint.fileName)}</strong></p>` : ""}${this.inlineEvidenceActions(track, [["suno_screenshot", "Screenshot importieren"], ["suno_project_zip", "Projekt-ZIP importieren"], ["suno_final_export", "Suno-Export importieren"]])}</div>`;
         body += this.filenameConfirmation(track, "suno_final_export", "sunoExportFilenameDifferenceConfirmed", draft.sunoExportFilenameDifferenceConfirmed, "Suno-Export");
         break;
       }
-      case "human_work":
-        body = `${this.boolQuestion("instrumentalTrack", "Ist dies ein Instrumentaltrack?", "Diese ausdrückliche Angabe wird gegen Lyrics-Quelle, Lyrics-Text und Human Work geprüft; Widersprüche werden nicht automatisch korrigiert.", draft.instrumentalTrack)}<div class="field-grid two-col">${singleChoiceFieldMarkup("lyricsSource", "Lyrics-Quelle", draft.lyricsSource, [["instrumental", "Instrumental – keine Lyrics"], ["human", "Menschlich geschrieben"], ["suno", "Von Suno erzeugt"], ["mixed", "Gemischt"]], true)}</div>
-          ${conditional.has("lyricsText") ? this.textArea("lyricsText", "Verwendeter Lyrics-Text", "Nur die tatsächlich in Suno verwendete Fassung dokumentieren.", draft.lyricsText, true) : ""}
+      case "human_work": {
+        const hasLegacyLyrics = Boolean(draft.legacyLyricsSource || draft.legacyLyricsText.trim());
+        body = `<section class="question-group lyrics-structure-section"><div><p class="overline">Lyrics / Structure</p><h4>Vocal Lyrics und Suno-Feldinhalt getrennt dokumentieren</h4><p>Bracketed instructions wie [Intro], [Drop] oder [Outro] sind Strukturangaben und machen einen Instrumentaltrack nicht automatisch zu einem Vocal-Track.</p></div>
+          ${this.boolQuestion("instrumentalTrack", "Instrumental track?", "Bezieht sich ausschließlich auf den finalen Track.", draft.instrumentalTrack)}
+          ${this.boolQuestion("vocalLyricsPresent", "Vocal lyrics present?", "Ja nur bei tatsächlich hörbaren bzw. vorhandenen Vocal Lyrics.", draft.vocalLyricsPresent)}
+          ${this.boolQuestion("sunoLyricsFieldContent", "Content in Suno Lyrics / Structure field?", "Dokumentiert unabhängig von Vocal Lyrics, ob das Feld verwendet wurde.", draft.sunoLyricsFieldContent)}
+          ${conditional.has("sunoLyricsContentTypes") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("sunoLyricsContentTypes", "Content types", draft.sunoLyricsContentTypes, sunoLyricsContentTypeChoices, true)}${conditional.has("sunoLyricsOtherContentType") ? this.textField("sunoLyricsOtherContentType", "Sonstiger Content-Typ", "Faktisch beschreiben", draft.sunoLyricsOtherContentType, true) : ""}${singleChoiceFieldMarkup("sunoLyricsContentSource", "Content source", draft.sunoLyricsContentSource ?? "", [["human", "Human"], ["ai", "AI"], ["mixed", "Mixed"]], true)}${this.textArea("sunoLyricsFieldText", "Exact Suno field content", "Exakte verwendete Fassung einschließlich eckiger Klammern dokumentieren.", draft.sunoLyricsFieldText, true)}</div>` : ""}
+          ${hasLegacyLyrics ? `<div class="legacy-data-notice">${icon("info")}<div><strong>Historische Lyrics-Angaben – nicht automatisch klassifiziert</strong><p>Quelle: ${escapeHtml(draft.legacyLyricsSource || "Not documented")}</p>${draft.legacyLyricsText ? `<pre>${escapeHtml(draft.legacyLyricsText)}</pre>` : ""}<small>Diese unverändert erhaltenen Altwerte bestimmen weder Vocal Lyrics noch Content-Typen. Prüfe die neuen Felder ausdrücklich.</small></div></div>` : ""}
+        </section>
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
-          ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat.", draft.humanEditingPerformed)}
+          ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat. Freitext wird nicht zur Vocal-Lyrics-Klassifikation verwendet.", draft.humanEditingPerformed)}
           ${conditional.has("humanEditingDetails") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceField("humanEditingDetails", "Bestätigte Schritte", draft.humanEditingDetails, humanWorkChoices, true)}</div>` : ""}`;
         break;
+      }
       case "artwork":
-        body = `<div class="policy-card artwork-factual-notice">${icon("info")}<div><p class="overline">Nur relevante Angaben</p><h4>Faktische Dokumentation</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div></div><div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.textField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, true) : ""}</div>
+        body = `<div class="policy-card artwork-factual-notice">${icon("info")}<div><p class="overline">Nur relevante Angaben</p><h4>Faktische Dokumentation</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div></div><div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.suggestedTextField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, aiSystemSuggestions, true) : ""}</div>
           <div class="form-section"><p class="field-label">Suno-Original-Artwork</p>${this.inlineEvidenceActions(track, [["artwork_suno_original", "Suno-Original importieren"]])}</div>
           ${conditional.has("humanArtworkProcessOperations") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkProcessOperations", "Menschlicher Arbeitsprozess", draft.humanArtworkProcessOperations, humanArtworkProcessChoices)}${this.textArea("humanArtworkProcessNotes", "Beschreibung / Ergänzungen", "Arbeitsprozess frei beschreiben oder die Auswahl ergänzen", draft.humanArtworkProcessNotes)}</div>` : ""}
           ${conditional.has("humanArtworkModifications") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkModifications", "Menschliche Änderungen", draft.humanArtworkModifications, aiArtworkHumanChangeChoices, true)}${conditional.has("customArtworkChange") ? this.textArea("customArtworkChange", "Sonstige menschliche Bearbeitung – Details", "Frei beschreibbare zusätzliche Änderung", draft.customArtworkChange) : ""}</div>` : ""}
@@ -1626,8 +1794,28 @@ export class SunoDocumentationApp {
           ${draft.artworkOrigin && draft.artworkOrigin !== "none" ? `<div class="question-group"><div><p class="overline">Artwork Content Check</p><h4>Ja oder Nein auswählen</h4><p>Folgeangaben erscheinen nur bei Ja und bleiben frei beschreibbar.</p></div>${this.boolQuestion("depictsRealPerson", "Zeigt das Artwork absichtlich eine reale Person?", "", draft.depictsRealPerson)}${conditional.has("realPersonNotes") ? this.textArea("realPersonNotes", "Welche reale Person wird dargestellt bzw. in welchem Zusammenhang?", "Darstellung und Kontext faktisch beschreiben", draft.realPersonNotes, true) : ""}${this.boolQuestion("depictsRealEvent", "Stellt es ein reales Ereignis als authentisch dar?", "", draft.depictsRealEvent)}${conditional.has("realEventNotes") ? this.textArea("realEventNotes", "Welches reale Ereignis wird dargestellt bzw. in welchem Zusammenhang?", "Darstellung und Kontext faktisch beschreiben", draft.realEventNotes, true) : ""}${this.boolQuestion("containsTrademark", "Reproduziert es eine Marke oder ein Firmenlogo?", "", draft.containsTrademark)}${conditional.has("trademarkNotes") ? this.textArea("trademarkNotes", "Welche Marke oder welches Firmenlogo wird reproduziert bzw. in welchem Zusammenhang?", "Darstellung und Kontext faktisch beschreiben", draft.trademarkNotes, true) : ""}</div><div class="form-section"><p class="field-label">Finales Artwork</p><p class="field-help">Lade hier die endgültige JPG- oder PNG-Datei hoch, die du aus Suno heruntergeladen hast. Falls ein sichtbarer KI-Hinweis erforderlich ist, ersetzt du sie anschließend durch die lokal gekennzeichnete Fassung.</p>${this.inlineEvidenceActions(track, [["final_artwork", "Finales Suno-Artwork importieren"]])}</div>` : ""}`;
         break;
       case "ai_transparency":
-        body = `<div class="policy-card">${icon("info")}<div><p class="overline">Projektinterne Transparenzrichtlinie · Track-Snapshot</p><h4>${this.policyLabel(track.profileSnapshot.artworkTransparencyPolicy)}</h4><p>Dies ist die aktuell für den Track gespeicherte Projektregel – keine pauschale gesetzliche Aussage. Globale Änderungen aktualisieren offene Tracks; finalisierte Snapshots bleiben unverändert.</p></div></div>
-          ${conditional.has("disclosure") ? `<div class="field-grid two-col">${this.textField("disclosureText", "Sichtbarer Hinweis", "AI-assisted", draft.disclosureText, true)}${track.profileSnapshot.artworkTransparencyPolicy === "per_artwork" ? this.boolQuestion("disclosureApplied", "Sichtbaren Hinweis anwenden?", "Bei Ja muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied) : `<div class="read-only-field"><span>Status</span><strong>${draft.disclosureApplied ? "Lokal erzeugt" : "Noch nicht erzeugt"}</strong></div>`}</div><button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Hinweis lokal erzeugen</button>` : `<div class="neutral-message">${icon("check")}<div><strong>AI Transparency ist für diesen Track deaktiviert.</strong><span>${contentCheckAllNegative(draft) ? "Alle drei Content-Checks wurden mit Nein beantwortet." : "Grundlage: Artwork-Angabe und aktive Workspace-Policy."}</span></div></div>`}`;
+        body = `<div class="policy-card">${icon("info")}<div><p class="overline">Faktische Dokumentation</p><h4>Audio-Assessment und Artwork-Disclosure sind getrennt</h4><p>SunoDM erfasst Benutzerangaben und technische Workflow-Prüfungen. Daraus wird keine AI-Act-, Rechte- oder sonstige Rechtsbewertung abgeleitet.</p></div></div>
+          <section class="question-group ai-assessment-section"><div><p class="overline">AI Transparency Assessment – Audio</p><h4>Audio-bezogene Tatsachen</h4><p>YES, NO und NOT DOCUMENTED bleiben ausdrücklich unterscheidbar.</p></div>
+            ${this.documentationBooleanQuestion("generativeAiUsed", "Generative AI used", "NOT DOCUMENTED bleibt offen und ist nicht dasselbe wie NO.", draft.generativeAiUsed)}
+            ${generativeAiAudioDetailState(draft.generativeAiUsed) === "details_required" ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.suggestedTextField("audioAiSystem", "AI system", "z. B. Suno, ChatGPT / OpenAI oder eigener Wert", draft.audioAiSystem, aiSystemSuggestions, true)}
+              ${this.documentationAnswerQuestion("aiAssistedAudioElements", "AI-assisted audio elements", draft.aiAssistedAudioElements)}
+              ${this.documentationAnswerQuestion("aiGeneratedAudioElements", "AI-generated audio elements", draft.aiGeneratedAudioElements)}
+              ${this.documentationAnswerQuestion("realPersonVoiceIntentionallyImitated", "Real person voice intentionally imitated", draft.realPersonVoiceIntentionallyImitated)}
+              ${this.documentationAnswerQuestion("realPersonIdentityIntentionallyRepresented", "Real person's identity intentionally represented", draft.realPersonIdentityIntentionallyRepresented)}
+              ${this.documentationAnswerQuestion("realEventRepresentedAsAuthenticRecording", "Real event represented as authentic recording", draft.realEventRepresentedAsAuthenticRecording)}
+              ${this.documentationAnswerQuestion("realLocationInstitutionEventPresentedAsAuthenticAiRecording", "Real location / institution / event presented as authentic AI recording", draft.realLocationInstitutionEventPresentedAsAuthenticAiRecording)}
+              ${this.documentationAnswerQuestion("audioDisclosureApplied", "Disclosure applied", draft.audioDisclosureApplied)}
+              ${conditional.has("audioDisclosureLocations") ? this.multiChoiceArrayField("audioDisclosureLocations", "Disclosure locations", draft.audioDisclosureLocations, audioDisclosureLocationChoices, true) : ""}
+              ${conditional.has("audioDisclosureText") ? this.textArea("audioDisclosureText", "Disclosure text", "Tatsächlich verwendeten Hinweis dokumentieren", draft.audioDisclosureText, true) : ""}
+              ${conditional.has("audioDisclosureReason") ? this.textArea("audioDisclosureReason", "Reason / note for NO", "Optionaler sachlicher Grund; die App bewertet ihn nicht rechtlich.", draft.audioDisclosureReason) : ""}
+              ${draft.commercialUseIntended && draft.audioDisclosureApplied === "not_documented" ? `<div class="danger-banner is-warning">${icon("alert")}<div><strong>Audio-Disclosure: NOT DOCUMENTED</strong><span>Bei kommerziell vorgesehener Nutzung mit generativer KI bleibt AI Transparency offen.</span></div></div>` : ""}
+            </div>` : generativeAiAudioDetailState(draft.generativeAiUsed) === "not_applicable"
+              ? `<div class="neutral-message">${icon("info")}<div><strong>Audio-Detailfragen: N/A</strong><span>„Generative AI used“ wurde ausdrücklich mit NO dokumentiert.</span></div></div>`
+              : `<div class="danger-banner is-warning">${icon("alert")}<div><strong>Generative AI used: NOT DOCUMENTED</strong><span>Die Angabe ist offen. Erst YES blendet die Audio-Detailfragen ein; NO markiert sie als N/A.</span></div></div>`}
+          </section>
+          <section class="question-group ai-assessment-section"><div><p class="overline">AI Transparency Assessment – Artwork</p><h4>${this.policyLabel(track.profileSnapshot.artworkTransparencyPolicy)}</h4><p>Projektinterne Artwork-Regel; keine pauschale gesetzliche Aussage.</p></div>
+            ${conditional.has("disclosure") ? `<div class="field-grid two-col">${this.textField("disclosureText", "Sichtbarer Artwork-Hinweis", "AI-assisted", draft.disclosureText, true)}${track.profileSnapshot.artworkTransparencyPolicy === "per_artwork" ? this.boolQuestion("disclosureApplied", "Sichtbaren Artwork-Hinweis anwenden?", "Bei Ja muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied) : `<div class="read-only-field"><span>Artwork-Status</span><strong>${draft.disclosureApplied ? "Lokal erzeugt" : "Noch nicht erzeugt"}</strong></div>`}</div><button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Artwork-Hinweis lokal erzeugen</button>` : `<div class="neutral-message">${icon("info")}<div><strong>Kein aktiver Artwork-Disclosure-Schritt</strong><span>${contentCheckAllNegative(draft) ? "Die drei Artwork-Content-Checks wurden mit Nein beantwortet." : "Grundlage: dokumentierte Artwork-Entstehung und Track-Policy."}</span></div></div>`}
+          </section>`;
         break;
       case "release":
         {
@@ -1675,7 +1863,6 @@ export class SunoDocumentationApp {
       }).join("")}</div></div>` : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track, locked) : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalTermsEvidencePicker(track, locked, hasTermsEvidence) : ""}
-      <div class="form-section"><p class="field-label">Optionaler externer Zeitstempel</p>${this.inlineEvidenceActions(track, [["external_timestamp", "Zeitstempelnachweis importieren"]])}</div>
       <div class="panel evidence-table-panel"><div class="evidence-table-head"><span>Datei</span><span>Rolle</span><span>Integrität</span><span>Größe</span><span></span></div>
         ${track.evidence.length ? `<div class="evidence-list">${track.evidence.map((item) => this.renderEvidenceRow(item, locked)).join("")}</div>` : this.emptyState("file", "Noch keine Evidence", "Importiere echte lokale Dateien über den nativen Dateidialog.")}
       </div>
@@ -1727,9 +1914,10 @@ export class SunoDocumentationApp {
     return `<section class="global-picker"><div><p class="overline">Globale Service-Terms-Evidence</p><h4>Archivierte Suno-Nutzungsbedingungen</h4><p>Die Datei wird einmal unter Einstellungen lokal registriert und als gehashte portable Kopie in nicht finalisierte Projekte übernommen. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div>
       ${terms.length ? `<div>${terms.map((item) => {
         const attached = attachedIds.has(item.id);
-        return `<article class="${attached ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>Lokale, gehashte PDF</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached ? "disabled" : ""}>${attached ? "Im Projekt hinterlegt" : "Diesem Projekt zuordnen"}</button></article>`;
+        const metadataComplete = termsMetadataComplete(item.metadata);
+        return `<article class="${attached && metadataComplete ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Provider nicht dokumentiert")} · Abruf ${formatDate(item.metadata?.retrievalDate)}</small><small>${metadataComplete ? "Kernmetadaten vollständig" : "Terms evidence exists, but descriptive metadata is incomplete."}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached ? "disabled" : ""}>${attached ? "Im Projekt hinterlegt" : "Diesem Projekt zuordnen"}</button></article>`;
       }).join("")}</div>` : `<p class="empty-inline">Noch keine globalen Suno-Nutzungsbedingungen. Registriere die Datei unter Einstellungen.</p>`}
-      <button class="button button--secondary" data-action="terms-unavailable" ${locked || (hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable !== true) ? "disabled" : ""}>${hasTermsEvidence && track.fields.sunoTermsEvidenceNotAvailable === true ? "Widerspruch: unavailable-Status zurücknehmen" : hasTermsEvidence ? icon("check") + " Globaler Terms-Nachweis im Projekt hinterlegt" : track.fields.sunoTermsEvidenceNotAvailable === true ? icon("check") + " Terms evidence not available – Status zurücknehmen" : "Terms evidence not available dokumentieren"}</button>
+      ${track.fields.sunoTermsEvidenceNotAvailable === true ? `<div class="danger-banner is-warning">${icon("info")}<div><strong>Historischer Status: Terms evidence not available</strong><span>Dieser Legacy-Wert bleibt erhalten, erfüllt Workflow 1.7 bei kommerzieller Nutzung aber nicht. Erforderlich sind lokale Evidence sowie Titel, Provider und Abrufdatum.${hasTermsEvidence ? " Eine Datei ist bereits vorhanden; prüfe ihre Metadaten." : ""}</span></div></div>` : ""}
     </section>`;
   }
 
@@ -1744,6 +1932,26 @@ export class SunoDocumentationApp {
       <article class="action-card">${icon("shield")}<div><h4>3. Prüfsummen verifizieren</h4><p>Hashliste erneut lesen und jede erfasste Datei nativ überprüfen.</p><span>${track.integrity.verified ? formatDate(track.integrity.verifiedAt, true) : "Ausstehend"}</span></div><button class="button button--primary" data-action="verify-hashes" ${!track.integrity.generated ? "disabled" : ""}>Verifizieren</button></article></div>
       <div class="technical-note">${icon("info")}<p><strong>Unabhängig prüfbar.</strong> SHA256SUMS.txt bleibt möglichst mit <code>sha256sum -c</code> kompatibel. Zertifikat, Archiv und interne Verwaltungsdaten werden nicht in dieselbe Hashliste aufgenommen.</p></div>
     </div>`;
+  }
+
+  private renderExternalTimestampSection(track: TrackDetail): string {
+    if (!isTrackContentLocked(track.status)) return "";
+    const records = track.externalTimestamps ?? [];
+    const anchors = track.finalizationAnchors ?? [];
+    const canAttach = track.status === "FINALIZED" && track.certificate.valid;
+    return `<section class="panel external-timestamp-section">
+      <div class="panel-heading"><div><p class="overline">Post-finalization attachment</p><h3>External Timestamp Evidence</h3><p>Ein externer Nachweis kann ausschließlich an einen bereits bestehenden Integritätsanker dieses Zertifikatssnapshots angehängt werden. Er verändert den ursprünglichen Manifest-/Hash-Snapshot nicht.</p></div>${canAttach ? `<button class="button button--secondary" data-action="open-external-timestamp">${icon("upload")} Externen Zeitstempel anhängen</button>` : ""}</div>
+      ${anchors.length ? `<div class="timestamp-anchor-list">${anchors.map((anchor) => `<article><strong>${escapeHtml(anchor.label)}</strong><small>${escapeHtml(anchor.relativePath)}</small><code>${escapeHtml(anchor.sha256)}</code></article>`).join("")}</div>` : `<div class="neutral-message">${icon("info")}<div><strong>Finalization anchors: NOT RECORDED</strong><span>Dieser Snapshot stellt keine auswählbaren lokalen Anker bereit.</span></div></div>`}
+      ${records.length ? `<div class="timestamp-record-list">${records.map((record) => {
+        const match = externalTimestampMatchLabel(record.referencedHashMatch);
+        const addendumIntegrity = externalTimestampIntegrityPresentation(record);
+        const integrityIssues = addendumIntegrity.issues.length
+          ? addendumIntegrity.issues.join(" · ")
+          : "Die nachgelagerten Timestamp-Dateien konnten nicht vollständig verifiziert werden.";
+        return `<article class="timestamp-record ${record.referencedHashMatch === false ? "is-mismatch" : ""} ${record.integrityVerified ? "" : "is-integrity-invalid"}"><header><div><strong>${escapeHtml(record.provider)}</strong><small>${escapeHtml(externalTimestampTypeLabel(record.timestampType))}</small></div><div class="timestamp-record-statuses"><span class="verification ${record.referencedHashMatch === true ? "is-valid" : ""}">Referenced hash match: ${match}</span><span class="verification ${record.integrityVerified ? "is-valid" : ""}">Addendum integrity: ${addendumIntegrity.label}</span></div></header>${record.integrityVerified ? "" : `<div class="danger-banner timestamp-integrity-issues">${icon("alert")}<div><strong>External timestamp addendum integrity: FAILED</strong><span>${escapeHtml(integrityIssues)}</span></div></div>`}<dl><div><dt>Timestamp</dt><dd>${escapeHtml(record.timestampValue || "Not documented")}</dd></div><div><dt>Referenced artifact</dt><dd>${escapeHtml(timestampArtifactLabel(record.referencedArtifact))} · ${escapeHtml(record.referencedArtifactPath)}</dd></div><div><dt>Referenced SHA-256</dt><dd><code>${escapeHtml(record.referencedSha256)}</code></dd></div><div><dt>Actual local SHA-256</dt><dd><code>${escapeHtml(record.actualSha256 || "Not verified")}</code></dd></div><div><dt>Timestamp evidence</dt><dd>${escapeHtml(record.evidenceFileName)} · <code>${escapeHtml(record.evidenceSha256)}</code></dd></div><div><dt>Imported at</dt><dd>${formatDate(record.importedAt, true)}</dd></div>${record.externalReferenceId ? `<div><dt>External reference ID</dt><dd>${escapeHtml(record.externalReferenceId)}</dd></div>` : ""}${record.providerVerificationUrl ? `<div><dt>Provider verification URL</dt><dd>${escapeHtml(record.providerVerificationUrl)}</dd></div>` : ""}<div><dt>Provenance</dt><dd>${escapeHtml(record.provenance)}</dd></div></dl><details><summary>Addendum paths</summary><ul><li>${escapeHtml(record.recordRelativePath)}</li><li>${escapeHtml(record.markdownRelativePath)}</li><li>${escapeHtml(record.pdfRelativePath)}</li><li>${escapeHtml(record.hashListRelativePath)}</li></ul></details></article>`;
+      }).join("")}</div>` : `<div class="${track.fields.commercialUseIntended ? "danger-banner is-warning" : "neutral-message"}">${icon("info")}<div><strong>External timestamp evidence: NOT RECORDED</strong><span>${track.fields.commercialUseIntended ? "For long-term evidentiary preservation, an external timestamp can be added after technical finalization." : "Ein externer Zeitstempel ist ein optionaler zusätzlicher Evidenzanker."}</span></div></div>`}
+      <p class="certificate-disclaimer">The application records the external timestamp evidence and its referenced hash. It does not independently determine the timestamp's legal qualification unless explicitly technically verified.</p>
+    </section>`;
   }
 
   private renderFinalization(track: TrackDetail): string {
@@ -1780,7 +1988,9 @@ export class SunoDocumentationApp {
           ? `<button class="button button--finalize" data-action="show-certificate-popup">${icon("certificate")} Zertifikat anzeigen</button>`
           : ""
         : `<button class="button button--finalize" data-action="finalize-track" ${!ready ? "disabled" : ""}>${icon("certificate")} Dokumentation finalisieren</button>`}
+      <div class="technical-note">${icon("info")}<p><strong>PASS:</strong> Configured documentation requirements for this step were satisfied.<br><strong>DOCUMENTATION COMPLETE:</strong> Meaning: configured documentation requirements completed.</p></div>
       <p class="certificate-disclaimer">Das Zertifikat bestätigt ausschließlich den Abschluss des konfigurierten Dokumentations- und Integritätsworkflows. Es ist keine behördliche Zertifizierung, Rechtsberatung oder unabhängige Feststellung von Urheberschaft oder Rechtskonformität.</p>
+      ${this.renderExternalTimestampSection(track)}
     </div>`;
   }
 
@@ -1789,9 +1999,10 @@ export class SunoDocumentationApp {
     const deviations = (track.blockingDeviations ?? []).filter((item) => item.blocking && !item.resolved);
     return `<div class="certificate-view ${track.certificate.valid ? "is-valid" : "is-invalid"}">
       <div class="certificate-paper"><header><div class="certificate-seal">${icon("certificate")}</div><div><p>Suno Documentation Manager</p><h3>Track Documentation<br>Completion Certificate</h3></div><span class="certificate-result">${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "CERTIFICATE INVALID"}</span></header>
-      <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div></dl>
-      <footer>This certificate confirms completion of the configured documentation workflow and integrity checks. It does not constitute governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.</footer></div>
+      <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div><div><dt>Meaning</dt><dd>configured documentation requirements completed</dd></div></dl>
+      <footer>PASS means: Configured documentation requirements for this step were satisfied. This certificate confirms completion of the configured documentation workflow and integrity checks. It does not constitute governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.</footer></div>
       <div class="certificate-actions">${track.certificate.valid ? `<button class="button button--secondary" data-action="show-certificate-popup">${icon("certificate")} Zertifikatsübersicht öffnen</button>` : ""}${canCreateTrackRevision(track.status) ? `<button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>` : ""}${track.certificate.valid && canCreateTrackRevision(track.status) ? `<button class="button button--danger-soft" data-action="invalidate-certificate">Zertifikat invalidieren</button>` : ""}</div>
+      ${this.renderExternalTimestampSection(track)}
     </div>`;
   }
 
@@ -1815,16 +2026,16 @@ export class SunoDocumentationApp {
     return `<div class="page-content settings-page">
       <div class="page-lead"><div><p class="overline">Workspace-Stammdaten</p><h2>Globale Angaben</h2><p>Diese Werte werden einmal gespeichert und als tatsächlicher Snapshot in jedes Track-Dokument übernommen.</p></div></div>
       <form id="profile-form" class="panel settings-form">
-        <div class="settings-section"><div class="settings-section-copy"><span>01</span><div><h3>Artist & Suno</h3><p>Nur produktionsrelevante Profildaten – keine privaten Kontaktdaten.</p></div></div><div class="field-grid two-col">${this.textField("artistName", "Künstlername", "Künstlername", profile.artistName, true)}${this.textField("sunoProfileName", "Suno-Profilname", "Profilname", profile.sunoProfileName, true)}${this.textField("sunoHandle", "Suno-Benutzername", "@handle", profile.sunoHandle, true)}${this.textField("sunoPlan", "Suno-Tarif", "z. B. Premier", profile.sunoPlan, true)}${this.dateField("subscriptionStartDate", "Abo-Startdatum", profile.subscriptionStartDate, true)}</div></div>
-        <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.textField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. OpenAI", profile.defaultAiImageService)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
+        <div class="settings-section"><div class="settings-section-copy"><span>01</span><div><h3>Artist & Suno</h3><p>Nur produktionsrelevante Profildaten – keine privaten Kontaktdaten.</p></div></div><div class="field-grid two-col">${this.textField("artistName", "Künstlername", "Künstlername", profile.artistName, true)}${this.textField("sunoProfileName", "Suno-Profilname", "Profilname", profile.sunoProfileName, true)}${this.textField("sunoHandle", "Suno-Benutzername", "@handle", profile.sunoHandle, true)}${this.suggestedTextField("sunoPlan", "Suno-Tarif", "z. B. Premier oder eigener Wert", profile.sunoPlan, sunoPlanSuggestions, true)}${this.dateField("subscriptionStartDate", "Abo-Startdatum", profile.subscriptionStartDate, true)}</div></div>
+        <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.suggestedTextField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. ChatGPT / OpenAI oder eigener Wert", profile.defaultAiImageService, aiSystemSuggestions)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
         <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
         <div class="form-save settings-save"><span>${icon("shield")} Stammdaten verbleiben in der lokalen Workspace-Datenbank.</span><button class="button button--primary" type="submit">${icon("check")} Einstellungen speichern</button></div>
       </form>
       <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
         ${subscriptions.length ? `<div class="global-evidence-list">${subscriptions.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globalen Nachweis entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
       </section>
-      <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Globale Datei für alle Projekte</p><h3>Archivierte Suno-Nutzungsbedingungen</h3><p>Wähle genau eine lokale PDF aus. Sie wird gehasht und in jedes neue sowie jedes noch bearbeitbare Projekt als portable Evidence-Kopie hinterlegt. Finalisierte Snapshots bleiben unverändert.</p><p>Gefordert: PDF. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div><button class="button button--secondary" data-action="import-global-terms">${icon("upload")} PDF auswählen</button></div>
-        ${terms.length ? `<div class="global-evidence-list">${terms.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>Lokale PDF · automatisch gehasht</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globale Nutzungsbedingungen entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch keine globale PDF mit Suno-Nutzungsbedingungen registriert.</p>`}
+      <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Globale Datei für alle Projekte</p><h3>Archivierte Suno-Nutzungsbedingungen</h3><p>Dokumenttitel, Provider und Abrufdatum sind Kernmetadaten. Die lokale PDF und ihre Metadaten werden in jedes neue sowie jedes noch bearbeitbare Projekt kopiert. Finalisierte Snapshots bleiben unverändert.</p><p>Source URL, Effective Date, anwendbarer Produktionszeitraum und sachliche Notiz sind optional. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div><button class="button button--secondary" data-action="import-global-terms">${icon("upload")} Terms-Evidence registrieren</button></div>
+        ${terms.length ? `<div class="global-evidence-list terms-evidence-list">${terms.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Provider nicht dokumentiert")} · Abruf ${formatDate(item.metadata?.retrievalDate)}</small><small>${escapeHtml(item.metadata?.sourceUrl || "Source URL: Not documented")} · ${escapeHtml(item.fileName)}</small></div><span class="verification ${termsMetadataComplete(item.metadata) ? "is-valid" : ""}">${termsMetadataComplete(item.metadata) ? icon("check") + " Vollständig" : "Metadaten fehlen"}</span><button class="button button--small button--secondary" data-edit-global-terms="${item.id}">Metadaten bearbeiten</button><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globale Nutzungsbedingungen entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch keine globale PDF mit Suno-Nutzungsbedingungen registriert.</p>`}
       </section>
     </div>`;
   }
@@ -1950,6 +2161,14 @@ export class SunoDocumentationApp {
 
   private boolQuestion(name: string, label: string, help: string, value: boolean | null): string {
     return `<fieldset class="boolean-field"><legend>${escapeHtml(label)}</legend>${help ? `<p>${escapeHtml(help)}</p>` : ""}<div><label><input type="radio" name="${name}" value="true" ${value === true ? "checked" : ""}><span>${icon("check")} Ja</span></label><label><input type="radio" name="${name}" value="false" ${value === false ? "checked" : ""}><span>${icon("close")} Nein</span></label></div></fieldset>`;
+  }
+
+  private documentationBooleanQuestion(name: string, label: string, help: string, value: boolean | null): string {
+    return `<fieldset class="boolean-field documentation-answer-field"><legend>${escapeHtml(label)}</legend>${help ? `<p>${escapeHtml(help)}</p>` : ""}<div><label><input type="radio" name="${escapeHtml(name)}" value="yes" data-documentation-boolean ${value === true ? "checked" : ""}><span>${icon("check")} YES</span></label><label><input type="radio" name="${escapeHtml(name)}" value="no" data-documentation-boolean ${value === false ? "checked" : ""}><span>${icon("close")} NO</span></label><label><input type="radio" name="${escapeHtml(name)}" value="not_documented" data-documentation-boolean ${value === null ? "checked" : ""}><span>${icon("info")} NOT DOCUMENTED</span></label></div></fieldset>`;
+  }
+
+  private documentationAnswerQuestion(name: string, label: string, value: DocumentationAnswer | null): string {
+    return `<fieldset class="boolean-field documentation-answer-field"><legend>${escapeHtml(label)}</legend><div><label><input type="radio" name="${escapeHtml(name)}" value="yes" ${value === "yes" ? "checked" : ""} required><span>${icon("check")} YES</span></label><label><input type="radio" name="${escapeHtml(name)}" value="no" ${value === "no" ? "checked" : ""} required><span>${icon("close")} NO</span></label><label><input type="radio" name="${escapeHtml(name)}" value="not_documented" ${value === "not_documented" ? "checked" : ""} required><span>${icon("info")} NOT DOCUMENTED</span></label></div></fieldset>`;
   }
 
   private radioCards(name: string, value: string, options: Array<[string, string, string]>): string {
@@ -2095,6 +2314,17 @@ export class SunoDocumentationApp {
       }
       return;
     }
+    if (button.dataset.editGlobalTerms) {
+      const item = this.state.globalEvidence.find((entry) => entry.id === button.dataset.editGlobalTerms && entry.role === "suno_terms_rights");
+      if (!item) return;
+      this.state.termsMetadataDialog = {
+        evidenceId: item.id,
+        metadata: { ...emptyEvidenceMetadata(), ...structuredClone(item.metadata) }
+      };
+      this.state.showExternalTimestampDialog = false;
+      this.render();
+      return;
+    }
     if (button.dataset.attachGlobal) {
       const global = this.state.globalEvidence.find((item) => item.id === button.dataset.attachGlobal);
       const terms = global?.role === "suno_terms_rights";
@@ -2164,7 +2394,7 @@ export class SunoDocumentationApp {
         this.state.showTrackLibrary = true;
         this.render();
         break;
-      case "close-modal": this.state.showNewTrack = false; this.state.folderImport = null; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.render(); break;
+      case "close-modal": this.state.showNewTrack = false; this.state.folderImport = null; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.state.termsMetadataDialog = null; this.state.showExternalTimestampDialog = false; this.render(); break;
       case "show-certificate-popup":
         if (this.requireTrack().certificate.valid && this.requireTrack().certificate.certificateId) {
           this.state.showCertificatePopup = true;
@@ -2189,7 +2419,18 @@ export class SunoDocumentationApp {
         break;
       case "import-evidence": await this.chooseEvidenceRole(); break;
       case "import-global-evidence": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.evidencePreview = null; this.state.showSubscriptionEvidence = true; this.render(); break;
-      case "import-global-terms": await this.importGlobalTermsEvidence(); break;
+      case "import-global-terms":
+        this.state.termsMetadataDialog = { evidenceId: null, metadata: emptyEvidenceMetadata() };
+        this.state.showExternalTimestampDialog = false;
+        this.render();
+        break;
+      case "open-external-timestamp":
+        if (this.requireTrack().status === "FINALIZED") {
+          this.state.showExternalTimestampDialog = true;
+          this.state.termsMetadataDialog = null;
+          this.render();
+        }
+        break;
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
@@ -2216,20 +2457,6 @@ export class SunoDocumentationApp {
           break;
         }
         if (window.confirm("Track mit dem aktuellen Workflow neu bewerten? Ein finalisierter Snapshot wird zuerst unverändert als Revision archiviert; Dokumente, Prüfsummen und Zertifikat müssen danach neu erzeugt werden.")) await this.runAction("Workflow wird aktualisiert und neu bewertet …", () => this.api.reEvaluateTrack(this.requireTrack().id), this.requireTrack().status === "FINALIZED");
-        break;
-      case "terms-unavailable":
-        {
-          const next = this.requireTrack().fields.sunoTermsEvidenceNotAvailable !== true;
-          const prompt = next
-            ? "Ausdrücklich dokumentieren, dass kein lokaler Terms-Nachweis verfügbar ist? Dies ist keine Aussage über Rechte oder Gültigkeit."
-            : "Den dokumentierten Status 'Terms evidence not available' zurücknehmen?";
-          if (!window.confirm(prompt)) break;
-          await this.trackMutation(
-            "Status wird dokumentiert …",
-            () => this.api.updateTrack(this.requireTrack().id, { sunoTermsEvidenceNotAvailable: next }),
-            next ? "Terms-Status dokumentiert" : "Terms-Status zurückgenommen"
-          );
-        }
         break;
     }
   }
@@ -2336,6 +2563,85 @@ export class SunoDocumentationApp {
       }
       return;
     }
+    if (form.id === "terms-metadata-form") {
+      const dialog = this.state.termsMetadataDialog;
+      if (!dialog) return;
+      const data = new FormData(form);
+      const metadata: Partial<EvidenceMetadata> = {
+        documentTitle: String(data.get("documentTitle") ?? "").trim(),
+        provider: String(data.get("provider") ?? "").trim(),
+        retrievalDate: String(data.get("retrievalDate") ?? "").trim(),
+        sourceUrl: String(data.get("sourceUrl") ?? "").trim(),
+        effectiveDate: String(data.get("effectiveDate") ?? "").trim(),
+        applicableProductionPeriod: String(data.get("applicableProductionPeriod") ?? "").trim(),
+        factualNote: String(data.get("factualNote") ?? "").trim()
+      };
+      if (!termsMetadataComplete(metadata)) {
+        this.showToast("error", "Terms-Metadaten unvollständig", "Dokumenttitel, Provider/Source und Abrufdatum sind erforderlich.");
+        this.render();
+        return;
+      }
+      const currentTrackId = this.state.track?.id;
+      const outcome = await this.withBusy(
+        dialog.evidenceId ? "Terms-Metadaten werden aktualisiert …" : "Nutzungsbedingungen auswählen und registrieren …",
+        async () => {
+          const item = dialog.evidenceId
+            ? await this.api.updateGlobalTermsEvidenceMetadata(dialog.evidenceId, metadata)
+            : await this.api.importGlobalTermsEvidence(metadata);
+          if (!item) return null;
+          return {
+            globalEvidence: await this.api.listGlobalEvidence(),
+            track: currentTrackId ? await this.api.loadTrack(currentTrackId) : null
+          };
+        }
+      );
+      if (!outcome) return;
+      this.state.globalEvidence = outcome.globalEvidence;
+      if (outcome.track) this.applyTrack(outcome.track);
+      this.state.termsMetadataDialog = null;
+      await this.refreshTracks();
+      this.showToast("success", dialog.evidenceId ? "Terms-Metadaten aktualisiert" : "Globale Nutzungsbedingungen registriert", "Bearbeitbare Projektkopien wurden aktualisiert; finalisierte Snapshots bleiben unverändert.");
+      this.render();
+      return;
+    }
+    if (form.id === "external-timestamp-form") {
+      const track = this.requireTrack();
+      if (track.status !== "FINALIZED") return;
+      const data = new FormData(form);
+      const timestampType = String(data.get("timestampType") ?? "") as ExternalTimestampInput["timestampType"];
+      const referencedArtifact = String(data.get("referencedArtifact") ?? "") as TimestampReferencedArtifact;
+      const referencedSha256 = String(data.get("referencedSha256") ?? "").trim();
+      const otherReferencedArtifact = String(data.get("otherReferencedArtifact") ?? "").trim();
+      if (!/^[a-f\d]{64}$/i.test(referencedSha256)) {
+        this.showToast("error", "Referenced SHA-256 ungültig", "Gib den vollständigen 64-stelligen SHA-256 aus dem externen Nachweis ein.");
+        this.render();
+        return;
+      }
+      if (referencedArtifact === "other" && !otherReferencedArtifact) {
+        this.showToast("error", "Referenziertes Artefakt fehlt", "Beschreibe das andere referenzierte Artefakt.");
+        this.render();
+        return;
+      }
+      const input: ExternalTimestampInput = {
+        provider: String(data.get("provider") ?? "").trim(),
+        timestampType,
+        timestampValue: String(data.get("timestampValue") ?? "").trim(),
+        referencedArtifact,
+        otherReferencedArtifact,
+        referencedSha256,
+        externalReferenceId: String(data.get("externalReferenceId") ?? "").trim(),
+        providerVerificationUrl: String(data.get("providerVerificationUrl") ?? "").trim(),
+        note: String(data.get("note") ?? "").trim()
+      };
+      const updated = await this.withBusy("Externen Zeitstempelnachweis auswählen und revisionsgebunden anhängen …", () => this.api.attachExternalTimestamp(track.id, input));
+      if (!updated) return;
+      this.applyTrack(updated);
+      this.state.showExternalTimestampDialog = false;
+      const record = updated.externalTimestamps.at(-1);
+      this.showToast("success", "Externer Zeitstempel registriert", `Referenced hash match: ${externalTimestampMatchLabel(record?.referencedHashMatch ?? null)}. Der ursprüngliche Finalisierungsanker wurde nicht verändert.`);
+      this.render();
+      return;
+    }
     if (form.id === "profile-form") {
       const data = new FormData(form);
       const profile: GlobalProfile = {
@@ -2398,7 +2704,11 @@ export class SunoDocumentationApp {
     const key = input.name as keyof TrackFields;
     if (!key) return;
     let value: string | boolean | null = input.value;
-    if (input instanceof HTMLInputElement && input.type === "radio" && (input.value === "true" || input.value === "false")) value = input.value === "true";
+    if (input instanceof HTMLInputElement && input.matches("[data-documentation-boolean]")) {
+      value = input.value === "yes" ? true : input.value === "no" ? false : null;
+    } else if (input instanceof HTMLInputElement && input.type === "radio" && (input.value === "true" || input.value === "false")) {
+      value = input.value === "true";
+    }
     (this.state.trackDraft as unknown as Record<string, unknown>)[key] = value;
     this.draftDirty = true;
     this.render();
@@ -2543,38 +2853,7 @@ export class SunoDocumentationApp {
     }
   }
 
-  private async importGlobalTermsEvidence(): Promise<void> {
-    const imported = await this.withBusy(
-      "Nutzungsbedingungen auswählen, global speichern und in Projekte kopieren …",
-      async () => {
-        const item = await this.api.importGlobalTermsEvidence();
-        if (!item) return null;
-        return { item, globalEvidence: await this.api.listGlobalEvidence() };
-      }
-    );
-    if (!imported) return;
-    this.state.globalEvidence = imported.globalEvidence;
-    await this.refreshTracks();
-    this.showToast(
-      "success",
-      "Globale Nutzungsbedingungen registriert",
-      "Die Datei wurde lokal gehasht und in jedes noch bearbeitbare Projekt kopiert. Finalisierte Snapshots wurden nicht verändert."
-    );
-    this.render();
-  }
-
-  private collectEvidenceMetadata(role: EvidenceRole): Partial<EvidenceMetadata> | null | undefined {
-    if (role === "external_timestamp") {
-      const provider = window.prompt("Zeitstempel-Provider / Aussteller:")?.trim();
-      if (!provider) return null;
-      const externalTimestamp = window.prompt("Zeitstempel (mit Zeitzone, soweit dokumentiert):")?.trim();
-      if (!externalTimestamp) return null;
-      const referencedHash = window.prompt("Referenzierter Hash:")?.trim();
-      if (!referencedHash) return null;
-      const referencedArtifact = window.prompt("Referenziertes Artefakt (z. B. Manifest oder Zertifikat):")?.trim();
-      if (!referencedArtifact) return null;
-      return { provider, externalTimestamp, referencedHash, referencedArtifact };
-    }
+  private collectEvidenceMetadata(_role: EvidenceRole): Partial<EvidenceMetadata> | null | undefined {
     return undefined;
   }
 

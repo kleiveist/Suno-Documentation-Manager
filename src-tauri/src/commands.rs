@@ -3,9 +3,10 @@ use crate::error::{AppError, Result};
 use crate::folder_import::{FolderImportExecutionInput, FolderImportProposal};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
-    EvidencePreview, EvidenceRole, GlobalEvidenceItem, OperationProgress, Profile, StepStatus,
-    SubscriptionBillingCycle, TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackPatch,
-    TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
+    EvidencePreview, EvidenceRole, ExternalTimestampInput, GlobalEvidenceItem, OperationProgress,
+    Profile, StepStatus, SubscriptionBillingCycle, TrackCoverPreview, TrackDetail,
+    TrackLibraryPlacement, TrackPatchRequest, TrackSummary, ValidationResult, WorkspaceScan,
+    WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
@@ -113,6 +114,7 @@ pub fn import_global_evidence(
 #[tauri::command]
 pub fn import_global_terms_evidence(
     state: State<'_, AppState>,
+    metadata: EvidenceMetadata,
 ) -> Result<Option<GlobalEvidenceItem>> {
     let role = EvidenceRole::SunoTermsRights;
     let Some(source) = rfd::FileDialog::new()
@@ -123,7 +125,39 @@ pub fn import_global_terms_evidence(
         return Ok(None);
     };
     with_workspace(&state, |app| {
-        app.register_global_terms_evidence(&source).map(Some)
+        app.register_global_terms_evidence(&source, metadata)
+            .map(Some)
+    })
+}
+
+#[tauri::command]
+pub fn update_global_terms_evidence_metadata(
+    state: State<'_, AppState>,
+    evidence_id: String,
+    metadata: EvidenceMetadata,
+) -> Result<GlobalEvidenceItem> {
+    with_workspace(&state, |app| {
+        app.update_global_terms_evidence_metadata(&evidence_id, metadata)
+    })
+}
+
+#[tauri::command]
+pub fn attach_external_timestamp(
+    state: State<'_, AppState>,
+    track_id: String,
+    input: ExternalTimestampInput,
+) -> Result<Option<TrackDetail>> {
+    let role = EvidenceRole::ExternalTimestamp;
+    let Some(source) = rfd::FileDialog::new()
+        .set_title("External timestamp evidence auswählen")
+        .add_filter("Timestamp evidence", role.allowed_extensions())
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    with_workspace(&state, |app| {
+        app.attach_external_timestamp_from(&track_id, &source, input)
+            .map(Some)
     })
 }
 
@@ -213,9 +247,9 @@ pub async fn load_track_cover(
 pub fn update_track(
     state: State<'_, AppState>,
     track_id: String,
-    input: TrackPatch,
+    input: TrackPatchRequest,
 ) -> Result<TrackDetail> {
-    with_workspace(&state, |app| app.update_track(&track_id, input))
+    with_workspace(&state, |app| app.update_track_request(&track_id, input))
 }
 
 #[tauri::command]

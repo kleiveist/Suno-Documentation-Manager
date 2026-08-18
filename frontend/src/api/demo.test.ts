@@ -9,8 +9,7 @@ async function settle<T>(promise: Promise<T>): Promise<T> {
 
 async function finalizeGravity(api: ReturnType<typeof createDemoApi>) {
   await settle(api.updateTrack("gravity", {
-    sunoExportFilenameDifferenceConfirmed: true,
-    sunoTermsEvidenceNotAvailable: true
+    sunoExportFilenameDifferenceConfirmed: true
   }));
   await settle(api.generateDocuments("gravity", false));
   await settle(api.calculateHashes("gravity"));
@@ -21,6 +20,23 @@ async function finalizeGravity(api: ReturnType<typeof createDemoApi>) {
 afterEach(() => vi.useRealTimers());
 
 describe("demo track library", () => {
+  it("does not prefill a new track's generation plan from the global profile", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+
+    const created = await settle(api.createTrack({
+      title: "Fresh Plan",
+      productionStartDate: "2026-08-17",
+      commercialUseIntended: false,
+      library: { section: "single" }
+    }));
+
+    expect(created.profileSnapshot.sunoPlan).toBe("Premier");
+    expect(created.fields.sunoPlanAtGeneration).toBe("");
+    expect(created.fields.legacySunoPlanAtCreation).toBe("");
+  });
+
   it("creates and renames an album before it contains a track", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -228,7 +244,12 @@ describe("demo evidence controls", () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
-    const global = await settle(api.importGlobalTermsEvidence());
+    const global = await settle(api.importGlobalTermsEvidence({
+      documentTitle: "Suno Terms of Service",
+      provider: "Suno, Inc.",
+      retrievalDate: "2026-08-17",
+      sourceUrl: "https://suno.com/terms"
+    }));
     const existing = await settle(api.loadTrack("gravity"));
     const created = await settle(api.createTrack({
       title: "Later Project",
@@ -243,10 +264,140 @@ describe("demo evidence controls", () => {
           role: "suno_terms_rights",
           sourceGlobalEvidenceId: global!.id,
           provenance: "global_copy",
-          metadata: expect.objectContaining({ originalFileName: "suno_terms.pdf" })
+          metadata: expect.objectContaining({
+            originalFileName: "suno_terms.pdf",
+            documentTitle: "Suno Terms of Service",
+            provider: "Suno, Inc.",
+            retrievalDate: "2026-08-17"
+          })
         })
       ]));
     }
+  });
+
+  it("rejects incomplete Terms metadata and propagates later metadata edits only to editable copies", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+
+    const rejected = expect(api.importGlobalTermsEvidence({ documentTitle: "", provider: "", retrievalDate: "" }))
+      .rejects.toThrow("Dokumenttitel");
+    await vi.runAllTimersAsync();
+    await rejected;
+
+    const global = await settle(api.importGlobalTermsEvidence({
+      documentTitle: "Suno Terms",
+      provider: "Suno",
+      retrievalDate: "2026-08-17"
+    }));
+    await settle(api.updateGlobalTermsEvidenceMetadata(global!.id, {
+      documentTitle: "Suno Terms of Service",
+      provider: "Suno, Inc.",
+      retrievalDate: "2026-08-17",
+      applicableProductionPeriod: "2026"
+    }));
+
+    const updated = await settle(api.loadTrack("gravity"));
+    expect(updated.evidence.find((item) => item.sourceGlobalEvidenceId === global!.id)?.metadata)
+      .toEqual(expect.objectContaining({ documentTitle: "Suno Terms of Service", applicableProductionPeriod: "2026" }));
+  });
+});
+
+describe("demo external timestamp attachment", () => {
+  it("registers an exact anchor match after finalization and does not carry it into a new revision", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const finalized = await finalizeGravity(api);
+    expect(finalized.track!.finalizationAnchors).toEqual([
+      {
+        artifact: "evidence_manifest",
+        label: "Evidence manifest (recommended timestamp anchor)",
+        relativePath: "06_CERTIFICATE/EVIDENCE_MANIFEST.json",
+        sha256: "a".repeat(64)
+      },
+      {
+        artifact: "sha256sums",
+        label: "Track SHA-256 manifest",
+        relativePath: "03_DOCUMENTATION/SHA256SUMS.txt",
+        sha256: "b".repeat(64)
+      },
+      {
+        artifact: "documentation_certificate_markdown",
+        label: "Documentation certificate (Markdown)",
+        relativePath: "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md",
+        sha256: "c".repeat(64)
+      },
+      {
+        artifact: "certificate_pdf",
+        label: "Documentation certificate (PDF)",
+        relativePath: "SunoDM_DOCUMENTATION_CERTIFICATE.pdf",
+        sha256: "d".repeat(64)
+      },
+      {
+        artifact: "final_evidence_package",
+        label: "Final evidence package certificate hash set",
+        relativePath: "06_CERTIFICATE/CERTIFICATE_SHA256.txt",
+        sha256: "e".repeat(64)
+      }
+    ]);
+    const anchor = finalized.track!.finalizationAnchors.find((item) => item.artifact === "evidence_manifest")!;
+
+    const timestamped = await settle(api.attachExternalTimestamp("gravity", {
+      provider: "Example TSA",
+      timestampType: "external_integrity_timestamp",
+      timestampValue: "2026-08-17T12:00:00Z",
+      referencedArtifact: "evidence_manifest",
+      otherReferencedArtifact: "",
+      referencedSha256: anchor.sha256,
+      externalReferenceId: "tsa-1",
+      providerVerificationUrl: "https://example.test/tsa-1",
+      note: ""
+    }));
+
+    const record = timestamped!.externalTimestamps[0];
+    const sidecarDirectory = `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${record.id}`;
+    expect(record).toEqual(expect.objectContaining({
+      certificateId: finalized.track!.certificate.certificateId,
+      referencedHashMatch: true,
+      actualSha256: anchor.sha256,
+      provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison",
+      recordRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD.json`,
+      markdownRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.md`,
+      pdfRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.pdf`,
+      hashListRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD_SHA256.txt`,
+      integrityVerified: true,
+      integrityIssues: []
+    }));
+
+    const revision = await settle(api.createRevision("gravity"));
+    expect(revision.track!.externalTimestamps).toEqual([]);
+    expect(revision.track!.finalizationAnchors).toEqual([]);
+  });
+
+  it("keeps a referenced hash mismatch separate from sidecar-integrity verification", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await finalizeGravity(api);
+
+    const timestamped = await settle(api.attachExternalTimestamp("gravity", {
+      provider: "Example TSA",
+      timestampType: "electronic_timestamp",
+      timestampValue: "",
+      referencedArtifact: "evidence_manifest",
+      otherReferencedArtifact: "",
+      referencedSha256: "0".repeat(64),
+      externalReferenceId: "",
+      providerVerificationUrl: "",
+      note: ""
+    }));
+
+    expect(timestamped!.externalTimestamps[0]).toEqual(expect.objectContaining({
+      referencedHashMatch: false,
+      integrityVerified: true,
+      integrityIssues: []
+    }));
   });
 });
 

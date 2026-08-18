@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-15 |
+| Last review | 2026-08-17 |
 | Audience | Product developers and architects |
 | Related ATP | [Active product acceptance](../atp/active/active.md) |
 
@@ -75,7 +75,7 @@ There is no backend service, remote database, telemetry endpoint, cloud dependen
 | `DocumentService` | Render versioned factual Markdown and text templates deterministically and write atomically | Invent legal conclusions or write managed content over an unmanaged file without consent and backup |
 | `ArtworkService` | Produce a local visible disclosure while preserving the AI original and documenting the process | Replace an original image or label project policy as a universal legal requirement |
 | `HashService` | Generate and verify SHA-256 records using native Rust code | Depend on a shell command for normal product behavior or hash excluded mutable areas |
-| `CertificateService` | Validate the finalization gate, produce certificate artifacts, detect later mismatch, invalidate, archive, and revise | Assert authorship, legal compliance, or governmental certification |
+| `CertificateService` | Validate the finalization gate, produce certificate artifacts, expose stable anchors, durably stage/register/publish certificate-bound external-timestamp addenda, reverify current and archived published bytes, detect later mismatch, invalidate, archive, and revise | Assert authorship, timestamp qualification, legal compliance, evidentiary weight, or governmental certification; auto-adopt unregistered timestamp metadata |
 | `PersistenceService` | Own the SQLite connection, transactions, migrations, and index recovery | Accept raw SQL from TypeScript or make SQLite the only surviving track record |
 
 ## Typed command boundary
@@ -87,11 +87,11 @@ The command surface is deliberately explicit. The exact Rust input and output st
 | Workspace | `create_workspace`, `open_workspace`, `scan_workspace` |
 | Track | `create_track`, `load_track`, `update_track`, `update_track_library`, `rename_album` |
 | Evidence | `import_evidence`, `preview_evidence`, `remove_evidence`, `verify_evidence` |
-| Global evidence | `list_global_evidence`, `import_global_evidence`, `import_global_terms_evidence`, `remove_global_evidence`, `attach_global_evidence` |
+| Global evidence | `list_global_evidence`, `import_global_evidence`, `import_global_terms_evidence`, `update_global_terms_evidence_metadata`, `remove_global_evidence`, `attach_global_evidence` |
 | Documents | `generate_documents` |
 | Artwork | `generate_artwork_disclosure` |
 | Integrity | `calculate_hashes`, `verify_hashes` |
-| Gate and revision | `validate_track`, `finalize_track`, `invalidate_certificate`, `create_revision` |
+| Gate, addendum, and revision | `validate_track`, `finalize_track`, `attach_external_timestamp`, `invalidate_certificate`, `create_revision` |
 
 A command accepts domain identifiers and constrained values. It does not accept an operation name, arbitrary SQL, or an unconstrained write path. Path selection happens through a native dialog or a validated path already associated with the open workspace.
 
@@ -163,6 +163,8 @@ Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclo
 
 Finalization renders `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` locally in native Rust from the same frozen track/profile/step/evidence snapshot as the JSON manifest and Markdown certificate. The fixed root PDF is excluded from the earlier `SHA256SUMS.txt` set to avoid a cycle; its complete SHA-256 digest is instead the fourth required entry in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`. The certificate directory and root PDF share one marker-backed staging, verification, rollback, recovery, and revision lifecycle.
 
+Post-finalization timestamp attachment uses a separate two-authority transaction: create and verify immutable sidecar-v1 bytes in contained staging, synchronize the completed stage and parent, register the certificate-bound row in SQLite, then publish and synchronize the registered directory live. A compensating database rollback occurs only after live removal is parent-synchronized; otherwise the registration remains recoverable. Workspace recovery completes only matching registered pending state, discards unregistered staging, and rejects an unregistered live sidecar. Load verification requires the canonical immutable record bytes, rejects injected runtime/trust claims even with a renewed hash list, and hashes the published addendum bytes and pinned Markdown/PDF digests without invoking the current renderer; the mutable current integrity result exists only in the returned view model. Revision lookup requires `revision.json.previous_certificate.certificateId` to match the sidecar, keeping registered archived records visible and independently verifiable without folding them into the base certificate result.
+
 Evidence import is dispatched as blocking native work rather than running on the webview event loop. Copy and SHA-256 calculation share one bounded-buffer stream. Routine track loading performs metadata checks instead of repeatedly hashing evidence above 64 MiB; explicit verification and integrity/finalization remain full checks. Preview commands embed only bounded images or text, and treat project ZIPs as metadata-only. An explicit replacement preserves the evidence ID, archives the previous bytes, and coordinates the filesystem change with the SQLite update so an occupied `(track_id, relative_path)` never becomes a raw user-facing uniqueness error.
 
 Profile updates and their non-finalized track snapshots are committed in one SQLite transaction. The native service marks affected documents stale and resets integrity; finalized and superseded snapshots are deliberately skipped. The frontend reloads the current track after the update, so workflow rails, missing items, and generated Markdown all evaluate the same embedded profile values.
@@ -217,6 +219,8 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Added the sidecar-v1 database-before-live publication, recovery, immutable-byte verification, and archived-sidecar architecture. | Project team |
+| 2026-08-17 | Added the typed Terms-metadata update and post-finalization external-timestamp command boundaries, including the prohibition on legal qualification claims. | Project team |
 | 2026-08-15 | Extended native progress and blocking-runtime dispatch through certificate finalization. | Project team |
 | 2026-08-15 | Moved progress-capable document and integrity work off the Tauri main thread so animation and IPC updates remain responsive. | Project team |
 | 2026-08-15 | Added the scoped native progress-channel contract for document generation and integrity operations. | Project team |

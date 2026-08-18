@@ -43,9 +43,33 @@ export type EvidenceRole =
 
 export type ArtworkOrigin = "none" | "human" | "ai_generated" | "ai_assisted";
 export type LyricsSource = "instrumental" | "human" | "suno" | "mixed";
+export type DocumentationAnswer = "yes" | "no" | "not_documented";
+export type SunoLyricsContentType =
+  | "vocal_lyrics"
+  | "structure_instructions"
+  | "sound_instructions"
+  | "arrangement_instructions"
+  | "mixed"
+  | "other";
+export type SunoLyricsContentSource = "human" | "ai" | "mixed";
 export type DisclosurePolicy = "always" | "per_artwork" | "none";
 export type SubscriptionBillingCycle = "monthly" | "annual";
 export type TrackLibrarySection = "single" | "album";
+
+export type ExternalTimestampType =
+  | "qualified_electronic_timestamp_user_declared"
+  | "electronic_timestamp"
+  | "external_integrity_timestamp"
+  | "other"
+  | "not_documented";
+
+export type TimestampReferencedArtifact =
+  | "evidence_manifest"
+  | "sha256sums"
+  | "documentation_certificate_markdown"
+  | "certificate_pdf"
+  | "final_evidence_package"
+  | "other";
 
 export interface TrackLibraryAssignment {
   section: TrackLibrarySection;
@@ -132,8 +156,12 @@ export interface EvidenceMetadata {
   sourceUrl: string;
   retrievalDate: string;
   effectiveDate: string;
+  applicableProductionPeriod: string;
   factualNote: string;
   externalTimestamp: string;
+  timestampType: string;
+  externalReferenceId: string;
+  providerVerificationUrl: string;
   referencedHash: string;
   referencedArtifact: string;
   fileExtension: string;
@@ -241,6 +269,51 @@ export interface CertificateState {
   invalidationReason?: string;
 }
 
+export interface ExternalTimestampInput {
+  provider: string;
+  timestampType: ExternalTimestampType;
+  timestampValue: string;
+  referencedArtifact: TimestampReferencedArtifact;
+  otherReferencedArtifact: string;
+  referencedSha256: string;
+  externalReferenceId: string;
+  providerVerificationUrl: string;
+  note: string;
+}
+
+export interface ExternalTimestampRecord {
+  id: string;
+  certificateId: string;
+  provider: string;
+  timestampType: ExternalTimestampType;
+  timestampValue: string;
+  referencedArtifact: TimestampReferencedArtifact;
+  referencedArtifactPath: string;
+  referencedSha256: string;
+  actualSha256: string;
+  referencedHashMatch: boolean | null;
+  externalReferenceId: string;
+  providerVerificationUrl: string;
+  note: string;
+  evidenceFileName: string;
+  evidenceSha256: string;
+  importedAt: string;
+  provenance: string;
+  recordRelativePath: string;
+  markdownRelativePath: string;
+  pdfRelativePath: string;
+  hashListRelativePath: string;
+  integrityVerified: boolean;
+  integrityIssues: string[];
+}
+
+export interface FinalizationAnchor {
+  artifact: TimestampReferencedArtifact;
+  label: string;
+  relativePath: string;
+  sha256: string;
+}
+
 export interface TrackFields {
   title: string;
   productionStartDate: string;
@@ -252,11 +325,18 @@ export interface TrackFields {
   sunoFinalGenerationDate: string;
   sunoFinalGenerationTime: string;
   sunoDownloadExportDate: string;
-  sunoPlanAtCreation: string;
+  sunoPlanAtGeneration: string;
+  legacySunoPlanAtCreation: string;
   finalExportDate: string;
   instrumentalTrack: boolean | null;
-  lyricsSource: LyricsSource | "";
-  lyricsText: string;
+  legacyLyricsSource: LyricsSource | "";
+  legacyLyricsText: string;
+  vocalLyricsPresent: boolean | null;
+  sunoLyricsFieldContent: boolean | null;
+  sunoLyricsContentTypes: SunoLyricsContentType[];
+  sunoLyricsContentSource: SunoLyricsContentSource | null;
+  sunoLyricsFieldText: string;
+  sunoLyricsOtherContentType: string;
   sunoStylePrompt: string;
   externalAudioUploaded: boolean | null;
   externalAudioSource: string;
@@ -293,6 +373,18 @@ export interface TrackFields {
   trademarkNotes: string;
   disclosureApplied: boolean | null;
   disclosureText: string;
+  generativeAiUsed: boolean | null;
+  audioAiSystem: string;
+  aiAssistedAudioElements: DocumentationAnswer | null;
+  aiGeneratedAudioElements: DocumentationAnswer | null;
+  realPersonVoiceIntentionallyImitated: DocumentationAnswer | null;
+  realPersonIdentityIntentionallyRepresented: DocumentationAnswer | null;
+  realEventRepresentedAsAuthenticRecording: DocumentationAnswer | null;
+  realLocationInstitutionEventPresentedAsAuthenticAiRecording: DocumentationAnswer | null;
+  audioDisclosureApplied: DocumentationAnswer | null;
+  audioDisclosureLocations: string[];
+  audioDisclosureText: string;
+  audioDisclosureReason: string;
   releaseNotes: string;
 }
 
@@ -321,6 +413,8 @@ export interface TrackDetail extends TrackSummary {
   documents: DocumentState;
   integrity: IntegrityState;
   certificate: CertificateState;
+  externalTimestamps: ExternalTimestampRecord[];
+  finalizationAnchors: FinalizationAnchor[];
   blockingDeviations?: BlockingDeviation[];
   missingItems?: string[];
 }
@@ -417,8 +511,12 @@ export function emptyEvidenceMetadata(): EvidenceMetadata {
     sourceUrl: "",
     retrievalDate: "",
     effectiveDate: "",
+    applicableProductionPeriod: "",
     factualNote: "",
     externalTimestamp: "",
+    timestampType: "",
+    externalReferenceId: "",
+    providerVerificationUrl: "",
     referencedHash: "",
     referencedArtifact: "",
     fileExtension: "",
@@ -462,11 +560,18 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     sunoFinalGenerationDate: "",
     sunoFinalGenerationTime: "",
     sunoDownloadExportDate: "",
-    sunoPlanAtCreation: profile.sunoPlan,
+    sunoPlanAtGeneration: "",
+    legacySunoPlanAtCreation: "",
     finalExportDate: "",
     instrumentalTrack: null,
-    lyricsSource: "",
-    lyricsText: "",
+    legacyLyricsSource: "",
+    legacyLyricsText: "",
+    vocalLyricsPresent: null,
+    sunoLyricsFieldContent: null,
+    sunoLyricsContentTypes: [],
+    sunoLyricsContentSource: null,
+    sunoLyricsFieldText: "",
+    sunoLyricsOtherContentType: "",
     sunoStylePrompt: "",
     externalAudioUploaded: null,
     externalAudioSource: "",
@@ -503,6 +608,18 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     trademarkNotes: "",
     disclosureApplied: null,
     disclosureText: profile.disclosureText,
+    generativeAiUsed: null,
+    audioAiSystem: "",
+    aiAssistedAudioElements: null,
+    aiGeneratedAudioElements: null,
+    realPersonVoiceIntentionallyImitated: null,
+    realPersonIdentityIntentionallyRepresented: null,
+    realEventRepresentedAsAuthenticRecording: null,
+    realLocationInstitutionEventPresentedAsAuthenticAiRecording: null,
+    audioDisclosureApplied: null,
+    audioDisclosureLocations: [],
+    audioDisclosureText: "",
+    audioDisclosureReason: "",
     releaseNotes: ""
   };
 }

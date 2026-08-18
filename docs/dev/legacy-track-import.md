@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-17 |
 | Audience | Developers implementing or reviewing legacy import |
 | Related ATP | [ATP-0003: Legacy track import](../atp/active/ATP-0003-legacy-track-import.md) |
 
@@ -44,6 +44,8 @@ Legacy scanning is read-only with respect to every candidate track directory. It
 4. Never follow a symbolic link outside the canonical workspace root.
 5. Never turn an unknown answer into `No` solely to make a branch N/A.
 6. Never write a managed document over existing content before preview, confirmation, and backup.
+7. Never infer vocal presence, Suno-field content type, or human contribution from lyrics text or bracket syntax.
+8. Never bind a historical timestamp-like file to a certificate or revision without the explicit post-finalization attachment transaction.
 
 ## Candidate detection
 
@@ -78,6 +80,8 @@ Unknown sibling files and directories remain in place. They can be shown as uncl
 | `03_DOCUMENTATION/SHA256SUMS.txt` | Presence is reported, but no historical PASS state is inferred. | Regenerate and verify after the imported facts and evidence are reviewed. |
 | Known file in `01_RELEASE/` or `02_SUNO/` | A bounded filename/location rule proposes a role; the item is indexed with `indexed_legacy` provenance and remains `NOT VERIFIED`. | Explicitly verify the present bytes and review whether the role is truthful. |
 | Artwork naming convention in `05_ARTWORK/` | The role is proposed and remains `NOT VERIFIED`. | Confirm the artwork process and all conditional facts. |
+| Historical lyrics source/text fields or `Lyrics.md` | Preserved as legacy compatibility information; text is not parsed into vocals, structure, sound, arrangement, or source facts. | In an editable track or new revision, answer instrumental/vocal/Suno-field questions explicitly. |
+| Historical timestamp-like evidence under `03_DOCUMENTATION/` | Preserved as ordinary indexed legacy evidence and never promoted to a certificate-bound timestamp record. | Finalize or revise first, then use the dedicated attachment action with an explicit anchor and claimed SHA-256. |
 | Other contained file outside `.archive/` and `06_CERTIFICATE/` | Indexed as `other`, still `NOT VERIFIED`. | Reclassify through an explicit fresh import when a mandatory role is needed. |
 | Existing `06_CERTIFICATE/` content | Preserved untouched and excluded from evidence inference. | Version 0.1 does not silently reinstate a historical finalized database state. Review it independently before starting a new managed revision. |
 
@@ -94,6 +98,16 @@ Conflicting documents, duplicate candidate roles, malformed manifests, unsupport
 | Verified finalized snapshot | Manifest, certificate, workflow version, and hashes all validate. | Can be presented as finalized without rewriting it |
 
 `NOT VERIFIED` is a workflow-step result, not permission to fill missing data. A user must confirm a fact or provide evidence before it can pass.
+
+`NOT DOCUMENTED` is a factual answer-state for information that is absent, not a synonym for `NO` or `N/A`. `NO` requires explicit user confirmation. `N/A` requires a deterministic inapplicability reason. Discovery never chooses among them merely to improve progress.
+
+## Semantic migration of older track JSON
+
+Older `lyricsSource` and `lyricsText` values remain readable under explicitly labeled legacy compatibility fields. They do not populate the new `Vocal lyrics present`, `Suno lyrics/structure field content`, content-type, or content-source answers. In particular, the importer does not interpret `[Intro]`, `[Drop]`, `[Verse]`, or unrestricted prose. The new facts remain `NOT DOCUMENTED` until the user reviews them in a non-finalized track or an explicitly created revision.
+
+The former `sunoPlanAtCreation` JSON name remains readable only as the separate `legacySunoPlanAtCreation` historical value. It is never copied into or presented as `sunoPlanAtGeneration`. If an older track has no explicitly confirmed new value, `Suno plan at generation` remains `NOT DOCUMENTED` and the applicable workflow requirement remains blocked until the user confirms it in mutable state. Generated review output may show the legacy value as historical user data, but it must state that this is not a plan-at-generation claim. Known provider suggestions apply only to new selections; historical spellings are preserved.
+
+Existing finalized certificate, manifest, hash, PDF, and revision bytes are never upgraded in place. Workflow 1.7, template 1.8, manifest schema 5, certificate/PDF 5.0, and the new semantic fields apply to new tracks, mutable older tracks, or a new revision after the prior snapshot has been archived.
 
 ## Scan algorithm
 
@@ -158,6 +172,7 @@ Workspace recovery does not move historical `06_CERTIFICATE/` content merely bec
 | `REQ-LEG-004` | Absolute, traversal, and escaping symbolic-link manifest paths are rejected. | [ATP-0012](../atp/active/ATP-0012-filesystem-containment.md) |
 | `REQ-LEG-005` | Index loss leaves portable certificate files untouched; scan recovers only observable facts and clearly reports the remaining blockers. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 | `REQ-LEG-006` | Explicitly removed indexed legacy evidence is preserved below `.archive/removals/` with metadata and is not re-added by a later scan. | [ATP-0003](../atp/active/ATP-0003-legacy-track-import.md) |
+| `REQ-LEG-007` | Legacy lyrics text and timestamp-like files remain readable but cannot infer vocal/Suno-field semantics or a certificate-bound timestamp relationship. | [ATP-0003](../atp/active/ATP-0003-legacy-track-import.md) |
 
 ## Verification
 
@@ -191,6 +206,8 @@ Reviewers compare pre-scan and post-scan candidate-tree hashes to prove that dis
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Corrected migration semantics so legacy plan-at-creation remains separate and the new plan-at-generation stays `NOT DOCUMENTED` until explicit confirmation. | Project team |
+| 2026-08-17 | Documented non-inferential migration for legacy lyrics/provider fields, exact `NO`/`N/A`/`NOT DOCUMENTED` semantics, immutable older certificate formats, and explicit revision-bound timestamp attachment. | Project team |
 | 2026-08-13 | Added indexed-legacy provenance, recoverable evidence removal, and marker-scoped certificate recovery. | Project team |
 | 2026-08-13 | Aligned conservative indexing, rescan reconciliation, and explicit profile adoption with version 0.1. | Project team |
 | 2026-08-13 | Defined conservative legacy discovery, recovery, and document adoption. | Project team |

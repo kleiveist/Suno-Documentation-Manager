@@ -2,8 +2,9 @@ use crate::certificate_pdf::{self, CertificatePdfSnapshot};
 use crate::error::{AppError, Result};
 use crate::integrity::HASH_FILE;
 use crate::model::{
-    BlockingDeviation, EvidenceItem, EvidenceMetadata, EvidenceProvenance, EvidenceRole,
-    FactOrigin, Profile, StepState, StepStatus, TrackRecord,
+    BlockingDeviation, DocumentationAnswer, EvidenceItem, EvidenceMetadata, EvidenceProvenance,
+    EvidenceRole, FactOrigin, Profile, StepState, StepStatus, SunoLyricsContentSource,
+    SunoLyricsContentType, TrackFields, TrackRecord,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
@@ -20,7 +21,7 @@ pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md"
 pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "4.1";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "5.0";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +40,24 @@ struct ManifestEvidence<'a> {
     derived_from_evidence_id: Option<&'a str>,
     generator_version: Option<&'a str>,
     generated_disclosure_text: Option<&'a str>,
-    metadata: &'a EvidenceMetadata,
+    metadata: serde_json::Value,
+}
+
+fn phase_one_metadata(metadata: &EvidenceMetadata) -> Result<serde_json::Value> {
+    let mut sanitized = serde_json::to_value(metadata)?;
+    if let Some(object) = sanitized.as_object_mut() {
+        for field in [
+            "timestampType",
+            "externalTimestamp",
+            "referencedHash",
+            "referencedArtifact",
+            "externalReferenceId",
+            "providerVerificationUrl",
+        ] {
+            object.remove(field);
+        }
+    }
+    Ok(sanitized)
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -271,37 +289,54 @@ fn generate_impl(
     let hashes = parse_hashes(&hash_manifest)?;
     let mut evidence_values = evidence
         .iter()
-        .filter(|item| item.verified && item.sha256.is_some() && item.verification_error.is_none())
+        .filter(|item| {
+            item.role != EvidenceRole::ExternalTimestamp
+                && item.verified
+                && item.sha256.is_some()
+                && item.verification_error.is_none()
+        })
         .collect::<Vec<_>>();
     evidence_values.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    if track.fields.suno_terms_evidence_not_available == Some(true)
+        && evidence_values
+            .iter()
+            .any(|item| item.role == EvidenceRole::SunoTermsRights)
+    {
+        return Err(AppError::Validation(
+            "Certificate generation cannot combine verified Terms evidence with an unavailable claim."
+                .into(),
+        ));
+    }
     let archived_revisions = archived_revision_references(track_root)?;
     let evidence_manifest = evidence_values
         .iter()
-        .map(|item| ManifestEvidence {
-            id: &item.id,
-            role: item.role.as_str(),
-            file_name: &item.file_name,
-            relative_path: &item.relative_path,
-            sha256: item.sha256.as_deref(),
-            size_bytes: item.size_bytes,
-            imported_at: &item.imported_at,
-            source_global_evidence_id: item.source_global_evidence_id.as_deref(),
-            coverage_start: item.coverage_start.as_deref(),
-            coverage_end: item.coverage_end.as_deref(),
-            provenance: &item.provenance,
-            derived_from_evidence_id: item.derived_from_evidence_id.as_deref(),
-            generator_version: item.generator_version.as_deref(),
-            generated_disclosure_text: item.generated_disclosure_text.as_deref(),
-            metadata: &item.metadata,
+        .map(|item| -> Result<ManifestEvidence<'_>> {
+            Ok(ManifestEvidence {
+                id: &item.id,
+                role: item.role.as_str(),
+                file_name: &item.file_name,
+                relative_path: &item.relative_path,
+                sha256: item.sha256.as_deref(),
+                size_bytes: item.size_bytes,
+                imported_at: &item.imported_at,
+                source_global_evidence_id: item.source_global_evidence_id.as_deref(),
+                coverage_start: item.coverage_start.as_deref(),
+                coverage_end: item.coverage_end.as_deref(),
+                provenance: &item.provenance,
+                derived_from_evidence_id: item.derived_from_evidence_id.as_deref(),
+                generator_version: item.generator_version.as_deref(),
+                generated_disclosure_text: item.generated_disclosure_text.as_deref(),
+                metadata: phase_one_metadata(&item.metadata)?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let automation = crate::workflow::automation_summary(track, evidence);
     let byte_identical_pairs = crate::workflow::byte_identical_pairs(evidence);
     let automatic_relationships = automatic_role_relationships(&evidence_values);
     let automatic_global_relationships =
         automatic_global_track_relationships(&track.id, &evidence_values);
     let manifest = json!({
-        "schema_version": 4,
+        "schema_version": 5,
         "track": {
             "id": track.id,
             "title": track.fields.title,
@@ -316,6 +351,44 @@ fn generate_impl(
             "suno_handle": profile.suno_handle,
         },
         "documented_facts": track.fields,
+        "semantic_snapshot": {
+            "suno_lyrics_structure": {
+                "instrumental_track": recorded_bool(track.fields.instrumental_track),
+                "vocal_lyrics_present": recorded_bool(track.fields.vocal_lyrics_present),
+                "suno_lyrics_field_content": recorded_bool(track.fields.suno_lyrics_field_content),
+                "content_types": suno_content_types(&track.fields),
+                "structure_instructions_present": structure_instructions_present(&track.fields),
+                "content_source": suno_content_source(&track.fields),
+                "exact_field_text": match track.fields.suno_lyrics_field_content {
+                    Some(true) => documented(&track.fields.suno_lyrics_field_text),
+                    Some(false) => "N/A",
+                    None => "NOT DOCUMENTED",
+                },
+                "legacy_data_classification": if track.fields.lyrics_source.trim().is_empty()
+                    && track.fields.lyrics_text.trim().is_empty()
+                {
+                    "N/A"
+                } else {
+                    "NOT DOCUMENTED"
+                },
+            },
+            "ai_transparency_audio": {
+                "generative_ai_used": recorded_bool(track.fields.generative_ai_used),
+                "ai_assisted_audio_elements": conditional_documentation_answer(
+                    track.fields.generative_ai_used,
+                    track.fields.ai_assisted_audio_elements,
+                ),
+                "ai_generated_audio_elements": conditional_documentation_answer(
+                    track.fields.generative_ai_used,
+                    track.fields.ai_generated_audio_elements,
+                ),
+                "audio_disclosure_applied": conditional_documentation_answer(
+                    track.fields.generative_ai_used,
+                    track.fields.audio_disclosure_applied,
+                ),
+                "deepfake_related_indicator_summary": deepfake_indicator_summary(&track.fields),
+            },
+        },
         "profile_snapshot": profile,
         "workflow": {
             "id": track.workflow_id,
@@ -325,6 +398,7 @@ fn generate_impl(
         "finalization": {
             "timestamp": finalized_at,
             "result": "DOCUMENTATION COMPLETE",
+            "meaning": "configured documentation requirements completed",
         },
         "steps": steps,
         "evidence": evidence_manifest,
@@ -333,6 +407,8 @@ fn generate_impl(
             "id": certificate_id,
             "format_version": CERTIFICATE_FORMAT_VERSION,
             "status": "DOCUMENTATION COMPLETE",
+            "status_meaning": "configured documentation requirements completed",
+            "workflow_pass_meaning": "Configured documentation requirements for this step were satisfied.",
             "sha256sums_sha256": hash_manifest_sha,
             "statement_scope": {
                 "confirms": [
@@ -360,7 +436,7 @@ fn generate_impl(
             "subscription_production_coverage": crate::workflow::subscription_production_coverage(track, evidence),
             "release_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav),
             "suno_export_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport),
-            "external_timestamp_evidence_exists": evidence.iter().any(|item| item.role == EvidenceRole::ExternalTimestamp && item.verified),
+            "external_timestamp_at_technical_finalization": "NOT RECORDED",
             "fact_origins": {
                 "final_suno_generation_date": automation.final_generation_origin,
                 "production_end_date": automation.production_end_origin,
@@ -374,6 +450,11 @@ fn generate_impl(
             "automatic_global_track_relationships": &automatic_global_relationships,
             "consistency_issues": &automation.consistency_issues,
         },
+        "external_timestamp": {
+            "status_at_technical_finalization": "NOT RECORDED",
+            "attachment_phase": "post_finalization_addendum",
+            "changes_phase_one_snapshot": false,
+        },
         "deviations": deviations,
         "revision_archives": &archived_revisions,
     });
@@ -381,14 +462,16 @@ fn generate_impl(
     manifest_bytes.push(b'\n');
     let manifest_sha = sha256_bytes(&manifest_bytes);
 
-    let release_wav = evidence
+    let release_wav = evidence_values
         .iter()
-        .find(|item| item.role == crate::model::EvidenceRole::ReleaseWav && item.verified)
+        .copied()
+        .find(|item| item.role == EvidenceRole::ReleaseWav)
         .and_then(|item| item.sha256.as_deref())
-        .unwrap_or("Not documented");
-    let final_artwork = evidence
+        .unwrap_or("NOT DOCUMENTED");
+    let final_artwork = evidence_values
         .iter()
-        .find(|item| item.role == crate::model::EvidenceRole::FinalArtwork && item.verified)
+        .copied()
+        .find(|item| item.role == EvidenceRole::FinalArtwork)
         .and_then(|item| item.sha256.as_deref())
         .unwrap_or("N/A");
     let na_steps = steps
@@ -398,14 +481,14 @@ fn generate_impl(
             format!(
                 "- {} — {}\n",
                 step.id,
-                step.na_reason.as_deref().unwrap_or("No reason")
+                step.na_reason.as_deref().unwrap_or("NOT DOCUMENTED")
             )
         })
         .collect::<String>();
     let completed_steps = steps
         .iter()
         .filter(|step| matches!(step.status, StepStatus::Pass | StepStatus::NotApplicable))
-        .map(|step| format!("- {}: {:?}\n", step.id, step.status))
+        .map(|step| format!("- {}: {}\n", step.id, step_status_label(&step.status)))
         .collect::<String>();
     let open_blocking = deviations
         .iter()
@@ -413,10 +496,10 @@ fn generate_impl(
         .count();
     let release_file_name =
         crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav)
-            .unwrap_or("Not recorded");
+            .unwrap_or("NOT RECORDED");
     let suno_export_file_name =
         crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport)
-            .unwrap_or("Not recorded");
+            .unwrap_or("NOT RECORDED");
     let generation_coverage =
         match crate::workflow::subscription_generation_coverage(track, evidence) {
             crate::workflow::CoverageStatus::Yes => "YES",
@@ -434,82 +517,75 @@ fn generate_impl(
     let last_editing_origin = fact_origin_label(automation.final_export_origin);
     let last_editing_date = documented(&track.fields.final_export_date);
     let suno_metadata_detected = yes_no(automation.suno_metadata_detected);
-    let suno_id = automation.suno_id.as_deref().unwrap_or("Not documented");
+    let suno_id = automation.suno_id.as_deref().unwrap_or("NOT DOCUMENTED");
     let release_identical_to_suno_export = yes_no(automation.release_identical_to_suno_export);
-    let lyrics = if track.fields.instrumental_track == Some(true) {
-        "N/A – instrumental track"
-    } else if track.fields.lyrics_text.trim().is_empty() {
-        "Not recorded"
-    } else {
-        track.fields.lyrics_text.as_str()
-    };
-    let evidence_register_md = evidence_values
+    let evidence_register_md = evidence_register_markdown(&evidence_values);
+    let terms = evidence_values
         .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            format!(
-                "### {}. {}\n\n- Evidence ID: `{}`\n- Original filename [Evidence-derived metadata]: `{}`\n- Managed filename: `{}`\n- Role: `{}`\n- Provenance: `{}`\n- Relative path: `{}`\n- Size: {} bytes\n- SHA-256: `{}`\n- Imported at: `{}`\n- Document title: {}\n- Provider/source: {}\n- Source URL: {}\n- Retrieval date: {}\n- Effective date: {}\n- Factual note: {}\n- External timestamp: {}\n- Referenced hash: `{}`\n- Referenced artifact: {}\n- Source global evidence ID: `{}`\n- Derived from evidence ID: `{}`\n- Generator version: `{}`\n\n",
-                index + 1,
-                item.role.as_str(),
-                item.id,
-                documented(&item.metadata.original_file_name),
-                item.file_name,
-                item.role.as_str(),
-                item.provenance.as_str(),
-                item.relative_path,
-                item.size_bytes,
-                item.sha256.as_deref().unwrap_or("Not recorded"),
-                item.imported_at,
-                documented(&item.metadata.document_title),
-                documented(&item.metadata.provider),
-                documented(&item.metadata.source_url),
-                documented(&item.metadata.retrieval_date),
-                documented(&item.metadata.effective_date),
-                documented(&item.metadata.factual_note),
-                documented(&item.metadata.external_timestamp),
-                documented(&item.metadata.referenced_hash),
-                documented(&item.metadata.referenced_artifact),
-                item.source_global_evidence_id.as_deref().unwrap_or("N/A"),
-                item.derived_from_evidence_id.as_deref().unwrap_or("N/A"),
-                item.generator_version.as_deref().unwrap_or("N/A"),
-            )
-        })
-        .collect::<String>();
+        .copied()
+        .filter(|item| item.role == EvidenceRole::SunoTermsRights)
+        .collect::<Vec<_>>();
+    let terms_ids = if terms.is_empty() {
+        "N/A".to_owned()
+    } else {
+        terms
+            .iter()
+            .map(|item| format!("`{}`", item.id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let terms_details_md = terms_evidence_markdown(&terms);
+    let source_provenance_md = source_provenance_markdown(&track.fields, &evidence_values);
+    let suno_plan_md = suno_plan_context_markdown(&track.fields);
+    let suno_field_md = suno_field_markdown(&track.fields);
+    let human_contribution_md = human_contribution_markdown(&track.fields);
+    let ai_audio_md = ai_audio_markdown(&track.fields);
+    let ai_artwork_md = ai_artwork_markdown(&track.fields);
     let revision_archives = if archived_revisions.is_empty() {
-        "None recorded".to_owned()
+        "NONE RECORDED".to_owned()
     } else {
         archived_revisions.join(", ")
     };
     let certificate = format!(
-        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Status: **DOCUMENTATION COMPLETE**\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Origin: **{final_generation_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Suno ID [Evidence-derived metadata]: {suno_id}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Download/export date [{download_export_origin}]: {}\n- Project URL [User-confirmed fact]: {}\n- Model [User-confirmed fact]: {}\n- Plan [User-confirmed fact]: {}\n\n## D. Source provenance\n\n- External audio uploaded: {}\n- Own audio uploaded: {}\n- Code-based generation: {}\n- Third-party samples uploaded: {}\n\n## E. Human contribution\n\n- Lyrics: {lyrics}\n- Lyrics source: {}\n- Confirmed human editing: {}\n- Desktop-PC editing after the Suno WAV: {}\n\n## F. AI Usage\n\n- Suno style prompt: {}\n- Artwork origin: {}\n- AI image service: {}\n\n## G. Artwork content checks\n\n- Real person: {}\n- Real event: {}\n- Trademark/logo: {}\n\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period: **{production_coverage}**\n- Assigned subscription evidence covers the recorded final-generation date: **{generation_coverage}**\n- Terms evidence: {}\n- Terms evidence not available [User-confirmed fact]: {}\n- External timestamp evidence: {}\n\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## J. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## Certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, and **System verification**.\n",
+        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- User final generation ID [User-confirmed fact]: {}\n- Suno ID [Evidence-derived metadata]: {suno_id}\n- Suno project URL [User-confirmed fact]: {}\n- Suno project/version ID [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: **NOT RECORDED**\n- No external timestamp evidence recorded.\n{}\nPost-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot.\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
         env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
         track.fields.title,
         profile.artist_name,
         documented(&track.fields.suno_final_generation_date),
-        documented(&track.fields.suno_download_export_date),
+        documented(&track.fields.suno_final_generation_id),
         documented(&track.fields.suno_project_url),
+        documented(&track.fields.suno_project_version_id),
+        documented(&track.fields.suno_download_export_date),
+        if automation.suno_metadata_detected {
+            "Evidence-derived metadata"
+        } else {
+            "NOT DOCUMENTED"
+        },
         documented(&track.fields.suno_model),
-        documented(&track.fields.suno_plan_at_creation),
-        recorded_bool(track.fields.external_audio_uploaded),
-        recorded_bool(track.fields.own_audio_uploaded),
-        recorded_bool(track.fields.code_based_generation),
-        recorded_bool(track.fields.third_party_samples_uploaded),
-        documented(&track.fields.lyrics_source),
-        documented(&track.fields.human_editing_details),
-        documented(&track.fields.post_export_editing_details),
-        documented(&track.fields.suno_style_prompt),
-        documented(&track.fields.artwork_origin),
-        documented(&track.fields.ai_image_service),
-        recorded_bool(track.fields.depicts_real_person),
-        recorded_bool(track.fields.depicts_real_event),
-        recorded_bool(track.fields.contains_trademark),
-        if evidence.iter().any(|item| item.role == EvidenceRole::SunoTermsRights && item.verified) { "Exists" } else { "Does not exist" },
+        documented(&track.fields.suno_plan_at_generation),
+        if terms.is_empty() { "NO" } else { "YES" },
         recorded_bool(track.fields.suno_terms_evidence_not_available),
-        if evidence.iter().any(|item| item.role == EvidenceRole::ExternalTimestamp && item.verified) { "Exists" } else { "Does not exist" },
+        if track.fields.commercial_use_intended {
+            "\nFor long-term evidentiary preservation, an external timestamp can be added after technical finalization.\n"
+        } else {
+            ""
+        },
         evidence_values.len(),
-        if na_steps.is_empty() { "- None\n" } else { &na_steps }
+        if na_steps.is_empty() {
+            "- NONE\n"
+        } else {
+            &na_steps
+        }
+    );
+    let certificate = certificate.replacen(
+        &format!(
+            "- Suno plan at generation [User-confirmed fact]: {}\n",
+            documented(&track.fields.suno_plan_at_generation)
+        ),
+        &suno_plan_md,
+        1,
     );
     let certificate_sha = sha256_bytes(certificate.as_bytes());
 
@@ -930,9 +1006,480 @@ fn parse_certificate_hashes(content: &str) -> Result<BTreeMap<String, String>> {
     Ok(result)
 }
 
+fn evidence_register_markdown(evidence: &[&EvidenceItem]) -> String {
+    evidence
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            format!(
+                "### {}. {}\n\n- Evidence ID [System value]: `{}`\n- Original filename [Evidence-derived metadata]: `{}`\n- Managed filename [System value]: `{}`\n- Role [System value]: `{}`\n- Provenance [System value]: `{}`\n- Relative path [System value]: `{}`\n- Size [System value]: {} bytes\n- SHA-256 [System verification]: `{}`\n- Imported at [System value]: `{}`\n- Document title [User-confirmed fact]: {}\n- Provider/source [User-confirmed fact]: {}\n- Source URL [User-confirmed fact]: {}\n- Retrieval date [User-confirmed fact]: {}\n- Effective date [User-confirmed fact]: {}\n- Applicable production period [User-confirmed fact]: {}\n- Factual note [User-confirmed fact]: {}\n- Source global evidence ID [System value]: `{}`\n- Derived from evidence ID [System value]: `{}`\n- Generator version [System value]: `{}`\n- Generated disclosure text [System value]: {}\n\n",
+                index + 1,
+                item.role.as_str(),
+                item.id,
+                documented(&item.metadata.original_file_name),
+                item.file_name,
+                item.role.as_str(),
+                item.provenance.as_str(),
+                item.relative_path,
+                item.size_bytes,
+                item.sha256.as_deref().unwrap_or("NOT RECORDED"),
+                item.imported_at,
+                documented(&item.metadata.document_title),
+                documented(&item.metadata.provider),
+                documented(&item.metadata.source_url),
+                documented(&item.metadata.retrieval_date),
+                documented(&item.metadata.effective_date),
+                documented(&item.metadata.applicable_production_period),
+                documented(&item.metadata.factual_note),
+                item.source_global_evidence_id.as_deref().unwrap_or("N/A"),
+                item.derived_from_evidence_id.as_deref().unwrap_or("N/A"),
+                item.generator_version.as_deref().unwrap_or("N/A"),
+                item.generated_disclosure_text
+                    .as_deref()
+                    .map(documented)
+                    .unwrap_or("N/A"),
+            )
+        })
+        .collect()
+}
+
+fn terms_evidence_markdown(terms: &[&EvidenceItem]) -> String {
+    if terms.is_empty() {
+        return "No archived terms evidence recorded.\n".into();
+    }
+    terms
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            format!(
+                "#### Terms evidence {} — `{}`\n\n- Evidence ID [System value]: `{}`\n- Document title [User-confirmed fact]: {}\n- Provider/source [User-confirmed fact]: {}\n- Source URL [User-confirmed fact]: {}\n- Retrieval date [User-confirmed fact]: {}\n- Effective date [User-confirmed fact]: {}\n- Applicable production period [User-confirmed fact]: {}\n- Factual note [User-confirmed fact]: {}\n- Relative path [System value]: `{}`\n- Original filename [Evidence-derived metadata]: `{}`\n- SHA-256 [System verification]: `{}`\n- Imported at [System value]: `{}`\n- Provenance [System value]: `{}`\n\n",
+                index + 1,
+                item.id,
+                item.id,
+                documented(&item.metadata.document_title),
+                documented(&item.metadata.provider),
+                documented(&item.metadata.source_url),
+                documented(&item.metadata.retrieval_date),
+                documented(&item.metadata.effective_date),
+                documented(&item.metadata.applicable_production_period),
+                documented(&item.metadata.factual_note),
+                item.relative_path,
+                documented(&item.metadata.original_file_name),
+                item.sha256.as_deref().unwrap_or("NOT RECORDED"),
+                item.imported_at,
+                item.provenance.as_str(),
+            )
+        })
+        .collect()
+}
+
+fn suno_plan_context_markdown(fields: &TrackFields) -> String {
+    format!(
+        "- Suno plan at generation [User-confirmed fact]: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n",
+        documented(&fields.suno_plan_at_generation),
+        documented(&fields.legacy_suno_plan_at_creation),
+    )
+}
+
+fn source_provenance_markdown(fields: &TrackFields, evidence: &[&EvidenceItem]) -> String {
+    let fields = fields.normalized_conditionals();
+    let source_code = evidence_path(evidence, EvidenceRole::SourceCodeFile);
+    let code_audio = evidence_path(evidence, EvidenceRole::CodeGeneratedAudioFile);
+    let mut output = format!(
+        "- External audio uploaded [User-confirmed fact]: {}\n- External audio source [User-confirmed fact]: {}\n- External audio provenance statement [User-confirmed fact]: {}\n- Own audio uploaded [User-confirmed fact]: {}\n- Own audio source [User-confirmed fact]: {}\n- Own audio provenance statement [User-confirmed fact]: {}\n- Third-party samples uploaded [User-confirmed fact]: {}\n- Third-party sample source [User-confirmed fact]: {}\n- Third-party sample provenance statement [User-confirmed fact]: {}\n- Code-based generation [User-confirmed fact]: {}\n- Source-code evidence [System value]: `{}`\n- Code-generated audio evidence [System value]: `{}`\n- Code-audio post-processing [User-confirmed fact]: {}\n- Code-audio post-processing operations [User-confirmed fact]: {}\n",
+        recorded_bool(fields.external_audio_uploaded),
+        conditional_text(
+            fields.external_audio_uploaded,
+            &fields.external_audio_source
+        ),
+        conditional_text(
+            fields.external_audio_uploaded,
+            &fields.external_audio_ownership
+        ),
+        recorded_bool(fields.own_audio_uploaded),
+        conditional_text(fields.own_audio_uploaded, &fields.own_audio_source),
+        conditional_text(fields.own_audio_uploaded, &fields.own_audio_ownership),
+        recorded_bool(fields.third_party_samples_uploaded),
+        conditional_text(
+            fields.third_party_samples_uploaded,
+            &fields.third_party_sample_source,
+        ),
+        conditional_text(
+            fields.third_party_samples_uploaded,
+            &fields.third_party_sample_ownership,
+        ),
+        recorded_bool(fields.code_based_generation),
+        conditional_text(fields.code_based_generation, source_code),
+        conditional_text(fields.code_based_generation, code_audio),
+        conditional_answer(
+            fields.code_based_generation,
+            recorded_bool(fields.code_audio_post_processed),
+        ),
+        if fields.code_based_generation == Some(true)
+            && fields.code_audio_post_processed == Some(true)
+        {
+            documented_string_list(&fields.code_audio_post_processing_operations)
+        } else {
+            "N/A".into()
+        },
+    );
+    if fields.code_based_generation == Some(true) && fields.code_audio_post_processed == Some(true)
+    {
+        output.push_str(&format!(
+            "- Other code-audio post-processing note [User-confirmed fact]: {}\n",
+            documented(&fields.code_audio_post_processing_note)
+        ));
+    }
+    output
+}
+
+fn evidence_path<'a>(evidence: &'a [&EvidenceItem], role: EvidenceRole) -> &'a str {
+    evidence
+        .iter()
+        .copied()
+        .find(|item| item.role == role)
+        .map(|item| item.relative_path.as_str())
+        .unwrap_or("NOT RECORDED")
+}
+
+fn human_contribution_markdown(fields: &TrackFields) -> String {
+    let fields = fields.normalized_conditionals();
+    let mut output = format!(
+        "- Human editing performed [User-confirmed fact]: {}\n- Confirmed human editing [User-confirmed fact]: {}\n- Desktop-PC editing after the Suno WAV [User-confirmed fact]: {}\n- Confirmed desktop-PC editing [User-confirmed fact]: {}\n",
+        recorded_bool(fields.human_editing_performed),
+        conditional_text(
+            fields.human_editing_performed,
+            &fields.human_editing_details
+        ),
+        recorded_bool(fields.post_export_editing_performed),
+        conditional_text(
+            fields.post_export_editing_performed,
+            &fields.post_export_editing_details,
+        ),
+    );
+    if fields.artwork_origin == "human" {
+        output.push_str(&format!(
+            "- Confirmed human artwork process [User-confirmed fact]: {}\n- Human artwork process notes [User-confirmed fact]: {}\n",
+            documented_string_list(&fields.human_artwork_process_operations),
+            documented(&fields.human_artwork_process_notes),
+        ));
+    } else if fields.artwork_origin == "ai_assisted" {
+        output.push_str(&format!(
+            "- Confirmed human artwork modifications [User-confirmed fact]: {}\n- Other human artwork change [User-confirmed fact]: {}\n",
+            documented_string_list(&fields.human_artwork_modifications),
+            documented(&fields.custom_artwork_change),
+        ));
+    }
+    output
+}
+
+fn suno_field_markdown(fields: &TrackFields) -> String {
+    let fields = fields.normalized_conditionals();
+    let heading = if fields.vocal_lyrics_present == Some(true) {
+        "Vocal Lyrics"
+    } else {
+        "Suno Structure / Generation Instructions"
+    };
+    let mut output = format!(
+        "## F. Suno Lyrics / Structure Field – {heading}\n\n- Instrumental track [User-confirmed fact]: {}\n- Vocal lyrics present [User-confirmed fact]: {}\n- Suno lyrics/structure field content [User-confirmed fact]: {}\n- Content types [User-confirmed fact]: {}\n- Structure instructions present [User-confirmed fact]: {}\n- Content source [User-confirmed fact]: {}\n- Other content type [User-confirmed fact]: {}\n",
+        recorded_bool(fields.instrumental_track),
+        recorded_bool(fields.vocal_lyrics_present),
+        recorded_bool(fields.suno_lyrics_field_content),
+        suno_content_types(&fields),
+        structure_instructions_present(&fields),
+        suno_content_source(&fields),
+        if fields.suno_lyrics_field_content == Some(true)
+            && fields
+                .suno_lyrics_content_types
+                .contains(&SunoLyricsContentType::Other)
+        {
+            documented(&fields.suno_lyrics_other_content_type)
+        } else {
+            "N/A"
+        },
+    );
+    output.push_str("\n### Exact Suno field text\n\n");
+    output.push_str(match fields.suno_lyrics_field_content {
+        Some(true) => documented(&fields.suno_lyrics_field_text),
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+    });
+    output.push_str("\n\n");
+    if !fields.lyrics_source.trim().is_empty() || !fields.lyrics_text.trim().is_empty() {
+        output.push_str(
+            "### F.1 Unclassified legacy lyrics data\n\n- Classification: **NOT DOCUMENTED**\n",
+        );
+        output.push_str(&format!(
+            "- Legacy source value: {}\n- Legacy text: {}\n\nThis retained historical data is unclassified legacy data and is not a Vocal Lyrics claim.\n\n",
+            documented(&fields.lyrics_source),
+            documented(&fields.lyrics_text),
+        ));
+    }
+    output
+}
+
+fn ai_audio_markdown(fields: &TrackFields) -> String {
+    let fields = fields.normalized_conditionals();
+    let active = fields.generative_ai_used;
+    format!(
+        "- Generative AI used [User-confirmed fact]: {}\n- AI system [User-confirmed fact]: {}\n- AI-assisted audio elements [User-confirmed fact]: {}\n- AI-generated audio elements [User-confirmed fact]: {}\n- Real person voice intentionally imitated [User-confirmed fact]: {}\n- Real person's identity intentionally represented [User-confirmed fact]: {}\n- Real event represented as authentic recording [User-confirmed fact]: {}\n- Real location / institution / event presented as authentic AI recording [User-confirmed fact]: {}\n- Disclosure applied [User-confirmed fact]: {}\n- Disclosure locations [User-confirmed fact]: {}\n- Disclosure text [User-confirmed fact]: {}\n- Disclosure reason / note [User-confirmed fact]: {}\n- Deepfake-related indicator summary: {}\n- Suno style prompt [User-confirmed fact]: {}\n\nNo AI Act compliance, legal necessity, or legal safety determination is made.\n",
+        recorded_bool(active),
+        conditional_text(active, &fields.audio_ai_system),
+        conditional_documentation_answer(active, fields.ai_assisted_audio_elements),
+        conditional_documentation_answer(active, fields.ai_generated_audio_elements),
+        conditional_documentation_answer(active, fields.real_person_voice_intentionally_imitated,),
+        conditional_documentation_answer(
+            active,
+            fields.real_person_identity_intentionally_represented,
+        ),
+        conditional_documentation_answer(
+            active,
+            fields.real_event_represented_as_authentic_recording,
+        ),
+        conditional_documentation_answer(
+            active,
+            fields.real_location_institution_event_presented_as_authentic_ai_recording,
+        ),
+        conditional_documentation_answer(active, fields.audio_disclosure_applied),
+        match (active, fields.audio_disclosure_applied) {
+            (Some(true), Some(DocumentationAnswer::Yes)) => {
+                documented_string_list(&fields.audio_disclosure_locations)
+            }
+            (Some(true), _) | (Some(false), _) => "N/A".into(),
+            (None, _) => "NOT DOCUMENTED".into(),
+        },
+        match (active, fields.audio_disclosure_applied) {
+            (Some(true), Some(DocumentationAnswer::Yes)) => {
+                documented(&fields.audio_disclosure_text)
+            }
+            (Some(true), _) | (Some(false), _) => "N/A",
+            (None, _) => "NOT DOCUMENTED",
+        },
+        match (active, fields.audio_disclosure_applied) {
+            (Some(true), Some(DocumentationAnswer::No)) => {
+                documented(&fields.audio_disclosure_reason)
+            }
+            (Some(true), _) | (Some(false), _) => "N/A",
+            (None, _) => "NOT DOCUMENTED",
+        },
+        deepfake_indicator_summary(&fields),
+        documented(&fields.suno_style_prompt),
+    )
+}
+
+fn ai_artwork_markdown(fields: &TrackFields) -> String {
+    let fields = fields.normalized_conditionals();
+    let artwork_present = !matches!(fields.artwork_origin.as_str(), "" | "none");
+    let ai_artwork = matches!(
+        fields.artwork_origin.as_str(),
+        "ai_generated" | "ai_assisted"
+    );
+    format!(
+        "- Artwork origin [User-confirmed fact]: {}\n- AI image service [User-confirmed fact]: {}\n- Human artwork process [User-confirmed fact]: {}\n- Human artwork modifications [User-confirmed fact]: {}\n- Depicts real person [User-confirmed fact]: {}\n- Real-person note [User-confirmed fact]: {}\n- Depicts real event [User-confirmed fact]: {}\n- Real-event note [User-confirmed fact]: {}\n- Trademark/logo [User-confirmed fact]: {}\n- Trademark/logo note [User-confirmed fact]: {}\n- Artwork disclosure applied [User-confirmed fact]: {}\n- Artwork disclosure text [User-confirmed fact]: {}\n",
+        documented(&fields.artwork_origin),
+        if ai_artwork {
+            documented(&fields.ai_image_service)
+        } else {
+            "N/A"
+        },
+        if fields.artwork_origin == "human" {
+            documented_string_list(&fields.human_artwork_process_operations)
+        } else {
+            "N/A".into()
+        },
+        if fields.artwork_origin == "ai_assisted" {
+            documented_string_list(&fields.human_artwork_modifications)
+        } else {
+            "N/A".into()
+        },
+        if artwork_present {
+            recorded_bool(fields.depicts_real_person)
+        } else {
+            "N/A"
+        },
+        if artwork_present {
+            applicable_note(fields.depicts_real_person, &fields.real_person_notes)
+        } else {
+            "N/A"
+        },
+        if artwork_present {
+            recorded_bool(fields.depicts_real_event)
+        } else {
+            "N/A"
+        },
+        if artwork_present {
+            applicable_note(fields.depicts_real_event, &fields.real_event_notes)
+        } else {
+            "N/A"
+        },
+        if artwork_present {
+            recorded_bool(fields.contains_trademark)
+        } else {
+            "N/A"
+        },
+        if artwork_present {
+            applicable_note(fields.contains_trademark, &fields.trademark_notes)
+        } else {
+            "N/A"
+        },
+        if ai_artwork {
+            recorded_bool(fields.disclosure_applied)
+        } else {
+            "N/A"
+        },
+        if ai_artwork && fields.disclosure_applied == Some(true) {
+            documented(&fields.disclosure_text)
+        } else {
+            "N/A"
+        },
+    )
+}
+
+fn suno_content_types(fields: &TrackFields) -> String {
+    match fields.suno_lyrics_field_content {
+        Some(false) => "N/A".into(),
+        None => "NOT DOCUMENTED".into(),
+        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED".into(),
+        Some(true) => fields
+            .suno_lyrics_content_types
+            .iter()
+            .map(|value| match value {
+                SunoLyricsContentType::VocalLyrics => "Vocal lyrics",
+                SunoLyricsContentType::StructureInstructions => "Structure instructions",
+                SunoLyricsContentType::SoundInstructions => "Sound instructions",
+                SunoLyricsContentType::ArrangementInstructions => "Arrangement instructions",
+                SunoLyricsContentType::Mixed => "Mixed",
+                SunoLyricsContentType::Other => "Other",
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+    }
+}
+
+fn structure_instructions_present(fields: &TrackFields) -> &'static str {
+    match fields.suno_lyrics_field_content {
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED",
+        Some(true) => yes_no(
+            fields
+                .suno_lyrics_content_types
+                .contains(&SunoLyricsContentType::StructureInstructions),
+        ),
+    }
+}
+
+fn suno_content_source(fields: &TrackFields) -> &'static str {
+    match fields.suno_lyrics_field_content {
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+        Some(true) => match fields.suno_lyrics_content_source {
+            Some(SunoLyricsContentSource::Human) => "human",
+            Some(SunoLyricsContentSource::Ai) => "AI",
+            Some(SunoLyricsContentSource::Mixed) => "mixed",
+            None => "NOT DOCUMENTED",
+        },
+    }
+}
+
+fn documentation_answer(value: Option<DocumentationAnswer>) -> &'static str {
+    match value {
+        Some(DocumentationAnswer::Yes) => "YES",
+        Some(DocumentationAnswer::No) => "NO",
+        Some(DocumentationAnswer::NotDocumented) | None => "NOT DOCUMENTED",
+    }
+}
+
+fn conditional_documentation_answer(
+    controlling: Option<bool>,
+    value: Option<DocumentationAnswer>,
+) -> &'static str {
+    match controlling {
+        Some(true) => documentation_answer(value),
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+    }
+}
+
+fn deepfake_indicator_summary(fields: &TrackFields) -> &'static str {
+    if fields.generative_ai_used == Some(false) {
+        return "N/A";
+    }
+    if fields.generative_ai_used != Some(true) {
+        return "INCOMPLETE – generative AI use NOT DOCUMENTED";
+    }
+    let answers = [
+        fields.real_person_voice_intentionally_imitated,
+        fields.real_person_identity_intentionally_represented,
+        fields.real_event_represented_as_authentic_recording,
+        fields.real_location_institution_event_presented_as_authentic_ai_recording,
+    ];
+    if answers
+        .iter()
+        .any(|answer| *answer == Some(DocumentationAnswer::Yes))
+    {
+        "Potential deepfake-related indicator recorded"
+    } else if answers
+        .iter()
+        .all(|answer| *answer == Some(DocumentationAnswer::No))
+    {
+        "Documented deepfake-related indicators: none recorded"
+    } else {
+        "Deepfake-related indicator documentation: INCOMPLETE"
+    }
+}
+
+fn documented_string_list(values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        "NOT DOCUMENTED".into()
+    } else {
+        values.join(" | ")
+    }
+}
+
+fn conditional_text<'a>(controlling: Option<bool>, value: &'a str) -> &'a str {
+    match controlling {
+        Some(true) => documented(value),
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+    }
+}
+
+fn conditional_answer<'a>(controlling: Option<bool>, value: &'a str) -> &'a str {
+    match controlling {
+        Some(true) => value,
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+    }
+}
+
+fn applicable_note<'a>(answer: Option<bool>, value: &'a str) -> &'a str {
+    match answer {
+        Some(true) => documented(value),
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+    }
+}
+
+fn step_status_label(status: &StepStatus) -> &'static str {
+    match status {
+        StepStatus::NotRun => "NOT_RUN",
+        StepStatus::Pass => "PASS",
+        StepStatus::Fail => "FAIL",
+        StepStatus::Blocked => "BLOCKED",
+        StepStatus::NotApplicable => "N/A",
+        StepStatus::NotVerified => "NOT_VERIFIED",
+    }
+}
+
 fn documented(value: &str) -> &str {
     if value.trim().is_empty() {
-        "Not documented"
+        "NOT DOCUMENTED"
     } else {
         value
     }
@@ -942,7 +1489,7 @@ fn fact_origin_label(origin: FactOrigin) -> &'static str {
     match origin {
         FactOrigin::UserConfirmedFact => "User-confirmed fact",
         FactOrigin::EvidenceDerivedMetadata => "Evidence-derived metadata",
-        FactOrigin::NotDocumented => "Not documented",
+        FactOrigin::NotDocumented => "NOT DOCUMENTED",
     }
 }
 
@@ -956,9 +1503,9 @@ fn yes_no(value: bool) -> &'static str {
 
 fn recorded_bool(value: Option<bool>) -> &'static str {
     match value {
-        Some(true) => "Yes",
-        Some(false) => "No",
-        None => "Not recorded",
+        Some(true) => "YES",
+        Some(false) => "NO",
+        None => "NOT DOCUMENTED",
     }
 }
 
@@ -973,7 +1520,7 @@ fn certificate_format_requires_pdf(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(CERTIFICATE_FORMAT_VERSION | "4.0" | "3.0" | "2.0") => {
+        Some(CERTIFICATE_FORMAT_VERSION | "4.1" | "4.0" | "3.0" | "2.0") => {
             if !hashes.contains_key(PDF_FILE) {
                 return Err(AppError::Validation(
                     "This certificate format requires the root-level technical PDF hash.".into(),
@@ -1095,6 +1642,157 @@ mod tests {
         let sums = workspace.path().join("SHA256SUMS.txt");
         fs::write(&sums, content).expect("write SHA256SUMS fixture");
         parse_hashes(&sums)
+    }
+
+    #[test]
+    fn suno_field_markdown_is_separate_from_human_contribution_for_ai_and_mixed_sources() {
+        for (source, expected_label) in [
+            (SunoLyricsContentSource::Ai, "AI"),
+            (SunoLyricsContentSource::Mixed, "mixed"),
+        ] {
+            let mut fields = TrackFields::default();
+            fields.human_editing_performed = Some(false);
+            fields.suno_lyrics_field_content = Some(true);
+            fields.suno_lyrics_content_types = vec![SunoLyricsContentType::StructureInstructions];
+            fields.suno_lyrics_content_source = Some(source);
+            fields.suno_lyrics_field_text = "[AI-or-mixed structure instruction]".into();
+
+            let human = human_contribution_markdown(&fields);
+            let suno_field = suno_field_markdown(&fields);
+
+            assert!(!human.contains("Content source [User-confirmed fact]"));
+            assert!(!human.contains("[AI-or-mixed structure instruction]"));
+            assert!(suno_field.starts_with(
+                "## F. Suno Lyrics / Structure Field – Suno Structure / Generation Instructions\n"
+            ));
+            assert!(suno_field.contains(&format!(
+                "- Content source [User-confirmed fact]: {expected_label}"
+            )));
+            assert!(suno_field.contains("[AI-or-mixed structure instruction]"));
+            assert!(!suno_field.starts_with("## E."));
+        }
+    }
+
+    #[test]
+    fn terms_markdown_labels_each_context_value_with_its_origin() {
+        let mut terms = relationship_evidence("terms-origin-labels", EvidenceRole::SunoTermsRights);
+        terms.metadata.document_title = "Archived Terms".into();
+        terms.metadata.provider = "Suno".into();
+        terms.metadata.source_url = "https://suno.example/terms".into();
+        terms.metadata.retrieval_date = "2026-08-17".into();
+        terms.metadata.effective_date = "2026-08-01".into();
+        terms.metadata.applicable_production_period = "2026-08-01 to 2026-08-31".into();
+        terms.metadata.factual_note = "User-recorded archive context".into();
+        terms.metadata.original_file_name = "Suno Terms.pdf".into();
+
+        let markdown = terms_evidence_markdown(&[&terms]);
+        for expected in [
+            "Evidence ID [System value]",
+            "Document title [User-confirmed fact]",
+            "Provider/source [User-confirmed fact]",
+            "Source URL [User-confirmed fact]",
+            "Retrieval date [User-confirmed fact]",
+            "Effective date [User-confirmed fact]",
+            "Applicable production period [User-confirmed fact]",
+            "Factual note [User-confirmed fact]",
+            "Relative path [System value]",
+            "Original filename [Evidence-derived metadata]",
+            "SHA-256 [System verification]",
+            "Imported at [System value]",
+            "Provenance [System value]",
+        ] {
+            assert!(
+                markdown.contains(expected),
+                "missing Terms label: {expected}"
+            );
+        }
+        assert!(markdown.contains("Archived Terms"));
+        assert!(markdown.contains("Suno Terms.pdf"));
+        assert!(markdown.contains(DIGEST));
+    }
+
+    #[test]
+    fn historical_plan_value_is_not_rendered_as_plan_at_generation() {
+        let fields: TrackFields = serde_json::from_value(serde_json::json!({
+            "sunoPlanAtCreation": "Pro"
+        }))
+        .expect("legacy plan fixture");
+
+        let markdown = suno_plan_context_markdown(&fields);
+        assert!(markdown.contains("Suno plan at generation [User-confirmed fact]: NOT DOCUMENTED"));
+        assert!(markdown.contains(
+            "Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: Pro"
+        ));
+        assert!(!markdown.contains("Suno plan at generation [User-confirmed fact]: Pro"));
+    }
+
+    #[test]
+    fn source_and_human_detail_markdown_labels_user_facts_and_system_paths() {
+        let mut fields = TrackFields::default();
+        fields.external_audio_uploaded = Some(true);
+        fields.external_audio_source = "External recorder".into();
+        fields.external_audio_ownership = "User-owned recording".into();
+        fields.own_audio_uploaded = Some(true);
+        fields.own_audio_source = "Own stem".into();
+        fields.own_audio_ownership = "Created by user".into();
+        fields.third_party_samples_uploaded = Some(true);
+        fields.third_party_sample_source = "Sample archive".into();
+        fields.third_party_sample_ownership = "Licensed sample".into();
+        fields.code_based_generation = Some(true);
+        fields.code_audio_post_processed = Some(true);
+        fields.code_audio_post_processing_operations = vec!["Normalize".into()];
+        fields.code_audio_post_processing_note = "Manual limiter".into();
+        fields.human_editing_performed = Some(true);
+        fields.human_editing_details = "Manual timing edit".into();
+        fields.post_export_editing_performed = Some(true);
+        fields.post_export_editing_details = "Manual mastering".into();
+        fields.artwork_origin = "ai_assisted".into();
+        fields.human_artwork_modifications = vec!["Crop".into()];
+        fields.custom_artwork_change = "Manual typography".into();
+
+        let source = relationship_evidence("source-code", EvidenceRole::SourceCodeFile);
+        let generated = relationship_evidence("code-audio", EvidenceRole::CodeGeneratedAudioFile);
+        let source_markdown = source_provenance_markdown(&fields, &[&source, &generated]);
+        for expected in [
+            "External audio source [User-confirmed fact]",
+            "External audio provenance statement [User-confirmed fact]",
+            "Own audio source [User-confirmed fact]",
+            "Own audio provenance statement [User-confirmed fact]",
+            "Third-party sample source [User-confirmed fact]",
+            "Third-party sample provenance statement [User-confirmed fact]",
+            "Source-code evidence [System value]",
+            "Code-generated audio evidence [System value]",
+            "Code-audio post-processing [User-confirmed fact]",
+            "Code-audio post-processing operations [User-confirmed fact]",
+            "Other code-audio post-processing note [User-confirmed fact]",
+        ] {
+            assert!(
+                source_markdown.contains(expected),
+                "missing source provenance label: {expected}"
+            );
+        }
+        assert!(source_markdown.contains("03_DOCUMENTATION/source-code.dat"));
+        assert!(source_markdown.contains("03_DOCUMENTATION/code-audio.dat"));
+
+        let assisted_artwork = human_contribution_markdown(&fields);
+        for expected in [
+            "Confirmed human editing [User-confirmed fact]",
+            "Confirmed desktop-PC editing [User-confirmed fact]",
+            "Confirmed human artwork modifications [User-confirmed fact]",
+            "Other human artwork change [User-confirmed fact]",
+        ] {
+            assert!(
+                assisted_artwork.contains(expected),
+                "missing human contribution label: {expected}"
+            );
+        }
+
+        fields.artwork_origin = "human".into();
+        fields.human_artwork_process_operations = vec!["Paint".into()];
+        fields.human_artwork_process_notes = "Hand-painted cover".into();
+        let human_artwork = human_contribution_markdown(&fields);
+        assert!(human_artwork.contains("Confirmed human artwork process [User-confirmed fact]"));
+        assert!(human_artwork.contains("Human artwork process notes [User-confirmed fact]"));
     }
 
     #[test]
@@ -1260,7 +1958,7 @@ mod tests {
         let manifest_path = workspace.path().join("manifest.json");
         let hashes = BTreeMap::from([(PDF_FILE.into(), DIGEST.into())]);
 
-        for version in ["2.0", "3.0", "4.0", CERTIFICATE_FORMAT_VERSION] {
+        for version in ["2.0", "3.0", "4.0", "4.1", CERTIFICATE_FORMAT_VERSION] {
             fs::write(
                 &manifest_path,
                 format!("{{\"certificate\":{{\"format_version\":\"{version}\"}}}}\n"),

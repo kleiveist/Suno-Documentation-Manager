@@ -85,9 +85,51 @@ pub fn verify_with_progress(
         current.len() as u32,
         None,
     ));
+    let mut mismatch_files = Vec::new();
+    let listed = parse_hash_list(&content)?;
+    for path in current.keys().chain(listed.keys()) {
+        if current.get(path) != listed.get(path) && !mismatch_files.contains(path) {
+            mismatch_files.push(path.clone());
+        }
+    }
+    let file_count = current.len().max(listed.len()) as u32;
+    let verified_count = current
+        .iter()
+        .filter(|(path, hash)| listed.get(*path) == Some(*hash))
+        .count() as u32;
+    Ok(IntegrityState {
+        generated: true,
+        verified: file_count > 0 && verified_count == file_count,
+        file_count,
+        verified_count,
+        generated_at: None,
+        verified_at: Some(Utc::now().to_rfc3339()),
+        mismatch_files,
+    })
+}
+
+pub fn listed_hash(track_root: &Path, relative: &Path) -> Result<Option<String>> {
+    crate::security::validate_relative(relative)?;
+    if excluded(relative) {
+        return Ok(None);
+    }
+    let portable = relative
+        .to_str()
+        .ok_or_else(|| AppError::Validation("Non-UTF-8 track paths cannot be hashed.".into()))?
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    if portable.contains('\\') || portable.chars().any(char::is_control) {
+        return Err(AppError::Validation(
+            "Track path contains characters unsupported by SHA256SUMS.".into(),
+        ));
+    }
+    let manifest = contained_path(track_root, Path::new(HASH_FILE), true)?;
+    let content = fs::read_to_string(&manifest).map_err(|error| AppError::io(&manifest, error))?;
+    Ok(parse_hash_list(&content)?.get(&portable).cloned())
+}
+
+fn parse_hash_list(content: &str) -> Result<BTreeMap<String, String>> {
     let mut listed = BTreeMap::new();
     let mut seen = HashSet::new();
-    let mut mismatch_files = Vec::new();
     for (line_number, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
             return Err(AppError::Data(format!(
@@ -117,25 +159,7 @@ pub fn verify_with_progress(
         }
         listed.insert(path.to_owned(), expected.to_ascii_lowercase());
     }
-    for path in current.keys().chain(listed.keys()) {
-        if current.get(path) != listed.get(path) && !mismatch_files.contains(path) {
-            mismatch_files.push(path.clone());
-        }
-    }
-    let file_count = current.len().max(listed.len()) as u32;
-    let verified_count = current
-        .iter()
-        .filter(|(path, hash)| listed.get(*path) == Some(*hash))
-        .count() as u32;
-    Ok(IntegrityState {
-        generated: true,
-        verified: file_count > 0 && verified_count == file_count,
-        file_count,
-        verified_count,
-        generated_at: None,
-        verified_at: Some(Utc::now().to_rfc3339()),
-        mismatch_files,
-    })
+    Ok(listed)
 }
 
 #[cfg(test)]

@@ -55,12 +55,62 @@ describe("runtime selection", () => {
     });
   });
 
-  it("opens the dedicated global Suno terms PDF picker without metadata", async () => {
+  it("passes required descriptive metadata to the global Suno terms importer", async () => {
     invokeMock.mockResolvedValue(null);
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+    const metadata = {
+      documentTitle: "Suno Terms of Service",
+      provider: "Suno, Inc.",
+      retrievalDate: "2026-08-17"
+    };
 
-    await expect(api.importGlobalTermsEvidence()).resolves.toBeNull();
-    expect(invokeMock).toHaveBeenCalledWith("import_global_terms_evidence", undefined);
+    await expect(api.importGlobalTermsEvidence(metadata)).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenCalledWith("import_global_terms_evidence", { metadata });
+  });
+
+  it("updates global terms metadata through its narrow native command", async () => {
+    invokeMock.mockResolvedValue({ id: "terms-1" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+    const metadata = { provider: "Suno, Inc.", retrievalDate: "2026-08-17" };
+
+    await api.updateGlobalTermsEvidenceMetadata("terms-1", metadata);
+
+    expect(invokeMock).toHaveBeenCalledWith("update_global_terms_evidence_metadata", {
+      evidenceId: "terms-1",
+      metadata
+    });
+  });
+
+  it("attaches external timestamp evidence to a finalized track through its dedicated command", async () => {
+    invokeMock.mockResolvedValue({ id: "track-1" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+    const input = {
+      provider: "Example TSA",
+      timestampType: "external_integrity_timestamp" as const,
+      timestampValue: "2026-08-17T12:00:00Z",
+      referencedArtifact: "evidence_manifest" as const,
+      otherReferencedArtifact: "",
+      referencedSha256: "a".repeat(64),
+      externalReferenceId: "tsa-1",
+      providerVerificationUrl: "https://example.test/verify/tsa-1",
+      note: "User supplied"
+    };
+
+    await api.attachExternalTimestamp("track-1", input);
+
+    expect(invokeMock).toHaveBeenCalledWith("attach_external_timestamp", { trackId: "track-1", input });
+  });
+
+  it("preserves an explicit null in a track patch sent to the native command", async () => {
+    invokeMock.mockResolvedValue({ id: "track-1" });
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.updateTrack("track-1", { generativeAiUsed: null });
+
+    expect(invokeMock).toHaveBeenCalledWith("update_track", {
+      trackId: "track-1",
+      input: { generativeAiUsed: null }
+    });
   });
 
   it("passes a library assignment when creating a track", async () => {

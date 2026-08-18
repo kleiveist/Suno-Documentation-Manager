@@ -21,15 +21,15 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.6";
+export const WORKFLOW_VERSION = "1.7";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
   { id: "source", number: "02", shortLabel: "Quelle", title: "Source", description: "Audioquellen und Rechtezuordnung", required: true },
   { id: "suno", number: "03", shortLabel: "Suno", title: "Suno", description: "Projekt, Modell und Erstellungstarif", required: true },
-  { id: "human_work", number: "04", shortLabel: "Human Work", title: "Menschliche Arbeit", description: "Lyrics und bestätigte Bearbeitungen", required: true },
+  { id: "human_work", number: "04", shortLabel: "Human Work", title: "Menschliche Arbeit", description: "Vocal Lyrics, Suno-Feldinhalt und bestätigte Bearbeitungen", required: true },
   { id: "artwork", number: "05", shortLabel: "Artwork", title: "Artwork", description: "Entstehung und Content-Check", required: true },
-  { id: "ai_transparency", number: "06", shortLabel: "AI-Hinweis", title: "KI-Transparenz", description: "Projektinterne Disclosure-Policy", required: true },
+  { id: "ai_transparency", number: "06", shortLabel: "AI-Hinweis", title: "KI-Transparenz", description: "Audio-Assessment und Artwork-Disclosure", required: true },
   { id: "release", number: "07", shortLabel: "Release", title: "Release", description: "Letzte Bearbeitung und Release-Dateien", required: true },
   { id: "evidence_licenses", number: "08", shortLabel: "Evidence", title: "Evidence & Lizenzen", description: "Nachweise vollständig zuordnen", required: true },
   { id: "integrity", number: "09", shortLabel: "Integrität", title: "Integrität", description: "Dokumente, SHA-256 und Verifikation", required: true },
@@ -51,6 +51,7 @@ const hasText = (value: string): boolean => value.trim().length > 0;
 const hasSelections = (value: readonly string[]): boolean => value.some((item) => item.trim().length > 0);
 const hasEvidence = (evidence: EvidenceItem[], role: EvidenceRole): boolean =>
   evidence.some((item) => item.role === role && item.verified && Boolean(item.sha256) && !item.verificationError);
+const documentationAnswerProvided = (value: TrackFields["aiAssistedAudioElements"]): boolean => value !== null;
 const originalFileName = (evidence: EvidenceItem[], role: EvidenceRole): string =>
   evidence.find((item) => item.role === role && item.verified && Boolean(item.sha256) && !item.verificationError)
     ?.metadata?.originalFileName?.trim() ?? "";
@@ -207,7 +208,22 @@ export function visibleConditionalFields(fields: TrackFields, profile: GlobalPro
   }
   if (fields.humanEditingPerformed === true) visible.add("humanEditingDetails");
   if (fields.postExportEditingPerformed === true) visible.add("postExportEditingDetails");
-  if (fields.lyricsSource !== "" && fields.lyricsSource !== "instrumental") visible.add("lyricsText");
+  if (fields.sunoLyricsFieldContent === true) {
+    visible.add("sunoLyricsContentTypes");
+    visible.add("sunoLyricsContentSource");
+    visible.add("sunoLyricsFieldText");
+    if (fields.sunoLyricsContentTypes.includes("other")) visible.add("sunoLyricsOtherContentType");
+  }
+  if (fields.generativeAiUsed === true) {
+    visible.add("audioAiSystem");
+    visible.add("audioAiAssessment");
+    visible.add("audioDisclosure");
+    if (fields.audioDisclosureApplied === "yes") {
+      visible.add("audioDisclosureLocations");
+      visible.add("audioDisclosureText");
+    }
+    if (fields.audioDisclosureApplied === "no") visible.add("audioDisclosureReason");
+  }
   if (isAiArtwork(fields)) {
     visible.add("aiImageService");
     visible.add("aiArtworkOriginal");
@@ -284,19 +300,32 @@ export function evaluateRequirements(
   add("profile-subscription-start", "suno", "Startdatum des globalen Suno-Abonnements", hasText(profile.subscriptionStartDate));
   add("suno-url", "suno", "Suno-Projekt-URL", hasText(fields.sunoProjectUrl));
   add("suno-generation-date", "suno", "Datum der finalen Suno-Generation", hasText(fields.sunoFinalGenerationDate));
-  add("suno-plan", "suno", "Suno-Tarif bei Erstellung", hasText(fields.sunoPlanAtCreation));
+  add("suno-plan", "suno", "Suno-Tarif bei der finalen Generation", hasText(fields.sunoPlanAtGeneration));
   add("suno-final-export", "suno", "Finaler Suno-Export", hasEvidence(evidence, "suno_final_export"), "suno_final_export");
   add("suno-filename", "suno", "Suno-Exportdateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "suno_final_export", fields.title, fields.sunoExportFilenameDifferenceConfirmed), "suno_final_export");
 
-  add("lyrics-source", "human_work", "Quelle der Lyrics", Boolean(fields.lyricsSource));
   add("instrumental-answer", "human_work", "Angabe: Instrumentaltrack", fields.instrumentalTrack !== null);
-  const lyricsWorkSelected = fields.humanEditingPerformed === true
-    && fields.humanEditingDetails.split(",").some((value) => value.trim() === "Lyrics");
-  const instrumentalConsistent = fields.instrumentalTrack === true
-    ? fields.lyricsSource === "instrumental" && !hasText(fields.lyricsText) && !lyricsWorkSelected
-    : fields.instrumentalTrack === false && fields.lyricsSource !== "instrumental";
-  add("instrumental-consistency", "human_work", "Instrumental-, Lyrics- und Human-Work-Angaben sind widerspruchsfrei", instrumentalConsistent);
-  if (fields.lyricsSource !== "" && fields.lyricsSource !== "instrumental") add("lyrics-text", "human_work", "Verwendeter Lyrics-Text", hasText(fields.lyricsText));
+  add("vocal-lyrics-answer", "human_work", "Angabe: Vocal Lyrics vorhanden", fields.vocalLyricsPresent !== null);
+  if (fields.instrumentalTrack !== null && fields.vocalLyricsPresent !== null) {
+    const vocalClassificationConflict = fields.sunoLyricsFieldContent === true
+      && fields.vocalLyricsPresent === false
+      && fields.sunoLyricsContentTypes.includes("vocal_lyrics");
+    add(
+      "instrumental-vocal-consistency",
+      "human_work",
+      "Instrumental-/Vocal-Angaben und die Vocal-Lyrics-Klassifikation müssen widerspruchsfrei sein",
+      !(fields.instrumentalTrack && fields.vocalLyricsPresent) && !vocalClassificationConflict
+    );
+  }
+  add("suno-lyrics-field-answer", "human_work", "Angabe: Inhalt im Suno-Lyrics-/Structure-Feld", fields.sunoLyricsFieldContent !== null);
+  if (fields.sunoLyricsFieldContent === true) {
+    add("suno-lyrics-content-types", "human_work", "Art des Inhalts im Suno-Lyrics-/Structure-Feld", hasSelections(fields.sunoLyricsContentTypes));
+    add("suno-lyrics-content-source", "human_work", "Quelle des Inhalts im Suno-Lyrics-/Structure-Feld", fields.sunoLyricsContentSource !== null);
+    add("suno-lyrics-field-text", "human_work", "Exakter Inhalt des Suno-Lyrics-/Structure-Felds", hasText(fields.sunoLyricsFieldText));
+    if (fields.sunoLyricsContentTypes.includes("other")) {
+      add("suno-lyrics-other-content-type", "human_work", "Beschreibung des sonstigen Suno-Feldinhalts", hasText(fields.sunoLyricsOtherContentType));
+    }
+  }
   add("suno-style-prompt", "human_work", "In Suno verwendeter Style-Prompt", hasText(fields.sunoStylePrompt));
   add("human-editing-answer", "human_work", "Angabe zu menschlicher Bearbeitung", fields.humanEditingPerformed !== null);
   if (fields.humanEditingPerformed === true) add("human-editing-details", "human_work", "Bestätigte menschliche Bearbeitungsschritte", hasText(fields.humanEditingDetails));
@@ -348,14 +377,45 @@ export function evaluateRequirements(
     }
   }
 
+  add("generative-ai-answer", "ai_transparency", "Angabe zur Verwendung generativer KI im Audio", fields.generativeAiUsed !== null);
+  if (fields.generativeAiUsed === true) {
+    add("audio-ai-system", "ai_transparency", "Für das Audio verwendetes KI-System", hasText(fields.audioAiSystem));
+    add("ai-assisted-audio-elements", "ai_transparency", "Angabe zu KI-assistierten Audioelementen", documentationAnswerProvided(fields.aiAssistedAudioElements));
+    add("ai-generated-audio-elements", "ai_transparency", "Angabe zu KI-generierten Audioelementen", documentationAnswerProvided(fields.aiGeneratedAudioElements));
+    add("voice-imitation", "ai_transparency", "Angabe zur absichtlichen Imitation einer realen Stimme", documentationAnswerProvided(fields.realPersonVoiceIntentionallyImitated));
+    add("identity-representation", "ai_transparency", "Angabe zur absichtlichen Darstellung der Identität einer realen Person", documentationAnswerProvided(fields.realPersonIdentityIntentionallyRepresented));
+    add("authentic-event-recording", "ai_transparency", "Angabe zu einem realen Ereignis als authentische Aufnahme", documentationAnswerProvided(fields.realEventRepresentedAsAuthenticRecording));
+    add("authentic-location-recording", "ai_transparency", "Angabe zu realem Ort, Institution oder Ereignis als authentische KI-Aufnahme", documentationAnswerProvided(fields.realLocationInstitutionEventPresentedAsAuthenticAiRecording));
+    const disclosureDecisionComplete = fields.audioDisclosureApplied !== null
+      && !(fields.commercialUseIntended && fields.audioDisclosureApplied === "not_documented");
+    add("audio-disclosure-status", "ai_transparency", "Audio-Disclosure-Entscheidung dokumentiert; bei kommerzieller Nutzung nicht 'Not documented'", disclosureDecisionComplete);
+    if (fields.audioDisclosureApplied === "yes") {
+      add("audio-disclosure-locations", "ai_transparency", "Ort des Audio-Disclosures", hasSelections(fields.audioDisclosureLocations));
+      add("audio-disclosure-text", "ai_transparency", "Text des Audio-Disclosures", hasText(fields.audioDisclosureText));
+    }
+  }
+
   add("export-date", "release", "Datum der letzten Bearbeitung", hasText(fields.finalExportDate));
   add("release-wav", "release", "Finale Release-Audiodatei", hasEvidence(evidence, "release_wav"), "release_wav");
   add("release-filename", "release", "Release-Dateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "release_wav", fields.title, fields.releaseFilenameDifferenceConfirmed), "release_wav");
   if (fields.commercialUseIntended) {
     add("subscription-evidence", "evidence_licenses", "Abo-/Zahlungsnachweis für den Produktionszeitraum", hasCoveringSubscriptionEvidence(evidence, fields), "subscription_payment");
     add("subscription-generation-coverage", "evidence_licenses", "Abo-Nachweis deckt das Datum der finalen Generation ab", subscriptionGenerationCoverageStatus(evidence, fields) === "YES", "subscription_payment");
-    const hasTermsEvidence = hasEvidence(evidence, "suno_terms_rights");
-    add("terms-evidence", "evidence_licenses", "Suno-Nutzungsbedingungen oder ausdrücklich 'Terms evidence not available' (nicht beides)", hasTermsEvidence ? fields.sunoTermsEvidenceNotAvailable !== true : fields.sunoTermsEvidenceNotAvailable === true, hasTermsEvidence ? undefined : "suno_terms_rights");
+    const verifiedTerms = evidence.filter((item) => hasEvidence([item], "suno_terms_rights"));
+    const completeTerms = verifiedTerms.some((item) =>
+      hasText(item.metadata?.documentTitle ?? "")
+      && hasText(item.metadata?.provider ?? "")
+      && isoDay(item.metadata?.retrievalDate) !== null
+    );
+    add(
+      "terms-evidence",
+      "evidence_licenses",
+      verifiedTerms.length
+        ? "Terms evidence exists, but descriptive metadata is incomplete: Titel, Provider und gültiges Abrufdatum sind erforderlich"
+        : "Verifizierter lokaler Suno-Terms-/Rights-Nachweis mit Titel, Provider und Abrufdatum",
+      completeTerms && fields.sunoTermsEvidenceNotAvailable !== true,
+      "suno_terms_rights"
+    );
   }
   add("documents-current", "integrity", "Aktuelle generierte Dokumente", documents.generated && documents.current);
   add("hashes-verified", "integrity", "Vollständige SHA-256-Verifikation", integrity.verified && integrity.mismatchFiles.length === 0);
@@ -512,7 +572,7 @@ export function evidenceRoleFileTypes(role: EvidenceRole): string {
     third_party_sample_file: "WAV, MP3, FLAC, M4A, AIFF oder OGG",
     third_party_sample_license: "PDF, PNG, JPG, TXT oder Markdown",
     suno_terms_rights: "PDF",
-    external_timestamp: "PDF, TXT, Markdown, JSON, HTML, PNG oder JPG",
+    external_timestamp: "TSR, TST, P7S, PDF, TXT, Markdown, JSON, HTML, PNG oder JPG",
     lyrics: "TXT oder Markdown",
     style: "TXT oder Markdown",
     other: "PDF, Bild, Text, ZIP, WAV, MP3 oder MP4"

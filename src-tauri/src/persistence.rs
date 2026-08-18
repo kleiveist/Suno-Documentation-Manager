@@ -1,7 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::model::{
-    BlockingDeviation, EvidenceItem, EvidenceProvenance, EvidenceRole, GlobalEvidenceItem, Profile,
-    StepState, StepStatus, TrackRecord,
+    BlockingDeviation, EvidenceItem, EvidenceProvenance, EvidenceRole, ExternalTimestampRecord,
+    GlobalEvidenceItem, Profile, StepState, StepStatus, TrackRecord,
 };
 use crate::security::{contained_path, ensure_contained_directory};
 use crate::workflow;
@@ -9,7 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 pub const DATABASE_RELATIVE_PATH: &str = ".suno-doc/workspace.sqlite";
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone)]
 pub struct Persistence {
@@ -530,6 +530,62 @@ impl Persistence {
         Ok(())
     }
 
+    /// Updates descriptive metadata on one reusable evidence record and all
+    /// explicitly supplied, still-mutable portable copies as one database unit.
+    /// Finalized/superseded tracks are filtered by the application before this
+    /// method is called; this transaction prevents partially propagated context.
+    pub fn save_global_evidence_and_copies(
+        &self,
+        global: &GlobalEvidenceItem,
+        copies: &[(TrackRecord, EvidenceItem)],
+    ) -> Result<()> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let global_metadata = serde_json::to_string(&global.evidence.metadata)?;
+        let global_count = transaction.execute(
+            "UPDATE global_evidence SET metadata_json=?1,notes=?2 WHERE id=?3",
+            params![global_metadata, global.notes, global.evidence.id],
+        )?;
+        if global_count == 0 {
+            return Err(AppError::EvidenceNotFound(global.evidence.id.clone()));
+        }
+
+        for (track, evidence) in copies {
+            let evidence_count = transaction.execute(
+                "UPDATE evidence SET metadata_json=?1 WHERE id=?2 AND track_id=?3",
+                params![
+                    serde_json::to_string(&evidence.metadata)?,
+                    evidence.id,
+                    track.id
+                ],
+            )?;
+            if evidence_count == 0 {
+                return Err(AppError::EvidenceNotFound(evidence.id.clone()));
+            }
+            let track_json = serde_json::to_string(track)?;
+            let track_count = transaction.execute(
+                "UPDATE tracks SET title=?1,relative_path=?2,status=?3,workflow_id=?4,
+                 workflow_version=?5,data_json=?6,updated_at=?7,legacy=?8 WHERE id=?9",
+                params![
+                    track.fields.title,
+                    track.relative_path,
+                    track.status.as_str(),
+                    track.workflow_id,
+                    track.workflow_version,
+                    track_json,
+                    track.updated_at,
+                    track.legacy as i64,
+                    track.id
+                ],
+            )?;
+            if track_count == 0 {
+                return Err(AppError::TrackNotFound(track.id.clone()));
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn global_evidence(&self) -> Result<Vec<GlobalEvidenceItem>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
@@ -589,6 +645,64 @@ impl Persistence {
             return Err(AppError::EvidenceNotFound(id.into()));
         }
         Ok(())
+    }
+
+    /// Persist a post-finalization timestamp record without mutating the
+    /// finalized track JSON or its phase-one evidence snapshot.
+    pub fn save_external_timestamp(
+        &self,
+        track_id: &str,
+        record: &ExternalTimestampRecord,
+    ) -> Result<()> {
+        // Current integrity is a load-time observation, not an immutable or
+        // database-persisted assertion. It is recomputed whenever the record is
+        // exposed through TrackDetail.
+        let mut persisted = record.clone();
+        persisted.integrity_verified = false;
+        persisted.integrity_issues.clear();
+        self.open()?.execute(
+            "INSERT INTO external_timestamp_records(id,track_id,certificate_id,imported_at,data_json)
+             VALUES(?1,?2,?3,?4,?5)",
+            params![
+                persisted.id,
+                track_id,
+                persisted.certificate_id,
+                persisted.imported_at,
+                serde_json::to_string(&persisted)?
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_external_timestamp(&self, track_id: &str, record_id: &str) -> Result<()> {
+        self.open()?.execute(
+            "DELETE FROM external_timestamp_records WHERE track_id=?1 AND id=?2",
+            params![track_id, record_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn external_timestamps(&self, track_id: &str) -> Result<Vec<ExternalTimestampRecord>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT data_json FROM external_timestamp_records
+             WHERE track_id=?1 ORDER BY imported_at,id",
+        )?;
+        let rows = statement.query_map([track_id], |row| {
+            let json = row.get::<_, String>(0)?;
+            serde_json::from_str(&json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
     }
 }
 
@@ -662,6 +776,20 @@ pub fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute_batch(
             "ALTER TABLE global_evidence ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
              PRAGMA user_version=4;",
+        )?;
+    }
+    if version < 5 {
+        transaction.execute_batch(
+            "CREATE TABLE external_timestamp_records(
+               id TEXT PRIMARY KEY,
+               track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+               certificate_id TEXT NOT NULL,
+               imported_at TEXT NOT NULL,
+               data_json TEXT NOT NULL
+             );
+             CREATE INDEX external_timestamp_track_certificate
+             ON external_timestamp_records(track_id,certificate_id,imported_at,id);
+             PRAGMA user_version=5;",
         )?;
     }
     transaction.commit()?;
@@ -744,13 +872,13 @@ mod tests {
         let tables: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN
-                 ('metadata','profile','tracks','evidence','step_states','deviations','global_evidence')",
+                 ('metadata','profile','tracks','evidence','step_states','deviations','global_evidence','external_timestamp_records')",
                 [],
                 |row| row.get(0),
             )
             .expect("table count");
         assert_eq!(version, SCHEMA_VERSION);
-        assert_eq!(tables, 7);
+        assert_eq!(tables, 8);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-15 |
+| Last review | 2026-08-17 |
 | Audience | Suno Documentation Manager users |
 | Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md) |
 
@@ -101,11 +101,13 @@ The cadence is a calculation rule for this one document, not permission to extra
 
 ## Register global Suno terms evidence
 
-Open `Einstellungen` and use `PDF auswählen` under `Archivierte Suno-Nutzungsbedingungen`. The button immediately opens the native file dialog; there is no metadata form. Select exactly one local PDF.
+Open `Einstellungen` under `Archivierte Suno-Nutzungsbedingungen`. Enter the document title, provider/source, and retrieval date, then select exactly one local PDF. Add the source URL when known; it is recommended but optional. Effective date, applicable production period, and a factual note are also optional. Leave an unknown optional value undocumented instead of guessing it.
 
-The selected source remains untouched. SunoDM verifies the PDF file signature, registers a hashed copy under `.suno-doc/global-evidence/`, records system-derived file facts, and automatically places a portable `global_copy` under `04_LICENSES/` for every new or still editable project. A finalized project is deliberately not changed; create a revision before assigning newer terms. The evidence records only the archived PDF and its provenance and does not determine rights or validity.
+The selected source remains untouched. SunoDM verifies the PDF file signature, registers a hashed copy under `.suno-doc/global-evidence/`, records the original filename, import time, SHA-256 and provenance, and automatically places a linked portable `global_copy` with the same descriptive metadata under `04_LICENSES/` for every new or still editable project. The track copy has its own local Evidence ID and retains `sourceGlobalEvidenceId`; the certificate summary and register use the same local ID. You can complete or correct descriptive metadata in Settings; matching editable track copies are updated and become stale for regeneration. A finalized project is deliberately not changed, so create a revision before assigning newer or corrected Terms.
 
-When documenting a track, select only evidence whose materialized start and end dates actually cover its production period. Before finalization, the application copies the selected file into the track evidence structure, calculates its hash, records `global_copy` provenance and the workspace source record ID, and includes those fields, the exact coverage dates, and the relative path in the manifest. Portability therefore does not depend on rerunning the cadence calculation: the track retains the concrete interval and remains self-contained if the workspace index is later unavailable.
+For a commercially intended track, a Terms file without title, provider/source, or retrieval date does not pass `Evidence & Licenses`. The interface reports that the file exists but its descriptive metadata is incomplete. A verified local Terms file also cannot be marked `Terms evidence not available`: the native save rejects that contradiction, and imported contradictory legacy state remains blocked rather than being rendered into a certificate. A source URL and effective date may remain `NOT DOCUMENTED`. These values describe the archived local version only; SunoDM neither downloads Terms nor determines their validity, enforceability, or legal sufficiency.
+
+For subscription evidence, attach only records whose materialized interval overlaps production or contains final generation. Multiple adjacent selected intervals may jointly provide gap-free production coverage. Before finalization, the application copies each selected file into the track evidence structure, calculates its hash, records `global_copy` provenance and the workspace source record ID, and includes those fields, the exact coverage dates, and the relative path in the manifest. Portability therefore does not depend on rerunning the cadence calculation: the track retains the concrete intervals and remains self-contained if the workspace index is later unavailable.
 
 ## Create a track
 
@@ -168,15 +170,21 @@ The application displays one task-oriented set of questions at a time. A negativ
 
 In `02 Source`, choose the applicable source category and rights basis from the guided clickable buttons instead of a dropdown or unrestricted description. Each question permits exactly one active choice. This applies to external audio, own audio, and third-party samples. Answer `Code-based generation?` explicitly. A `No` answer ends that branch. A `Yes` answer first requests the code or text that was actually used, then asks whether its audio output was post-processed, and finally requests the resulting WAV or MP3. If post-processing is `Yes`, select every operation that actually occurred; at least one is required, and `Other post-processing` reveals an editable detail field. `No` creates no operation claim. Supported source formats include Ruby, Python, plain text, Markdown, JavaScript, TypeScript, Rust, shell scripts, and other listed text-based formats. Both managed copies and the factual post-processing answer are included in the generated English project documentation.
 
-In `03 Suno`, the model and plan-at-creation fields offer suggestions but remain freely editable. You can select a listed value such as `v5.5` or `Premier`, or retain an exact historical, custom, or future value such as `v6`; the app does not validate either field against a closed list.
+In `03 Suno`, record the final generation as separate facts: date, Suno/final-generation ID when known, project URL, optional project/version ID, download/export date, model, and plan at generation. Valid embedded Suno metadata can supply the date and Suno ID with an evidence-derived origin; it never supplies a plan. The model and plan fields offer suggestions but remain freely editable. You can select a listed value such as `v5.5` or `Premier`, or retain an exact historical, custom, or future value such as `v6`; the app does not validate either field against a closed list.
 
 Record only work that occurred. Do not select arrangement, mixing, mastering, or another editing label unless it accurately describes confirmed work on this track.
 
-In `04 Human Work`, choose exactly one lyrics source from the clickable single-choice buttons, record the exact lyrics text used for every non-instrumental source, and enter the complete Suno style prompt. Select all actually performed human-editing steps from the guided multi-choice buttons. If post-export editing is `Yes`, select at least one actual post-export operation; a free-text processing claim is neither shown nor accepted for a new selection. Document generation writes `02_SUNO/Lyrics.md` and `02_SUNO/Style.md`; managed files at the former `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md` locations are removed during regeneration.
+In `04 Human Work`, answer three independent questions: whether the track is instrumental, whether sung or spoken vocal lyrics are present, and whether the Suno lyrics/structure field contains any content. An instrumental track with no vocals may still contain `[Intro]`, `[Drop]`, sound directions, or arrangement instructions and is valid. If the Suno field contains content, select all applicable content types, choose its `human`, `AI`, or `mixed` source, and retain the exact text. `Other` also needs its factual label. The app does not classify bracketed text automatically. `Instrumental = Yes` together with `Vocal lyrics = Yes` is a real contradiction and must be corrected before finalization.
+
+Enter the complete Suno style prompt and select only the human-editing steps that actually occurred. Suno structure text is not automatically Human Work; its documented content source controls that statement. If post-export editing is `Yes`, select at least one actual post-export operation; a free-text processing claim is neither shown nor accepted for a new selection. Document generation writes `02_SUNO/Lyrics.md` with a `Vocal Lyrics` or `Suno Structure / Generation Instructions` heading as applicable, plus `02_SUNO/Style.md`. Managed files at the former `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md` locations are removed during regeneration.
 
 The interface can display guided labels in German, but the corresponding stored values and generated choice statements are English. Exact user-authored facts such as lyrics and the Suno style prompt remain verbatim.
 
-In `05 Artwork`, the visible notice explains that only relevant facts are requested and that the app records your confirmation without making a legal decision. For human artwork, select any number of process chips and freely add or edit process notes. For AI-assisted artwork, select at least one actual human change; `Other human editing` reveals an optional free-text detail. Answer each content check with its independent `Yes` or `No` buttons. Only `Yes` reveals the required factual note for that question; `No` hides and clears it. Upload the final JPG or PNG downloaded from Suno. The final-artwork role is requested exactly once in this step, not again under Release. For AI artwork, three explicit `No` answers deactivate `06 AI Transparency`; otherwise the configured disclosure policy applies.
+In `05 Artwork`, the visible notice explains that only relevant facts are requested and that the app records your confirmation without making a legal decision. For human artwork, select any number of process chips and freely add or edit process notes. For AI-assisted artwork, select at least one actual human change; `Other human editing` reveals an optional free-text detail. Answer each content check with its independent `Yes` or `No` buttons. Only `Yes` reveals the required factual note for that question; `No` hides and clears it. Upload the final JPG or PNG downloaded from Suno. The final-artwork role is requested exactly once in this step, not again under Release. Three explicit negative artwork answers close their note branches but do not deactivate the separate Audio assessment.
+
+In `06 AI Transparency`, complete Audio and Artwork as separate factual sections. For Audio, first answer `Generative AI used`. `Yes` requires the AI system, the six `Yes`/`No`/`Not documented` indicators for generated/assisted elements and authentic-person/event representations, and an audio-disclosure status. `Disclosure = Yes` requires location and exact text. `Disclosure = No` is a deliberate answer and can retain a factual reason. `Not documented` means the information is missing; for commercial use with generative AI it remains a blocker. The Artwork section continues to show the origin, service, content checks, human changes, policy, and artwork-disclosure result. The app never translates these answers into `AI Act compliant`, `No deepfake`, or another legal conclusion.
+
+Known service values are displayed consistently in new suggestions, for example `ChatGPT / OpenAI`, but every custom or historical free-text value remains unchanged.
 
 In `07 Release`, choose any applicable release-note labels and import the final audio. The managed authoritative copy keeps its real audio extension and is named from the safe track title, for example `01_RELEASE/Neon Universe.wav` or `01_RELEASE/Neon Universe.mp3`. A collision is reported instead of overwritten. Renaming an editable track updates managed release evidence through the native operation; finalized tracks require the existing revision workflow first.
 
@@ -207,13 +215,22 @@ The track dashboard emphasizes progress and concrete missing items. Step labels 
 | Status | Meaning |
 | --- | --- |
 | `NOT RUN` | The step has no valid result yet. |
-| `PASS` | All applicable mandatory requirements in the step pass. |
+| `PASS` | Configured documentation requirements for this step were satisfied. It is not a legal or rights decision. |
 | `FAIL` | At least one evaluated requirement failed. |
 | `BLOCKED` | A prerequisite or deviation prevents completion. |
 | `N/A` | The item does not apply and a reason is stored. |
 | `NOT VERIFIED` | Imported historical information exists but has not been verified. |
 
-Saving a workflow form reevaluates the requirements and refreshes the rail immediately. Explicit `No` answers count as completed answers; for example, three `No` answers in the artwork content check close all three note branches and allow the artwork requirement to pass once its other applicable fields and evidence are complete.
+Saving a workflow form reevaluates the requirements and refreshes the rail immediately. Within a questionnaire, distinguish these values:
+
+| Answer | Meaning |
+| --- | --- |
+| `YES` | You explicitly confirmed the fact. |
+| `NO` | You explicitly confirmed that it does not apply or did not occur. |
+| `N/A` | The question is logically inapplicable; the application retains the reason. |
+| `NOT DOCUMENTED` | Sufficient information is absent. This is not a negative answer. |
+
+Explicit `No` answers count as completed answers where the workflow accepts them; for example, three `No` artwork content checks close their three note branches. An explicit `NOT DOCUMENTED` remains visibly distinct, and the commercial generative-AI disclosure rule can still block completion.
 
 `FAIL`, `BLOCKED`, and `NOT VERIFIED` block finalization. A percentage is a navigation aid; it is not a certificate.
 
@@ -222,6 +239,8 @@ Saving a workflow form reevaluates the requirements and refreshes the rail immed
 Use `Workspace auswählen` to reopen the same root. The SQLite index restores mutable working state. Use the scan action to discover unindexed existing track folders.
 
 A scan never changes candidate track files. It adds conservative local index records so found tracks are visible, reports missing and unknown information, and records discovered evidence as `indexed_legacy` and `NOT VERIFIED`. Confirm separately before adopting current workspace profile data or replacing an unmanaged document. See [Legacy track import](../dev/legacy-track-import.md).
+
+Older saved lyrics source/text can appear as legacy compatibility information. Their presence does not answer whether vocals exist or whether the Suno field contains lyrics, structure, sound, or arrangement instructions. Classify those facts explicitly in an editable track or revision; SunoDM does not infer them from `[Intro]`, `[Verse]`, or any other free text.
 
 If you explicitly remove indexed legacy evidence after review, the application moves a present file to `.archive/removals/<removal-id>/`, writes a `removal.json` audit record, and removes it from the index. It does not permanently delete the historical bytes, and a later scan does not re-add the archived path. There is no automatic restore action in version 0.1, so preserve the removal directory if you may need manual recovery.
 
@@ -263,6 +282,8 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Clarified that verified local Terms evidence cannot coexist with an unavailable claim. | Project team |
+| 2026-08-17 | Documented workflow 1.7 Terms metadata, complete Final Suno Generation, separated instrumental/vocal/Suno-field facts, distinct Audio/Artwork AI assessments, provider suggestions, and exact `NO`/`N/A`/`NOT DOCUMENTED` semantics. | Project team |
 | 2026-08-16 | Explained conditional code-audio post-processing, free model/plan suggestions, artwork process selections and factual checks, and safe title-based release filenames. | Project team |
 | 2026-08-16 | Replaced Source and lyrics-source dropdowns with accessible clickable single-choice buttons. | Project team |
 | 2026-08-16 | Documented the required generated WAV/MP3 evidence for code-based generation. | Project team |

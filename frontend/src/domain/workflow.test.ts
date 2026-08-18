@@ -8,11 +8,13 @@ import {
   evaluateRequirements,
   finalizationGate,
   subscriptionEvidenceRelevance,
+  subscriptionGenerationCoverageStatus,
   subscriptionProductionCoverageStatus,
   statusLabel,
   stepStatuses,
   visibleConditionalFields,
-  evidenceRoleFileTypes
+  evidenceRoleFileTypes,
+  WORKFLOW_VERSION
 } from "./workflow";
 import {
   emptyEvidenceMetadata,
@@ -54,7 +56,7 @@ function evidence(role: EvidenceRole): EvidenceItem {
 }
 
 function completeTrack(): TrackDetail {
-  const fields = {
+  const fields: TrackDetail["fields"] = {
     ...emptyTrackFields(profile),
     title: "Complete Track",
     productionStartDate: "2026-07-01",
@@ -65,10 +67,14 @@ function completeTrack(): TrackDetail {
     sunoFinalGenerationId: "generation-1",
     sunoFinalGenerationDate: "2026-07-03",
     sunoDownloadExportDate: "",
-    sunoPlanAtCreation: "Premier",
+    sunoPlanAtGeneration: "Premier",
     finalExportDate: "2026-07-03",
-    lyricsSource: "instrumental" as const,
     instrumentalTrack: true,
+    vocalLyricsPresent: false,
+    sunoLyricsFieldContent: true,
+    sunoLyricsContentTypes: ["structure_instructions"],
+    sunoLyricsContentSource: "human",
+    sunoLyricsFieldText: "[Intro]\n[Drop]\n[Outro]",
     sunoStylePrompt: "cinematic synthwave, driving bass",
     externalAudioUploaded: false,
     ownAudioUploaded: false,
@@ -77,7 +83,8 @@ function completeTrack(): TrackDetail {
     humanEditingPerformed: false,
     postExportEditingPerformed: false,
     commercialUseIntended: false,
-    artworkOrigin: "none" as const
+    artworkOrigin: "none",
+    generativeAiUsed: false
   };
   return {
     id: "complete",
@@ -89,15 +96,17 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.6",
+    workflowVersion: "1.7",
     profileSnapshot: structuredClone(profile),
     automation: emptyTrackAutomation(),
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.7", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.8", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
+    externalTimestamps: [],
+    finalizationAnchors: [],
     blockingDeviations: []
   };
 }
@@ -224,14 +233,43 @@ describe("missing requirements", () => {
     expect(finalizationGate(track, profile).valid).toBe(false);
   });
 
-  it("blocks contradictory instrumental, lyrics and confirmed human-work facts", () => {
+  it("TEST 01 accepts an instrumental with bracketed structure instructions and no vocal lyrics", () => {
+    const track = completeTrack();
+    const ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).not.toContain("instrumental-vocal-consistency");
+    expect(ids).not.toContain("suno-lyrics-field-text");
+    expect(finalizationGate(track, profile).valid).toBe(true);
+  });
+
+  it("TEST 02 blocks explicit vocal inconsistencies without parsing free text", () => {
     const track = completeTrack();
     track.fields.instrumentalTrack = true;
-    track.fields.lyricsSource = "mixed";
-    track.fields.lyricsText = "Contradictory lyrics";
+    track.fields.vocalLyricsPresent = true;
     track.fields.humanEditingPerformed = true;
     track.fields.humanEditingDetails = "Arrangement, Lyrics";
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("instrumental-consistency");
+    track.fields.legacyLyricsText = "[Intro]\nlegacy value";
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("instrumental-vocal-consistency");
+    track.fields.vocalLyricsPresent = false;
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("instrumental-vocal-consistency");
+    track.fields.sunoLyricsContentTypes = ["vocal_lyrics"];
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("instrumental-vocal-consistency");
+  });
+
+  it("does not let a historical plan-at-creation value satisfy the current generation-plan gate", () => {
+    const track = completeTrack();
+    track.fields.sunoPlanAtGeneration = "";
+    track.fields.legacySunoPlanAtCreation = "Historical Pro";
+
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("suno-plan");
+  });
+
+  it("TEST 03 accepts a vocal track with vocal lyrics", () => {
+    const track = completeTrack();
+    track.fields.instrumentalTrack = false;
+    track.fields.vocalLyricsPresent = true;
+    track.fields.sunoLyricsContentTypes = ["vocal_lyrics"];
+    track.fields.sunoLyricsFieldText = "Original vocal lyrics";
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("instrumental-vocal-consistency");
   });
 
   it("requires explicit confirmation for an intentional filename deviation without changing the title", () => {
@@ -244,7 +282,7 @@ describe("missing requirements", () => {
     expect(track.fields.title).toBe("Gravaty");
   });
 
-  it("checks commercial final-generation coverage and the explicit terms alternative", () => {
+  it("TEST 04/05 requires complete core metadata for commercial Terms evidence", () => {
     const track = completeTrack();
     track.fields.commercialUseIntended = true;
     const subscription = evidence("subscription_payment");
@@ -259,8 +297,17 @@ describe("missing requirements", () => {
     track.fields.sunoTermsEvidenceNotAvailable = true;
     ids = calculateMissingRequirements(track, profile).map((item) => item.id);
     expect(ids).not.toContain("subscription-generation-coverage");
-    expect(ids).not.toContain("terms-evidence");
-    track.evidence.push(evidence("suno_terms_rights"));
+    expect(ids).toContain("terms-evidence");
+    const terms = evidence("suno_terms_rights");
+    track.evidence.push(terms);
+    ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).toContain("terms-evidence");
+    terms.metadata = {
+      ...terms.metadata!,
+      documentTitle: "Suno Terms of Service",
+      provider: "Suno, Inc.",
+      retrievalDate: "2026-08-17"
+    };
     ids = calculateMissingRequirements(track, profile).map((item) => item.id);
     expect(ids).toContain("terms-evidence");
     track.fields.sunoTermsEvidenceNotAvailable = false;
@@ -331,6 +378,19 @@ describe("missing requirements", () => {
     expect(subscriptionProductionCoverageStatus([july, august], track.fields)).toBe("YES");
   });
 
+  it("TEST 06/07 records the plan at generation and evaluates date coverage technically", () => {
+    const track = completeTrack();
+    track.fields.sunoPlanAtGeneration = "Premier";
+    track.fields.sunoFinalGenerationDate = "2026-08-15";
+    const covered = evidence("subscription_payment");
+    covered.coverageStart = "2026-08-14";
+    covered.coverageEnd = "2026-09-13";
+    expect(subscriptionGenerationCoverageStatus([covered], track.fields)).toBe("YES");
+    covered.coverageEnd = "2026-08-13";
+    expect(subscriptionGenerationCoverageStatus([covered], track.fields)).toBe("NO");
+    expect(WORKFLOW_VERSION).toBe("1.7");
+  });
+
   it("requires a verified generated disclosure artifact for AI artwork", () => {
     const track = completeTrack();
     track.fields.artworkOrigin = "ai_assisted";
@@ -364,6 +424,65 @@ describe("missing requirements", () => {
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("release-final-artwork");
   });
 
+  it("TEST 08 completes the factual audio AI transparency questionnaire without legal conclusions", () => {
+    const track = completeTrack();
+    Object.assign(track.fields, {
+      generativeAiUsed: true,
+      audioAiSystem: "Suno",
+      aiAssistedAudioElements: "yes",
+      aiGeneratedAudioElements: "yes",
+      realPersonVoiceIntentionallyImitated: "no",
+      realPersonIdentityIntentionallyRepresented: "no",
+      realEventRepresentedAsAuthenticRecording: "no",
+      realLocationInstitutionEventPresentedAsAuthenticAiRecording: "no",
+      audioDisclosureApplied: "yes",
+      audioDisclosureLocations: ["release metadata"],
+      audioDisclosureText: "AI-generated audio"
+    } satisfies Partial<TrackDetail["fields"]>);
+
+    expect(calculateMissingRequirements(track, profile).filter((item) => item.stepId === "ai_transparency")).toEqual([]);
+  });
+
+  it("TEST 09 keeps commercial generative-AI disclosure NOT DOCUMENTED visibly incomplete", () => {
+    const track = completeTrack();
+    Object.assign(track.fields, {
+      commercialUseIntended: true,
+      generativeAiUsed: true,
+      audioAiSystem: "Suno",
+      aiAssistedAudioElements: "yes",
+      aiGeneratedAudioElements: "yes",
+      realPersonVoiceIntentionallyImitated: "no",
+      realPersonIdentityIntentionallyRepresented: "no",
+      realEventRepresentedAsAuthenticRecording: "no",
+      realLocationInstitutionEventPresentedAsAuthenticAiRecording: "no",
+      audioDisclosureApplied: "not_documented"
+    } satisfies Partial<TrackDetail["fields"]>);
+
+    const ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).toContain("audio-disclosure-status");
+  });
+
+  it("TEST 10 accepts a deliberate NO disclosure with an optional factual reason", () => {
+    const track = completeTrack();
+    Object.assign(track.fields, {
+      generativeAiUsed: true,
+      audioAiSystem: "Suno",
+      aiAssistedAudioElements: "yes",
+      aiGeneratedAudioElements: "yes",
+      realPersonVoiceIntentionallyImitated: "no",
+      realPersonIdentityIntentionallyRepresented: "no",
+      realEventRepresentedAsAuthenticRecording: "no",
+      realLocationInstitutionEventPresentedAsAuthenticAiRecording: "no",
+      audioDisclosureApplied: "no",
+      audioDisclosureReason: "User-confirmed publication decision"
+    } satisfies Partial<TrackDetail["fields"]>);
+
+    const ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).not.toContain("audio-disclosure-status");
+    expect(ids).not.toContain("audio-disclosure-locations");
+    expect(ids).not.toContain("audio-disclosure-text");
+  });
+
   it("evaluates code-audio post-processing only on the applicable branch", () => {
     const track = completeTrack();
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain(
@@ -390,7 +509,7 @@ describe("missing requirements", () => {
   it("accepts future and historical free-text Suno model and plan values", () => {
     const track = completeTrack();
     track.fields.sunoModel = "v6";
-    track.fields.sunoPlanAtCreation = "Historical Studio Plan";
+    track.fields.sunoPlanAtGeneration = "Historical Studio Plan";
     const missing = calculateMissingRequirements(track, profile).map((item) => item.id);
     expect(missing).not.toContain("suno-model");
     expect(missing).not.toContain("suno-plan");
@@ -408,7 +527,7 @@ describe("missing requirements", () => {
     );
   });
 
-  it("deactivates AI Transparency after three explicit No answers", () => {
+  it("keeps audio AI transparency independent when artwork disclosure is not applicable", () => {
     const track = completeTrack();
     track.fields.artworkOrigin = "ai_generated";
     track.fields.aiImageService = "Local Image Tool";
@@ -419,8 +538,29 @@ describe("missing requirements", () => {
 
     expect(contentCheckAllNegative(track.fields)).toBe(true);
     expect(visibleConditionalFields(track.fields, profile)).not.toContain("disclosure");
+    track.fields.generativeAiUsed = null;
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("generative-ai-answer");
+    track.fields.generativeAiUsed = false;
     expect(calculateMissingRequirements(track, profile).filter((item) => item.stepId === "ai_transparency")).toEqual([]);
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("artwork-final");
+  });
+
+  it("TEST 16 distinguishes NO, NOT DOCUMENTED and deterministically non-applicable answers", () => {
+    const track = completeTrack();
+    track.fields.generativeAiUsed = true;
+    track.fields.audioAiSystem = "Suno";
+    track.fields.aiAssistedAudioElements = "yes";
+    track.fields.aiGeneratedAudioElements = "no";
+    track.fields.realPersonVoiceIntentionallyImitated = "not_documented";
+    track.fields.realPersonIdentityIntentionallyRepresented = "no";
+    track.fields.realEventRepresentedAsAuthenticRecording = "no";
+    track.fields.realLocationInstitutionEventPresentedAsAuthenticAiRecording = "no";
+    track.fields.audioDisclosureApplied = "no";
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("voice-imitation");
+    track.fields.realPersonVoiceIntentionallyImitated = null;
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("voice-imitation");
+    track.fields.generativeAiUsed = false;
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("voice-imitation");
   });
 
   it("surfaces every attached but missing or unverified evidence item", () => {

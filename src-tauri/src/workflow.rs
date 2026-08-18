@@ -1,8 +1,9 @@
 use crate::audio_metadata::{has_suno_studio_marker, parse_suno_metadata};
 use crate::error::{AppError, Result};
 use crate::model::{
-    BlockingDeviation, ByteIdenticalPair, ConsistencyIssue, EvidenceDerivedField, EvidenceItem,
-    EvidenceRole, FactOrigin, Profile, StepState, StepStatus, TrackAutomation, TrackRecord,
+    BlockingDeviation, ByteIdenticalPair, ConsistencyIssue, DocumentationAnswer,
+    EvidenceDerivedField, EvidenceItem, EvidenceRole, FactOrigin, Profile, StepState, StepStatus,
+    SunoLyricsContentType, TrackAutomation, TrackRecord,
 };
 use chrono::{Days, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -40,7 +41,6 @@ pub struct WorkflowRequirement {
     pub when: String,
     pub missing_message: String,
     pub evidence_role: Option<String>,
-    pub allow_explicit_unavailable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,7 +108,8 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         "code_based_generation",
         "code_audio_post_processed",
         "third_party_samples",
-        "lyrics_text",
+        "suno_lyrics_field_content",
+        "suno_lyrics_other_content_type",
         "human_editing",
         "post_export_editing",
         "artwork_present",
@@ -118,6 +119,8 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         "real_person",
         "real_event",
         "trademark_or_logo",
+        "generative_ai_used",
+        "audio_disclosure_yes",
         "commercial_use",
         "finalization_ready",
     ]
@@ -205,14 +208,6 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         } else if requirement.evidence_role.is_some() {
             return Err(AppError::Data(format!(
                 "Non-evidence requirement {} declares an evidence role.",
-                requirement.key
-            )));
-        }
-        if requirement.allow_explicit_unavailable.is_some()
-            && requirement.key != "evidence_licenses.terms_or_unavailable"
-        {
-            return Err(AppError::Data(format!(
-                "Requirement {} cannot configure the terms-unavailable alternative.",
                 requirement.key
             )));
         }
@@ -472,7 +467,12 @@ fn condition_applies(condition: &str, track: &TrackRecord) -> bool {
             f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true)
         }
         "third_party_samples" => f.third_party_samples_uploaded == Some(true),
-        "lyrics_text" => !matches!(f.lyrics_source.as_str(), "" | "instrumental"),
+        "suno_lyrics_field_content" => f.suno_lyrics_field_content == Some(true),
+        "suno_lyrics_other_content_type" => {
+            f.suno_lyrics_field_content == Some(true)
+                && f.suno_lyrics_content_types
+                    .contains(&SunoLyricsContentType::Other)
+        }
         "human_editing" => f.human_editing_performed == Some(true),
         "post_export_editing" => f.post_export_editing_performed == Some(true),
         "artwork_present" => !matches!(f.artwork_origin.as_str(), "" | "none"),
@@ -485,6 +485,11 @@ fn condition_applies(condition: &str, track: &TrackRecord) -> bool {
         "real_person" => f.depicts_real_person == Some(true),
         "real_event" => f.depicts_real_event == Some(true),
         "trademark_or_logo" => f.contains_trademark == Some(true),
+        "generative_ai_used" => f.generative_ai_used == Some(true),
+        "audio_disclosure_yes" => {
+            f.generative_ai_used == Some(true)
+                && f.audio_disclosure_applied == Some(crate::model::DocumentationAnswer::Yes)
+        }
         "commercial_use" => f.commercial_use_intended,
         "finalization_ready" => true,
         _ => true, // Unknown conditions fail closed by making their requirement applicable.
@@ -567,16 +572,11 @@ fn requirement_met(
         "field" if requirement.key == "evidence_licenses.subscription_generation_coverage" => {
             subscription_generation_coverage(track, evidence) == CoverageStatus::Yes
         }
-        "field" if requirement.key == "evidence_licenses.terms_or_unavailable" => {
-            let has_terms = evidence
-                .iter()
-                .any(|item| verified_role(item, EvidenceRole::SunoTermsRights));
-            if has_terms {
-                track.fields.suno_terms_evidence_not_available != Some(true)
-            } else {
-                requirement.allow_explicit_unavailable == Some(true)
-                    && track.fields.suno_terms_evidence_not_available == Some(true)
-            }
+        "field" if requirement.key == "evidence_licenses.terms_complete" => {
+            track.fields.suno_terms_evidence_not_available != Some(true)
+                && evidence.iter().any(|item| {
+                    verified_role(item, EvidenceRole::SunoTermsRights) && terms_complete(item)
+                })
         }
         "field" => field_requirement_met(&requirement.key, track, profile, deviations),
         _ => false,
@@ -585,6 +585,12 @@ fn requirement_met(
 
 fn verified_role(item: &EvidenceItem, role: EvidenceRole) -> bool {
     item.role == role && item.verified && item.sha256.is_some() && item.verification_error.is_none()
+}
+
+fn terms_complete(item: &EvidenceItem) -> bool {
+    present(&item.metadata.document_title)
+        && present(&item.metadata.provider)
+        && NaiveDate::parse_from_str(item.metadata.retrieval_date.trim(), "%Y-%m-%d").is_ok()
 }
 
 fn verified_local_disclosure(
@@ -640,10 +646,9 @@ pub fn subscription_generation_coverage(
     track: &TrackRecord,
     evidence: &[EvidenceItem],
 ) -> CoverageStatus {
-    let generation_date = track.fields.suno_final_generation_date.trim();
-    if generation_date.is_empty() {
+    let Some(generation_date) = parse_iso_day(&track.fields.suno_final_generation_date) else {
         return CoverageStatus::NotVerified;
-    }
+    };
     let subscriptions = evidence
         .iter()
         .filter(|item| verified_role(item, EvidenceRole::SubscriptionPayment))
@@ -656,33 +661,34 @@ pub fn subscription_generation_coverage(
     {
         return CoverageStatus::NotVerified;
     }
-    if subscriptions.iter().any(|item| {
-        item.coverage_start
-            .as_deref()
-            .is_some_and(|start| start <= generation_date)
-            && item
-                .coverage_end
-                .as_deref()
-                .is_some_and(|end| end >= generation_date)
-    }) {
-        CoverageStatus::Yes
-    } else {
-        CoverageStatus::No
+    let mut ranges = Vec::with_capacity(subscriptions.len());
+    for item in subscriptions {
+        let Some(start) = parse_iso_day(item.coverage_start.as_deref().unwrap_or_default()) else {
+            return CoverageStatus::NotVerified;
+        };
+        let Some(end) = parse_iso_day(item.coverage_end.as_deref().unwrap_or_default()) else {
+            return CoverageStatus::NotVerified;
+        };
+        if end < start {
+            return CoverageStatus::NotVerified;
+        }
+        ranges.push((start, end));
     }
+    ranges
+        .iter()
+        .any(|(start, end)| *start <= generation_date && generation_date <= *end)
+        .then_some(CoverageStatus::Yes)
+        .unwrap_or(CoverageStatus::No)
 }
 
 pub fn subscription_production_coverage(
     track: &TrackRecord,
     evidence: &[EvidenceItem],
 ) -> CoverageStatus {
-    let Ok(production_start) =
-        NaiveDate::parse_from_str(track.fields.production_start_date.trim(), "%Y-%m-%d")
-    else {
+    let Some(production_start) = parse_iso_day(&track.fields.production_start_date) else {
         return CoverageStatus::NotVerified;
     };
-    let Ok(production_end) =
-        NaiveDate::parse_from_str(track.fields.production_end_date.trim(), "%Y-%m-%d")
-    else {
+    let Some(production_end) = parse_iso_day(&track.fields.production_end_date) else {
         return CoverageStatus::NotVerified;
     };
     if production_end < production_start {
@@ -707,15 +713,10 @@ pub fn subscription_production_coverage(
 
     let mut ranges = Vec::with_capacity(subscriptions.len());
     for item in subscriptions {
-        let Ok(start) = NaiveDate::parse_from_str(
-            item.coverage_start.as_deref().unwrap_or_default(),
-            "%Y-%m-%d",
-        ) else {
+        let Some(start) = parse_iso_day(item.coverage_start.as_deref().unwrap_or_default()) else {
             return CoverageStatus::NotVerified;
         };
-        let Ok(end) =
-            NaiveDate::parse_from_str(item.coverage_end.as_deref().unwrap_or_default(), "%Y-%m-%d")
-        else {
+        let Some(end) = parse_iso_day(item.coverage_end.as_deref().unwrap_or_default()) else {
             return CoverageStatus::NotVerified;
         };
         if end < start {
@@ -744,6 +745,22 @@ pub fn subscription_production_coverage(
         }
     }
     CoverageStatus::No
+}
+
+fn parse_iso_day(value: &str) -> Option<NaiveDate> {
+    let value = value.trim();
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| index != 4 && index != 7 && !byte.is_ascii_digit())
+    {
+        return None;
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
 }
 
 pub fn original_evidence_file_name<'a>(
@@ -908,6 +925,18 @@ pub fn consistency_issues(track: &TrackRecord, evidence: &[EvidenceItem]) -> Vec
             "human_artwork_editing_undocumented",
             "Menschlich bearbeitetes Artwork ist vorhanden, aber die Bearbeitung ist nicht dokumentiert.",
             "artwork",
+        ));
+    }
+
+    if track.fields.suno_terms_evidence_not_available == Some(true)
+        && evidence
+            .iter()
+            .any(|item| verified_role(item, EvidenceRole::SunoTermsRights))
+    {
+        issues.push(issue(
+            "terms_evidence_availability_conflict",
+            "Verifizierte Terms-Evidence ist vorhanden, widerspricht aber der Angabe, dass sie nicht verfügbar sei.",
+            "evidence_licenses",
         ));
     }
 
@@ -1084,23 +1113,22 @@ fn field_requirement_met(
         "suno.project_url" => present(&f.suno_project_url),
         "suno.final_generation_date" => present(&f.suno_final_generation_date),
         "suno.download_export_date" => present(&f.suno_download_export_date),
-        "suno.plan_at_creation" => present(&f.suno_plan_at_creation),
+        "suno.plan_at_generation" => present(&f.suno_plan_at_generation),
         "suno.final_export_date" => present(&f.final_export_date),
-        "human_work.lyrics_source" => present(&f.lyrics_source),
         "human_work.instrumental_answer" => f.instrumental_track.is_some(),
-        "human_work.instrumental_consistency" => match f.instrumental_track {
-            Some(true) => {
-                f.lyrics_source == "instrumental"
-                    && f.lyrics_text.trim().is_empty()
-                    && !(f.human_editing_performed == Some(true)
-                        && f.human_editing_details
-                            .split(',')
-                            .any(|value| value.trim() == "Lyrics"))
-            }
-            Some(false) => f.lyrics_source != "instrumental",
-            None => false,
-        },
-        "human_work.human_lyrics_details" => present(&f.lyrics_text),
+        "human_work.vocal_lyrics_present" => f.vocal_lyrics_present.is_some(),
+        "human_work.instrumental_consistency" => {
+            !(f.instrumental_track == Some(true) && f.vocal_lyrics_present == Some(true))
+                && !(f.suno_lyrics_field_content == Some(true)
+                    && f.vocal_lyrics_present == Some(false)
+                    && f.suno_lyrics_content_types
+                        .contains(&crate::model::SunoLyricsContentType::VocalLyrics))
+        }
+        "human_work.suno_lyrics_field_content" => f.suno_lyrics_field_content.is_some(),
+        "human_work.suno_lyrics_content_types" => !f.suno_lyrics_content_types.is_empty(),
+        "human_work.suno_lyrics_content_source" => f.suno_lyrics_content_source.is_some(),
+        "human_work.suno_lyrics_field_text" => present(&f.suno_lyrics_field_text),
+        "human_work.suno_lyrics_other_content_type" => present(&f.suno_lyrics_other_content_type),
         "human_work.suno_style_prompt" => present(&f.suno_style_prompt),
         "human_work.human_editing_performed" => f.human_editing_performed.is_some(),
         "human_work.human_editing_details" => present(&f.human_editing_details),
@@ -1119,6 +1147,34 @@ fn field_requirement_met(
         "artwork.trademark_or_logo_note" => present(&f.trademark_notes),
         "ai_transparency.image_service" => present(&f.ai_image_service),
         "ai_transparency.policy" => present(&profile.artwork_transparency_policy),
+        "ai_transparency.generative_ai_used" => f.generative_ai_used.is_some(),
+        "ai_transparency.audio_ai_system" => present(&f.audio_ai_system),
+        "ai_transparency.ai_assisted_audio_elements" => f.ai_assisted_audio_elements.is_some(),
+        "ai_transparency.ai_generated_audio_elements" => f.ai_generated_audio_elements.is_some(),
+        "ai_transparency.real_person_voice_intentionally_imitated" => {
+            f.real_person_voice_intentionally_imitated.is_some()
+        }
+        "ai_transparency.real_person_identity_intentionally_represented" => {
+            f.real_person_identity_intentionally_represented.is_some()
+        }
+        "ai_transparency.real_event_represented_as_authentic_recording" => {
+            f.real_event_represented_as_authentic_recording.is_some()
+        }
+        "ai_transparency.real_location_institution_event_presented_as_authentic_ai_recording" => f
+            .real_location_institution_event_presented_as_authentic_ai_recording
+            .is_some(),
+        "ai_transparency.audio_disclosure_decision" => {
+            f.audio_disclosure_applied.is_some()
+                && !(f.commercial_use_intended
+                    && f.generative_ai_used == Some(true)
+                    && f.audio_disclosure_applied
+                        == Some(crate::model::DocumentationAnswer::NotDocumented))
+        }
+        "ai_transparency.audio_disclosure_locations" => f
+            .audio_disclosure_locations
+            .iter()
+            .any(|value| present(value)),
+        "ai_transparency.audio_disclosure_text" => present(&f.audio_disclosure_text),
         "finalize.blocking_deviations_resolved" => deviations
             .iter()
             .all(|deviation| !deviation.blocking || deviation.resolved),
@@ -1198,6 +1254,26 @@ mod tests {
             value: raw,
         }];
         item
+    }
+
+    fn document_complete_audio_ai(track: &mut TrackRecord, disclosure: DocumentationAnswer) {
+        track.fields.generative_ai_used = Some(true);
+        track.fields.audio_ai_system = "Suno".into();
+        track.fields.ai_assisted_audio_elements = Some(DocumentationAnswer::Yes);
+        track.fields.ai_generated_audio_elements = Some(DocumentationAnswer::Yes);
+        track.fields.real_person_voice_intentionally_imitated = Some(DocumentationAnswer::No);
+        track.fields.real_person_identity_intentionally_represented =
+            Some(DocumentationAnswer::NotDocumented);
+        track.fields.real_event_represented_as_authentic_recording = Some(DocumentationAnswer::No);
+        track
+            .fields
+            .real_location_institution_event_presented_as_authentic_ai_recording =
+            Some(DocumentationAnswer::NotDocumented);
+        track.fields.audio_disclosure_applied = Some(disclosure);
+        if disclosure == DocumentationAnswer::Yes {
+            track.fields.audio_disclosure_locations = vec!["Release description".into()];
+            track.fields.audio_disclosure_text = "Contains AI-generated audio".into();
+        }
     }
 
     #[test]
@@ -1365,13 +1441,64 @@ mod tests {
     }
 
     #[test]
-    fn instrumental_contradictions_block_until_explicitly_corrected() {
+    fn verified_terms_evidence_conflicts_with_an_unavailable_claim() {
+        let mut track = disclosure_track("none", None);
+        track.fields.suno_terms_evidence_not_available = Some(true);
+        let evidence = vec![verified_evidence(EvidenceRole::SunoTermsRights)];
+
+        assert!(consistency_issues(&track, &evidence).iter().any(|issue| {
+            issue.code == "terms_evidence_availability_conflict"
+                && issue.step_id == "evidence_licenses"
+                && issue.blocking
+        }));
+    }
+
+    #[test]
+    fn instrumental_structure_content_is_valid_but_instrumental_vocals_conflict() {
         let mut track = disclosure_track("none", None);
         track.fields.instrumental_track = Some(true);
-        track.fields.lyrics_source = "mixed".into();
-        track.fields.lyrics_text = "Used lyric text".into();
-        track.fields.human_editing_performed = Some(true);
-        track.fields.human_editing_details = "Arrangement, Lyrics".into();
+        track.fields.vocal_lyrics_present = Some(false);
+        track.fields.suno_lyrics_field_content = Some(true);
+        track.fields.suno_lyrics_content_types =
+            vec![crate::model::SunoLyricsContentType::StructureInstructions];
+        track.fields.suno_lyrics_content_source =
+            Some(crate::model::SunoLyricsContentSource::Human);
+        track.fields.suno_lyrics_field_text = "[Intro]\n[Instrumental]".into();
+        track.fields.suno_style_prompt = "instrumental ambient".into();
+        track.fields.human_editing_performed = Some(false);
+
+        assert!(field_requirement_met(
+            "human_work.instrumental_consistency",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        for key in [
+            "human_work.instrumental_answer",
+            "human_work.vocal_lyrics_present",
+            "human_work.suno_lyrics_field_content",
+            "human_work.suno_lyrics_content_types",
+            "human_work.suno_lyrics_content_source",
+            "human_work.suno_lyrics_field_text",
+        ] {
+            assert!(
+                field_requirement_met(key, &track, &Profile::default(), &[]),
+                "{key}"
+            );
+        }
+        let valid = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate instrumental structure case");
+        assert_eq!(
+            valid
+                .steps
+                .iter()
+                .find(|step| step.id == "human_work")
+                .map(|step| &step.status),
+            Some(&StepStatus::Pass)
+        );
+
+        track.fields.suno_lyrics_content_types =
+            vec![crate::model::SunoLyricsContentType::VocalLyrics];
         assert!(!field_requirement_met(
             "human_work.instrumental_consistency",
             &track,
@@ -1379,11 +1506,127 @@ mod tests {
             &[]
         ));
 
-        track.fields.lyrics_source = "instrumental".into();
-        track.fields.lyrics_text.clear();
-        track.fields.human_editing_details = "Arrangement".into();
+        track.fields.suno_lyrics_content_types =
+            vec![crate::model::SunoLyricsContentType::StructureInstructions];
+        track.fields.vocal_lyrics_present = Some(true);
+        assert!(!field_requirement_met(
+            "human_work.instrumental_consistency",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        let conflict = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate instrumental vocal conflict");
+        assert_eq!(
+            conflict
+                .steps
+                .iter()
+                .find(|step| step.id == "human_work")
+                .map(|step| &step.status),
+            Some(&StepStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn vocal_track_and_other_suno_field_content_require_only_the_new_explicit_facts() {
+        let mut track = disclosure_track("none", None);
+        track.fields.instrumental_track = Some(false);
+        track.fields.vocal_lyrics_present = Some(true);
+        track.fields.suno_lyrics_field_content = Some(true);
+        track.fields.suno_lyrics_content_types = vec![
+            crate::model::SunoLyricsContentType::VocalLyrics,
+            crate::model::SunoLyricsContentType::Other,
+        ];
+        track.fields.suno_lyrics_content_source =
+            Some(crate::model::SunoLyricsContentSource::Mixed);
+        track.fields.suno_lyrics_field_text = "A documented vocal line".into();
+        track.fields.suno_style_prompt = "vocal pop".into();
+        track.fields.human_editing_performed = Some(false);
+
         assert!(field_requirement_met(
             "human_work.instrumental_consistency",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        assert!(condition_applies("suno_lyrics_other_content_type", &track));
+        assert!(!field_requirement_met(
+            "human_work.suno_lyrics_other_content_type",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        track.fields.suno_lyrics_other_content_type = "Performance direction".into();
+        assert!(field_requirement_met(
+            "human_work.suno_lyrics_other_content_type",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        let evaluation = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate vocal lyrics case");
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "human_work")
+                .map(|step| &step.status),
+            Some(&StepStatus::Pass)
+        );
+    }
+
+    #[test]
+    fn legacy_lyrics_fields_alone_do_not_answer_the_new_documentation_questions() {
+        let mut track = disclosure_track("none", None);
+        track.fields.lyrics_source = "instrumental".into();
+        track.fields.lyrics_text = "[Intro]\n[Instrumental]".into();
+
+        assert!(!field_requirement_met(
+            "human_work.instrumental_answer",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        assert!(!field_requirement_met(
+            "human_work.vocal_lyrics_present",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        assert!(!field_requirement_met(
+            "human_work.suno_lyrics_field_content",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        let evaluation = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate legacy-only lyrics fields");
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "human_work")
+                .map(|step| &step.status),
+            Some(&StepStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn legacy_plan_at_creation_does_not_satisfy_plan_at_generation() {
+        let mut track = disclosure_track("none", None);
+        let migrated: crate::model::TrackFields = serde_json::from_value(serde_json::json!({
+            "sunoPlanAtCreation": "Historical Pro plan"
+        }))
+        .expect("historical plan field");
+        track.fields.legacy_suno_plan_at_creation = migrated.legacy_suno_plan_at_creation;
+
+        assert_eq!(
+            track.fields.legacy_suno_plan_at_creation,
+            "Historical Pro plan"
+        );
+        assert!(track.fields.suno_plan_at_generation.is_empty());
+        assert!(!field_requirement_met(
+            "suno.plan_at_generation",
             &track,
             &Profile::default(),
             &[]
@@ -1406,6 +1649,19 @@ mod tests {
             subscription_generation_coverage(&track, &[subscription]),
             CoverageStatus::No
         );
+        assert_eq!(
+            subscription_generation_coverage(&track, &[]),
+            CoverageStatus::NotVerified
+        );
+
+        let mut malformed = verified_evidence(EvidenceRole::SubscriptionPayment);
+        malformed.coverage_start = Some("2026-8-1".into());
+        malformed.coverage_end = Some("2026-8-31".into());
+        assert_eq!(
+            subscription_generation_coverage(&track, &[malformed]),
+            CoverageStatus::NotVerified
+        );
+        track.fields.suno_final_generation_date = "2026-8-15".into();
         assert_eq!(
             subscription_generation_coverage(&track, &[]),
             CoverageStatus::NotVerified
@@ -1459,20 +1715,16 @@ mod tests {
     }
 
     #[test]
-    fn commercial_terms_status_requires_real_evidence_or_explicit_unavailable_answer() {
+    fn commercial_terms_require_verified_evidence_with_complete_core_metadata() {
         let mut track = disclosure_track("none", None);
-        let requirement = WorkflowRequirement {
-            key: "evidence_licenses.terms_or_unavailable".into(),
-            step_id: "evidence_licenses".into(),
-            kind: "field".into(),
-            required: true,
-            when: "commercial_use".into(),
-            missing_message: "missing".into(),
-            evidence_role: None,
-            allow_explicit_unavailable: Some(true),
-        };
+        let config = embedded_config();
+        let requirement = config
+            .requirements
+            .iter()
+            .find(|requirement| requirement.key == "evidence_licenses.terms_complete")
+            .expect("terms requirement");
         assert!(!requirement_met(
-            &requirement,
+            requirement,
             &track,
             &Profile::default(),
             &[],
@@ -1480,49 +1732,52 @@ mod tests {
             &[]
         ));
         track.fields.suno_terms_evidence_not_available = Some(true);
-        assert!(requirement_met(
-            &requirement,
-            &track,
-            &Profile::default(),
-            &[],
-            &HashSet::new(),
-            &[]
-        ));
-        let mut strict_requirement = requirement.clone();
-        strict_requirement.allow_explicit_unavailable = Some(false);
         assert!(!requirement_met(
-            &strict_requirement,
+            requirement,
             &track,
             &Profile::default(),
             &[],
             &HashSet::new(),
             &[]
         ));
-        track.fields.suno_terms_evidence_not_available = None;
-        let terms = vec![verified_evidence(EvidenceRole::SunoTermsRights)];
-        assert!(requirement_met(
-            &requirement,
+
+        let mut terms = verified_evidence(EvidenceRole::SunoTermsRights);
+        assert!(!requirement_met(
+            requirement,
             &track,
             &Profile::default(),
-            &terms,
+            std::slice::from_ref(&terms),
             &HashSet::from(["suno_terms_rights"]),
             &[]
         ));
-        track.fields.suno_terms_evidence_not_available = Some(true);
+
+        terms.metadata.document_title = "Suno Terms of Service".into();
+        terms.metadata.provider = "Suno, Inc.".into();
+        terms.metadata.retrieval_date = "2026-08-17".into();
         assert!(!requirement_met(
-            &requirement,
+            requirement,
             &track,
             &Profile::default(),
-            &terms,
+            std::slice::from_ref(&terms),
             &HashSet::from(["suno_terms_rights"]),
             &[]
         ));
         track.fields.suno_terms_evidence_not_available = Some(false);
         assert!(requirement_met(
-            &strict_requirement,
+            requirement,
             &track,
             &Profile::default(),
-            &terms,
+            std::slice::from_ref(&terms),
+            &HashSet::from(["suno_terms_rights"]),
+            &[]
+        ));
+
+        terms.metadata.retrieval_date = "17.08.2026".into();
+        assert!(!requirement_met(
+            requirement,
+            &track,
+            &Profile::default(),
+            &[terms],
             &HashSet::from(["suno_terms_rights"]),
             &[]
         ));
@@ -1601,14 +1856,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_6_configuration_is_accepted() {
+    fn valid_version_1_7_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.6");
+        validate_config(&config).expect("valid workflow 1.7");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.6");
+        assert_eq!(config.version, "1.7");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
@@ -1623,6 +1878,14 @@ mod tests {
         assert!(config.requirements.iter().any(|requirement| {
             requirement.key == "suno.final_export_date" && requirement.step_id == "release"
         }));
+        assert!(config
+            .requirements
+            .iter()
+            .any(|requirement| requirement.key == "suno.plan_at_generation"));
+        assert!(!config
+            .requirements
+            .iter()
+            .any(|requirement| requirement.key == "suno.plan_at_creation"));
         assert!(config.requirements.iter().any(|requirement| {
             requirement.key == "human_work.post_export_editing_performed"
                 && requirement.step_id == "release"
@@ -1754,11 +2017,12 @@ mod tests {
     }
 
     #[test]
-    fn three_negative_content_checks_disable_ai_transparency() {
+    fn three_negative_artwork_checks_do_not_disable_the_audio_ai_step() {
         let mut track = disclosure_track("ai_assisted", Some(true));
         track.fields.depicts_real_person = Some(false);
         track.fields.depicts_real_event = Some(false);
         track.fields.contains_trademark = Some(false);
+        track.fields.generative_ai_used = Some(false);
         let profile = Profile {
             artwork_transparency_policy: "always".into(),
             ..Default::default()
@@ -1767,6 +2031,7 @@ mod tests {
         assert!(content_check_all_negative(&track));
         assert!(!condition_applies("ai_transparency_required", &track));
         assert!(!disclosure_required(&track, &profile));
+        assert!(!can_mark_na("ai_transparency", &track).expect("AI step applicability"));
 
         let evidence = vec![
             verified_evidence(EvidenceRole::AiArtworkOriginal),
@@ -1778,6 +2043,138 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("AI-Kennzeichnung") || item.contains("finale Artwork")));
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "ai_transparency")
+                .map(|step| &step.status),
+            Some(&StepStatus::Pass)
+        );
+    }
+
+    #[test]
+    fn complete_audio_ai_questionnaire_accepts_explicit_not_documented_indicators() {
+        let mut track = disclosure_track("none", None);
+        document_complete_audio_ai(&mut track, DocumentationAnswer::Yes);
+
+        let evaluation = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate complete audio AI questionnaire");
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "ai_transparency")
+                .map(|step| &step.status),
+            Some(&StepStatus::Pass)
+        );
+    }
+
+    #[test]
+    fn each_audio_ai_indicator_requires_an_explicit_tri_state_answer() {
+        let mut track = disclosure_track("none", None);
+        document_complete_audio_ai(&mut track, DocumentationAnswer::No);
+        track.fields.real_person_identity_intentionally_represented = None;
+
+        assert!(!field_requirement_met(
+            "ai_transparency.real_person_identity_intentionally_represented",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        let evaluation = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate incomplete indicator questionnaire");
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "ai_transparency")
+                .map(|step| &step.status),
+            Some(&StepStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn commercial_generative_audio_blocks_not_documented_disclosure() {
+        let mut track = disclosure_track("none", None);
+        document_complete_audio_ai(&mut track, DocumentationAnswer::NotDocumented);
+        track.fields.commercial_use_intended = true;
+
+        assert!(!field_requirement_met(
+            "ai_transparency.audio_disclosure_decision",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        let commercial = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate commercial disclosure");
+        assert_eq!(
+            commercial
+                .steps
+                .iter()
+                .find(|step| step.id == "ai_transparency")
+                .map(|step| &step.status),
+            Some(&StepStatus::Blocked)
+        );
+
+        track.fields.commercial_use_intended = false;
+        assert!(field_requirement_met(
+            "ai_transparency.audio_disclosure_decision",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn explicit_no_audio_disclosure_is_complete_without_a_reason() {
+        let mut track = disclosure_track("none", None);
+        document_complete_audio_ai(&mut track, DocumentationAnswer::No);
+        track.fields.audio_disclosure_reason.clear();
+
+        let evaluation = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate explicit no disclosure");
+        assert_eq!(
+            evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "ai_transparency")
+                .map(|step| &step.status),
+            Some(&StepStatus::Pass)
+        );
+    }
+
+    #[test]
+    fn yes_audio_disclosure_requires_both_location_and_text() {
+        let mut track = disclosure_track("none", None);
+        document_complete_audio_ai(&mut track, DocumentationAnswer::Yes);
+        assert!(field_requirement_met(
+            "ai_transparency.audio_disclosure_locations",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        assert!(field_requirement_met(
+            "ai_transparency.audio_disclosure_text",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+
+        track.fields.audio_disclosure_locations.clear();
+        track.fields.audio_disclosure_text.clear();
+        assert!(!field_requirement_met(
+            "ai_transparency.audio_disclosure_locations",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        assert!(!field_requirement_met(
+            "ai_transparency.audio_disclosure_text",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
     }
 
     #[test]

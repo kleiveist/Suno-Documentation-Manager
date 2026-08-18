@@ -2,15 +2,18 @@ use crate::certificate;
 use crate::documents;
 use crate::error::{AppError, Result};
 use crate::evidence;
+use crate::external_timestamp;
 use crate::folder_import::{self, FolderImportExecutionInput, FolderImportProposal};
 use crate::integrity;
 use crate::model::{
     ActionResult, BlockingDeviation, CertificateState, CreateTrackInput, DeviationInput,
     DocumentPreview, DocumentState, EvidenceDerivedField, EvidenceItem, EvidenceMetadata,
-    EvidencePreview, EvidenceProvenance, EvidenceRole, GlobalEvidenceItem, IntegrityState,
+    EvidencePreview, EvidenceProvenance, EvidenceRole, ExternalTimestampInput,
+    ExternalTimestampRecord, FinalizationAnchor, GlobalEvidenceItem, IntegrityState,
     LegacyCandidate, OperationProgress, Profile, StepState, StepStatus, SubscriptionBillingCycle,
     TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch,
-    TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
+    TrackPatchRequest, TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan,
+    WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -276,6 +279,11 @@ impl WorkspaceApp {
                     .map_err(|error| AppError::io(&finalization_marker, error))?;
                 recovered = true;
             }
+
+            let timestamp_records = self.persistence.external_timestamps(&track.id)?;
+            if external_timestamp::reconcile_publications(&root, &timestamp_records)? {
+                recovered = true;
+            }
         }
         if recovered {
             self.persistence.set_meta("last_recovery_at", &now())?;
@@ -367,7 +375,6 @@ impl WorkspaceApp {
         let fields = crate::model::TrackFields {
             title: input.title.trim().to_owned(),
             production_start_date: input.production_start_date,
-            suno_plan_at_creation: profile.suno_plan.clone(),
             commercial_use_intended: input.commercial_use_intended,
             ai_image_service: profile.default_ai_image_service.clone(),
             disclosure_text: profile.disclosure_text.clone(),
@@ -600,12 +607,43 @@ impl WorkspaceApp {
     }
 
     pub fn update_track(&self, id: &str, patch: TrackPatch) -> Result<TrackDetail> {
+        self.update_track_with_explicit_nulls(id, patch, &[])
+    }
+
+    pub fn update_track_request(
+        &self,
+        id: &str,
+        request: TrackPatchRequest,
+    ) -> Result<TrackDetail> {
+        self.update_track_with_explicit_nulls(id, request.patch, &request.explicit_null_fields)
+    }
+
+    fn update_track_with_explicit_nulls(
+        &self,
+        id: &str,
+        patch: TrackPatch,
+        explicit_null_fields: &[String],
+    ) -> Result<TrackDetail> {
         let mut track = self.mutable_track(id)?;
         let previous_path = track.relative_path.clone();
         let previous_fields = track.fields.clone();
         let previous_origins = track.field_origins.clone();
-        apply_patch(&mut track.fields, patch);
+        let terms_unavailable_requested = patch.suno_terms_evidence_not_available == Some(true);
+        apply_patch_with_explicit_nulls(&mut track.fields, patch, explicit_null_fields);
         let evidence = self.persistence.evidence(id)?;
+        if terms_unavailable_requested
+            && evidence.iter().any(|item| {
+                item.role == EvidenceRole::SunoTermsRights
+                    && item.verified
+                    && item.sha256.is_some()
+                    && item.verification_error.is_none()
+            })
+        {
+            return Err(AppError::Validation(
+                "Terms evidence cannot be marked unavailable while a verified local Terms evidence file is attached."
+                    .into(),
+            ));
+        }
         reconcile_evidence_derived_fields(&mut track, &evidence);
         if track.fields.title != previous_fields.title {
             track.fields.release_filename_difference_confirmed = None;
@@ -943,11 +981,15 @@ impl WorkspaceApp {
         Ok(item)
     }
 
-    pub fn register_global_terms_evidence(&self, source: &Path) -> Result<GlobalEvidenceItem> {
+    pub fn register_global_terms_evidence(
+        &self,
+        source: &Path,
+        mut metadata: EvidenceMetadata,
+    ) -> Result<GlobalEvidenceItem> {
+        validate_evidence_metadata(&EvidenceRole::SunoTermsRights, &metadata)?;
         let mut item =
             evidence::register_global(&self.root, EvidenceRole::SunoTermsRights, source)?;
-        let mut metadata =
-            evidence::capture_automatic_metadata(source, EvidenceMetadata::default());
+        metadata = evidence::capture_automatic_metadata(source, metadata);
         metadata.original_file_name = source
             .file_name()
             .and_then(|value| value.to_str())
@@ -973,6 +1015,51 @@ impl WorkspaceApp {
             self.attach_global_evidence(&track.id, &item.evidence.id)?;
         }
         Ok(item)
+    }
+
+    pub fn update_global_terms_evidence_metadata(
+        &self,
+        evidence_id: &str,
+        supplied: EvidenceMetadata,
+    ) -> Result<GlobalEvidenceItem> {
+        let mut global = self.persistence.global_evidence_item(evidence_id)?;
+        if global.evidence.role != EvidenceRole::SunoTermsRights {
+            return Err(AppError::Validation(
+                "Only Suno terms/rights evidence has editable descriptive metadata here.".into(),
+            ));
+        }
+        apply_descriptive_evidence_metadata(&mut global.evidence.metadata, &supplied);
+        validate_evidence_metadata(&EvidenceRole::SunoTermsRights, &global.evidence.metadata)?;
+
+        let mut copies = Vec::new();
+        for mut track in self.persistence.tracks()?.into_iter().filter(|track| {
+            !is_hidden_workspace_path(Path::new(&track.relative_path))
+                && !matches!(
+                    track.status,
+                    TrackStatus::Finalized | TrackStatus::Superseded
+                )
+        }) {
+            let Some(mut copy) = self
+                .persistence
+                .evidence(&track.id)?
+                .into_iter()
+                .find(|item| {
+                    item.role == EvidenceRole::SunoTermsRights
+                        && item.provenance == EvidenceProvenance::GlobalCopy
+                        && item.source_global_evidence_id.as_deref() == Some(evidence_id)
+                })
+            else {
+                continue;
+            };
+            copy.metadata = global.evidence.metadata.clone();
+            mark_content_changed(&mut track);
+            track.status = TrackStatus::Active;
+            track.updated_at = now();
+            copies.push((track, copy));
+        }
+        self.persistence
+            .save_global_evidence_and_copies(&global, &copies)?;
+        Ok(global)
     }
 
     pub fn register_global_evidence_for_billing_cycle(
@@ -1109,6 +1196,12 @@ impl WorkspaceApp {
         source: &Path,
         mut metadata: EvidenceMetadata,
     ) -> Result<TrackDetail> {
+        if role == EvidenceRole::ExternalTimestamp {
+            return Err(AppError::Validation(
+                "External timestamp evidence can only be attached after technical finalization."
+                    .into(),
+            ));
+        }
         if matches!(
             role,
             EvidenceRole::SubscriptionPayment | EvidenceRole::SunoTermsRights
@@ -1206,6 +1299,12 @@ impl WorkspaceApp {
         source: &Path,
         metadata: EvidenceMetadata,
     ) -> Result<TrackDetail> {
+        if role == EvidenceRole::ExternalTimestamp {
+            return Err(AppError::Validation(
+                "External timestamp evidence can only be attached after technical finalization."
+                    .into(),
+            ));
+        }
         if matches!(
             role,
             EvidenceRole::SubscriptionPayment | EvidenceRole::SunoTermsRights
@@ -2062,6 +2161,89 @@ impl WorkspaceApp {
             ),
             track: Some(detail),
         })
+    }
+
+    pub fn attach_external_timestamp_from(
+        &self,
+        id: &str,
+        source: &Path,
+        input: ExternalTimestampInput,
+    ) -> Result<TrackDetail> {
+        let track = self.persistence.track(id)?;
+        if track.status != TrackStatus::Finalized
+            || !track.certificate.valid
+            || track.certificate.certificate_id.is_none()
+        {
+            return Err(AppError::Validation(
+                "External timestamp evidence can only be attached to a valid technically finalized snapshot."
+                    .into(),
+            ));
+        }
+        let track_root = self.track_root(&track)?;
+        certificate::verify(&track_root)?;
+        let integrity = integrity::verify(&track_root)?;
+        if !integrity.verified {
+            return Err(AppError::Validation(format!(
+                "The finalized track integrity check failed: {}",
+                integrity.mismatch_files.join(", ")
+            )));
+        }
+        let certificate_id = track
+            .certificate
+            .certificate_id
+            .as_deref()
+            .ok_or_else(|| AppError::Data("Finalized track has no certificate ID.".into()))?;
+        let anchors_before = external_timestamp::finalization_anchors(&track_root)?;
+        let staged = external_timestamp::stage(&track_root, certificate_id, source, input)?;
+        let record = staged.record.clone();
+
+        // Register the complete stage first. A process exit from this point on
+        // leaves a database-visible pending record that workspace recovery can
+        // deterministically publish; it cannot leave an invisible live orphan.
+        if let Err(error) = self.persistence.save_external_timestamp(id, &record) {
+            return Err(match external_timestamp::discard_staged(&track_root, &staged) {
+                Ok(()) => error,
+                Err(cleanup) => AppError::Data(format!(
+                    "External timestamp database registration failed ({error}); staging cleanup also failed ({cleanup})."
+                )),
+            });
+        }
+
+        let post_publish_check = (|| -> Result<()> {
+            external_timestamp::publish(&track_root, &staged)?;
+            external_timestamp::verify_published_record(&track_root, &record)?;
+            certificate::verify(&track_root)?;
+            let post_integrity = integrity::verify(&track_root)?;
+            if !post_integrity.verified {
+                return Err(AppError::Validation(
+                    "Attaching timestamp evidence changed the phase-one integrity set.".into(),
+                ));
+            }
+            let anchors_after = external_timestamp::finalization_anchors(&track_root)?;
+            if anchors_after != anchors_before {
+                return Err(AppError::Validation(
+                    "Attaching timestamp evidence changed a finalized anchor.".into(),
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = post_publish_check {
+            let filesystem_cleanup =
+                external_timestamp::remove_published_record(&track_root, &record)
+                    .and_then(|()| external_timestamp::discard_staged(&track_root, &staged));
+            if let Err(cleanup) = filesystem_cleanup {
+                return Err(AppError::Data(format!(
+                    "External timestamp publication failed ({error}); filesystem cleanup also failed ({cleanup}). The registered record was retained for recovery."
+                )));
+            }
+            if let Err(cleanup) = self.persistence.remove_external_timestamp(id, &record.id) {
+                return Err(AppError::Data(format!(
+                    "External timestamp publication failed ({error}); database rollback also failed ({cleanup}). The registered failed record remains visible."
+                )));
+            }
+            return Err(error);
+        }
+        self.detail_from_record(track, false)
     }
 
     pub fn invalidate_certificate(&self, id: &str) -> Result<ActionResult> {
@@ -3124,6 +3306,8 @@ impl WorkspaceApp {
         }
         let cover_evidence_id = final_artwork_evidence_id(&evidence);
         let automation = workflow::automation_summary(&track, &evidence);
+        let (external_timestamps, finalization_anchors) =
+            self.external_timestamp_context(&track)?;
         Ok(TrackDetail {
             id: track.id.clone(),
             title: track.fields.title.clone(),
@@ -3143,6 +3327,8 @@ impl WorkspaceApp {
             fields: track.fields.clone(),
             steps: evaluation.steps,
             evidence,
+            external_timestamps,
+            finalization_anchors,
             documents: track.documents.clone(),
             integrity: track.integrity.clone(),
             certificate: track.certificate.clone(),
@@ -3165,6 +3351,8 @@ impl WorkspaceApp {
         let progress = workflow::progress(&track, &track.profile_snapshot, &evidence, &deviations)?;
         let cover_evidence_id = final_artwork_evidence_id(&evidence);
         let automation = workflow::automation_summary(&track, &evidence);
+        let (external_timestamps, finalization_anchors) =
+            self.external_timestamp_context(&track)?;
         Ok(TrackDetail {
             id: track.id.clone(),
             title: track.fields.title.clone(),
@@ -3184,12 +3372,43 @@ impl WorkspaceApp {
             fields: track.fields.clone(),
             steps: evaluation.steps,
             evidence,
+            external_timestamps,
+            finalization_anchors,
             documents: track.documents.clone(),
             integrity: track.integrity.clone(),
             certificate: track.certificate.clone(),
             blocking_deviations: deviations,
             missing_items: evaluation.missing,
         })
+    }
+
+    fn external_timestamp_context(
+        &self,
+        track: &TrackRecord,
+    ) -> Result<(Vec<ExternalTimestampRecord>, Vec<FinalizationAnchor>)> {
+        let root = self.track_root(track)?;
+        let mut records = self.persistence.external_timestamps(&track.id)?;
+        for record in &mut records {
+            match external_timestamp::verify_published_record(&root, record) {
+                Ok(()) => {
+                    record.integrity_verified = true;
+                    record.integrity_issues.clear();
+                }
+                Err(error) => {
+                    record.integrity_verified = false;
+                    record.integrity_issues = vec![error.to_string()];
+                }
+            }
+        }
+        if track.status != TrackStatus::Finalized || !track.certificate.valid {
+            return Ok((records, Vec::new()));
+        }
+        let anchors = if certificate::verify(&root).is_ok() {
+            external_timestamp::finalization_anchors(&root).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Ok((records, anchors))
     }
 }
 
@@ -3885,9 +4104,20 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
     for (name, value, max) in [
         ("Suno model", fields.suno_model.as_str(), 200),
         (
-            "Suno plan at creation",
-            fields.suno_plan_at_creation.as_str(),
+            "Suno plan at generation",
+            fields.suno_plan_at_generation.as_str(),
             200,
+        ),
+        (
+            "Legacy Suno plan at creation",
+            fields.legacy_suno_plan_at_creation.as_str(),
+            200,
+        ),
+        ("Audio AI system", fields.audio_ai_system.as_str(), 500),
+        (
+            "Other Suno lyrics/structure content type",
+            fields.suno_lyrics_other_content_type.as_str(),
+            1000,
         ),
         ("AI image service", fields.ai_image_service.as_str(), 500),
         ("Disclosure text", fields.disclosure_text.as_str(), 80),
@@ -3896,6 +4126,11 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
     }
     for (name, value, max) in [
         ("Lyrics", fields.lyrics_text.as_str(), 1_000_000),
+        (
+            "Suno lyrics/structure field content",
+            fields.suno_lyrics_field_text.as_str(),
+            1_000_000,
+        ),
         (
             "Suno style prompt",
             fields.suno_style_prompt.as_str(),
@@ -3959,6 +4194,16 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
         ),
         ("Real-event note", fields.real_event_notes.as_str(), 20_000),
         ("Trademark note", fields.trademark_notes.as_str(), 20_000),
+        (
+            "Audio disclosure text",
+            fields.audio_disclosure_text.as_str(),
+            20_000,
+        ),
+        (
+            "Audio disclosure reason",
+            fields.audio_disclosure_reason.as_str(),
+            20_000,
+        ),
         ("Release notes", fields.release_notes.as_str(), 20_000),
     ] {
         validate_multiline_text(name, value, max)?;
@@ -3975,6 +4220,10 @@ fn validate_track_fields(fields: &crate::model::TrackFields) -> Result<()> {
         (
             "Human artwork modifications",
             fields.human_artwork_modifications.as_slice(),
+        ),
+        (
+            "Audio disclosure locations",
+            fields.audio_disclosure_locations.as_slice(),
         ),
     ] {
         validate_text_list(name, values, 100, 4_000)?;
@@ -4052,11 +4301,27 @@ fn validate_evidence_metadata(role: &EvidenceRole, metadata: &EvidenceMetadata) 
             metadata.factual_note.as_str(),
             20_000,
         ),
+        (
+            "Applicable production period",
+            metadata.applicable_production_period.as_str(),
+            1000,
+        ),
+        ("Timestamp type", metadata.timestamp_type.as_str(), 200),
         ("Timestamp value", metadata.external_timestamp.as_str(), 200),
         ("Referenced hash", metadata.referenced_hash.as_str(), 512),
         (
             "Referenced artifact",
             metadata.referenced_artifact.as_str(),
+            4000,
+        ),
+        (
+            "External reference ID",
+            metadata.external_reference_id.as_str(),
+            1000,
+        ),
+        (
+            "Provider verification URL",
+            metadata.provider_verification_url.as_str(),
             4000,
         ),
         (
@@ -4105,8 +4370,27 @@ fn validate_evidence_metadata(role: &EvidenceRole, metadata: &EvidenceMetadata) 
             ));
         }
     }
+    if !metadata.provider_verification_url.trim().is_empty() {
+        let url = Url::parse(metadata.provider_verification_url.trim())
+            .map_err(|_| AppError::Validation("Provider verification URL is invalid.".into()))?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(AppError::Validation(
+                "Provider verification URL must be an HTTP(S) URL with a host.".into(),
+            ));
+        }
+    }
     match role {
-        EvidenceRole::SunoTermsRights => {}
+        EvidenceRole::SunoTermsRights => {
+            if metadata.document_title.trim().is_empty()
+                || metadata.provider.trim().is_empty()
+                || metadata.retrieval_date.trim().is_empty()
+            {
+                return Err(AppError::Validation(
+                    "Terms evidence exists, but descriptive metadata is incomplete: document title, provider/source, and retrieval date are required."
+                        .into(),
+                ));
+            }
+        }
         EvidenceRole::ExternalTimestamp => {
             if metadata.provider.trim().is_empty()
                 || metadata.external_timestamp.trim().is_empty()
@@ -4131,6 +4415,16 @@ fn validate_evidence_metadata(role: &EvidenceRole, metadata: &EvidenceMetadata) 
         _ => {}
     }
     Ok(())
+}
+
+fn apply_descriptive_evidence_metadata(target: &mut EvidenceMetadata, supplied: &EvidenceMetadata) {
+    target.document_title = supplied.document_title.clone();
+    target.provider = supplied.provider.clone();
+    target.source_url = supplied.source_url.clone();
+    target.retrieval_date = supplied.retrieval_date.clone();
+    target.effective_date = supplied.effective_date.clone();
+    target.applicable_production_period = supplied.applicable_production_period.clone();
+    target.factual_note = supplied.factual_note.clone();
 }
 
 fn normalize_track_library(input: TrackLibraryPlacement) -> Result<TrackLibraryPlacement> {
@@ -4449,6 +4743,14 @@ fn validate_required_production_range(track: &TrackRecord) -> Result<()> {
 }
 
 fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
+    apply_patch_with_explicit_nulls(fields, patch, &[]);
+}
+
+fn apply_patch_with_explicit_nulls(
+    fields: &mut crate::model::TrackFields,
+    patch: TrackPatch,
+    explicit_null_fields: &[String],
+) {
     if let Some(value) = patch.title {
         fields.title = value;
     }
@@ -4479,14 +4781,35 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     if let Some(value) = patch.suno_download_export_date {
         fields.suno_download_export_date = value;
     }
-    if let Some(value) = patch.suno_plan_at_creation {
-        fields.suno_plan_at_creation = value;
+    if let Some(value) = patch.suno_plan_at_generation {
+        fields.suno_plan_at_generation = value;
+    }
+    if let Some(value) = patch.legacy_suno_plan_at_creation {
+        fields.legacy_suno_plan_at_creation = value;
     }
     if let Some(value) = patch.final_export_date {
         fields.final_export_date = value;
     }
     if let Some(value) = patch.instrumental_track {
         fields.instrumental_track = Some(value);
+    }
+    if let Some(value) = patch.vocal_lyrics_present {
+        fields.vocal_lyrics_present = Some(value);
+    }
+    if let Some(value) = patch.suno_lyrics_field_content {
+        fields.suno_lyrics_field_content = Some(value);
+    }
+    if let Some(value) = patch.suno_lyrics_content_types {
+        fields.suno_lyrics_content_types = value;
+    }
+    if let Some(value) = patch.suno_lyrics_content_source {
+        fields.suno_lyrics_content_source = Some(value);
+    }
+    if let Some(value) = patch.suno_lyrics_field_text {
+        fields.suno_lyrics_field_text = value;
+    }
+    if let Some(value) = patch.suno_lyrics_other_content_type {
+        fields.suno_lyrics_other_content_type = value;
     }
     if let Some(value) = patch.lyrics_source {
         fields.lyrics_source = value;
@@ -4560,6 +4883,42 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     if let Some(value) = patch.suno_terms_evidence_not_available {
         fields.suno_terms_evidence_not_available = Some(value);
     }
+    if let Some(value) = patch.generative_ai_used {
+        fields.generative_ai_used = Some(value);
+    }
+    if let Some(value) = patch.audio_ai_system {
+        fields.audio_ai_system = value;
+    }
+    if let Some(value) = patch.ai_assisted_audio_elements {
+        fields.ai_assisted_audio_elements = Some(value);
+    }
+    if let Some(value) = patch.ai_generated_audio_elements {
+        fields.ai_generated_audio_elements = Some(value);
+    }
+    if let Some(value) = patch.real_person_voice_intentionally_imitated {
+        fields.real_person_voice_intentionally_imitated = Some(value);
+    }
+    if let Some(value) = patch.real_person_identity_intentionally_represented {
+        fields.real_person_identity_intentionally_represented = Some(value);
+    }
+    if let Some(value) = patch.real_event_represented_as_authentic_recording {
+        fields.real_event_represented_as_authentic_recording = Some(value);
+    }
+    if let Some(value) = patch.real_location_institution_event_presented_as_authentic_ai_recording {
+        fields.real_location_institution_event_presented_as_authentic_ai_recording = Some(value);
+    }
+    if let Some(value) = patch.audio_disclosure_applied {
+        fields.audio_disclosure_applied = Some(value);
+    }
+    if let Some(value) = patch.audio_disclosure_locations {
+        fields.audio_disclosure_locations = value;
+    }
+    if let Some(value) = patch.audio_disclosure_text {
+        fields.audio_disclosure_text = value;
+    }
+    if let Some(value) = patch.audio_disclosure_reason {
+        fields.audio_disclosure_reason = value;
+    }
     if let Some(value) = patch.artwork_origin {
         fields.artwork_origin = value;
     }
@@ -4605,13 +4964,59 @@ fn apply_patch(fields: &mut crate::model::TrackFields, patch: TrackPatch) {
     if let Some(value) = patch.release_notes {
         fields.release_notes = value;
     }
+    for field in explicit_null_fields {
+        match field.as_str() {
+            "instrumentalTrack" => fields.instrumental_track = None,
+            "vocalLyricsPresent" => fields.vocal_lyrics_present = None,
+            "sunoLyricsFieldContent" => fields.suno_lyrics_field_content = None,
+            "sunoLyricsContentSource" => fields.suno_lyrics_content_source = None,
+            "externalAudioUploaded" => fields.external_audio_uploaded = None,
+            "ownAudioUploaded" => fields.own_audio_uploaded = None,
+            "codeBasedGeneration" => fields.code_based_generation = None,
+            "codeAudioPostProcessed" => fields.code_audio_post_processed = None,
+            "thirdPartySamplesUploaded" => fields.third_party_samples_uploaded = None,
+            "humanEditingPerformed" => fields.human_editing_performed = None,
+            "postExportEditingPerformed" => fields.post_export_editing_performed = None,
+            "releaseFilenameDifferenceConfirmed" => {
+                fields.release_filename_difference_confirmed = None;
+            }
+            "sunoExportFilenameDifferenceConfirmed" => {
+                fields.suno_export_filename_difference_confirmed = None;
+            }
+            "sunoTermsEvidenceNotAvailable" => fields.suno_terms_evidence_not_available = None,
+            "depictsRealPerson" => fields.depicts_real_person = None,
+            "depictsRealEvent" => fields.depicts_real_event = None,
+            "containsTrademark" => fields.contains_trademark = None,
+            "disclosureApplied" => fields.disclosure_applied = None,
+            "generativeAiUsed" => fields.generative_ai_used = None,
+            "aiAssistedAudioElements" => fields.ai_assisted_audio_elements = None,
+            "aiGeneratedAudioElements" => fields.ai_generated_audio_elements = None,
+            "realPersonVoiceIntentionallyImitated" => {
+                fields.real_person_voice_intentionally_imitated = None;
+            }
+            "realPersonIdentityIntentionallyRepresented" => {
+                fields.real_person_identity_intentionally_represented = None;
+            }
+            "realEventRepresentedAsAuthenticRecording" => {
+                fields.real_event_represented_as_authentic_recording = None;
+            }
+            "realLocationInstitutionEventPresentedAsAuthenticAiRecording" => {
+                fields.real_location_institution_event_presented_as_authentic_ai_recording = None;
+            }
+            "audioDisclosureApplied" => fields.audio_disclosure_applied = None,
+            _ => {}
+        }
+    }
     fields.normalize_conditionals();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{EmbeddedMetadata, FactOrigin};
+    use crate::model::{
+        DocumentationAnswer, EmbeddedMetadata, FactOrigin, SunoLyricsContentSource,
+        SunoLyricsContentType, TimestampReferencedArtifact, TimestampType,
+    };
     use crate::workflow::CoverageStatus;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
@@ -4890,11 +5295,12 @@ mod tests {
                     suno_final_generation_id: Some("acceptance-generation".into()),
                     suno_final_generation_date: Some("2026-08-02".into()),
                     suno_download_export_date: Some("2026-08-03".into()),
-                    suno_plan_at_creation: Some("Pro".into()),
+                    suno_plan_at_generation: Some("Pro".into()),
                     production_end_date: Some("2026-08-03".into()),
                     final_export_date: Some("2026-08-03".into()),
                     instrumental_track: Some(true),
-                    lyrics_source: Some("instrumental".into()),
+                    vocal_lyrics_present: Some(false),
+                    suno_lyrics_field_content: Some(false),
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
@@ -4903,6 +5309,20 @@ mod tests {
                     human_editing_performed: Some(false),
                     post_export_editing_performed: Some(false),
                     commercial_use_intended: Some(false),
+                    generative_ai_used: Some(true),
+                    audio_ai_system: Some("Suno".into()),
+                    ai_assisted_audio_elements: Some(DocumentationAnswer::Yes),
+                    ai_generated_audio_elements: Some(DocumentationAnswer::Yes),
+                    real_person_voice_intentionally_imitated: Some(DocumentationAnswer::No),
+                    real_person_identity_intentionally_represented: Some(DocumentationAnswer::No),
+                    real_event_represented_as_authentic_recording: Some(DocumentationAnswer::No),
+                    real_location_institution_event_presented_as_authentic_ai_recording: Some(
+                        DocumentationAnswer::No,
+                    ),
+                    audio_disclosure_applied: Some(DocumentationAnswer::No),
+                    audio_disclosure_reason: Some(
+                        "User deliberately recorded that no disclosure was applied.".into(),
+                    ),
                     artwork_origin: Some("none".into()),
                     ..TrackPatch::default()
                 },
@@ -4911,8 +5331,11 @@ mod tests {
         fs::create_dir_all(fixture_root).expect("fixture directory");
         let suno_export = fixture_root.join("suno-export.wav");
         let release_master = fixture_root.join("release-master.wav");
-        fs::write(&suno_export, b"RIFF\x08\0\0\0WAVEsuno evidence").expect("Suno fixture");
-        fs::write(&release_master, b"RIFF\x08\0\0\0WAVErelease evidence").expect("release fixture");
+        let suno_bytes = b"RIFF\x08\0\0\0WAVEsuno evidence".to_vec();
+        let mut release_bytes = suno_bytes.clone();
+        *release_bytes.last_mut().expect("non-empty audio fixture") ^= 1;
+        fs::write(&suno_export, &suno_bytes).expect("Suno fixture");
+        fs::write(&release_master, &release_bytes).expect("one-byte-different release fixture");
         app.import_evidence_from(&updated.id, EvidenceRole::SunoFinalExport, &suno_export)
             .expect("Suno evidence import");
         app.import_evidence_from(&updated.id, EvidenceRole::ReleaseWav, &release_master)
@@ -4952,6 +5375,480 @@ mod tests {
             .expect("finalization")
             .track
             .expect("finalized track detail")
+    }
+
+    #[test]
+    fn one_changed_audio_byte_is_reported_as_not_identical_in_every_certificate_format() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let finalized = finalize_acceptance_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "One Byte Identity Check",
+        );
+        assert!(!finalized.automation.release_identical_to_suno_export);
+        let suno_hash = p0_evidence(&finalized, EvidenceRole::SunoFinalExport)
+            .sha256
+            .as_deref()
+            .expect("Suno SHA-256");
+        let release_hash = p0_evidence(&finalized, EvidenceRole::ReleaseWav)
+            .sha256
+            .as_deref()
+            .expect("release SHA-256");
+        assert_ne!(suno_hash, release_hash);
+
+        let track_root = app.root().join(&finalized.relative_path);
+        let managed = fs::read_to_string(track_root.join("02_SUNO/suno_project.txt"))
+            .expect("managed Suno document");
+        assert!(
+            managed.contains("Release identical to Suno final export [System verification]: NO")
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(track_root.join(certificate::MANIFEST_FILE)).expect("manifest bytes"),
+        )
+        .expect("manifest JSON");
+        assert_eq!(
+            manifest["system_verification"]["release_identical_to_suno_export"].as_bool(),
+            Some(false)
+        );
+        let markdown = fs::read_to_string(track_root.join(certificate::CERTIFICATE_FILE))
+            .expect("Markdown certificate");
+        assert!(markdown.contains("Release identical to Suno final export: **NO**"));
+        let pdf = fs::read(track_root.join(certificate::PDF_FILE)).expect("certificate PDF");
+        let mut warnings = Vec::new();
+        let pdf = printpdf::PdfDocument::parse(
+            &pdf,
+            &printpdf::PdfParseOptions::default(),
+            &mut warnings,
+        )
+        .expect("parse certificate PDF");
+        let compact_pdf_text = pdf
+            .extract_text()
+            .into_iter()
+            .flatten()
+            .collect::<String>()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            compact_pdf_text.contains("ReleaseidenticaltoSunofinalexport[Systemverification]NO")
+        );
+    }
+
+    #[test]
+    fn external_timestamps_are_hash_checked_addenda_bound_to_one_certificate_revision() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let finalized = finalize_acceptance_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Timestamp Revision Binding",
+        );
+        let certificate_id = finalized
+            .certificate
+            .certificate_id
+            .clone()
+            .expect("certificate ID");
+        let manifest_anchor = finalized
+            .finalization_anchors
+            .iter()
+            .find(|anchor| anchor.artifact == TimestampReferencedArtifact::EvidenceManifest)
+            .expect("manifest anchor")
+            .clone();
+        let track_root = app.root().join(&finalized.relative_path);
+        let excluded_anchor = track_root.join(".summary/track.json");
+        let excluded_source = directory.path().join("timestamp-excluded.json");
+        fs::write(&excluded_source, b"{\"providerRecord\":\"excluded\"}\n")
+            .expect("excluded timestamp fixture");
+        let excluded_error = app
+            .attach_external_timestamp_from(
+                &finalized.id,
+                &excluded_source,
+                ExternalTimestampInput {
+                    provider: "Example Timestamp Provider".into(),
+                    timestamp_type: TimestampType::ExternalIntegrityTimestamp,
+                    timestamp_value: "2026-08-17T11:55:00Z".into(),
+                    referenced_artifact: TimestampReferencedArtifact::Other,
+                    other_referenced_artifact: ".summary/track.json".into(),
+                    referenced_sha256: sha256_file(&excluded_anchor)
+                        .expect("excluded anchor digest"),
+                    external_reference_id: String::new(),
+                    provider_verification_url: String::new(),
+                    note: String::new(),
+                },
+            )
+            .expect_err("excluded post-finalization file cannot become an Other anchor");
+        assert!(excluded_error.to_string().contains("phase-one SHA256SUMS"));
+        assert!(app
+            .persistence
+            .external_timestamps(&finalized.id)
+            .expect("no rejected timestamp record")
+            .is_empty());
+        let stable_files = [
+            certificate::MANIFEST_FILE,
+            certificate::CERTIFICATE_FILE,
+            certificate::CERTIFICATE_HASH_FILE,
+            certificate::PDF_FILE,
+            integrity::HASH_FILE,
+        ]
+        .into_iter()
+        .map(|relative| {
+            (
+                relative.to_owned(),
+                fs::read(track_root.join(relative)).expect("stable phase-one artifact"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+        let matching_source = directory.path().join("timestamp-match.json");
+        fs::write(
+            &matching_source,
+            b"{\"providerRecord\":\"timestamp-match\"}\n",
+        )
+        .expect("matching timestamp fixture");
+        let attached = app
+            .attach_external_timestamp_from(
+                &finalized.id,
+                &matching_source,
+                ExternalTimestampInput {
+                    provider: "Example Timestamp Provider".into(),
+                    timestamp_type: TimestampType::QualifiedElectronicTimestampUserDeclared,
+                    timestamp_value: "2026-08-17T12:00:00Z".into(),
+                    referenced_artifact: TimestampReferencedArtifact::EvidenceManifest,
+                    other_referenced_artifact: String::new(),
+                    referenced_sha256: manifest_anchor.sha256.clone(),
+                    external_reference_id: "EXT-REF-001".into(),
+                    provider_verification_url: "https://timestamp.example/verify/EXT-REF-001"
+                        .into(),
+                    note: "Provider qualification is user-declared, not system-verified.".into(),
+                },
+            )
+            .expect("matching timestamp attachment");
+        assert_eq!(attached.external_timestamps.len(), 1);
+        let matching = &attached.external_timestamps[0];
+        assert_eq!(matching.certificate_id, certificate_id);
+        assert_eq!(matching.referenced_hash_match, Some(true));
+        assert_eq!(matching.actual_sha256, manifest_anchor.sha256);
+        for relative in [
+            &matching.record_relative_path,
+            &matching.markdown_relative_path,
+            &matching.pdf_relative_path,
+            &matching.hash_list_relative_path,
+        ] {
+            assert!(
+                track_root.join(relative).is_file(),
+                "missing addendum {relative}"
+            );
+        }
+        let addendum = fs::read_to_string(track_root.join(&matching.markdown_relative_path))
+            .expect("timestamp addendum markdown");
+        assert!(addendum.contains("Referenced hash match [System verification]: **YES**"));
+        assert!(addendum.contains("user declared"));
+        assert!(addendum.contains("does not independently determine"));
+
+        let mismatch_source = directory.path().join("timestamp-mismatch.tsr");
+        fs::write(&mismatch_source, b"opaque non-empty RFC3161-like fixture")
+            .expect("mismatch timestamp fixture");
+        let mismatched = app
+            .attach_external_timestamp_from(
+                &finalized.id,
+                &mismatch_source,
+                ExternalTimestampInput {
+                    provider: "Example Timestamp Provider".into(),
+                    timestamp_type: TimestampType::ExternalIntegrityTimestamp,
+                    timestamp_value: "2026-08-17T12:05:00Z".into(),
+                    referenced_artifact: TimestampReferencedArtifact::EvidenceManifest,
+                    other_referenced_artifact: String::new(),
+                    referenced_sha256: "0".repeat(64),
+                    external_reference_id: String::new(),
+                    provider_verification_url: String::new(),
+                    note: String::new(),
+                },
+            )
+            .expect("mismatching timestamp remains documented");
+        assert_eq!(mismatched.external_timestamps.len(), 2);
+        let mismatch = mismatched
+            .external_timestamps
+            .iter()
+            .find(|record| record.referenced_hash_match == Some(false))
+            .expect("negative hash comparison");
+        let mismatch_addendum =
+            fs::read_to_string(track_root.join(&mismatch.markdown_relative_path))
+                .expect("mismatch addendum markdown");
+        assert!(mismatch_addendum.contains("Referenced hash match [System verification]: **NO**"));
+
+        for (relative, expected) in &stable_files {
+            assert_eq!(
+                &fs::read(track_root.join(relative)).expect("phase-one artifact after addendum"),
+                expected,
+                "timestamp attachment changed {relative}"
+            );
+        }
+        certificate::verify(&track_root).expect("primary certificate remains valid");
+        assert!(
+            integrity::verify(&track_root)
+                .expect("primary integrity remains readable")
+                .verified
+        );
+
+        let matching_directory = track_root
+            .join(&matching.record_relative_path)
+            .parent()
+            .expect("timestamp record directory")
+            .to_path_buf();
+        let matching_evidence = matching_directory.join("TIMESTAMP_EVIDENCE.json");
+        fs::write(&matching_evidence, b"tampered timestamp evidence")
+            .expect("tamper timestamp sidecar only");
+        let after_sidecar_tamper = app
+            .load_track(&finalized.id)
+            .expect("phase-one snapshot remains loadable");
+        assert!(after_sidecar_tamper.certificate.valid);
+        let damaged = after_sidecar_tamper
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == matching.id)
+            .expect("damaged timestamp record remains visible");
+        assert!(!damaged.integrity_verified);
+        assert!(damaged
+            .integrity_issues
+            .iter()
+            .any(|issue| issue.contains("evidence SHA-256")));
+        assert!(after_sidecar_tamper
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == mismatch.id)
+            .is_some_and(|record| record.integrity_verified));
+        assert!(
+            integrity::verify(&track_root)
+                .expect("phase-one integrity after sidecar tamper")
+                .verified
+        );
+
+        let revision = app
+            .create_revision(&finalized.id)
+            .expect("new revision after timestamp")
+            .track
+            .expect("revision detail");
+        assert_eq!(revision.external_timestamps.len(), 2);
+        assert!(revision
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == matching.id)
+            .is_some_and(|record| !record.integrity_verified));
+        assert!(revision
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == mismatch.id)
+            .is_some_and(|record| record.integrity_verified));
+        assert!(revision.finalization_anchors.is_empty());
+        let persisted = app
+            .persistence
+            .external_timestamps(&finalized.id)
+            .expect("historical timestamp records");
+        assert_eq!(persisted.len(), 2);
+        assert!(persisted
+            .iter()
+            .all(|record| record.certificate_id == certificate_id));
+        let archived_records = WalkDir::new(track_root.join(".archive/revisions"))
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_name() == "TIMESTAMP_RECORD.json")
+            .count();
+        assert_eq!(archived_records, 2);
+
+        let archived_mismatch_evidence = WalkDir::new(track_root.join(".archive/revisions"))
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .find(|entry| {
+                entry.file_name() == "TIMESTAMP_EVIDENCE.tsr"
+                    && entry.path().parent().and_then(Path::file_name)
+                        == Some(std::ffi::OsStr::new(&mismatch.id))
+            })
+            .expect("archived mismatch evidence")
+            .into_path();
+        let revision_root = archived_mismatch_evidence
+            .ancestors()
+            .find(|path| {
+                path.parent().and_then(Path::file_name) == Some(std::ffi::OsStr::new("revisions"))
+            })
+            .expect("timestamp revision root");
+        let revision_metadata = revision_root.join("revision.json");
+        let original_revision_metadata =
+            fs::read(&revision_metadata).expect("original revision metadata");
+        let mut wrong_revision: serde_json::Value =
+            serde_json::from_slice(&original_revision_metadata).expect("revision metadata JSON");
+        wrong_revision["previous_certificate"]["certificateId"] =
+            serde_json::Value::String("SDM-different-certificate".into());
+        fs::write(
+            &revision_metadata,
+            serde_json::to_vec_pretty(&wrong_revision).expect("wrong revision metadata bytes"),
+        )
+        .expect("tamper revision certificate binding");
+        let after_revision_binding_tamper = app
+            .load_track(&finalized.id)
+            .expect("track remains loadable after revision binding tamper");
+        let wrongly_bound = after_revision_binding_tamper
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == mismatch.id)
+            .expect("wrongly bound archived timestamp remains visible");
+        assert!(!wrongly_bound.integrity_verified);
+        assert!(wrongly_bound
+            .integrity_issues
+            .iter()
+            .any(|issue| issue.contains("certificate ID")));
+        fs::write(&revision_metadata, original_revision_metadata)
+            .expect("restore revision certificate binding");
+        let restored_revision_binding = app
+            .load_track(&finalized.id)
+            .expect("track reload after revision binding restore");
+        assert!(restored_revision_binding
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == mismatch.id)
+            .is_some_and(|record| record.integrity_verified));
+
+        fs::write(
+            &archived_mismatch_evidence,
+            b"tampered archived timestamp evidence",
+        )
+        .expect("tamper archived timestamp evidence");
+        let after_archive_tamper = app
+            .load_track(&finalized.id)
+            .expect("track remains loadable after archived sidecar tamper");
+        let damaged_archive = after_archive_tamper
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == mismatch.id)
+            .expect("archived timestamp remains visible");
+        assert!(!damaged_archive.integrity_verified);
+        assert!(damaged_archive
+            .integrity_issues
+            .iter()
+            .any(|issue| issue.contains("evidence SHA-256")));
+    }
+
+    #[test]
+    fn timestamp_publication_recovery_reconciles_pending_stages_without_adopting_orphans() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().join("workspace");
+        let app = WorkspaceApp::open(&workspace, true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let finalized = finalize_acceptance_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Timestamp Publication Recovery",
+        );
+        let certificate_id = finalized
+            .certificate
+            .certificate_id
+            .as_deref()
+            .expect("certificate ID")
+            .to_owned();
+        let anchor = finalized
+            .finalization_anchors
+            .iter()
+            .find(|anchor| anchor.artifact == TimestampReferencedArtifact::EvidenceManifest)
+            .expect("manifest anchor")
+            .clone();
+        let track_root = app.root().join(&finalized.relative_path);
+        let input = |note: &str| ExternalTimestampInput {
+            provider: "Recovery Timestamp Provider".into(),
+            timestamp_type: TimestampType::ExternalIntegrityTimestamp,
+            timestamp_value: "2026-08-17T15:00:00Z".into(),
+            referenced_artifact: TimestampReferencedArtifact::EvidenceManifest,
+            other_referenced_artifact: String::new(),
+            referenced_sha256: anchor.sha256.clone(),
+            external_reference_id: String::new(),
+            provider_verification_url: String::new(),
+            note: note.into(),
+        };
+
+        let abandoned_source = directory.path().join("abandoned-timestamp.json");
+        fs::write(&abandoned_source, b"{\"state\":\"staged-only\"}\n")
+            .expect("abandoned timestamp source");
+        let abandoned = external_timestamp::stage(
+            &track_root,
+            &certificate_id,
+            &abandoned_source,
+            input("crash before database registration"),
+        )
+        .expect("unregistered stage");
+        let abandoned_stage = track_root
+            .join(".archive/timestamp-staging")
+            .join(&abandoned.record.id);
+        assert!(abandoned_stage.is_dir());
+        assert!(!track_root
+            .join(&abandoned.record.record_relative_path)
+            .exists());
+        drop(app);
+
+        let app = WorkspaceApp::open(&workspace, false).expect("clean abandoned stage recovery");
+        assert!(!abandoned_stage.exists());
+        assert!(app
+            .persistence
+            .external_timestamps(&finalized.id)
+            .expect("timestamp rows after abandoned stage cleanup")
+            .is_empty());
+
+        let pending_source = directory.path().join("pending-timestamp.json");
+        fs::write(&pending_source, b"{\"state\":\"database-registered\"}\n")
+            .expect("pending timestamp source");
+        let pending = external_timestamp::stage(
+            &track_root,
+            &certificate_id,
+            &pending_source,
+            input("crash after database registration"),
+        )
+        .expect("registered stage");
+        app.persistence
+            .save_external_timestamp(&finalized.id, &pending.record)
+            .expect("register pending timestamp before simulated crash");
+        let pending_stage = track_root
+            .join(".archive/timestamp-staging")
+            .join(&pending.record.id);
+        let pending_live = track_root
+            .join(&pending.record.record_relative_path)
+            .parent()
+            .expect("pending live directory")
+            .to_path_buf();
+        assert!(pending_stage.is_dir());
+        assert!(!pending_live.exists());
+        drop(app);
+
+        let app = WorkspaceApp::open(&workspace, false).expect("publish registered pending stage");
+        assert!(!pending_stage.exists());
+        assert!(pending_live.is_dir());
+        let recovered = app
+            .load_track(&finalized.id)
+            .expect("load recovered timestamp record");
+        assert!(recovered
+            .external_timestamps
+            .iter()
+            .find(|record| record.id == pending.record.id)
+            .is_some_and(|record| record.integrity_verified));
+
+        // Simulate the old unsafe crash window: a live sidecar without a DB
+        // registration is detected explicitly and is never auto-adopted.
+        let orphan_source = directory.path().join("orphan-timestamp.json");
+        fs::write(&orphan_source, b"{\"state\":\"unregistered-live\"}\n")
+            .expect("orphan timestamp source");
+        let orphan = external_timestamp::stage(
+            &track_root,
+            &certificate_id,
+            &orphan_source,
+            input("legacy unregistered live orphan"),
+        )
+        .expect("orphan stage");
+        external_timestamp::publish(&track_root, &orphan).expect("publish orphan fixture");
+        drop(app);
+        let error = WorkspaceApp::open(&workspace, false)
+            .expect_err("unregistered live sidecar must block silent recovery");
+        assert!(error
+            .to_string()
+            .contains("Unregistered external timestamp sidecar detected"));
     }
 
     #[test]
@@ -5253,7 +6150,7 @@ mod tests {
     }
 
     #[test]
-    fn global_terms_pdf_import_requires_no_manual_metadata_and_propagates_to_tracks() {
+    fn global_terms_pdf_import_requires_core_metadata_and_propagates_to_mutable_tracks() {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory.path().join("workspace");
         let app = WorkspaceApp::open(&workspace, true).expect("workspace");
@@ -5294,15 +6191,25 @@ mod tests {
         let invalid_terms_source = directory.path().join("suno-terms.txt");
         fs::write(&invalid_terms_source, b"not an accepted terms PDF\n")
             .expect("invalid terms fixture");
+        let terms_metadata = EvidenceMetadata {
+            document_title: "Suno Terms of Service".into(),
+            provider: "Suno, Inc.".into(),
+            source_url: "https://suno.com/terms".into(),
+            retrieval_date: "2026-08-01".into(),
+            effective_date: "2026-07-01".into(),
+            applicable_production_period: "2026-07 through 2026-08".into(),
+            factual_note: "Locally archived terms edition.".into(),
+            ..EvidenceMetadata::default()
+        };
         assert!(matches!(
-            app.register_global_terms_evidence(&invalid_terms_source),
+            app.register_global_terms_evidence(&invalid_terms_source, terms_metadata.clone()),
             Err(AppError::FileType { .. })
         ));
         let disguised_pdf = directory.path().join("disguised-terms.pdf");
         fs::write(&disguised_pdf, b"plain text with a PDF extension\n")
             .expect("disguised terms fixture");
         assert!(matches!(
-            app.register_global_terms_evidence(&disguised_pdf),
+            app.register_global_terms_evidence(&disguised_pdf, terms_metadata.clone()),
             Err(AppError::Validation(_))
         ));
 
@@ -5312,19 +6219,40 @@ mod tests {
             b"%PDF-1.7\n1 0 obj\n<</Type /Terms>>\nendobj\n%%EOF\n",
         )
         .expect("terms PDF fixture");
+        assert!(app
+            .register_global_terms_evidence(&terms_source, EvidenceMetadata::default())
+            .expect_err("incomplete terms metadata")
+            .to_string()
+            .contains("descriptive metadata is incomplete"));
         let global_terms = app
-            .register_global_terms_evidence(&terms_source)
+            .register_global_terms_evidence(&terms_source, terms_metadata.clone())
             .expect("global terms import");
         assert_eq!(global_terms.evidence.role, EvidenceRole::SunoTermsRights);
         assert_eq!(
             global_terms.evidence.metadata.original_file_name,
             "suno-terms-2026-08-01.pdf"
         );
-        assert!(global_terms.evidence.metadata.document_title.is_empty());
-        assert!(global_terms.evidence.metadata.provider.is_empty());
-        assert!(global_terms.evidence.metadata.source_url.is_empty());
-        assert!(global_terms.evidence.metadata.retrieval_date.is_empty());
+        assert_eq!(
+            global_terms.evidence.metadata.document_title,
+            "Suno Terms of Service"
+        );
+        assert_eq!(global_terms.evidence.metadata.provider, "Suno, Inc.");
+        assert_eq!(global_terms.evidence.metadata.retrieval_date, "2026-08-01");
         let terms = app.load_track(&track.id).expect("track with global terms");
+        assert_eq!(terms.fields.suno_terms_evidence_not_available, Some(false));
+        let error = app
+            .update_track(
+                &track.id,
+                TrackPatch {
+                    suno_terms_evidence_not_available: Some(true),
+                    ..TrackPatch::default()
+                },
+            )
+            .expect_err("verified Terms evidence must reject an unavailable claim");
+        assert!(error.to_string().contains(
+            "Terms evidence cannot be marked unavailable while a verified local Terms evidence file is attached."
+        ));
+        let terms = app.load_track(&track.id).expect("unchanged Terms status");
         assert_eq!(terms.fields.suno_terms_evidence_not_available, Some(false));
         let terms_item = terms
             .evidence
@@ -5335,7 +6263,7 @@ mod tests {
             terms_item.metadata.original_file_name,
             "suno-terms-2026-08-01.pdf"
         );
-        assert!(terms_item.metadata.provider.is_empty());
+        assert_eq!(terms_item.metadata.provider, "Suno, Inc.");
         assert_eq!(
             terms_item.source_global_evidence_id.as_deref(),
             Some(global_terms.evidence.id.as_str())
@@ -5344,6 +6272,41 @@ mod tests {
         assert!(!app
             .load_track(&immutable_track.id)
             .expect("unchanged finalized track")
+            .evidence
+            .iter()
+            .any(|item| item.role == EvidenceRole::SunoTermsRights));
+
+        let edited_metadata = EvidenceMetadata {
+            document_title: "Suno Terms of Service — archived edition".into(),
+            provider: "Suno, Inc.".into(),
+            source_url: "https://suno.com/terms".into(),
+            retrieval_date: "2026-08-01".into(),
+            effective_date: "2026-07-01".into(),
+            applicable_production_period: "Production during August 2026".into(),
+            factual_note: "Context corrected before track finalization.".into(),
+            ..EvidenceMetadata::default()
+        };
+        let edited = app
+            .update_global_terms_evidence_metadata(
+                &global_terms.evidence.id,
+                edited_metadata.clone(),
+            )
+            .expect("edit terms metadata");
+        assert_eq!(
+            edited.evidence.metadata.document_title,
+            "Suno Terms of Service — archived edition"
+        );
+        let updated_copy = app
+            .load_track(&track.id)
+            .expect("track after terms metadata edit")
+            .evidence
+            .into_iter()
+            .find(|item| item.role == EvidenceRole::SunoTermsRights)
+            .expect("updated portable terms copy");
+        assert_eq!(updated_copy.metadata, edited.evidence.metadata);
+        assert!(!app
+            .load_track(&immutable_track.id)
+            .expect("finalized track remains unchanged after metadata edit")
             .evidence
             .iter()
             .any(|item| item.role == EvidenceRole::SunoTermsRights));
@@ -5364,45 +6327,16 @@ mod tests {
 
         let timestamp_source = directory.path().join("external-timestamp.json");
         fs::write(&timestamp_source, b"{\"timestamp\":\"fixture\"}\n").expect("timestamp fixture");
-        let digest = "a".repeat(64);
-        let timestamp = app
-            .import_evidence_with_metadata_from(
-                &track.id,
-                EvidenceRole::ExternalTimestamp,
-                &timestamp_source,
-                EvidenceMetadata {
-                    provider: "Example timestamp issuer".into(),
-                    external_timestamp: "2026-08-02T12:00:00Z".into(),
-                    referenced_hash: digest.clone(),
-                    referenced_artifact: "06_CERTIFICATE/EVIDENCE_MANIFEST.json".into(),
-                    ..EvidenceMetadata::default()
-                },
-            )
-            .expect("timestamp import");
-        assert!(timestamp.evidence.iter().any(|item| {
-            item.role == EvidenceRole::ExternalTimestamp
-                && item.metadata.referenced_hash == digest
-                && item.metadata.original_file_name == "external-timestamp.json"
-        }));
-
-        let invalid_timestamp_source = directory.path().join("invalid-timestamp.json");
-        fs::write(&invalid_timestamp_source, b"{}\n").expect("invalid timestamp fixture");
         let invalid = app.import_evidence_with_metadata_from(
             &track.id,
             EvidenceRole::ExternalTimestamp,
-            &invalid_timestamp_source,
-            EvidenceMetadata {
-                provider: "Example timestamp issuer".into(),
-                external_timestamp: "2026-08-02T12:00:00Z".into(),
-                referenced_hash: "not-a-sha256".into(),
-                referenced_artifact: "EVIDENCE_MANIFEST.json".into(),
-                ..EvidenceMetadata::default()
-            },
+            &timestamp_source,
+            EvidenceMetadata::default(),
         );
         assert!(invalid
-            .expect_err("invalid referenced hash")
+            .expect_err("pre-finalization timestamp route is disabled")
             .to_string()
-            .contains("SHA-256"));
+            .contains("after technical finalization"));
 
         drop(app);
         let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");
@@ -5418,11 +6352,7 @@ mod tests {
         assert!(evidence.iter().any(|item| {
             item.role == EvidenceRole::SunoTermsRights
                 && item.metadata.original_file_name == "suno-terms-2026-08-01.pdf"
-                && item.metadata.document_title.is_empty()
-        }));
-        assert!(evidence.iter().any(|item| {
-            item.role == EvidenceRole::ExternalTimestamp
-                && item.metadata.external_timestamp == "2026-08-02T12:00:00Z"
+                && item.metadata.document_title == "Suno Terms of Service — archived edition"
         }));
     }
 
@@ -5492,8 +6422,9 @@ mod tests {
             },
         );
 
+        assert_eq!(fields.lyrics_text, "stale human lyrics");
+        assert_eq!(fields.lyrics_source, "instrumental");
         for value in [
-            &fields.lyrics_text,
             &fields.external_audio_source,
             &fields.external_audio_ownership,
             &fields.own_audio_source,
@@ -5525,19 +6456,46 @@ mod tests {
         assert_eq!(fields.depicts_real_event, None);
         assert_eq!(fields.contains_trademark, None);
 
-        let before = fields.clone();
+        let mut expected = fields.clone();
+        expected.lyrics_text = "updated legacy value".into();
         apply_patch(
             &mut fields,
             TrackPatch {
-                lyrics_text: Some("ignored hidden value".into()),
+                lyrics_text: Some("updated legacy value".into()),
                 real_person_notes: Some("ignored hidden note".into()),
                 ..TrackPatch::default()
             },
         );
         assert_eq!(
-            fields, before,
-            "inactive-only patches must be semantic no-ops"
+            fields, expected,
+            "legacy lyrics remain editable, while inactive artwork details stay ignored"
         );
+    }
+
+    #[test]
+    fn desktop_patch_null_clears_documented_nullable_facts_but_omission_preserves_them() {
+        let mut fields = crate::model::TrackFields {
+            instrumental_track: Some(true),
+            vocal_lyrics_present: Some(false),
+            generative_ai_used: Some(true),
+            audio_ai_system: "Suno".into(),
+            ai_generated_audio_elements: Some(DocumentationAnswer::Yes),
+            ..crate::model::TrackFields::default()
+        };
+        let request: TrackPatchRequest = serde_json::from_value(serde_json::json!({
+            "instrumentalTrack": null,
+            "generativeAiUsed": null,
+            "aiGeneratedAudioElements": null
+        }))
+        .expect("desktop track patch");
+
+        apply_patch_with_explicit_nulls(&mut fields, request.patch, &request.explicit_null_fields);
+
+        assert_eq!(fields.instrumental_track, None);
+        assert_eq!(fields.generative_ai_used, None);
+        assert_eq!(fields.ai_generated_audio_elements, None);
+        assert_eq!(fields.vocal_lyrics_present, Some(false));
+        assert_eq!(fields.audio_ai_system, "Suno");
     }
 
     fn certificate_file_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -5571,11 +6529,11 @@ mod tests {
         let mut section = Section::Fields;
         for line in content.lines() {
             section = match line {
-                "## I. Evidence register" => Section::Other,
-                "## J. Integrity anchors and workflow" => Section::Fields,
+                "## J. Evidence register" => Section::Other,
+                "## K. Integrity anchors and workflow" => Section::Fields,
                 "### Mandatory steps completed" => Section::CompletedSteps,
                 "### N/A steps with reasons" => Section::NaReasons,
-                "## Certificate statement" => Section::Other,
+                "## L. Technical certificate statement" => Section::Other,
                 _ => section,
             };
             if !line.starts_with("- ") {
@@ -5584,9 +6542,9 @@ mod tests {
             let entry = &line[2..];
             match section {
                 Section::Fields => {
-                    let (key, value) = entry
-                        .split_once(": ")
-                        .unwrap_or_else(|| panic!("malformed certificate field: {line}"));
+                    let Some((key, value)) = entry.split_once(": ") else {
+                        continue;
+                    };
                     assert!(
                         fields
                             .insert(key.into(), unquote_certificate_value(value))
@@ -5605,7 +6563,7 @@ mod tests {
                         "duplicate completed step: {step_id}"
                     );
                 }
-                Section::NaReasons if entry != "None" => {
+                Section::NaReasons if !entry.eq_ignore_ascii_case("none") => {
                     let (step_id, reason) = entry
                         .split_once(" — ")
                         .unwrap_or_else(|| panic!("malformed N/A reason: {line}"));
@@ -5854,7 +6812,7 @@ mod tests {
         assert_eq!(created.library.album_title.as_deref(), Some("Night Drive"));
         assert_eq!(created.relative_path, "Night Drive/Album Track");
         assert!(workspace.join("Night Drive/Album Track").is_dir());
-        assert_eq!(crate::persistence::SCHEMA_VERSION, 4);
+        assert_eq!(crate::persistence::SCHEMA_VERSION, 5);
         drop(app);
 
         let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");
@@ -5888,7 +6846,7 @@ mod tests {
             &assisted.id,
             TrackPatch {
                 suno_model: Some("v6 private preview".into()),
-                suno_plan_at_creation: Some("Historical Founder Plan".into()),
+                suno_plan_at_generation: Some("Historical Founder Plan".into()),
                 code_based_generation: Some(true),
                 code_audio_post_processed: Some(true),
                 code_audio_post_processing_operations: Some(vec![
@@ -5948,7 +6906,7 @@ mod tests {
             .expect("reload AI-assisted track");
         assert_eq!(assisted.fields.suno_model, "v6 private preview");
         assert_eq!(
-            assisted.fields.suno_plan_at_creation,
+            assisted.fields.suno_plan_at_generation,
             "Historical Founder Plan"
         );
         assert_eq!(assisted.fields.code_audio_post_processed, Some(true));
@@ -7191,19 +8149,58 @@ mod tests {
                     suno_project_version_id: Some("project-end-to-end-v1".into()),
                     suno_final_generation_id: Some("generation-end-to-end".into()),
                     suno_final_generation_time: Some("14:35".into()),
-                    suno_plan_at_creation: Some("Pro".into()),
+                    suno_plan_at_generation: Some("Pro".into()),
                     final_export_date: Some("2026-08-03".into()),
-                    lyrics_source: Some("instrumental".into()),
                     instrumental_track: Some(true),
+                    vocal_lyrics_present: Some(false),
+                    suno_lyrics_field_content: Some(true),
+                    suno_lyrics_content_types: Some(vec![
+                        SunoLyricsContentType::StructureInstructions,
+                        SunoLyricsContentType::SoundInstructions,
+                        SunoLyricsContentType::ArrangementInstructions,
+                    ]),
+                    suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
+                    suno_lyrics_field_text: Some(
+                        "[Intro]\n[sidechained synth pad]\n[Drop]\n[Outro]".into(),
+                    ),
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
-                    code_based_generation: Some(false),
+                    code_based_generation: Some(true),
+                    code_audio_post_processed: Some(true),
+                    code_audio_post_processing_operations: Some(vec![
+                        "EQ".into(),
+                        "Other post-processing".into(),
+                    ]),
+                    code_audio_post_processing_note: Some(
+                        "Rendered Sonic Pi layer was level-adjusted before use.".into(),
+                    ),
                     third_party_samples_uploaded: Some(false),
                     human_editing_performed: Some(false),
-                    post_export_editing_performed: Some(false),
+                    post_export_editing_performed: Some(true),
+                    post_export_editing_details: Some(
+                        "Final level adjustment and metadata preparation.".into(),
+                    ),
                     commercial_use_intended: Some(true),
-                    suno_terms_evidence_not_available: Some(true),
+                    generative_ai_used: Some(true),
+                    audio_ai_system: Some("Suno".into()),
+                    ai_assisted_audio_elements: Some(DocumentationAnswer::Yes),
+                    ai_generated_audio_elements: Some(DocumentationAnswer::Yes),
+                    real_person_voice_intentionally_imitated: Some(DocumentationAnswer::No),
+                    real_person_identity_intentionally_represented: Some(DocumentationAnswer::No),
+                    real_event_represented_as_authentic_recording: Some(DocumentationAnswer::No),
+                    real_location_institution_event_presented_as_authentic_ai_recording: Some(
+                        DocumentationAnswer::NotDocumented,
+                    ),
+                    audio_disclosure_applied: Some(DocumentationAnswer::Yes),
+                    audio_disclosure_locations: Some(vec![
+                        "release metadata".into(),
+                        "description".into(),
+                    ]),
+                    audio_disclosure_text: Some(
+                        "AI-generated and AI-assisted audio elements documented with SunoDM."
+                            .into(),
+                    ),
                     artwork_origin: Some("ai_assisted".into()),
                     ai_image_service: Some("Local Tool".into()),
                     human_artwork_modifications: Some(vec![
@@ -7222,18 +8219,41 @@ mod tests {
         let suno_export = fixture_root.join("suno-export.wav");
         let release_master = fixture_root.join("release-master.wav");
         let ai_original = fixture_root.join("ai-original.png");
-        let subscription = fixture_root.join("subscription.pdf");
+        let release_mp3 = fixture_root.join("release-master.mp3");
+        let source_code = fixture_root.join("sonic-pi-generator.rb");
+        let code_audio = fixture_root.join("sonic-pi-render.wav");
+        let subscription_one = fixture_root.join("subscription-one.pdf");
+        let subscription_two = fixture_root.join("subscription-two.pdf");
+        let terms_source = fixture_root.join("suno-terms.pdf");
         let final_audio = p0_pcm_wav(Some(&p0_suno_comment("2026-08-02T06:38:06Z")));
         fs::write(&suno_export, &final_audio).expect("Suno fixture");
         fs::write(&release_master, &final_audio).expect("byte-identical release fixture");
+        fs::write(&release_mp3, b"ID3\x04\0\0release mp3 fixture").expect("release MP3 fixture");
+        fs::write(
+            &source_code,
+            b"use_bpm 110\nlive_loop :documented_layer do\n  play 48\n  sleep 1\nend\n",
+        )
+        .expect("Sonic Pi source fixture");
+        fs::write(&code_audio, b"RIFF\x08\0\0\0WAVEsonic pi rendered layer")
+            .expect("code-generated audio fixture");
         image::RgbaImage::from_pixel(640, 640, image::Rgba([24, 48, 96, 255]))
             .save(&ai_original)
             .expect("AI artwork fixture");
         fs::write(
-            &subscription,
+            &subscription_one,
             b"%PDF-1.7\n1 0 obj\n<</Type /Receipt>>\nendobj\n%%EOF\n",
         )
-        .expect("subscription fixture");
+        .expect("first subscription fixture");
+        fs::write(
+            &subscription_two,
+            b"%PDF-1.7\n1 0 obj\n<</Type /Receipt /Period 2>>\nendobj\n%%EOF\n",
+        )
+        .expect("second subscription fixture");
+        fs::write(
+            &terms_source,
+            b"%PDF-1.7\n1 0 obj\n<</Type /Terms>>\nendobj\n%%EOF\n",
+        )
+        .expect("terms fixture");
         app.import_evidence_from(&updated.id, EvidenceRole::SunoFinalExport, &suno_export)
             .expect("Suno evidence import");
         let automated = app
@@ -7258,6 +8278,16 @@ mod tests {
         .expect("explicit filename difference confirmations");
         app.import_evidence_from(&updated.id, EvidenceRole::AiArtworkOriginal, &ai_original)
             .expect("AI original import");
+        app.import_evidence_from(&updated.id, EvidenceRole::ReleaseMp3, &release_mp3)
+            .expect("release MP3 import");
+        app.import_evidence_from(&updated.id, EvidenceRole::SourceCodeFile, &source_code)
+            .expect("Sonic Pi source-code import");
+        app.import_evidence_from(
+            &updated.id,
+            EvidenceRole::CodeGeneratedAudioFile,
+            &code_audio,
+        )
+        .expect("code-generated audio import");
         let disclosed = app
             .generate_artwork_disclosure(&updated.id, Some("AI-assisted".into()))
             .expect("local artwork disclosure")
@@ -7294,21 +8324,59 @@ mod tests {
                 .join(&disclosed_artwork.relative_path),
         )
         .expect("final artwork import from disclosed bytes");
-        let global = app
+        let global_one = app
             .register_global_evidence(
                 EvidenceRole::SubscriptionPayment,
-                &subscription,
+                &subscription_one,
                 Some("2026-07-01".into()),
+                Some("2026-08-01".into()),
+            )
+            .expect("first global subscription evidence");
+        let global_two = app
+            .register_global_evidence(
+                EvidenceRole::SubscriptionPayment,
+                &subscription_two,
+                Some("2026-08-02".into()),
                 Some("2026-08-31".into()),
             )
-            .expect("global subscription evidence");
+            .expect("second global subscription evidence");
+        app.attach_global_evidence(&updated.id, &global_one.evidence.id)
+            .expect("first portable subscription copy");
         let portable = app
-            .attach_global_evidence(&updated.id, &global.evidence.id)
-            .expect("portable subscription copy");
-        assert!(portable.evidence.iter().any(|item| {
-            item.role == EvidenceRole::SubscriptionPayment
-                && item.source_global_evidence_id.as_deref() == Some(global.evidence.id.as_str())
-        }));
+            .attach_global_evidence(&updated.id, &global_two.evidence.id)
+            .expect("second portable subscription copy");
+        assert_eq!(
+            portable
+                .evidence
+                .iter()
+                .filter(|item| { item.role == EvidenceRole::SubscriptionPayment })
+                .count(),
+            2
+        );
+        let terms = app
+            .register_global_terms_evidence(
+                &terms_source,
+                EvidenceMetadata {
+                    document_title: "Suno Terms of Service".into(),
+                    provider: "Suno, Inc.".into(),
+                    source_url: "https://suno.com/terms".into(),
+                    retrieval_date: "2026-08-02".into(),
+                    effective_date: "2026-07-01".into(),
+                    applicable_production_period: "2026-08-01 to 2026-08-02".into(),
+                    factual_note: "Offline archived terms fixture.".into(),
+                    ..EvidenceMetadata::default()
+                },
+            )
+            .expect("terms evidence with core metadata");
+        assert!(app
+            .load_track(&updated.id)
+            .expect("track with terms")
+            .evidence
+            .iter()
+            .any(|item| {
+                item.role == EvidenceRole::SunoTermsRights
+                    && item.source_global_evidence_id.as_deref() == Some(terms.evidence.id.as_str())
+            }));
 
         let generated = app
             .generate_documents(&updated.id, false)
@@ -7343,8 +8411,72 @@ mod tests {
             assert!(track_root.join(relative).is_file(), "generated {relative}");
         }
         certificate::verify(&track_root).expect("certificate integrity");
-        let manifest =
-            fs::read_to_string(track_root.join(certificate::MANIFEST_FILE)).expect("manifest text");
+
+        // Re-render the exact persisted snapshot in an independent root. This
+        // exercises determinism across the manifest, Markdown, PDF, and their
+        // certificate hash set rather than checking each renderer in isolation.
+        let original_manifest_bytes =
+            fs::read(track_root.join(certificate::MANIFEST_FILE)).expect("manifest snapshot");
+        let original_manifest_json: serde_json::Value =
+            serde_json::from_slice(&original_manifest_bytes).expect("manifest snapshot JSON");
+        let certificate_steps: Vec<StepState> =
+            serde_json::from_value(original_manifest_json["steps"].clone())
+                .expect("certificate workflow snapshot");
+        let persisted_snapshot = app
+            .persistence
+            .track(&updated.id)
+            .expect("persisted finalized snapshot");
+        let persisted_evidence = app
+            .persistence
+            .evidence(&updated.id)
+            .expect("persisted finalized evidence");
+        let persisted_deviations = app
+            .persistence
+            .deviations(&updated.id)
+            .expect("persisted finalized deviations");
+        let reproduction_root = directory.path().join("certificate-reproduction");
+        fs::create_dir_all(reproduction_root.join("03_DOCUMENTATION"))
+            .expect("reproduction documentation directory");
+        fs::copy(
+            track_root.join(integrity::HASH_FILE),
+            reproduction_root.join(integrity::HASH_FILE),
+        )
+        .expect("reproduction SHA256SUMS");
+        certificate::generate(
+            &reproduction_root,
+            &persisted_snapshot,
+            &persisted_snapshot.profile_snapshot,
+            &certificate_steps,
+            &persisted_evidence,
+            &persisted_deviations,
+            persisted_snapshot
+                .certificate
+                .certificate_id
+                .as_deref()
+                .expect("persisted certificate ID"),
+            persisted_snapshot
+                .certificate
+                .finalized_at
+                .as_deref()
+                .expect("persisted finalization timestamp"),
+            "normalized-snapshot-reproduction",
+        )
+        .expect("re-render identical normalized snapshot");
+        for relative in [
+            certificate::MANIFEST_FILE,
+            certificate::CERTIFICATE_FILE,
+            certificate::PDF_FILE,
+            certificate::CERTIFICATE_HASH_FILE,
+        ] {
+            assert_eq!(
+                fs::read(track_root.join(relative)).expect("original certificate artifact"),
+                fs::read(reproduction_root.join(relative))
+                    .expect("reproduced certificate artifact"),
+                "same normalized snapshot produced different bytes for {relative}"
+            );
+        }
+
+        let manifest = String::from_utf8(original_manifest_bytes).expect("manifest text");
         assert!(!manifest.contains(app.root().to_string_lossy().as_ref()));
         assert!(manifest.contains("\"relative_path\": \".\""));
         assert!(manifest.contains("01_RELEASE/End To End.wav"));
@@ -7355,7 +8487,7 @@ mod tests {
         assert!(manifest.contains("sourceGlobalEvidenceId"));
         let manifest_json: serde_json::Value =
             serde_json::from_str(&manifest).expect("manifest JSON");
-        assert_eq!(manifest_json["schema_version"].as_u64(), Some(4));
+        assert_eq!(manifest_json["schema_version"].as_u64(), Some(5));
         assert_eq!(
             manifest_json["evidence_derived_metadata"]["suno_created_timestamp"].as_str(),
             Some("2026-08-02T06:38:06Z")
@@ -7394,7 +8526,7 @@ mod tests {
         );
         assert_eq!(
             manifest_json["system_verification"]["fact_origins"]["last_editing_date"].as_str(),
-            Some("evidence_derived_metadata")
+            Some("user_confirmed_fact")
         );
         assert_eq!(
             manifest_json["system_verification"]["release_identical_to_suno_export"].as_bool(),
@@ -7413,9 +8545,95 @@ mod tests {
         )));
         assert!(markdown.contains("Release identical to Suno final export: **YES**"));
         assert!(markdown.contains("Download/export date [Evidence-derived metadata]: 2026-08-02"));
-        assert!(markdown.contains("Last editing date [Evidence-derived metadata]: 2026-08-02"));
+        assert!(markdown.contains("Last editing date [User-confirmed fact]: 2026-08-03"));
         assert!(!markdown.contains("2026-08-02T06:38:06Z"));
         assert!(markdown.contains(P0_SUNO_ID));
+        assert!(markdown.contains("Suno plan at generation [User-confirmed fact]: Pro"));
+        assert!(markdown.contains("Instrumental track [User-confirmed fact]: YES"));
+        assert!(markdown.contains("Vocal lyrics present [User-confirmed fact]: NO"));
+        assert!(markdown.contains("Suno Structure / Generation Instructions"));
+        assert!(markdown.contains("Suno Terms of Service"));
+        assert!(markdown.contains("Suno, Inc."));
+        assert!(markdown.contains("AI Transparency Assessment"));
+        for relative in [
+            "03_DOCUMENTATION/README.md",
+            "03_DOCUMENTATION/AI_USAGE.md",
+            "03_DOCUMENTATION/SHA256SUMS.txt",
+        ] {
+            assert!(track_root.join(relative).is_file(), "missing {relative}");
+        }
+
+        let source_code_records = manifest_json["evidence"]
+            .as_array()
+            .expect("manifest evidence")
+            .iter()
+            .filter(|item| item["role"].as_str() == Some("source_code_file"))
+            .count();
+        let code_audio_records = manifest_json["evidence"]
+            .as_array()
+            .expect("manifest evidence")
+            .iter()
+            .filter(|item| item["role"].as_str() == Some("code_generated_audio_file"))
+            .count();
+        let subscription_records = manifest_json["evidence"]
+            .as_array()
+            .expect("manifest evidence")
+            .iter()
+            .filter(|item| item["role"].as_str() == Some("subscription_payment"))
+            .count();
+        assert_eq!(source_code_records, 1);
+        assert_eq!(code_audio_records, 1);
+        assert_eq!(subscription_records, 2);
+
+        let manifest_anchor = final_detail
+            .finalization_anchors
+            .iter()
+            .find(|anchor| anchor.artifact == TimestampReferencedArtifact::EvidenceManifest)
+            .expect("final manifest anchor")
+            .clone();
+        let timestamp_source = fixture_root.join("external-timestamp.json");
+        fs::write(
+            &timestamp_source,
+            b"{\"timestamp\":\"2026-08-04T12:00:00Z\"}\n",
+        )
+        .expect("external timestamp fixture");
+        let timestamped = app
+            .attach_external_timestamp_from(
+                &updated.id,
+                &timestamp_source,
+                ExternalTimestampInput {
+                    provider: "Example Timestamp Provider".into(),
+                    timestamp_type: TimestampType::ElectronicTimestamp,
+                    timestamp_value: "2026-08-04T12:00:00Z".into(),
+                    referenced_artifact: TimestampReferencedArtifact::EvidenceManifest,
+                    other_referenced_artifact: String::new(),
+                    referenced_sha256: manifest_anchor.sha256,
+                    external_reference_id: "E2E-TIMESTAMP-1".into(),
+                    provider_verification_url: "https://timestamp.example/e2e".into(),
+                    note: "Optional post-finalization evidence fixture.".into(),
+                },
+            )
+            .expect("external timestamp attachment");
+        assert_eq!(timestamped.external_timestamps.len(), 1);
+        assert_eq!(
+            timestamped.external_timestamps[0].referenced_hash_match,
+            Some(true)
+        );
+        let revision = app
+            .create_revision(&updated.id)
+            .expect("archive complete timestamped snapshot as revision")
+            .track
+            .expect("new revision detail");
+        assert_eq!(revision.external_timestamps.len(), 1);
+        assert!(revision.external_timestamps[0].integrity_verified);
+        assert!(WalkDir::new(track_root.join(".archive/revisions"))
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .any(|entry| entry.file_name() == "TIMESTAMP_RECORD.json"));
+        if std::env::var_os("SUNODM_KEEP_ACCEPTANCE_FIXTURE").is_some() {
+            let retained = directory.keep();
+            eprintln!("retained acceptance fixture: {}", retained.display());
+        }
     }
 
     #[test]
@@ -7443,10 +8661,11 @@ mod tests {
                     suno_final_generation_date: Some("2026-08-02".into()),
                     suno_final_generation_time: Some("09:10".into()),
                     suno_download_export_date: Some("2026-08-03".into()),
-                    suno_plan_at_creation: Some("Pro".into()),
+                    suno_plan_at_generation: Some("Pro".into()),
                     final_export_date: Some("2026-08-03".into()),
-                    lyrics_source: Some("instrumental".into()),
                     instrumental_track: Some(true),
+                    vocal_lyrics_present: Some(false),
+                    suno_lyrics_field_content: Some(false),
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
@@ -7455,6 +8674,7 @@ mod tests {
                     human_editing_performed: Some(false),
                     post_export_editing_performed: Some(false),
                     commercial_use_intended: Some(false),
+                    generative_ai_used: Some(false),
                     artwork_origin: Some("human".into()),
                     depicts_real_person: Some(false),
                     depicts_real_event: Some(false),
@@ -7492,14 +8712,6 @@ mod tests {
         )
         .expect("explicit filename difference confirmations");
 
-        let na_reason = "AI transparency is not applicable to human artwork.";
-        app.set_step_status(
-            &updated.id,
-            "ai_transparency",
-            StepStatus::NotApplicable,
-            Some(na_reason.into()),
-        )
-        .expect("store justified N/A");
         let deviation_detail = app
             .add_deviation(
                 &updated.id,
@@ -7790,26 +9002,18 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         assert_eq!(manifest_na_reasons, certificate.na_reasons);
-        assert_eq!(
-            certificate
-                .na_reasons
-                .get("ai_transparency")
-                .map(String::as_str),
-            Some(na_reason)
-        );
-        assert!(stored_steps.iter().any(|step| {
-            step.id == "ai_transparency"
-                && step.status == StepStatus::NotApplicable
-                && step.na_reason.as_deref() == Some(na_reason)
-        }));
+        assert!(certificate.na_reasons.is_empty());
+        assert!(stored_steps
+            .iter()
+            .all(|step| step.status != StepStatus::NotApplicable));
         let manifest_completed = manifest_steps
             .iter()
             .filter(|step| matches!(step["status"].as_str(), Some("PASS" | "N_A")))
             .map(|step| {
                 let id = step["id"].as_str().expect("completed step ID").to_owned();
                 let status = match step["status"].as_str().expect("completed status") {
-                    "PASS" => "Pass",
-                    "N_A" => "NotApplicable",
+                    "PASS" => "PASS",
+                    "N_A" => "N/A",
                     status => panic!("unexpected completed status: {status}"),
                 };
                 (id, status.to_owned())
@@ -9202,13 +10406,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_upgrade_archives_finalized_v16_and_requires_fresh_v17_outputs() {
+    fn workflow_upgrade_archives_finalized_v17_and_requires_fresh_v18_outputs() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
         let finalized =
             finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
-        assert_eq!(finalized.workflow_version, "1.6");
+        assert_eq!(finalized.workflow_version, "1.7");
         let track_root = app.root().join(&finalized.relative_path);
         let certificate_before = certificate_file_snapshot(&track_root);
         let hashes_before =
@@ -9225,17 +10429,17 @@ mod tests {
             )
             .expect("stored old-workflow override");
 
-        let workflow_v17 = workflow::config_with_version_for_test("1.7")
-            .expect("test-only workflow 1.7 configuration");
+        let workflow_v18 = workflow::config_with_version_for_test("1.8")
+            .expect("test-only workflow 1.8 configuration");
         let upgraded = app
-            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v17)
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v18)
             .expect("explicit workflow reevaluation")
             .track
             .expect("upgraded track detail");
 
         assert_eq!(upgraded.status, TrackStatus::Active);
         assert_eq!(upgraded.workflow_id, "suno-track");
-        assert_eq!(upgraded.workflow_version, "1.7");
+        assert_eq!(upgraded.workflow_version, "1.8");
         assert!(!upgraded.documents.current);
         assert!(!upgraded.integrity.generated);
         assert!(!upgraded.integrity.verified);
@@ -9274,7 +10478,7 @@ mod tests {
         }
 
         assert!(matches!(
-            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v17),
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v18),
             Err(AppError::Validation(_))
         ));
         assert_eq!(
@@ -10382,11 +11586,11 @@ mod tests {
 
         let upgraded = app
             .re_evaluate_track(&track.id)
-            .expect("explicit 1.6 reevaluation")
+            .expect("explicit 1.7 reevaluation")
             .track
             .expect("reevaluated track");
 
-        assert_eq!(upgraded.workflow_version, "1.6");
+        assert_eq!(upgraded.workflow_version, "1.7");
         assert_eq!(upgraded.fields.suno_final_generation_date, "2026-08-17");
         assert_eq!(upgraded.fields.production_end_date, "2026-08-17");
         assert_eq!(
@@ -10434,7 +11638,7 @@ mod tests {
             .expect("explicit reevaluation")
             .track
             .expect("reevaluated track");
-        assert_eq!(upgraded.workflow_version, "1.6");
+        assert_eq!(upgraded.workflow_version, "1.7");
     }
 
     #[test]

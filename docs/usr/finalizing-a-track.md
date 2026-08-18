@@ -9,7 +9,7 @@
 | Owner | Project team |
 | Last review | 2026-08-17 |
 | Audience | Users finalizing a track documentation set |
-| Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md) |
+| Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md); [ATP-0016: Evidence and certificate workflow 5.0](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
 
 ## Purpose
 
@@ -42,19 +42,20 @@ The gate requires:
 - every applicable mandatory step to be `PASS` or justified `N/A`;
 - no open blocking deviation;
 - every required evidence role to contain a real readable file;
-- the explicit instrumental answer to agree with lyrics source/text and selected human work;
+- instrumental and actual vocal-lyrics answers to be present and non-contradictory, while any populated Suno lyrics/structure field has its exact text, content type, and source;
 - the actual release and Suno-export filenames to match the title or have an explicit intentional-deviation confirmation;
 - evidence-derived dates and their recorded evidence/hash origins to match the current Suno export;
 - the concrete final-generation date of a commercial track to fall inside selected subscription coverage; and
-- commercial tracks to include archived Suno terms/rights evidence or the explicit status `Terms evidence not available`;
+- commercial tracks to include archived Suno Terms evidence with document title, provider/source, and retrieval date, without simultaneously claiming that Terms evidence is unavailable;
+- the Audio AI assessment to be complete when generative AI is used, including a disclosure status other than `NOT DOCUMENTED` for commercial intent;
 - all generated documents to match current facts, evidence metadata, and template versions;
 - SHA-256 generation to cover the complete required set;
 - native verification to pass for every listed file; and
 - workflow and application versions to be available for the certificate.
 
-Register an archived Suno terms PDF once under `Einstellungen`. `PDF auswählen` opens the native file dialog directly, accepts only a signature-checked PDF, and places a portable global-evidence copy into every editable project without asking for manual metadata. If a finalized project needs newer terms, create a revision first; finalized snapshots are never rewritten.
+Register an archived Suno Terms PDF once under `Einstellungen`. Enter its title, provider/source, and retrieval date; add a source URL, effective date, applicable production period, or factual note only when known. The native picker accepts a signature-checked PDF and places a portable global-evidence copy with the same Evidence ID and metadata into every editable project. Once verified local Terms evidence is attached, SunoDM rejects an attempt to set `Terms evidence not available` to `YES`. A contradictory imported legacy value blocks workflow consistency and certificate generation instead of appearing beside `Terms evidence exists: YES`. If a finalized project needs newer or corrected Terms, create a revision first; finalized snapshots are never rewritten.
 
-`FAIL`, `BLOCKED`, `NOT VERIFIED`, or an N/A item without a reason prevents finalization.
+An external timestamp is not part of this gate because its stable referenced hash exists only after technical finalization. `FAIL`, `BLOCKED`, `NOT VERIFIED`, or an N/A item without a reason prevents finalization.
 
 ## Resolve missing items
 
@@ -64,7 +65,10 @@ Open the track overview and follow each missing-item action. Common blockers inc
 - no final release WAV or other configured final release role;
 - a missing AI artwork original after AI artwork was declared;
 - no selected subscription evidence for the production period;
+- an archived Terms file whose title, provider/source, or retrieval date is missing for a commercial track;
 - an unanswered conditional ownership or license question;
+- an unclassified legacy lyrics value or a contradiction between `Instrumental = YES` and `Vocal lyrics present = YES`;
+- commercial generative-AI use whose audio-disclosure status remains `NOT DOCUMENTED`;
 - a user-confirmed final-generation date that conflicts with valid embedded Suno metadata;
 - an evidence-derived date whose source evidence was replaced or removed;
 - a stale generated document after an input changed;
@@ -75,9 +79,15 @@ Do not enter a guessed historical value or attach an unrelated file merely to cl
 
 The Suno final export, final release audio, and final artwork are each singular. Use the adjacent replacement action when one changes so generated documents and the certificate cannot refer to ambiguous authoritative assets.
 
+## Review lyrics and Final Suno Generation
+
+Do not use the presence of text in Suno's lyrics/songtext field as proof of vocals. Review the three separate answers: instrumental track, actual sung/spoken vocal lyrics, and Suno-field content. An instrumental track with `Vocal lyrics present = NO` may validly retain bracketed structure, sound, arrangement, or generation instructions. If field content exists, confirm its types, `human`/`AI`/`mixed` source, and exact text. Resolve `Instrumental = YES` plus `Vocal lyrics present = YES` before finalization; the application never resolves it by interpreting the text.
+
+Review Section C as a chain of distinct facts: final-generation date, Suno ID/final-generation ID, project URL, project/version ID when present, download/export date, metadata origin/detection, model, plan at generation, and `Release identical to Suno final export`. A user-confirmed plan such as `Premier` is not evidence-derived unless explicitly labeled otherwise. The later coverage comparison only establishes whether documented date intervals contain the production/final-generation dates; it does not confirm commercial rights.
+
 ## Review automatic Suno metadata
 
-When you import a Suno final-export WAV, the application checks its bounded structured metadata. A recognized `made with suno studio` value with valid `created` and `id` fields appears in the evidence details as evidence-derived metadata. The application does not add new editable generation-time or ID questions.
+When you import a Suno final-export WAV, the application checks its bounded structured metadata. A recognized `made with suno studio` value can supply a valid `created` value and a valid `id` independently; each appears in the evidence details with its evidence/hash origin when present. An invalid or missing ID does not prevent date derivation.
 
 The calendar part of `created` is authoritative for the final-generation date in Step 03, the production-end date in Step 01, and the optional download/export date in Step 03. As long as a valid metadata date exists, these values are filled automatically and shown read-only. Step 07 asks whether the WAV was edited again on the desktop PC. Choose `No` to derive and lock the last-editing date from the WAV; choose `Yes` to enter the actual date and confirmed editing work yourself. You can enter manual fallback dates when no valid metadata date is available. The application never substitutes an import or filesystem timestamp.
 
@@ -87,7 +97,11 @@ For commercial tracks, attach each globally registered receipt whose interval ov
 
 The overview also reports hash-based byte identity. `Release identical to Suno export` means the verified release audio and Suno final export have exactly the same SHA-256; matching names or dates alone do not produce that result. Identity is a technical observation, not a legal conclusion and not a requirement that the files must be identical after documented editing.
 
-## Review artwork transparency
+## Review AI transparency
+
+Review the Audio assessment independently from Artwork. If generative AI was used, confirm the named AI system and all six tri-state indicators: AI-assisted elements, AI-generated elements, intentional real-person voice imitation, intentional identity representation, authentic-recording representation of a real event, and authentic AI-recording presentation of a real location/institution/event. `NO` is a deliberate negative answer. `NOT DOCUMENTED` records missing information and must never be read as `NO`.
+
+Review the audio-disclosure answer separately. `YES` requires the recorded locations and exact text. `NO` is a conscious answer and can include a factual reason; SunoDM does not decide whether that reason is legally sufficient. For a commercially intended track using generative AI, `NOT DOCUMENTED` remains incomplete and blocks finalization. The certificate may state whether a potential indicator was recorded, but it never states `No deepfake`, `AI Act compliant`, or `Disclosure legally unnecessary`.
 
 If the artwork is AI-generated or AI-assisted, review the original, any intermediate stages, the configured project transparency policy, disclosure text, and final output. Under the default policy, generate the visible local disclosure before choosing the final release artwork.
 
@@ -101,11 +115,11 @@ Confirm that:
 - `AI_USAGE.md` and `artwork_process.md` identify the service, base image, human modifications, policy, result, text, and final output; and
 - positive real-person, real-event, trademark, or logo answers have the configured factual note or evidence.
 
-The content check records your answers. It does not decide legality.
+The Artwork content check records your answers. It does not decide legality, and three negative Artwork answers do not hide the Audio assessment.
 
 ## Generate current documents
 
-Use the document-generation action after completing the relevant steps. Template `1.6` includes current evidence metadata in the deterministic document snapshot; the manifest and certificate retain the automatic fact origins and final-Suno verification summary. Review the generated Markdown and text files for factual accuracy. The documents should state confirmed facts and applicable N/A reasons, not legal guarantees.
+Use the document-generation action after completing the relevant steps. Template `1.8` includes current evidence metadata in the deterministic document snapshot; the manifest and certificate retain the automatic fact origins, separated lyrics/AI facts, complete Terms context, and final-Suno verification summary. Review the generated Markdown and text files for factual accuracy. The documents should state confirmed facts, exact `NO`/`NOT DOCUMENTED` answers, and applicable N/A reasons, not legal guarantees.
 
 While the native service prepares, renders, and atomically writes the managed documents, the progress view shows the current phase, elapsed time, current relative path, and completed document count. These are live operation values rather than a simulated upload. The animated scene is only a visual companion; the final native result remains authoritative. Generated headings and guided values remain English even when the interface and progress view are German.
 
@@ -144,17 +158,29 @@ SunoDM_DOCUMENTATION_CERTIFICATE.pdf
 └── CERTIFICATE_SHA256.txt
 ```
 
-`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` format 4.1 is an A4, A–J technical representation of the same finalized snapshot. It separates the documented title from both original filenames; gives a compact final-Suno summary with fact origins for derived dates and release/export byte identity; renders every source branch with N/A where appropriate; records only selected human work; exposes artwork answers; and lists joint subscription coverage, archived terms, optional external timestamp evidence, provenance, lineage, and full SHA-256 values. The Certificate ID and `Seite X / Y` appear on every page. It is technical documentation, not legal or governmental certification.
+`SunoDM_DOCUMENTATION_CERTIFICATE.pdf` format 5.0 is an A4, A–L technical representation of the same finalized snapshot. It separates the documented title from both original filenames; gives a complete Final Suno Generation section with distinct dates, IDs, URL, model, plan, origins, and release/export hash comparison; renders every source branch with N/A where appropriate; separates vocal content and Suno structure instructions; records only selected human work; separates Audio and Artwork AI answers; and lists technical subscription coverage, the same Terms Evidence IDs used by the evidence register, provenance, lineage, and full SHA-256 values. The Certificate ID and `Seite X / Y` appear on every page. It is technical documentation, not legal or governmental certification.
+
+Section H states `External timestamp evidence at technical finalization: NOT RECORDED`. This is the correct phase-one fact, not an omission: an external provider can timestamp a certificate anchor only after that anchor exists. A later addendum does not rewrite this base PDF.
 
 During finalization, the progress view distinguishes native gate validation, snapshot collection, transaction protection, certificate/manifest generation, certificate verification, the complete SHA-256 reread, and the final database commit. File names, byte counts, file counts, and elapsed time remain visible while the filesystem work runs outside the Tauri main thread.
 
 After the verified native result is committed, a certificate summary opens automatically. It shows the certificate ID, track, artist, finalization time, workflow, verified integrity count, evidence count, blocking-deviation count, and final result. Close it to continue, or open the complete certificate view. For a still-valid finalized track, the same summary remains available through `Show certificate` in Finalize and `Open certificate summary` in the Certificate section.
 
-Review the certificate ID, track, artist, workflow and application versions, timestamp, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, earlier revision references, and final status. Expected success status is `DOCUMENTATION COMPLETE`.
+Review the certificate ID, track, artist, workflow and application versions, application finalization time, mandatory-step result, N/A reasons, evidence count, selected hashes, blocking-deviation result, earlier revision references, and final status. The application finalization time is not represented as an independent trusted timestamp. Expected success status is `DOCUMENTATION COMPLETE`.
 
-Review manifest schema 4 and confirm that paths are track-root-relative. `documented_facts` contains the full user-facing track-fact snapshot; each evidence item includes the original import filename, path, size, full hash, import timestamp, provenance, lineage, technical audio facts, and structured embedded metadata when present. The dedicated `evidence_derived_metadata` section retains the selected Suno timestamp and ID, while `system_verification` records detection, all date origins, joint production/final-generation subscription coverage, every byte-identical evidence pair, the release/export identity result, unambiguous role relationships, explicit global-evidence-to-track relationships, and consistency issues. The current terms importer records the selected PDF and system-derived file facts only; external timestamps still include issuer, timestamp, referenced hash, and artifact. No field is fetched from a network or inferred from a filename.
+Review manifest schema 5 and confirm that paths are track-root-relative. `documented_facts` contains the full user-facing track-fact snapshot, including distinct instrumental/vocal/Suno-field values and Audio/Artwork AI assessments. Each evidence item includes the original import filename, path, size, full hash, import timestamp, provenance, lineage, technical audio facts, structured embedded metadata when present, and complete stored Terms context for the Terms Evidence ID. The dedicated `evidence_derived_metadata` section retains the selected Suno timestamp and ID, while `system_verification` records detection, all date origins, joint production/final-generation subscription coverage, every byte-identical evidence pair, the release/export identity result, unambiguous role relationships, explicit global-evidence-to-track relationships, and consistency issues. Post-finalization timestamp records live in separate addenda and do not modify this schema-5 phase-one manifest. No field is fetched from a network or inferred from a filename.
 
-Project/version ID and legacy manually entered generation-ID/time fields are not requested and are not finalization requirements. A valid generation ID and timestamp embedded in the WAV remain attached to that evidence and can appear in the machine-readable manifest without becoming editable form fields. Compatibility fields from older local records are ignored by the current workflow.
+A project/version ID and a user-confirmed final-generation ID are shown only when supplied. The evidence-derived Suno ID remains separately labeled so different identifiers are not conflated. Compatibility time and lyrics fields from older records remain readable but do not satisfy new semantic answers or become finalization facts automatically.
+
+The certificate defines its completion labels narrowly:
+
+- `PASS`: Configured documentation requirements for this step were satisfied.
+- `DOCUMENTATION COMPLETE`: Configured documentation requirements for the finalized snapshot were completed.
+- `NO`: the user explicitly confirmed a negative fact.
+- `N/A`: the fact is logically inapplicable and its reason is retained.
+- `NOT DOCUMENTED`: sufficient documented information is absent.
+
+None of these labels means rights cleared, copyright confirmed, legally complete, AI Act compliant, court-proof, or government certified.
 
 The certificate includes this mandatory meaning:
 
@@ -170,6 +196,48 @@ sha256sum -c 06_CERTIFICATE/CERTIFICATE_SHA256.txt
 
 The certificate list covers the main SHA-256 list, evidence manifest, certificate Markdown, and root-level technical PDF. It does not hash itself, and the PDF does not contain a self-hash. Changing one PDF byte therefore makes native certificate verification fail.
 
+## Attach optional external timestamp evidence
+
+After technical finalization, the Certificate view shows the stable anchors that can be sent to an external timestamp provider. The Evidence Manifest is the recommended anchor; you can also choose the main SHA-256 list, Markdown certificate, PDF certificate, or the final evidence-package certificate hash set. `Other` requires an explicit phase-one relative path whose current SHA-256 still exactly matches its entry in the verified `03_DOCUMENTATION/SHA256SUMS.txt`; an arbitrary contained, excluded, added, or changed file is rejected. Record the exact displayed SHA-256 before leaving the application.
+
+Obtain any external timestamp outside SunoDM. The application does not contact a provider or create a trusted timestamp. Then use the post-finalization attachment action and enter:
+
+- provider/issuer;
+- type: `Qualified electronic timestamp – user declared`, `Electronic timestamp`, `External integrity timestamp`, `Other`, or `Not documented`;
+- timestamp value when present;
+- the selected referenced artifact and claimed SHA-256;
+- the local timestamp evidence file; and
+- optional external reference ID, provider verification URL, and factual note.
+
+A qualified type is your declared classification; SunoDM does not report it as technically verified qualification. The native operation verifies the current certificate/integrity set, recalculates the selected local artifact, and stores both your claimed hash and the actual local hash. A mismatch is retained as `Referenced hash match: NO`; it is not hidden and produces no positive integrity claim.
+
+Each successful attachment creates a separate certificate-ID-bound sidecar:
+
+```text
+06_CERTIFICATE/EXTERNAL_TIMESTAMPS/<timestamp-record-id>/
+├── TIMESTAMP_RECORD.json
+├── TIMESTAMP_EVIDENCE.<original-extension>
+├── EXTERNAL_TIMESTAMP_ADDENDUM.md
+├── EXTERNAL_TIMESTAMP_ADDENDUM.pdf
+└── TIMESTAMP_RECORD_SHA256.txt
+```
+
+This is sidecar format v1. SunoDM first creates and verifies the complete set in `.archive/timestamp-staging/` and synchronizes the stage plus its parent, then registers its certificate-bound record in SQLite, and only then publishes the staged directory to the live path above. If live publication must be rolled back, removal from the live parent is synchronized before its database row is deleted; otherwise the row remains available for recovery. If the application stops after registration, reopening the workspace verifies and publishes the matching pending stage. A stage with no registered record is an abandoned operation and is removed. An unexpected live sidecar with no registered row causes a controlled error and is never auto-adopted, because SunoDM cannot invent or trust its provider, type, timestamp, claimed hash, or other user-confirmed metadata.
+
+The addenda show provider, declared type, timestamp value, referenced artifact/path, claimed and actual SHA-256 values, match result, original evidence filename, evidence SHA-256, import time, optional reference/URL/note, provenance, and the bound Certificate ID. Immutable `TIMESTAMP_RECORD.json` also records `sidecarFormatVersion: 1`, `integrityVerifiedAtPublication`, and the pinned `markdownSha256` and `pdfSha256` of the exact published addendum bytes. It does not store the current `integrityVerified` value or issue list. Its canonical bytes are checked exactly; inserting a runtime integrity or provider-trust claim is detected even if the sidecar hash list is recalculated. They include this boundary:
+
+> The application records the external timestamp evidence and its referenced hash. It does not independently determine the timestamp's legal qualification unless explicitly technically verified.
+
+The sidecar hash list protects the record, copied evidence, Markdown, and PDF, but not itself. The original manifest, main hash list, base Markdown/PDF certificate, and certificate hash list remain byte-identical, so attaching evidence cannot change the hash that was timestamped. This avoids a cyclic hash dependency. From the timestamp-record directory, an optional independent check is:
+
+```sh
+sha256sum -c TIMESTAMP_RECORD_SHA256.txt
+```
+
+When you reopen the track, SunoDM reverifies the complete sidecar against its registered record: the exact regular-file set, immutable record JSON, exact published record/evidence/Markdown/PDF bytes, pinned Markdown/PDF hashes, referenced artifact and match result, and versioned sidecar hash list. It verifies the bytes that were published; it does not re-render an older addendum with the current renderer. Review the current `Sidecar integrity: PASS` or displayed issues independently from the immutable publication-time fact and from `Referenced hash match`. If a sidecar file was changed or removed, that timestamp record reports integrity `NO`, but the unchanged phase-one certificate remains separately valid.
+
+No external timestamp is required for ordinary finalization. For commercial tracks the application displays `External timestamp evidence: NOT RECORDED` until one is attached and may recommend this optional preservation step; it does not give legal advice.
+
 ## Preserve the snapshot
 
 Keep the complete track folder together. The folder is designed to remain reviewable without the SQLite index or application. A copy that omits evidence or generated documents is not the same finalized snapshot.
@@ -184,7 +252,7 @@ Use `Create new revision and edit` from the overview, any workflow step (includi
 
 When the application reports `Documentation changed after finalization`, review the mismatch before proceeding. Then create the revision explicitly.
 
-The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, the complete former certificate directory, and the former root-level technical PDF below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. The mutable revision may analyze carried Suno WAV evidence and derive its permitted dates; the archived finalized revision is not changed. After the next successful finalization, the current manifest, Markdown certificate, and PDF list the relative paths of these managed earlier revision archives. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again.
+The application archives `revision.json`, the prior `03_DOCUMENTATION/SHA256SUMS.txt`, the complete former certificate directory including its `EXTERNAL_TIMESTAMPS/` sidecars, and the former root-level technical PDF below `.archive/revisions/<revision-id>/`, then opens a new working revision. It can preserve this recovery record even when the live certificate was already damaged. Every timestamp record remains bound to the archived Certificate ID and is never copied or reassigned to the new revision. Archived records remain listed and are reverified from their archived bytes whenever the track loads; `revision.json.previous_certificate.certificateId` must equal the sidecar Certificate ID. Modifying that binding or a sidecar byte makes the timestamp record's current integrity `NO` without changing the base certificate's validity. The mutable revision may analyze carried Suno WAV evidence and derive its permitted dates; the archived finalized revision is not changed. After the next successful finalization, the current manifest, Markdown certificate, and PDF list the relative paths of these managed earlier revision archives. Update the relevant facts or evidence, regenerate documents, apply artwork disclosure if required, regenerate and verify hashes, and pass the complete finalization gate again. Attach a new external timestamp only after that revision has its own final certificate and anchors.
 
 Tracks created by an older application version or recovered from an imported folder may not yet contain `.archive/revisions/`. Revision creation safely creates this managed parent before moving any live certificate artifact; users do not need to create the folder manually.
 
@@ -200,10 +268,11 @@ Use a non-sensitive test track and record actual results only in the acceptance 
 2. Complete every mandatory item, regenerate documents, and generate and verify hashes.
 3. Finalize and inspect the three files under `06_CERTIFICATE/` plus `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` at the track root.
 4. Independently verify both SHA-256 lists where the platform tool is available.
-5. Modify a protected disposable file and confirm certificate invalidation.
-6. Create a revision and confirm that the previous certificate state remains archived.
+5. Attach disposable timestamp evidence once with the displayed manifest hash and once with a deliberately different claimed hash; confirm `Referenced hash match: YES` and `NO` remain distinct without changing the base certificate bytes.
+6. Modify a protected disposable file and confirm certificate invalidation.
+7. Create a revision and confirm that the previous certificate and its timestamp sidecars remain archived and are not attached to the new revision.
 
-Executed results and remaining manual checks are recorded in [ATP-0007](../atp/active/ATP-0007-sha256-generation-and-verification.md), [ATP-0008](../atp/active/ATP-0008-finalization-gate.md), [ATP-0009](../atp/active/ATP-0009-certificate-generation.md), [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md), and the [acceptance report](../dev/acceptance-report.md).
+Executed results are recorded in [ATP-0007](../atp/active/ATP-0007-sha256-generation-and-verification.md), [ATP-0008](../atp/active/ATP-0008-finalization-gate.md), [ATP-0009](../atp/active/ATP-0009-certificate-generation.md), [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md), current [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md), and the historical [acceptance report](../dev/acceptance-report.md).
 
 ## Related documents
 
@@ -216,6 +285,8 @@ Executed results and remaining manual checks are recorded in [ATP-0007](../atp/a
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-17 | Documented sidecar-v1 staging, registration, publication and startup recovery; immutable pinned-byte verification for current and archived addenda; and rejection of contradictory Terms availability. | Project team |
+| 2026-08-17 | Documented workflow 1.7 finalization semantics, template 1.8, manifest schema 5, certificate/PDF 5.0, separated lyrics and AI facts, complete Terms metadata, and stable certificate-bound external-timestamp addenda without cyclic hashing or legal qualification claims. | Project team |
 | 2026-08-17 | Documented workflow 1.6 derived download/last-editing dates, Step-07 desktop editing, joint subscription coverage, and the 1.7/4/4.1 artifact versions. | Project team |
 | 2026-08-17 | Documented workflow 1.5 authoritative read-only dates in Steps 01 and 03, with manual fallback only when no valid Suno metadata date exists. | Project team |
 | 2026-08-17 | Documented Suno WAV metadata review, conditional date derivation, optional download date, consistency blockers, byte identity, revision-only analysis, and the 1.4/1.6/3/4.0 artifact versions. | Project team |

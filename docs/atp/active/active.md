@@ -21,5 +21,6 @@
 - 📝 [ATP-0013: End-to-end offline track workflow](ATP-0013-end-to-end-offline-workflow.md)
 - 📝 [ATP-0014: Track library album and single organization](ATP-0014-track-library-organization.md)
 - 📝 [ATP-0015: Technical evidence certificate 4.1](ATP-0015-technical-evidence-certificate.md)
+- 📝 [ATP-0016: Evidence and certificate workflow 5.0 release candidate](ATP-0016-evidence-certificate-workflow-5.md)
 
 <!-- AUTO-GENERATED:docs-index END -->

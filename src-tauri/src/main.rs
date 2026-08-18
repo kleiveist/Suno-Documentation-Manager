@@ -9,6 +9,7 @@ mod commands;
 mod documents;
 mod error;
 mod evidence;
+mod external_timestamp;
 mod folder_import;
 mod integrity;
 mod model;
@@ -29,6 +30,7 @@ fn main() {
             commands::list_global_evidence,
             commands::import_global_evidence,
             commands::import_global_terms_evidence,
+            commands::update_global_terms_evidence_metadata,
             commands::remove_global_evidence,
             commands::attach_global_evidence,
             commands::list_tracks,
@@ -58,6 +60,7 @@ fn main() {
             commands::verify_hashes,
             commands::validate_track,
             commands::finalize_track,
+            commands::attach_external_timestamp,
             commands::invalidate_certificate,
             commands::create_revision,
             commands::re_evaluate_track,

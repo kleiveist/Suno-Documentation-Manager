@@ -19,6 +19,8 @@ import {
   type ByteIdenticalPair,
   type ConsistencyIssue,
   type EvidenceItem,
+  type EvidenceMetadata,
+  type ExternalTimestampInput,
   type FolderImportExecutionInput,
   type FolderImportProposal,
   type EvidenceRole,
@@ -114,7 +116,7 @@ function makeTrack(
   complete = false,
   library: TrackLibraryAssignment = { section: "single" }
 ): TrackDetail {
-  const fields = {
+  const fields: TrackDetail["fields"] = {
     ...emptyTrackFields(profile),
     title,
     productionStartDate: "2026-07-18",
@@ -123,11 +125,14 @@ function makeTrack(
     sunoProjectUrl: complete ? "https://suno.com/song/demo-project" : "",
     sunoFinalGenerationDate: "",
     sunoDownloadExportDate: complete ? "2026-07-24" : "",
-    sunoPlanAtCreation: "Premier",
+    sunoPlanAtGeneration: complete ? "Premier" : "",
     finalExportDate: complete ? "2026-07-24" : "",
-    lyricsSource: complete ? ("human" as const) : ("" as const),
     instrumentalTrack: complete ? false : null,
-    lyricsText: complete ? "Eigene Lyrics – im Track-Dokument vollständig gespeichert." : "",
+    vocalLyricsPresent: complete ? true : null,
+    sunoLyricsFieldContent: complete ? true : null,
+    sunoLyricsContentTypes: complete ? ["vocal_lyrics"] : [],
+    sunoLyricsContentSource: complete ? ("human" as const) : null,
+    sunoLyricsFieldText: complete ? "Eigene Lyrics – im Track-Dokument vollständig gespeichert." : "",
     sunoStylePrompt: complete ? "cinematic synthwave, driving bass, wide vocal" : "",
     externalAudioUploaded: false,
     ownAudioUploaded: false,
@@ -143,7 +148,18 @@ function makeTrack(
     depictsRealEvent: complete ? false : null,
     containsTrademark: complete ? false : null,
     disclosureApplied: complete,
-    disclosureText: "AI-assisted"
+    disclosureText: "AI-assisted",
+    generativeAiUsed: complete ? true : null,
+    audioAiSystem: complete ? "Suno" : "",
+    aiAssistedAudioElements: complete ? ("yes" as const) : null,
+    aiGeneratedAudioElements: complete ? ("yes" as const) : null,
+    realPersonVoiceIntentionallyImitated: complete ? ("no" as const) : null,
+    realPersonIdentityIntentionallyRepresented: complete ? ("no" as const) : null,
+    realEventRepresentedAsAuthenticRecording: complete ? ("no" as const) : null,
+    realLocationInstitutionEventPresentedAsAuthenticAiRecording: complete ? ("no" as const) : null,
+    audioDisclosureApplied: complete ? ("yes" as const) : null,
+    audioDisclosureLocations: complete ? ["Release-Metadaten"] : [],
+    audioDisclosureText: complete ? "AI-generated audio" : ""
   };
   const originalArtwork = evidence("ai_artwork_original", `${title}_AI_ORIGINAL.png`);
   const disclosedArtwork: EvidenceItem = {
@@ -160,7 +176,19 @@ function makeTrack(
         { ...evidence("subscription_payment", "subscription_2026-07.pdf"), provenance: "global_copy" as const, sourceGlobalEvidenceId: "demo-global-subscription", coverageStart: "2026-07-01", coverageEnd: "2026-07-31" },
         originalArtwork,
         disclosedArtwork,
-        evidence("final_artwork", `${title}_FINAL.jpeg`)
+        evidence("final_artwork", `${title}_FINAL.jpeg`),
+        {
+          ...evidence("suno_terms_rights", "suno_terms.pdf"),
+          provenance: "global_copy" as const,
+          sourceGlobalEvidenceId: "demo-global-terms",
+          metadata: {
+            ...emptyEvidenceMetadata(),
+            originalFileName: "suno_terms.pdf",
+            documentTitle: "Suno Terms of Service",
+            provider: "Suno, Inc.",
+            retrievalDate: "2026-07-18"
+          }
+        }
       ]
     : [evidence("suno_screenshot", `${title}_SUNO.png`)];
   const track: TrackDetail = {
@@ -183,7 +211,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.7",
+      templateVersion: "1.8",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -193,7 +221,9 @@ function makeTrack(
       verifiedCount: complete ? 17 : 0,
       mismatchFiles: []
     },
-    certificate: { valid: false }
+    certificate: { valid: false },
+    externalTimestamps: [],
+    finalizationAnchors: []
   };
   refresh(track);
   return track;
@@ -435,20 +465,53 @@ export function createDemoApi(): DesktopApi {
       globalEvidence.push(item);
       return clone(item);
     },
-    async importGlobalTermsEvidence() {
+    async importGlobalTermsEvidence(metadata) {
       await wait();
+      const normalized: EvidenceMetadata = {
+        ...emptyEvidenceMetadata(),
+        ...clone(metadata),
+        originalFileName: "suno_terms.pdf"
+      };
+      if (!normalized.documentTitle.trim() || !normalized.provider.trim() || !normalized.retrievalDate.trim()) {
+        throw new Error("Dokumenttitel, Anbieter und Abrufdatum sind für den Terms-Nachweis erforderlich.");
+      }
       const item: GlobalEvidenceItem = {
         ...evidence("suno_terms_rights", "suno_terms.pdf"),
         relativePath: ".suno-doc/global-evidence/suno_terms.pdf",
-        metadata: {
-          ...emptyEvidenceMetadata(),
-          originalFileName: "suno_terms.pdf",
-        }
+        metadata: normalized
       };
       globalEvidence.push(item);
       for (const track of tracks.values()) {
         if (track.status === "FINALIZED" || track.status === "SUPERSEDED") continue;
         attachGlobalToTrack(track, item);
+      }
+      return clone(item);
+    },
+    async updateGlobalTermsEvidenceMetadata(evidenceId, metadata) {
+      await wait();
+      const item = globalEvidence.find((entry) => entry.id === evidenceId && entry.role === "suno_terms_rights");
+      if (!item) throw new Error("Der globale Terms-Nachweis wurde nicht gefunden.");
+      const normalized: EvidenceMetadata = {
+        ...emptyEvidenceMetadata(),
+        ...item.metadata,
+        ...clone(metadata),
+        originalFileName: item.metadata?.originalFileName || item.fileName
+      };
+      if (!normalized.documentTitle.trim() || !normalized.provider.trim() || !normalized.retrievalDate.trim()) {
+        throw new Error("Dokumenttitel, Anbieter und Abrufdatum sind für den Terms-Nachweis erforderlich.");
+      }
+      item.metadata = normalized;
+      for (const track of tracks.values()) {
+        if (track.status === "FINALIZED" || track.status === "SUPERSEDED") continue;
+        let changed = false;
+        for (const copy of track.evidence.filter((entry) => entry.sourceGlobalEvidenceId === evidenceId && entry.provenance === "global_copy")) {
+          copy.metadata = clone(normalized);
+          changed = true;
+        }
+        if (changed) {
+          track.documents.current = false;
+          refresh(track);
+        }
       }
       return clone(item);
     },
@@ -697,7 +760,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.7",
+        templateVersion: "1.8",
         files: documentFiles
       };
       track.integrity.generated = false;
@@ -784,10 +847,54 @@ export function createDemoApi(): DesktopApi {
         { stage: "complete", processedBytes: totalBytes, totalBytes, processedFiles: totalFiles, totalFiles }
       ]);
       track.status = "FINALIZED";
-      track.certificate = { valid: true, certificateId: `SDM-${new Date().getFullYear()}-${track.id.slice(0, 8).toUpperCase()}`, finalizedAt: now(), workflowVersion: WORKFLOW_VERSION };
+      const certificateId = `SDM-${new Date().getFullYear()}-${track.id.slice(0, 8).toUpperCase()}`;
+      track.certificate = { valid: true, certificateId, finalizedAt: now(), workflowVersion: WORKFLOW_VERSION };
+      track.finalizationAnchors = [
+        { artifact: "evidence_manifest", label: "Evidence manifest (recommended timestamp anchor)", relativePath: "06_CERTIFICATE/EVIDENCE_MANIFEST.json", sha256: "a".repeat(64) },
+        { artifact: "sha256sums", label: "Track SHA-256 manifest", relativePath: "03_DOCUMENTATION/SHA256SUMS.txt", sha256: "b".repeat(64) },
+        { artifact: "documentation_certificate_markdown", label: "Documentation certificate (Markdown)", relativePath: "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md", sha256: "c".repeat(64) },
+        { artifact: "certificate_pdf", label: "Documentation certificate (PDF)", relativePath: "SunoDM_DOCUMENTATION_CERTIFICATE.pdf", sha256: "d".repeat(64) },
+        { artifact: "final_evidence_package", label: "Final evidence package certificate hash set", relativePath: "06_CERTIFICATE/CERTIFICATE_SHA256.txt", sha256: "e".repeat(64) }
+      ];
       refresh(track);
       track.status = "FINALIZED";
       return result(track, "Dokumentation finalisiert und Zertifikat erzeugt.");
+    },
+    async attachExternalTimestamp(trackId, input: ExternalTimestampInput) {
+      await wait();
+      const track = get(trackId);
+      if (track.status !== "FINALIZED" || !track.certificate.valid || !track.certificate.certificateId) {
+        throw new Error("Ein externer Zeitstempel kann erst nach der technischen Finalisierung angehängt werden.");
+      }
+      const anchor = track.finalizationAnchors.find((item) => item.artifact === input.referencedArtifact);
+      const actualSha256 = anchor?.sha256;
+      const id = crypto.randomUUID();
+      track.externalTimestamps.push({
+        id,
+        certificateId: track.certificate.certificateId,
+        provider: input.provider,
+        timestampType: input.timestampType,
+        timestampValue: input.timestampValue,
+        referencedArtifact: input.referencedArtifact,
+        referencedArtifactPath: anchor?.relativePath || input.otherReferencedArtifact,
+        referencedSha256: input.referencedSha256,
+        actualSha256: actualSha256 ?? "",
+        referencedHashMatch: actualSha256 ? actualSha256.toLocaleLowerCase() === input.referencedSha256.trim().toLocaleLowerCase() : null,
+        externalReferenceId: input.externalReferenceId,
+        providerVerificationUrl: input.providerVerificationUrl,
+        note: input.note,
+        evidenceFileName: "external_timestamp_evidence.pdf",
+        evidenceSha256: "f".repeat(64),
+        importedAt: now(),
+        provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison",
+        recordRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/TIMESTAMP_RECORD.json`,
+        markdownRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/EXTERNAL_TIMESTAMP_ADDENDUM.md`,
+        pdfRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/EXTERNAL_TIMESTAMP_ADDENDUM.pdf`,
+        hashListRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/TIMESTAMP_RECORD_SHA256.txt`,
+        integrityVerified: true,
+        integrityIssues: []
+      });
+      return clone(track);
     },
     async invalidateCertificate(trackId) {
       await wait();
@@ -810,6 +917,8 @@ export function createDemoApi(): DesktopApi {
       track.integrity.verified = false;
       track.integrity.mismatchFiles = [];
       track.documents.current = false;
+      track.externalTimestamps = [];
+      track.finalizationAnchors = [];
       refresh(track);
       return result(track, "Der bisherige Snapshot wurde archiviert und eine neue Revision angelegt.");
     },
@@ -836,6 +945,8 @@ export function createDemoApi(): DesktopApi {
         mismatchFiles: []
       };
       track.steps = [];
+      track.externalTimestamps = [];
+      track.finalizationAnchors = [];
       refresh(track);
       return result(
         track,

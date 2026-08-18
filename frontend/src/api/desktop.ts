@@ -4,6 +4,7 @@ import { createDemoApi } from "./demo";
 import type {
   ActionResult,
   EvidencePreview,
+  ExternalTimestampInput,
   FolderImportExecutionInput,
   FolderImportProposal,
   EvidenceMetadata,
@@ -38,7 +39,8 @@ export interface DesktopApi {
   updateProfile(profile: GlobalProfile): Promise<GlobalProfile>;
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]>;
   importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle): Promise<GlobalEvidenceItem | null>;
-  importGlobalTermsEvidence(): Promise<GlobalEvidenceItem | null>;
+  importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null>;
+  updateGlobalTermsEvidenceMetadata(evidenceId: string, metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem>;
   removeGlobalEvidence(evidenceId: string): Promise<void>;
   attachGlobalEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
   listTracks(): Promise<TrackSummary[]>;
@@ -68,6 +70,7 @@ export interface DesktopApi {
   verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   validateTrack(trackId: string): Promise<ValidationResult>;
   finalizeTrack(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
+  attachExternalTimestamp(trackId: string, input: ExternalTimestampInput): Promise<TrackDetail | null>;
   invalidateCertificate(trackId: string): Promise<ActionResult>;
   createRevision(trackId: string): Promise<ActionResult>;
   reEvaluateTrack(trackId: string): Promise<ActionResult>;
@@ -149,13 +152,17 @@ class TauriDesktopApi implements DesktopApi {
     }
   }
 
-  async importGlobalTermsEvidence(): Promise<GlobalEvidenceItem | null> {
+  async importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null> {
     try {
-      return await command<GlobalEvidenceItem | null>("import_global_terms_evidence");
+      return await command<GlobalEvidenceItem | null>("import_global_terms_evidence", { metadata });
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
     }
+  }
+
+  updateGlobalTermsEvidenceMetadata(evidenceId: string, metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem> {
+    return command("update_global_terms_evidence_metadata", { evidenceId, metadata });
   }
 
   removeGlobalEvidence(evidenceId: string): Promise<void> {
@@ -284,6 +291,15 @@ class TauriDesktopApi implements DesktopApi {
 
   finalizeTrack(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult> {
     return command("finalize_track", { trackId, onProgress: progressChannel(onProgress) });
+  }
+
+  async attachExternalTimestamp(trackId: string, input: ExternalTimestampInput): Promise<TrackDetail | null> {
+    try {
+      return await command<TrackDetail | null>("attach_external_timestamp", { trackId, input });
+    } catch (error) {
+      if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
+      throw error;
+    }
   }
 
   invalidateCertificate(trackId: string): Promise<ActionResult> {
