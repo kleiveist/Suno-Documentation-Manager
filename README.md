@@ -28,6 +28,7 @@ The certificate confirms completion of the configured documentation and integrit
 - explicit evidence provenance for managed imports, global copies, locally generated disclosure outputs, and indexed legacy files;
 - separate factual models for vocal lyrics, the Suno lyrics/structure field, audio AI transparency, and artwork AI transparency;
 - deterministic Markdown and text document generation;
+- bundled local Chromaprint screening of the authoritative release evidence and an optional explicitly triggered ACRCloud comparison;
 - local, reproducible visible disclosure for AI-generated or AI-assisted artwork;
 - native SHA-256 generation and verification;
 - a finalization gate, completion certificate, evidence manifest, revisions, and optional revision-bound external-timestamp addenda; and
@@ -75,7 +76,7 @@ Rust command and service boundary
               └── portable track folders and evidence
 ```
 
-There is no product backend and no network dependency. TypeScript does not execute SQL, calculate authoritative hashes, or perform unrestricted filesystem operations. See [Product architecture](docs/def/product-architecture.md) and [Persistence](docs/def/persistence.md) for the trust and data boundaries.
+There is no product backend and no required network dependency. The normal workflow remains local; only user-started optional external timestamp and ACRCloud screening actions can contact a configured provider. TypeScript does not execute SQL, calculate authoritative hashes, or perform unrestricted filesystem operations. See [Product architecture](docs/def/product-architecture.md), [Pre-release audio screening](docs/def/pre-release-audio-screening.md), and [Persistence](docs/def/persistence.md) for the trust and data boundaries.
 
 ## Development quick start
 
@@ -99,9 +100,9 @@ The browser-only Vite preview cannot perform the native workspace, evidence, art
 3. Create a track as a single or assign it to a named album; scanned historical tracks default to singles.
 4. Browse the collapsible album/single tree; reassign tracks or rename albums while the native layer moves the physical folders safely.
 5. Follow the steps `01 Track` through `10 Finalize`.
-6. Import real evidence with the native picker and resolve the displayed missing items.
+6. Import real evidence with the native picker; the authoritative release evidence receives a local technical fingerprint automatically.
 7. Generate documents and, when applicable, the visible AI artwork disclosure.
-8. Generate and verify `03_DOCUMENTATION/SHA256SUMS.txt`.
+8. Optionally run the explicitly requested ACRCloud comparison in Step 09, then generate and verify `03_DOCUMENTATION/SHA256SUMS.txt`.
 9. Finalize only after the application reports that every gate condition passes.
 10. Preserve the generated certificate set, manifest, and root-level technical PDF with the track folder. After technical finalization, optionally attach external timestamp evidence to one displayed stable anchor.
 
@@ -109,7 +110,9 @@ Start with [Getting started](docs/usr/getting-started.md). Before finalization, 
 
 Step 10 now creates `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` directly in the track root. The local native renderer uses the same finalized structured snapshot as the Markdown certificate and evidence manifest; the PDF's SHA-256 is the fourth required entry in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`.
 
-Workflow 1.7 recognizes structured `made with suno studio` metadata in imported Suno WAV exports and records its validated `created` timestamp and `id` as evidence-derived metadata. While a valid metadata date exists, it authoritatively fills and locks the final-generation date, production-end date, and optional download/export date. In Step 07, `No` to desktop-PC editing also derives and locks the last-editing date; `Yes` requires a freely selected date and the confirmed editing work. Manual fallbacks remain available when no valid metadata date exists. Section C of the certificate identifies the final generation date, Suno ID, project URL, model, plan at generation, metadata origin, and release/export hash comparison as separate facts.
+Workflow 1.8 recognizes structured `made with suno studio` metadata in imported Suno WAV exports and records its validated `created` timestamp and `id` as evidence-derived metadata. While a valid metadata date exists, it authoritatively fills and locks the final-generation date, production-end date, and optional download/export date. In Step 07, `No` to desktop-PC editing also derives and locks the last-editing date; `Yes` requires a freely selected date and the confirmed editing work. Manual fallbacks remain available when no valid metadata date exists. Section C of the certificate identifies the final generation date, Suno ID, project URL, model, plan at generation, metadata origin, and release/export hash comparison as separate facts.
+
+Before finalization, SunoDM uses the bundled, pinned Chromaprint engine to record a real technical fingerprint of the managed authoritative `release_wav` evidence. The portable `03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json`, detached `LOCAL_FINGERPRINT.sha256`, and `AUDIO_SCREENING.md` bind the engine, algorithm, source Evidence ID/path/SHA-256, size, duration, and generated time; the full fingerprint remains only in the local fingerprint record and is never printed in the certificate, PDF, manifest, or UI. Step 09 can additionally send a bounded audio sample—not the Chromaprint fingerprint—to ACRCloud after explicit Settings configuration and a user click. This is optional, never runs in the background or during finalization, cannot block finalization, and records a structured result plus provider response facts under the same hash-covered directory. A match/no-match is a technical provider result only, not a conclusion about authorship, ownership, permission, infringement, legality, or release clearance.
 
 Instrumental status, actual vocal lyrics, and content in Suno's lyrics/structure field are independent answers. An instrumental track may therefore retain bracketed structure, sound, arrangement, or generation instructions without being classified as vocal. Historical lyrics fields remain readable but are not reinterpreted: unresolved semantics stay `NOT DOCUMENTED` until the user classifies them in an editable track or revision. A historical `sunoPlanAtCreation` value likewise remains separately labeled legacy data and never populates the new plan-at-generation fact without explicit confirmation.
 
@@ -119,7 +122,7 @@ System verification compares SHA-256 values across all verified evidence and exp
 
 Finalized snapshots remain immutable: metadata extraction never backfills them in place, while an explicitly created revision may analyze the carried evidence. Optional external timestamp evidence is attached only after finalization beneath `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/`. Sidecar format v1 is durably staged, verified, and parent-synchronized before SQLite registration, and only then published to its live certificate path; live-parent synchronization precedes any compensating database rollback. Startup publishes a valid registered pending stage, removes an unregistered abandoned stage, and rejects an unexpected unregistered live sidecar instead of adopting its user-confirmed metadata. The immutable `TIMESTAMP_RECORD.json` records its certificate ID, chosen artifact, claimed and actual hashes and match result, evidence-file hash, publication-time integrity result, provenance, and pinned Markdown/PDF hashes; current `integrityVerified` and issues are computed presentation state and are not written into that immutable record. Exact-record verification rejects injected runtime or provider-trust claims even with a recomputed sidecar hash list. A custom `Other` anchor is accepted only when it is an unchanged entry in the verified phase-one `SHA256SUMS.txt`. Load verification hashes the exact published bytes without re-rendering them through a newer renderer. Current and archived revision sidecars remain listed and independently reverified; an archive must bind `revision.json.previous_certificate.certificateId` to the sidecar Certificate ID, and sidecar or binding tampering reports integrity `NO` on that record without changing an otherwise valid base certificate. Attachment does not alter the stamped anchor, create a cyclic self-hash, transfer to a later revision, or establish the timestamp's legal qualification.
 
-Generated documents use template `1.8`; new finalizations write manifest schema `5` and certificate/PDF format `5.0`. SQLite schema `5` stores revision-bound external-timestamp records separately from the immutable finalized snapshot. `PASS` means only that the configured documentation requirements for a step were satisfied. `DOCUMENTATION COMPLETE` means only that the configured documentation requirements for the finalized snapshot were completed. Neither status certifies authorship, ownership, non-infringement, legality, license validity, judicial weight, AI-law compliance, or governmental approval.
+Generated documents use template `1.9`; new finalizations write manifest schema `6` and certificate/PDF format `5.1`. SQLite schema `7` stores the non-secret ACRCloud configuration separately from the immutable finalized snapshot. Existing finalized artifacts remain byte-identical; there is no screening backfill. `PASS` means only that the configured documentation requirements for a step were satisfied. `DOCUMENTATION COMPLETE` means only that the configured documentation requirements for the finalized snapshot were completed. Neither status certifies authorship, ownership, non-infringement, legality, license validity, judicial weight, AI-law compliance, or governmental approval.
 
 Archived Suno terms/rights files are selected once under `Einstellungen` together with their document title, provider/source, and retrieval date. Optional source URL, effective date, applicable production period, and a factual note add context without legal evaluation. SunoDM stores the local global record with its SHA-256 and metadata, then places a linked portable `global_copy` in every new or still editable project. Certificate summary and evidence-register detail refer to that same local Evidence ID, while `sourceGlobalEvidenceId` preserves the workspace-record link. Metadata edits propagate only to editable copies; finalized snapshots are never changed, so use a new revision before attaching newer or corrected terms.
 
@@ -183,7 +186,7 @@ python tools/control.py docs index --dry-run
 python tools/control.py release check
 ```
 
-Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-0016](docs/atp/active/ATP-0016-evidence-certificate-workflow-5.md) records the final workflow-1.7 / certificate-5.0 automated suites, PDF inspection, and retained portable-folder review. The older [acceptance report](docs/dev/acceptance-report.md) and ATPs continue to describe only their identified earlier builds and certificate formats; their historical result rows are not reinterpreted.
+Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-0016](docs/atp/active/ATP-0016-evidence-certificate-workflow-5.md) records the historical workflow-1.7 / certificate-5.0 release candidate; [ATP-0017](docs/atp/active/ATP-0017-pre-release-audio-screening.md) defines the required screening checks for the new format. The older [acceptance report](docs/dev/acceptance-report.md) and ATPs continue to describe only their identified earlier builds and certificate formats; their historical result rows are not reinterpreted.
 
 ## Detailed documentation
 
@@ -192,6 +195,7 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 - [Track library organization model](docs/def/track-library-model.md)
 - [Persistence and recovery](docs/def/persistence.md)
 - [Workflow model](docs/def/workflow-model.md)
+- [Pre-release audio screening](docs/def/pre-release-audio-screening.md)
 - [Getting started](docs/usr/getting-started.md)
 - [Finalizing a track](docs/usr/finalizing-a-track.md)
 - [Legacy track import](docs/dev/legacy-track-import.md)
@@ -219,6 +223,7 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 - 📝 [Deployment architecture — unavailable inherited reference](docs/def/deployment-architecture.md)
 - 📝 [Provider-neutral persistence architecture — inherited template reference](docs/def/persistence-architecture.md)
 - 📝 [Local persistence and recovery](docs/def/persistence.md)
+- 📝 [Pre-release audio screening](docs/def/pre-release-audio-screening.md)
 - 📝 [Suno Documentation Manager product architecture](docs/def/product-architecture.md)
 - 📝 [Project profiles — inherited template reference](docs/def/project-profiles.md)
 - 📝 [Track documentation model](docs/def/track-documentation-model.md)
@@ -255,6 +260,7 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-18 | Added pre-release local Chromaprint screening and explicit optional ACRCloud screening documentation; advanced template to 1.9, manifest to 6, certificate/PDF to 5.1, and SQLite schema to 7. | Project team |
 | 2026-08-17 | Documented final sidecar-v1 durability and recovery, byte-pinned current/archive verification, Terms contradiction prevention, and completed ATP-0016 acceptance evidence. | Project team |
 | 2026-08-17 | Raised the evidence workflow to 1.7 and documented separated instrumental/vocal/Suno-field facts, complete final-generation and Terms context, audio/artwork AI assessments, precise status semantics, and revision-bound external-timestamp addenda; advanced template to 1.8, manifest to 5, certificate/PDF to 5.0, and SQLite schema to 5. | Project team |
 | 2026-08-17 | Raised workflow to 1.6: WAV metadata now also supplies the optional download/export date and, when no desktop editing occurred, the locked last-editing date; adjacent subscription receipts are evaluated jointly. | Project team |

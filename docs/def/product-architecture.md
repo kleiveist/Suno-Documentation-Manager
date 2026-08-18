@@ -7,13 +7,13 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-17 |
+| Last review | 2026-08-18 |
 | Audience | Product developers and architects |
 | Related ATP | [Active product acceptance](../atp/active/active.md) |
 
 ## Purpose
 
-This document defines the runtime components, trust boundaries, command contracts, and non-goals of Suno Documentation Manager version 0.1. It answers how an entirely local desktop application turns user input and evidence files into a portable track documentation snapshot.
+This document defines the runtime components, trust boundaries, command contracts, and non-goals of Suno Documentation Manager version 0.1. It answers how a local-first desktop application turns user input and evidence files into a portable track documentation snapshot.
 
 ## Scope
 
@@ -30,12 +30,12 @@ This document defines the runtime components, trust boundaries, command contract
 - individual database table and document-template fields;
 - user-interface layout details;
 - a general-purpose workflow engine;
-- cloud, server, authentication, synchronization, and remote backup designs; and
+- cloud, server, synchronization, and remote backup designs; and
 - legal interpretation of track contents or evidence.
 
 ## Context
 
-The product is generated from the `desktop-local` template profile. Its product runtime is one Tauri desktop process. Development can use Vite as Tauri's asset server, but product behavior never depends on a local HTTP application server. A packaged build loads bundled frontend assets and remains usable without a network connection.
+The product is generated from the `desktop-local` template profile. Its product runtime is one Tauri desktop process. Development can use Vite as Tauri's asset server, but product behavior never depends on a local HTTP application server. A packaged build loads bundled frontend assets and remains usable without a network connection. Optional external-provider features remain disabled until the user deliberately configures and starts them; the ordinary documentation, integrity, and finalization workflow is local.
 
 The webview is an untrusted presentation client. It may collect input, render state, and request a named operation. It does not receive unrestricted filesystem access, raw SQL access, or an arbitrary native-operation interface.
 
@@ -50,6 +50,7 @@ flowchart LR
     Services[Rust product services]
     DB[(Workspace SQLite index)]
     Tracks[Portable track folders]
+    Provider[Optional user-configured provider]
 
     User --> UI
     UI -->|invoke named operation| Commands
@@ -58,9 +59,10 @@ flowchart LR
     Services --> Tracks
     Source -->|copy, never move| Services
     Tracks -->|scan and recover| Services
+    Services -.->|explicit optional HTTPS request only| Provider
 ```
 
-There is no backend service, remote database, telemetry endpoint, cloud dependency, or runtime network edge.
+There is no backend service, remote database, telemetry endpoint, cloud dependency, or required runtime network edge. The only runtime network edges are optional and user-started: a configured external timestamp provider after finalization and an ACRCloud identification request in Step 09. Neither is contacted during startup, import, replacement, document/hash generation, verification, workflow evaluation, or finalization.
 
 ## Runtime responsibilities
 
@@ -74,6 +76,7 @@ There is no backend service, remote database, telemetry endpoint, cloud dependen
 | `EvidenceService` | Validate roles and file types, choose contained destinations, copy files, detect collisions, record explicit provenance and lineage, archive indexed-legacy removals, and trigger reevaluation | Delete the import source, silently overwrite a destination, or infer generated provenance from a role or filename |
 | `DocumentService` | Render versioned factual Markdown and text templates deterministically and write atomically | Invent legal conclusions or write managed content over an unmanaged file without consent and backup |
 | `ArtworkService` | Produce a local visible disclosure while preserving the AI original and documenting the process | Replace an original image or label project policy as a universal legal requirement |
+| `AudioScreeningService` | Run the bundled verified Chromaprint engine against authoritative release evidence; create bounded, explicit ACRCloud sample requests and portable technical records | Use a system executable, upload a Chromaprint fingerprint, retry or contact a provider in the background, expose credentials, or make a legal/rights conclusion |
 | `HashService` | Generate and verify SHA-256 records using native Rust code | Depend on a shell command for normal product behavior or hash excluded mutable areas |
 | `CertificateService` | Validate the finalization gate, produce certificate artifacts, expose stable anchors, durably stage/register/publish certificate-bound external-timestamp addenda, reverify current and archived published bytes, detect later mismatch, invalidate, archive, and revise | Assert authorship, timestamp qualification, legal compliance, evidentiary weight, or governmental certification; auto-adopt unregistered timestamp metadata |
 | `PersistenceService` | Own the SQLite connection, transactions, migrations, and index recovery | Accept raw SQL from TypeScript or make SQLite the only surviving track record |
@@ -90,12 +93,13 @@ The command surface is deliberately explicit. The exact Rust input and output st
 | Global evidence | `list_global_evidence`, `import_global_evidence`, `import_global_terms_evidence`, `update_global_terms_evidence_metadata`, `remove_global_evidence`, `attach_global_evidence` |
 | Documents | `generate_documents` |
 | Artwork | `generate_artwork_disclosure` |
+| Audio screening | `run_local_audio_screening`, `run_external_audio_screening`, `get_audio_screening_settings`, `update_audio_screening_settings`, `update_audio_screening_secret`, `test_audio_screening_provider` |
 | Integrity | `calculate_hashes`, `verify_hashes` |
 | Gate, addendum, and revision | `validate_track`, `finalize_track`, `attach_external_timestamp`, `invalidate_certificate`, `create_revision` |
 
 A command accepts domain identifiers and constrained values. It does not accept an operation name, arbitrary SQL, or an unconstrained write path. Path selection happens through a native dialog or a validated path already associated with the open workspace.
 
-Long-running `generate_documents`, `calculate_hashes`, `verify_hashes`, and `finalize_track` requests also receive one scoped Tauri IPC channel. Each command clones the path-based workspace service and dispatches its blocking filesystem work through Tauri's blocking runtime, outside the webview/main thread. The native service sends one-way `OperationProgress` values containing a named phase, byte and file counters, and an optional root-relative current file. Document progress advances as managed outputs are written. Integrity progress advances from bytes read through bounded native streams and covers both calculation and the mandatory immediate verification pass. Finalization progress covers native gate validation, certificate publication and verification, the final integrity reread, and authoritative snapshot persistence. Closing the receiving view does not turn a completed native operation into a failure, and the command's final typed result—not a progress message or UI percentage—remains authoritative.
+Long-running `generate_documents`, `calculate_hashes`, `verify_hashes`, `run_local_audio_screening`, `run_external_audio_screening`, and `finalize_track` requests also receive one scoped Tauri IPC channel. Each command clones the path-based workspace service and dispatches its blocking filesystem work through Tauri's blocking runtime, outside the webview/main thread. The native service sends one-way `OperationProgress` values containing a named phase, byte and file counters, and an optional root-relative current file. Audio-screening progress identifies local preparation/fingerprinting or the explicit bounded external request without disclosing secrets. Document progress advances as managed outputs are written. Integrity progress advances from bytes read through bounded native streams and covers both calculation and the mandatory immediate verification pass. Finalization progress covers native gate validation, certificate publication and verification, the final integrity reread, and authoritative snapshot persistence. Closing the receiving view does not turn a completed native operation into a failure, and the command's final typed result—not a progress message or UI percentage—remains authoritative.
 
 ## Service interaction
 
@@ -163,6 +167,8 @@ Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclo
 
 Finalization renders `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` locally in native Rust from the same frozen track/profile/step/evidence snapshot as the JSON manifest and Markdown certificate. The fixed root PDF is excluded from the earlier `SHA256SUMS.txt` set to avoid a cycle; its complete SHA-256 digest is instead the fourth required entry in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`. The certificate directory and root PDF share one marker-backed staging, verification, rollback, recovery, and revision lifecycle.
 
+The pre-release audio-screening service is local by default. Its bundled pinned Chromaprint runner is selected by application target and hash-checked before direct execution; it does not use the `PATH`, a user-selected executable, or a substitute hash-based algorithm. The resulting `03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json`, detached `LOCAL_FINGERPRINT.sha256`, and `AUDIO_SCREENING.md` are portable phase-one documentation and therefore flow through normal document freshness and SHA-256 integrity processing. ACRCloud is an optional, separate user-started HTTPS edge: secrets stay in workspace-local private configuration, the request uses only a bounded audio sample, and its structured result plus any safe provider response are archived as normal hash-covered documentation artifacts. It cannot block finalization or alter a finalized snapshot.
+
 Post-finalization timestamp attachment uses a separate two-authority transaction: create and verify immutable sidecar-v1 bytes in contained staging, synchronize the completed stage and parent, register the certificate-bound row in SQLite, then publish and synchronize the registered directory live. A compensating database rollback occurs only after live removal is parent-synchronized; otherwise the registration remains recoverable. Workspace recovery completes only matching registered pending state, discards unregistered staging, and rejects an unregistered live sidecar. Load verification requires the canonical immutable record bytes, rejects injected runtime/trust claims even with a renewed hash list, and hashes the published addendum bytes and pinned Markdown/PDF digests without invoking the current renderer; the mutable current integrity result exists only in the returned view model. Revision lookup requires `revision.json.previous_certificate.certificateId` to match the sidecar, keeping registered archived records visible and independently verifiable without folding them into the base certificate result.
 
 Evidence import is dispatched as blocking native work rather than running on the webview event loop. Copy and SHA-256 calculation share one bounded-buffer stream. Routine track loading performs metadata checks instead of repeatedly hashing evidence above 64 MiB; explicit verification and integrity/finalization remain full checks. Preview commands embed only bounded images or text, and treat project ZIPs as metadata-only. An explicit replacement preserves the evidence ID, archives the previous bytes, and coordinates the filesystem change with the SQLite update so an occupied `(track_id, relative_path)` never becomes a raw user-facing uniqueness error.
@@ -181,6 +187,7 @@ Track library placement is synchronized between the workspace index and physical
 | `REQ-ARC-004` | Workspace index loss does not make a complete track folder unintelligible. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 | `REQ-ARC-005` | Expected I/O, validation, and migration failures return controlled errors without a Rust panic. | [ATP-0011](../atp/active/ATP-0011-local-persistence-and-recovery.md) |
 | `REQ-ARC-006` | On every local filesystem explicitly claimed as supported, create-only and evidence-copy publication succeeds without replacing an occupied destination, deleting the source, or leaving a temporary file. | [ATP-0012](../atp/active/ATP-0012-filesystem-containment.md) |
+| `REQ-ARC-007` | Local screening uses only the verified bundled engine and explicit ACRCloud screening is bounded, credential-safe, and non-blocking. | [ATP-0017](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Verification
 
@@ -191,7 +198,8 @@ python tools/control.py doctor
 python tools/control.py tauri doctor
 python tools/control.py test --suite tauri
 python tools/control.py test --suite frontend
-rg -n "FastAPI|postgres|http://|https://|execute_sql|execute_file_operation" frontend src-tauri project-profile.toml
+rg -n "FastAPI|postgres|execute_sql|execute_file_operation" frontend src-tauri project-profile.toml
+rg -n "COPYRIGHT[_]SAFE|INFRINGEMENT[_]FREE|LEGAL[_]SAFE" frontend src-tauri docs workflows
 ```
 
 Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containment.md) and [ATP-0013](../atp/active/ATP-0013-end-to-end-offline-workflow.md) against an identified build.
@@ -201,7 +209,8 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 - A desktop process still handles untrusted filenames and large media; containment, size handling, and controlled errors require native tests.
 - Path checks are not descriptor-relative across the complete operation; a hostile same-user concurrent writer can attempt a symbolic-link swap after validation. Such shared writable workspaces are outside the version 0.1 threat model and remain an open ATP item.
 - A portable folder can be edited outside the application. Integrity verification detects changes but cannot prevent them.
-- Development dependency installation can require internet access even though normal product runtime use does not.
+- Development dependency installation can require internet access. Normal product runtime use does not require a connection; a deliberate external timestamp or ACRCloud request does.
+- External screening depends on a user-configured third party and a packaged target-specific engine. Provider unavailability, configuration errors, unsupported formats, and unavailable target runners remain non-positive technical results.
 - The current removable-media compatibility result is limited to the identified Linux/exFAT fixture; other operating systems and filesystems retain their own acceptance obligation.
 - The certificate is a workflow artifact, not a legal or identity credential.
 
@@ -211,6 +220,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 - [Track library organization model](track-library-model.md)
 - [Persistence and recovery](persistence.md)
 - [Workflow model](workflow-model.md)
+- [Pre-release audio screening](pre-release-audio-screening.md)
 - [Legacy track import](../dev/legacy-track-import.md)
 - [Finalizing a track](../usr/finalizing-a-track.md)
 - [Framework architecture inherited from the template](architecture.md)
@@ -219,6 +229,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-18 | Added the local Chromaprint and explicit optional ACRCloud screening boundary, provider network edge, portability/integrity rules, and ATP-0017 mapping. | Project team |
 | 2026-08-17 | Added the sidecar-v1 database-before-live publication, recovery, immutable-byte verification, and archived-sidecar architecture. | Project team |
 | 2026-08-17 | Added the typed Terms-metadata update and post-finalization external-timestamp command boundaries, including the prohibition on legal qualification claims. | Project team |
 | 2026-08-15 | Extended native progress and blocking-runtime dispatch through certificate finalization. | Project team |

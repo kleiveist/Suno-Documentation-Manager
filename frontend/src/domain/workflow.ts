@@ -21,7 +21,7 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.7";
+export const WORKFLOW_VERSION = "1.8";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
@@ -51,6 +51,20 @@ const hasText = (value: string): boolean => value.trim().length > 0;
 const hasSelections = (value: readonly string[]): boolean => value.some((item) => item.trim().length > 0);
 const hasEvidence = (evidence: EvidenceItem[], role: EvidenceRole): boolean =>
   evidence.some((item) => item.role === role && item.verified && Boolean(item.sha256) && !item.verificationError);
+const releaseEvidence = (evidence: EvidenceItem[]): EvidenceItem | undefined =>
+  evidence.find((item) => item.role === "release_wav" && item.verified && Boolean(item.sha256) && !item.verificationError);
+const hasCurrentLocalAudioScreening = (track: Pick<TrackDetail, "evidence" | "audioScreening">): boolean => {
+  const source = releaseEvidence(track.evidence);
+  const local = track.audioScreening?.local;
+  return local?.status === "fingerprint_generated"
+    && Boolean(source)
+    && local.sourceEvidenceId === source!.id
+    && local.sourceRelativePath === source!.relativePath
+    && local.sourceSha256 === source!.sha256
+    && local.sourceSizeBytes === source!.sizeBytes
+    && Boolean(local.artifactRelativePath?.trim())
+    && /^[a-f\d]{64}$/iu.test(local.artifactSha256 ?? "");
+};
 const documentationAnswerProvided = (value: TrackFields["aiAssistedAudioElements"]): boolean => value !== null;
 const originalFileName = (evidence: EvidenceItem[], role: EvidenceRole): string =>
   evidence.find((item) => item.role === role && item.verified && Boolean(item.sha256) && !item.verificationError)
@@ -247,7 +261,7 @@ export function contentCheckAllNegative(fields: TrackFields): boolean {
 }
 
 export function evaluateRequirements(
-  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations" | "automation">,
+  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations" | "automation" | "audioScreening">,
   profile: GlobalProfile
 ): RequirementEvaluation[] {
   const { fields, evidence, documents, integrity } = track;
@@ -398,6 +412,12 @@ export function evaluateRequirements(
   add("export-date", "release", "Datum der letzten Bearbeitung", hasText(fields.finalExportDate));
   add("release-wav", "release", "Finale Release-Audiodatei", hasEvidence(evidence, "release_wav"), "release_wav");
   add("release-filename", "release", "Release-Dateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "release_wav", fields.title, fields.releaseFilenameDifferenceConfirmed), "release_wav");
+  add(
+    "local-audio-screening",
+    "release",
+    "Lokaler Chromaprint-Fingerprint für die aktuelle finale Release-Audiodatei",
+    hasCurrentLocalAudioScreening(track)
+  );
   if (fields.commercialUseIntended) {
     add("subscription-evidence", "evidence_licenses", "Abo-/Zahlungsnachweis für den Produktionszeitraum", hasCoveringSubscriptionEvidence(evidence, fields), "subscription_payment");
     add("subscription-generation-coverage", "evidence_licenses", "Abo-Nachweis deckt das Datum der finalen Generation ab", subscriptionGenerationCoverageStatus(evidence, fields) === "YES", "subscription_payment");
@@ -437,7 +457,7 @@ export function evaluateRequirements(
 }
 
 export function calculateMissingRequirements(
-  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations" | "automation">,
+  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "blockingDeviations" | "automation" | "audioScreening">,
   profile: GlobalProfile
 ): MissingRequirement[] {
   return evaluateRequirements(track, profile).filter((item) => !item.completed).map(({ completed: _completed, ...item }) => item);
@@ -467,7 +487,7 @@ export function calculateProgress(
 }
 
 export function finalizationGate(
-  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "steps" | "blockingDeviations" | "automation">,
+  track: Pick<TrackDetail, "fields" | "evidence" | "documents" | "integrity" | "steps" | "blockingDeviations" | "automation" | "audioScreening">,
   profile: GlobalProfile
 ): ValidationResult {
   const missing = calculateMissingRequirements(track, profile);

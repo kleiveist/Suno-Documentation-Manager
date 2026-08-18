@@ -28,6 +28,17 @@ async function configureFreeTsa(api: ReturnType<typeof createDemoApi>, autoAfter
   }));
 }
 
+async function configureDemoAcrCloud(api: ReturnType<typeof createDemoApi>) {
+  const settings = await settle(api.getAudioScreeningSettings());
+  await settle(api.updateAudioScreeningSettings({
+    ...settings,
+    enabled: true,
+    host: "identify-eu-west-1.acrcloud.com",
+    timeoutSeconds: 30
+  }));
+  await settle(api.updateAudioScreeningSecret({ accessKey: "demo-key", accessSecret: "demo-secret" }));
+}
+
 afterEach(() => vi.useRealTimers());
 
 describe("demo track library", () => {
@@ -132,6 +143,57 @@ describe("demo track library", () => {
     const rejected = expect(update).rejects.toThrow("Albumtitel");
     await vi.runAllTimersAsync();
     await rejected;
+  });
+});
+
+describe("demo pre-release audio screening", () => {
+  it("keeps the external provider disabled by default and exposes no credentials", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+
+    const settings = await settle(api.getAudioScreeningSettings());
+    const track = await settle(api.loadTrack("gravity"));
+
+    expect(settings).toEqual(expect.objectContaining({
+      enabled: false,
+      credentialsConfigured: false,
+      status: "disabled"
+    }));
+    expect(track.audioScreening.external).toEqual(expect.objectContaining({
+      provider: "ACRCloud",
+      status: "skipped_not_configured",
+      matches: []
+    }));
+  });
+
+  it("labels local demo presentation and never fabricates an external provider match", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await configureDemoAcrCloud(api);
+
+    const result = await settle(api.runExternalAudioScreening("gravity"));
+    const external = result.track!.audioScreening.external;
+
+    expect(external.status).toBe("provider_unavailable");
+    expect(external.matches).toEqual([]);
+    expect(external.message).toContain("Browser demo");
+  });
+
+  it("marks a previously current local screening stale when the release evidence changes", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const before = await settle(api.loadTrack("gravity"));
+    const release = before.evidence.find((item) => item.role === "release_wav")!;
+
+    const changed = await settle(api.importEvidence("gravity", "release_wav", release.id));
+
+    expect(changed!.audioScreening.local.status).toBe("stale");
+    expect(changed!.audioScreening.local.message).toContain("changed");
+    expect(changed!.audioScreening.external.status).toBe("stale");
+    expect(changed!.audioScreening.external.message).toContain("changed");
   });
 });
 

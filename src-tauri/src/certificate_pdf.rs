@@ -1,9 +1,10 @@
 use crate::certificate::{localized_certificate_label, localized_certificate_paragraph};
 use crate::error::{AppError, Result};
 use crate::model::{
-    BlockingDeviation, CertificateRenderOptions, DocumentationAnswer, EvidenceItem, EvidenceRole,
-    ExternalTimestampStatus, FactOrigin, Profile, StepState, StepStatus, SunoLyricsContentSource,
-    SunoLyricsContentType, TimestampProviderMetadata, TrackAutomation, TrackFields, TrackRecord,
+    AudioScreeningStatus, BlockingDeviation, CertificateRenderOptions, DocumentationAnswer,
+    EvidenceItem, EvidenceRole, ExternalTimestampStatus, FactOrigin, Profile, StepState,
+    StepStatus, SunoLyricsContentSource, SunoLyricsContentType, TimestampProviderMetadata,
+    TrackAutomation, TrackFields, TrackRecord,
 };
 use crate::workflow;
 use printpdf::{
@@ -588,6 +589,7 @@ pub fn generate_pdf(snapshot: &CertificatePdfSnapshot<'_>) -> Result<Vec<u8>> {
     render_evidence_register(&mut layout, snapshot.evidence);
     render_integrity_anchors(&mut layout, snapshot);
     render_workflow(&mut layout, snapshot.steps, &step_labels);
+    render_audio_screening(&mut layout, snapshot);
     render_certificate_statement(&mut layout, snapshot);
 
     let pages = layout.into_pages(snapshot.certificate_id);
@@ -1954,6 +1956,197 @@ fn render_workflow(layout: &mut PdfLayout, steps: &[StepState], labels: &HashMap
     }
 }
 
+/// K.2 is deliberately a compact factual rendering of the state frozen for
+/// this certificate. It never prints the raw Chromaprint fingerprint, raw
+/// provider response, request signature, or credentials.
+fn render_audio_screening(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'_>) {
+    layout.section_title("K.2 Pre-release audio screening");
+    let local = &snapshot.track.audio_screening.local;
+    let external = &snapshot.track.audio_screening.external;
+    let rows = vec![
+        TableRow::plain(
+            "Local screening status [System verification]",
+            audio_screening_status_label(local.status),
+        ),
+        TableRow::plain(
+            "Local engine [System verification]",
+            documented(&local.engine),
+        ),
+        TableRow::plain(
+            "Local engine version [System verification]",
+            documented(&local.engine_version),
+        ),
+        TableRow::plain(
+            "Fingerprint algorithm [System verification]",
+            documented(&local.fingerprint_algorithm),
+        ),
+        TableRow::mono(
+            "Local source Evidence ID [System verification]",
+            documented(&local.source_evidence_id),
+        ),
+        TableRow::mono(
+            "Local source path [System verification]",
+            documented(&local.source_relative_path),
+        ),
+        TableRow::mono(
+            "Local source SHA-256 [System verification]",
+            documented(&local.source_sha256),
+        ),
+        TableRow::plain(
+            "Local source size (bytes) [System verification]",
+            local.source_size_bytes.to_string(),
+        ),
+        TableRow::plain(
+            "Local measured duration (ms) [System verification]",
+            milliseconds_label(local.duration_milliseconds),
+        ),
+        TableRow::mono(
+            "Local record path [System verification]",
+            documented(&local.artifact_relative_path),
+        ),
+        TableRow::mono(
+            "Local record SHA-256 [System verification]",
+            documented(&local.artifact_sha256),
+        ),
+        TableRow::plain(
+            "Local generated at [System value]",
+            external_or_missing(local.generated_at.as_deref()),
+        ),
+        TableRow::plain(
+            "External screening provider [System value]",
+            documented(&external.provider),
+        ),
+        TableRow::plain(
+            "External screening status [System verification]",
+            audio_screening_status_label(external.status),
+        ),
+        TableRow::plain(
+            "External provider configured at snapshot [System value]",
+            yes_no(external.configured_at_snapshot),
+        ),
+        TableRow::mono(
+            "External source Evidence ID [System verification]",
+            documented(&external.source_evidence_id),
+        ),
+        TableRow::mono(
+            "External source path [System verification]",
+            documented(&external.source_relative_path),
+        ),
+        TableRow::mono(
+            "External source SHA-256 [System verification]",
+            documented(&external.source_sha256),
+        ),
+        TableRow::plain(
+            "External checked at [System value]",
+            external_or_missing(external.checked_at.as_deref()),
+        ),
+        TableRow::plain(
+            "External sample offset (ms) [System value]",
+            milliseconds_label(external.sample_offset_milliseconds),
+        ),
+        TableRow::plain(
+            "External sample duration (ms) [System value]",
+            milliseconds_label(external.sample_duration_milliseconds),
+        ),
+        TableRow::plain(
+            "External source duration (ms) [System value]",
+            milliseconds_label(external.source_duration_milliseconds),
+        ),
+        TableRow::plain(
+            "External request count [System value]",
+            external.request_count.to_string(),
+        ),
+        TableRow::mono(
+            "External response archive [System verification]",
+            external_or_missing(external.response_relative_path.as_deref()),
+        ),
+        TableRow::mono(
+            "External response SHA-256 [System verification]",
+            external_or_missing(external.response_sha256.as_deref()),
+        ),
+    ];
+    layout.table_rows(&rows, 78.0);
+
+    if external.matches.is_empty() {
+        layout.table_row(
+            &TableRow::plain(
+                "Provider matches [Provider-derived metadata]",
+                "NONE RECORDED",
+            ),
+            78.0,
+        );
+    } else {
+        for (index, item) in external.matches.iter().take(5).enumerate() {
+            layout.table_row(
+                &TableRow::plain(
+                    format!("Provider match {} [Provider-derived metadata]", index + 1),
+                    audio_screening_match_value(item),
+                ),
+                78.0,
+            );
+        }
+    }
+    layout.write_localized(
+        "Audio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion.",
+        LEFT_MM,
+        RIGHT_MM - LEFT_MM,
+        7.2,
+        BuiltinFont::Helvetica,
+        1.3,
+    );
+}
+
+fn audio_screening_match_value(item: &crate::model::AudioScreeningMatch) -> String {
+    let artists = if item.artists.is_empty() {
+        "NOT DOCUMENTED".to_owned()
+    } else {
+        item.artists.join(", ")
+    };
+    let mut value = format!("{} — {artists}", documented(&item.title));
+    if let Some(album) = nonempty(item.album.as_deref()) {
+        value.push_str(&format!("; album {album}"));
+    }
+    if let Some(isrc) = nonempty(item.isrc.as_deref()) {
+        value.push_str(&format!("; ISRC {isrc}"));
+    }
+    if let Some(acrid) = nonempty(item.acrid.as_deref()) {
+        value.push_str(&format!("; ACRID {acrid}"));
+    }
+    if let Some(score) = item.score {
+        value.push_str(&format!("; score {score}"));
+    }
+    value
+}
+
+fn milliseconds_label(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "NOT DOCUMENTED".into())
+}
+
+fn external_or_missing(value: Option<&str>) -> &str {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("NOT RECORDED")
+}
+
+fn audio_screening_status_label(status: AudioScreeningStatus) -> &'static str {
+    match status {
+        AudioScreeningStatus::NotRun => "NOT RUN",
+        AudioScreeningStatus::FingerprintGenerated => "FINGERPRINT GENERATED",
+        AudioScreeningStatus::NoMatchDetected => "NO MATCH DETECTED",
+        AudioScreeningStatus::MatchDetected => "MATCH DETECTED",
+        AudioScreeningStatus::SkippedNotConfigured => "SKIPPED NOT CONFIGURED",
+        AudioScreeningStatus::ProviderUnavailable => "PROVIDER UNAVAILABLE",
+        AudioScreeningStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        AudioScreeningStatus::ConfigurationInvalid => "CONFIGURATION INVALID",
+        AudioScreeningStatus::EngineUnavailable => "ENGINE UNAVAILABLE",
+        AudioScreeningStatus::UnsupportedFormat => "UNSUPPORTED FORMAT",
+        AudioScreeningStatus::ProcessingFailed => "PROCESSING FAILED",
+        AudioScreeningStatus::Stale => "STALE",
+    }
+}
+
 fn render_evidence_register(layout: &mut PdfLayout, evidence: &[&EvidenceItem]) {
     layout.section_title("J. Evidence register");
     render_evidence_column_heading(layout);
@@ -3010,6 +3203,7 @@ mod tests {
                 library: TrackLibraryPlacement::default(),
                 field_origins: Default::default(),
                 fields,
+                audio_screening: Default::default(),
                 documents: DocumentState::default(),
                 integrity: IntegrityState::default(),
                 certificate: CertificateState::default(),
@@ -3062,7 +3256,7 @@ mod tests {
                 revision_references: &self.revision_references,
                 certificate_id: CERTIFICATE_ID,
                 finalized_at: "2026-01-04T12:34:56Z",
-                certificate_version: "5.0",
+                certificate_version: crate::certificate::CERTIFICATE_FORMAT_VERSION,
                 sha256sums_sha256: DIGEST_A,
                 evidence_manifest_sha256: DIGEST_B,
                 markdown_certificate_sha256: DIGEST_C,
@@ -3173,6 +3367,66 @@ mod tests {
         assert!(bilingual_normalized.contains(
             "ID der finalen Erzeugung [Vom Nutzer bestätigte Angabe] / Final generation ID [User-confirmed fact]"
         ));
+    }
+
+    #[test]
+    fn renders_localized_audio_screening_without_raw_values() {
+        let mut german = Fixture::new(1);
+        german.track.audio_screening.local.status = AudioScreeningStatus::FingerprintGenerated;
+        german.track.audio_screening.local.fingerprint = "RAW_FINGERPRINT_MUST_NOT_RENDER".into();
+        german.track.audio_screening.local.message = "LOCAL_MESSAGE_MUST_NOT_RENDER".into();
+        german.track.audio_screening.local.artifact_relative_path =
+            "03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json".into();
+        german.track.audio_screening.local.artifact_sha256 = DIGEST_A.into();
+        german.track.audio_screening.external.status = AudioScreeningStatus::MatchDetected;
+        german.track.audio_screening.external.configured_at_snapshot = Some(false);
+        german.track.audio_screening.external.message = "EXTERNAL_MESSAGE_MUST_NOT_RENDER".into();
+        german
+            .track
+            .audio_screening
+            .external
+            .matches
+            .extend((0..6).map(|index| crate::model::AudioScreeningMatch {
+                title: format!("Provider title {index}"),
+                artists: vec![format!("Provider artist {index}")],
+                ..Default::default()
+            }));
+        german.render_options = CertificateRenderOptions {
+            language: crate::model::CertificateLanguage::De,
+            bilingual: false,
+        };
+
+        let (_, german_text) = parse_text(&german.generate());
+        assert!(german_text.contains("K.2 Audio-Screening vor Veröffentlichung"));
+        assert!(german_text.contains("Status des lokalen Screenings"));
+        assert!(german_text.contains("Provider title 0"));
+        assert!(german_text.contains("Provider title 4"));
+        assert!(!german_text.contains("Provider title 5"));
+        assert!(german_text.contains(
+            "Audio-Screening-Ergebnisse sind ausschließlich technische Vergleichsdatensätze."
+        ));
+        for forbidden in [
+            "RAW_FINGERPRINT_MUST_NOT_RENDER",
+            "LOCAL_MESSAGE_MUST_NOT_RENDER",
+            "EXTERNAL_MESSAGE_MUST_NOT_RENDER",
+        ] {
+            assert!(!german_text.contains(forbidden), "PDF leaked {forbidden}");
+        }
+
+        german.render_options = CertificateRenderOptions {
+            language: crate::model::CertificateLanguage::De,
+            bilingual: true,
+        };
+        let (_, bilingual_text) = parse_text(&german.generate());
+        let bilingual_normalized = normalized_text(&bilingual_text);
+        assert!(bilingual_normalized.contains(
+            "K.2 Audio-Screening vor Veröffentlichung / K.2 Pre-release audio screening"
+        ));
+        assert!(bilingual_normalized.contains(
+            "Audio-Screening-Ergebnisse sind ausschließlich technische Vergleichsdatensätze."
+        ));
+        assert!(bilingual_normalized
+            .contains("Audio-screening results are technical comparison records only."));
     }
 
     #[test]

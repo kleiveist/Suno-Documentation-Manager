@@ -466,7 +466,7 @@ impl Default for TimestampSettings {
 /// Write-only input for a Custom RFC 3161 secret. It intentionally does not
 /// implement `Serialize`, which prevents accidental inclusion in returned DTOs
 /// or normal JSON persistence.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimestampSecretInput {
     pub secret: Option<String>,
@@ -480,6 +480,341 @@ pub struct TimestampProviderTestResult {
     pub message: String,
     pub tested_at: String,
     pub capabilities: TimestampProviderCapabilities,
+}
+
+/// Technical outcome of a pre-release audio screening operation. These states
+/// intentionally describe only fingerprinting or a provider response; they do
+/// not make a copyright, licence, originality, or legal-safety determination.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioScreeningStatus {
+    #[default]
+    NotRun,
+    FingerprintGenerated,
+    NoMatchDetected,
+    MatchDetected,
+    SkippedNotConfigured,
+    ProviderUnavailable,
+    AuthenticationFailed,
+    ConfigurationInvalid,
+    EngineUnavailable,
+    UnsupportedFormat,
+    ProcessingFailed,
+    Stale,
+}
+
+/// Configuration health for the optional ACRCloud provider. It is deliberately
+/// separate from `AudioScreeningStatus`: a provider configuration is not a
+/// per-track screening result.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioScreeningProviderStatus {
+    #[default]
+    Disabled,
+    NotConfigured,
+    Ready,
+    AuthenticationFailed,
+    ProviderUnavailable,
+    ConfigurationInvalid,
+}
+
+/// Non-secret global ACRCloud configuration. Credentials are write-only and
+/// stored outside SQLite so they cannot be copied to profiles, tracks,
+/// manifests, certificates, revisions, or public DTOs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioScreeningSettings {
+    pub enabled: bool,
+    pub host: String,
+    pub timeout_seconds: u32,
+    pub status: AudioScreeningProviderStatus,
+    pub status_message: String,
+    pub credentials_configured: bool,
+    pub local_engine_available: bool,
+    pub local_engine_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<String>,
+}
+
+impl Default for AudioScreeningSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            timeout_seconds: 30,
+            status: AudioScreeningProviderStatus::Disabled,
+            status_message: "External ACRCloud screening is disabled.".into(),
+            credentials_configured: false,
+            local_engine_available: false,
+            local_engine_version: String::new(),
+            last_tested_at: None,
+        }
+    }
+}
+
+/// Write-only input for ACRCloud credentials. This deliberately does not
+/// implement `Serialize`, preventing accidental return or normal persistence.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioScreeningSecretInput {
+    pub access_key: Option<String>,
+    pub access_secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioScreeningProviderTestResult {
+    pub status: AudioScreeningProviderStatus,
+    pub message: String,
+    pub tested_at: String,
+}
+
+/// A factual match summary copied from an ACRCloud response. Every optional
+/// field remains absent when the provider did not supply it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioScreeningMatch {
+    pub title: String,
+    pub artists: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acrid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+}
+
+/// Durable state for the local Chromaprint run. The fingerprint itself is
+/// retained only in the portable JSON artifact and persisted track state; it
+/// is deliberately omitted from certificates and public track summaries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioScreeningLocalRecord {
+    pub schema_version: u32,
+    pub status: AudioScreeningStatus,
+    pub message: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub fingerprint_algorithm: String,
+    pub track_id: String,
+    pub source_evidence_id: String,
+    pub source_relative_path: String,
+    pub source_sha256: String,
+    pub source_size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_milliseconds: Option<u64>,
+    pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    pub artifact_relative_path: String,
+    pub artifact_sha256: String,
+}
+
+impl Default for AudioScreeningLocalRecord {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            status: AudioScreeningStatus::NotRun,
+            message: "No local Chromaprint fingerprint has been generated yet.".into(),
+            engine: "chromaprint".into(),
+            engine_version: String::new(),
+            fingerprint_algorithm: "2".into(),
+            track_id: String::new(),
+            source_evidence_id: String::new(),
+            source_relative_path: String::new(),
+            source_sha256: String::new(),
+            source_size_bytes: 0,
+            duration_milliseconds: None,
+            fingerprint: String::new(),
+            generated_at: None,
+            artifact_relative_path: String::new(),
+            artifact_sha256: String::new(),
+        }
+    }
+}
+
+/// Durable state for an explicitly user-triggered ACRCloud request. No
+/// credential, request signature, or request header is ever recorded here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioScreeningExternalRecord {
+    pub schema_version: u32,
+    pub provider: String,
+    pub status: AudioScreeningStatus,
+    pub message: String,
+    pub track_id: String,
+    pub source_evidence_id: String,
+    pub source_relative_path: String,
+    pub source_sha256: String,
+    pub source_size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_offset_milliseconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_duration_milliseconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_duration_milliseconds: Option<u64>,
+    pub request_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_relative_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_sha256: Option<String>,
+    pub matches: Vec<AudioScreeningMatch>,
+    /// Frozen only at finalization, so historical certificates can truthfully
+    /// explain why the optional provider was not used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configured_at_snapshot: Option<bool>,
+}
+
+impl Default for AudioScreeningExternalRecord {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            provider: "ACRCloud".into(),
+            status: AudioScreeningStatus::NotRun,
+            message: "No external catalog screening has been run.".into(),
+            track_id: String::new(),
+            source_evidence_id: String::new(),
+            source_relative_path: String::new(),
+            source_sha256: String::new(),
+            source_size_bytes: 0,
+            checked_at: None,
+            sample_offset_milliseconds: None,
+            sample_duration_milliseconds: None,
+            source_duration_milliseconds: None,
+            request_count: 0,
+            response_relative_path: None,
+            response_sha256: None,
+            matches: Vec::new(),
+            configured_at_snapshot: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioScreeningState {
+    pub local: AudioScreeningLocalRecord,
+    pub external: AudioScreeningExternalRecord,
+}
+
+/// Browser-safe view of a local record. The full acoustic fingerprint remains
+/// only in the internal track state and `LOCAL_FINGERPRINT.json`; it is not
+/// needed to render workflow status and must not cross the Tauri IPC boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioScreeningLocalSummary {
+    pub status: AudioScreeningStatus,
+    pub message: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub fingerprint_algorithm: String,
+    pub source_evidence_id: String,
+    pub source_relative_path: String,
+    pub source_sha256: String,
+    pub source_size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_milliseconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    pub artifact_relative_path: String,
+    pub artifact_sha256: String,
+}
+
+impl From<&AudioScreeningLocalRecord> for AudioScreeningLocalSummary {
+    fn from(record: &AudioScreeningLocalRecord) -> Self {
+        Self {
+            status: record.status,
+            message: record.message.clone(),
+            engine: record.engine.clone(),
+            engine_version: record.engine_version.clone(),
+            fingerprint_algorithm: record.fingerprint_algorithm.clone(),
+            source_evidence_id: record.source_evidence_id.clone(),
+            source_relative_path: record.source_relative_path.clone(),
+            source_sha256: record.source_sha256.clone(),
+            source_size_bytes: record.source_size_bytes,
+            duration_milliseconds: record.duration_milliseconds,
+            generated_at: record.generated_at.clone(),
+            artifact_relative_path: record.artifact_relative_path.clone(),
+            artifact_sha256: record.artifact_sha256.clone(),
+        }
+    }
+}
+
+/// Browser-safe view of the factual external provider result. The raw response
+/// stays in the portable artifact; request credentials and signatures are not
+/// represented by either record type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioScreeningExternalSummary {
+    pub provider: String,
+    pub status: AudioScreeningStatus,
+    pub message: String,
+    pub source_evidence_id: String,
+    pub source_relative_path: String,
+    pub source_sha256: String,
+    pub source_size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_offset_milliseconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_duration_milliseconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_duration_milliseconds: Option<u64>,
+    pub request_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_relative_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_sha256: Option<String>,
+    pub matches: Vec<AudioScreeningMatch>,
+}
+
+impl From<&AudioScreeningExternalRecord> for AudioScreeningExternalSummary {
+    fn from(record: &AudioScreeningExternalRecord) -> Self {
+        Self {
+            provider: record.provider.clone(),
+            status: record.status,
+            message: record.message.clone(),
+            source_evidence_id: record.source_evidence_id.clone(),
+            source_relative_path: record.source_relative_path.clone(),
+            source_sha256: record.source_sha256.clone(),
+            source_size_bytes: record.source_size_bytes,
+            checked_at: record.checked_at.clone(),
+            sample_offset_milliseconds: record.sample_offset_milliseconds,
+            sample_duration_milliseconds: record.sample_duration_milliseconds,
+            source_duration_milliseconds: record.source_duration_milliseconds,
+            request_count: record.request_count,
+            response_relative_path: record.response_relative_path.clone(),
+            response_sha256: record.response_sha256.clone(),
+            matches: record.matches.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioScreeningSummary {
+    pub local: AudioScreeningLocalSummary,
+    pub external: AudioScreeningExternalSummary,
+}
+
+impl From<&AudioScreeningState> for AudioScreeningSummary {
+    fn from(state: &AudioScreeningState) -> Self {
+        Self {
+            local: AudioScreeningLocalSummary::from(&state.local),
+            external: AudioScreeningExternalSummary::from(&state.external),
+        }
+    }
+}
+
+impl Default for AudioScreeningSummary {
+    fn default() -> Self {
+        Self::from(&AudioScreeningState::default())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1350,6 +1685,11 @@ pub struct TrackRecord {
     #[serde(default)]
     pub field_origins: TrackFieldOrigins,
     pub fields: TrackFields,
+    /// Pre-release audio screening is mutable only while a track is editable.
+    /// Older stored tracks deserialize to the neutral default without a
+    /// backfill, preserving finalized snapshots byte-for-byte.
+    #[serde(default)]
+    pub audio_screening: AudioScreeningState,
     pub documents: DocumentState,
     pub integrity: IntegrityState,
     pub certificate: CertificateState,
@@ -1399,6 +1739,10 @@ pub struct TrackDetail {
     pub fields: TrackFields,
     pub steps: Vec<StepState>,
     pub evidence: Vec<EvidenceItem>,
+    /// Public summary intentionally includes neither the full Chromaprint
+    /// fingerprint nor raw provider response bytes or credentials.
+    #[serde(default)]
+    pub audio_screening: AudioScreeningSummary,
     #[serde(default)]
     pub external_timestamps: Vec<ExternalTimestampRecord>,
     #[serde(default)]
@@ -1704,6 +2048,22 @@ mod tests {
             EvidenceRole::ExternalTimestamp.destination(),
             "03_DOCUMENTATION"
         );
+    }
+
+    #[test]
+    fn public_audio_screening_summary_omits_fingerprint_and_internal_track_ids() {
+        let mut state = AudioScreeningState::default();
+        state.local.fingerprint = "RAW_CHROMAPRINT_MUST_NOT_REACH_WEBVIEW".into();
+        state.local.track_id = "INTERNAL_LOCAL_TRACK_ID".into();
+        state.external.track_id = "INTERNAL_EXTERNAL_TRACK_ID".into();
+        state.external.message = "Technical result only.".into();
+
+        let public = serde_json::to_string(&AudioScreeningSummary::from(&state))
+            .expect("serialize public audio-screening summary");
+        assert!(!public.contains("RAW_CHROMAPRINT_MUST_NOT_REACH_WEBVIEW"));
+        assert!(!public.contains("INTERNAL_LOCAL_TRACK_ID"));
+        assert!(!public.contains("INTERNAL_EXTERNAL_TRACK_ID"));
+        assert!(public.contains("Technical result only."));
     }
 
     #[test]

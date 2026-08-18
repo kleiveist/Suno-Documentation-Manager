@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.7"
+version = "1.8"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -58,7 +58,7 @@ order = 7
 name = "07 Release"
 required = true
 when = "always"
-description = "Final release audio, selected release notes, and the documented last-editing decision."
+description = "Final release audio, local Chromaprint fingerprinting, selected release notes, and the documented last-editing decision."
 
 [[steps]]
 id = "evidence_licenses"
@@ -678,6 +678,14 @@ kind = "field"
 required = true
 when = "always"
 missing_message = "Der tatsächliche Release-Dateiname fehlt, stimmt nicht mit dem dokumentierten Titel überein oder die Abweichung wurde nicht ausdrücklich bestätigt."
+
+[[requirements]]
+key = "release.audio_screening_local"
+step_id = "release"
+kind = "audio_screening"
+required = true
+when = "always"
+missing_message = "Der lokale Chromaprint-Fingerprint für das autoritative Release-Audio fehlt, ist veraltet oder ist nicht an dessen SHA-256 gebunden."
 
 [[requirements]]
 key = "evidence_licenses.portable_copy"

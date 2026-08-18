@@ -26,6 +26,7 @@
 - 📝 [ATP-0014: Track library album and single organization](active/ATP-0014-track-library-organization.md)
 - 📝 [ATP-0015: Technical evidence certificate 4.1](active/ATP-0015-technical-evidence-certificate.md)
 - 📝 [ATP-0016: Evidence and certificate workflow 5.0 release candidate](active/ATP-0016-evidence-certificate-workflow-5.md)
+- 📝 [ATP-0017: Pre-release audio screening](active/ATP-0017-pre-release-audio-screening.md)
 
 ## 📁 Completed
 - 🗂️ [Overview](completed/completed.md)

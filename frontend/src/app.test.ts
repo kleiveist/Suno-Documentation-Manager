@@ -7,6 +7,7 @@ import {
   canonicalGuidedChoiceValue,
   canCreateTrackRevision,
   documentationAnswerLabel,
+  externalAudioScreeningIsCurrent,
   externalTimestampSummaryFor,
   externalTimestampIntegrityPresentation,
   externalTimestampMatchLabel,
@@ -17,6 +18,7 @@ import {
   isAutomaticDateReadonly,
   isTrackContentLocked,
   legacySunoPlanNoticeMarkup,
+  localAudioScreeningIsCurrent,
   missingProfileFields,
   normalizeGuidedTrackFields,
   operationProgressPercent,
@@ -30,6 +32,8 @@ import {
   timestampArtifactLabel,
   timestampProviderIsReady,
   timestampProviderStatusLabel,
+  visibleExternalAudioScreening,
+  visibleLocalAudioScreening,
   externalTimestampStatusLabel,
   serializeMultiChoiceValue,
   trackSummaryFromDetail,
@@ -40,7 +44,7 @@ import {
   workflowUpgradePresentation
 } from "./app";
 import { evidenceRoleFileTypes, WORKFLOW_STEPS } from "./domain/workflow";
-import { emptyEvidenceMetadata, emptyProfile, emptyTimestampSettings, emptyTrackAutomation, emptyTrackFields, type TrackDetail } from "./domain/types";
+import { emptyAudioScreeningSettings, emptyAudioScreeningSummary, emptyEvidenceMetadata, emptyProfile, emptyTimestampSettings, emptyTrackAutomation, emptyTrackFields, type EvidenceItem, type TrackDetail } from "./domain/types";
 import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
 
 describe("theme", () => {
@@ -195,6 +199,81 @@ describe("navigation", () => {
     })).toBe(false);
   });
 
+  it("presents an unrequested ACRCloud check as skipped when global credentials are absent", () => {
+    const external = { status: "not_run" as const, message: "No external catalog screening has been run." };
+    expect(visibleExternalAudioScreening(external, emptyAudioScreeningSettings)).toEqual({
+      status: "skipped_not_configured",
+      message: "ACRCloud ist nicht aktiviert; es wurde keine externe Katalogprüfung gestartet."
+    });
+    expect(visibleExternalAudioScreening(external, { status: "not_configured" })).toEqual({
+      status: "skipped_not_configured",
+      message: "ACRCloud-Zugangsdaten fehlen; es wurde keine externe Katalogprüfung gestartet."
+    });
+    expect(visibleExternalAudioScreening(external, { status: "ready" })).toEqual(external);
+  });
+
+  it("never presents a renamed release file as covered by its earlier local fingerprint", () => {
+    const release = {
+      id: "release-1",
+      role: "release_wav",
+      fileName: "current-release.wav",
+      relativePath: "01_RELEASE/current-release.wav",
+      sha256: "a".repeat(64),
+      sizeBytes: 1_024,
+      importedAt: "2026-08-18T12:00:00Z",
+      verified: true,
+      provenance: "managed_copy",
+      metadata: emptyEvidenceMetadata()
+    } satisfies EvidenceItem;
+    const local = {
+      ...emptyAudioScreeningSummary.local,
+      status: "fingerprint_generated" as const,
+      sourceEvidenceId: release.id,
+      sourceRelativePath: release.relativePath,
+      sourceSha256: release.sha256,
+      sourceSizeBytes: release.sizeBytes
+    };
+
+    expect(localAudioScreeningIsCurrent(local, [release])).toBe(true);
+    const renamedRelease = { ...release, relativePath: "01_RELEASE/renamed-release.wav" };
+    expect(localAudioScreeningIsCurrent(local, [renamedRelease])).toBe(false);
+    expect(visibleLocalAudioScreening(local, [renamedRelease])).toEqual(expect.objectContaining({
+      status: "stale",
+      message: expect.stringContaining("nicht mehr an die aktuelle finale Release-Datei gebunden")
+    }));
+    expect(local.status).toBe("fingerprint_generated");
+  });
+
+  it("masks an external catalog result when its release binding is stale", () => {
+    const release = {
+      id: "release-1",
+      role: "release_wav",
+      fileName: "current-release.wav",
+      relativePath: "01_RELEASE/current-release.wav",
+      sha256: "b".repeat(64),
+      sizeBytes: 1_024,
+      importedAt: "2026-08-18T12:00:00Z",
+      verified: true,
+      provenance: "managed_copy",
+      metadata: emptyEvidenceMetadata()
+    } satisfies EvidenceItem;
+    const external = {
+      ...emptyAudioScreeningSummary.external,
+      status: "match_detected" as const,
+      message: "Provider reported a match.",
+      sourceEvidenceId: release.id,
+      sourceRelativePath: "01_RELEASE/earlier-release.wav",
+      sourceSha256: release.sha256,
+      sourceSizeBytes: release.sizeBytes
+    };
+
+    expect(externalAudioScreeningIsCurrent(external, [release])).toBe(false);
+    expect(visibleExternalAudioScreening(external, { status: "ready" }, [release])).toEqual({
+      status: "stale",
+      message: expect.stringContaining("nicht mehr an die aktuelle finale Release-Datei gebunden")
+    });
+  });
+
   it("keeps referenced-hash and addendum-integrity results visibly separate", () => {
     expect(externalTimestampMatchLabel(true)).toBe("YES");
     expect(externalTimestampIntegrityPresentation({
@@ -282,6 +361,7 @@ describe("navigation", () => {
       blockingDeviations: [],
       certificate: { valid: false },
       externalTimestamps: [],
+      audioScreening: structuredClone(emptyAudioScreeningSummary),
       finalizationAnchors: []
     } satisfies TrackDetail;
 
@@ -358,6 +438,18 @@ describe("navigation", () => {
           qualificationStatus: "unknown"
         }
       },
+      audioScreeningSettings: {
+        ...emptyAudioScreeningSettings,
+        enabled: true,
+        host: "identify-eu-west-1.acrcloud.com",
+        credentialsConfigured: true,
+        status: "ready"
+      },
+      audioScreeningProviderTest: {
+        status: "ready",
+        message: "Provider reachable",
+        testedAt: "2026-08-18T12:00:00Z"
+      },
       query: "old workspace query",
       trackFilter: "finalized",
       draftDirty: true
@@ -382,6 +474,8 @@ describe("navigation", () => {
       termsMetadataDialog: null,
       timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
       timestampProviderTest: null,
+      audioScreeningSettings: { ...emptyAudioScreeningSettings },
+      audioScreeningProviderTest: null,
       query: "",
       trackFilter: "all",
       draftDirty: false
@@ -463,8 +557,23 @@ describe("navigation", () => {
     expect(operationProgressPercent("finalization", {
       stage: "saving_final_snapshot", processedBytes: 1_000, totalBytes: 1_000, processedFiles: 10, totalFiles: 10
     })).toBe(97);
+    expect(operationProgressPercent("audio_screening", {
+      stage: "fingerprinting_audio", processedBytes: 500, totalBytes: 1_000, processedFiles: 0, totalFiles: 1
+    })).toBe(30);
+    expect(operationProgressPercent("audio_screening", {
+      stage: "saving_screening_result", processedBytes: 1_000, totalBytes: 1_000, processedFiles: 1, totalFiles: 1
+    })).toBe(96);
     expect(operationStageLabel("comparing_hashes")).toBe("Ergebnisse werden verglichen");
     expect(operationStageLabel("generating_certificate")).toBe("Zertifikat und Manifest entstehen");
+    expect(operationStageLabel("preparing_audio", "audio_screening")).toBe("Audio wird vorbereitet");
+    expect(operationStageLabel("fingerprinting_audio", "audio_screening")).toBe("Lokaler Audio-Fingerprint wird erzeugt");
+    expect(operationStageLabel("fingerprint_complete", "audio_screening")).toBe("Chromaprint-Fingerprint abgeschlossen");
+    expect(operationStageLabel("preparing_external_check", "audio_screening")).toBe("Externe Katalogprüfung wird vorbereitet");
+    expect(operationStageLabel("sending_provider_request", "audio_screening")).toBe("Audioausschnitt wird übertragen");
+    expect(operationStageLabel("waiting_provider_response", "audio_screening")).toBe("ACRCloud-Ergebnis wird erwartet");
+    expect(operationStageLabel("processing_provider_response", "audio_screening")).toBe("Provider-Ergebnis wird geprüft");
+    expect(operationStageLabel("saving_screening_result", "audio_screening")).toBe("Prüfergebnis wird lokal dokumentiert");
+    expect(operationStageLabel("complete", "audio_screening")).toBe("Prüfung abgeschlossen");
   });
 
   it("keeps a changed library assignment when applying a track detail", () => {

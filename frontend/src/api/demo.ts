@@ -12,11 +12,16 @@ import { subscriptionCoverageEnd } from "../domain/subscription";
 import { trackLibraryAssignment } from "../domain/track-library";
 import {
   emptyEvidenceMetadata,
+  emptyAudioScreeningSettings,
+  emptyAudioScreeningSummary,
   emptyProfile,
   emptyTimestampSettings,
   emptyTrackAutomation,
   emptyTrackFields,
   type ActionResult,
+  type AudioScreeningProviderTestResult,
+  type AudioScreeningSecretInput,
+  type AudioScreeningSettings,
   type ByteIdenticalPair,
   type ConsistencyIssue,
   type EvidenceItem,
@@ -196,6 +201,35 @@ function makeTrack(
         }
       ]
     : [evidence("suno_screenshot", `${title}_SUNO.png`)];
+  const release = items.find((item) => item.role === "release_wav");
+  const audioScreening = clone(emptyAudioScreeningSummary);
+  if (complete && release?.sha256) {
+    audioScreening.local = {
+      status: "fingerprint_generated",
+      message: "Browser demo presentation only: no local audio file was analysed and no provider request was made.",
+      engine: "Chromaprint",
+      engineVersion: "demo",
+      sourceEvidenceId: release.id,
+      sourceRelativePath: release.relativePath,
+      sourceSha256: release.sha256,
+      sourceSizeBytes: release.sizeBytes,
+      durationMilliseconds: 213_450,
+      fingerprintAlgorithm: "2",
+      generatedAt: now(),
+      artifactRelativePath: "03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json",
+      artifactSha256: "d".repeat(64)
+    };
+    audioScreening.external = {
+      provider: "ACRCloud",
+      status: "skipped_not_configured",
+      message: "Browser demo: optional ACRCloud screening is not configured and no provider was contacted.",
+      sourceEvidenceId: release.id,
+      sourceRelativePath: release.relativePath,
+      sourceSha256: release.sha256,
+      sourceSizeBytes: release.sizeBytes,
+      matches: []
+    };
+  }
   const track: TrackDetail = {
     id,
     title,
@@ -216,7 +250,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.8",
+      templateVersion: "1.9",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -229,6 +263,7 @@ function makeTrack(
     certificate: { valid: false },
     externalTimestamps: [],
     externalTimestampSummary: notRecordedExternalTimestampSummary(),
+    audioScreening,
     finalizationAnchors: []
   };
   refresh(track);
@@ -333,6 +368,54 @@ function normalizeTimestampSettings(next: TimestampSettings, timestampSecretConf
   };
   const status = configuredTimestampProviderStatus(normalized, timestampSecretConfigured);
   return { ...normalized, ...status };
+}
+
+function configuredAudioScreeningStatus(
+  settings: AudioScreeningSettings,
+  credentialsConfigured = false
+): Pick<AudioScreeningSettings, "status" | "statusMessage"> {
+  if (!settings.enabled) {
+    return {
+      status: "disabled",
+      statusMessage: "Optional ACRCloud screening is disabled."
+    };
+  }
+  if (!settings.host.trim()) {
+    return {
+      status: "configuration_invalid",
+      statusMessage: "Enter the ACRCloud project host before using the optional provider check."
+    };
+  }
+  if (!credentialsConfigured) {
+    return {
+      status: "not_configured",
+      statusMessage: "Store both ACRCloud access values in local secure settings before using the optional provider check."
+    };
+  }
+  return {
+    status: "ready",
+    statusMessage: "ACRCloud is configured. Use the explicit test or per-track check; no request runs automatically."
+  };
+}
+
+function normalizeAudioScreeningSettings(
+  next: AudioScreeningSettings,
+  credentialsConfigured = false
+): AudioScreeningSettings {
+  const timeoutCandidate = Number(next.timeoutSeconds);
+  const timeoutSeconds = Number.isFinite(timeoutCandidate) && timeoutCandidate > 0
+    ? Math.min(Math.trunc(timeoutCandidate), 120)
+    : emptyAudioScreeningSettings.timeoutSeconds;
+  const normalized: AudioScreeningSettings = {
+    ...emptyAudioScreeningSettings,
+    ...clone(next),
+    host: next.host.trim(),
+    timeoutSeconds,
+    credentialsConfigured,
+    localEngineAvailable: false,
+    localEngineVersion: undefined
+  };
+  return { ...normalized, ...configuredAudioScreeningStatus(normalized, credentialsConfigured) };
 }
 
 function reconcileAutomaticDate(
@@ -480,6 +563,11 @@ export function createDemoApi(): DesktopApi {
   // The browser demo deliberately stores only this non-sensitive state bit;
   // native builds keep the actual credential outside workspace data.
   let timestampSecretConfigured = false;
+  let audioScreeningSettings: AudioScreeningSettings = clone(emptyAudioScreeningSettings);
+  // As with timestamp credentials, the demo retains only configuration state.
+  // It never receives, stores, sends or fabricates provider credentials.
+  let audioAccessKeyConfigured = false;
+  let audioAccessSecretConfigured = false;
 
   const attachGlobalToTrack = (track: TrackDetail, item: GlobalEvidenceItem): void => {
     if (track.evidence.some((entry) => entry.sourceGlobalEvidenceId === item.id)) return;
@@ -620,6 +708,34 @@ export function createDemoApi(): DesktopApi {
     return track;
   };
 
+  const releaseAudio = (track: TrackDetail): EvidenceItem | undefined => track.evidence.find((item) =>
+    item.role === "release_wav" && item.verified && Boolean(item.sha256) && !item.verificationError
+  );
+
+  const markAudioScreeningStale = (track: TrackDetail): void => {
+    const source = releaseAudio(track);
+    const local = track.audioScreening.local;
+    if (local.status !== "not_run") {
+      track.audioScreening.local = {
+        ...local,
+        status: "stale",
+        message: source
+          ? "The authoritative release audio changed; generate a new local fingerprint for the current file."
+          : "The authoritative release audio is no longer available; the prior local fingerprint is stale."
+      };
+    }
+    const external = track.audioScreening.external;
+    if (external.status !== "not_run") {
+      track.audioScreening.external = {
+        ...external,
+        status: "stale",
+        message: "The authoritative release audio changed; the prior external result is no longer current.",
+        responseRelativePath: undefined,
+        responseSha256: undefined
+      };
+    }
+  };
+
   return {
     mode: "demo",
     async getWorkflow(): Promise<WorkflowDefinitionDto> {
@@ -711,6 +827,46 @@ export function createDemoApi(): DesktopApi {
         testedAt,
         capabilities: timestampProviderCapabilities(timestampSettings.provider)
       };
+    },
+    async getAudioScreeningSettings() {
+      await wait();
+      return clone(audioScreeningSettings);
+    },
+    async updateAudioScreeningSettings(next) {
+      await wait();
+      const credentialsConfigured = audioAccessKeyConfigured && audioAccessSecretConfigured;
+      audioScreeningSettings = normalizeAudioScreeningSettings(next, credentialsConfigured);
+      return clone(audioScreeningSettings);
+    },
+    async updateAudioScreeningSecret(input: AudioScreeningSecretInput) {
+      await wait();
+      if (typeof input.accessKey === "string" && input.accessKey.trim()) audioAccessKeyConfigured = true;
+      if (typeof input.accessSecret === "string" && input.accessSecret.trim()) audioAccessSecretConfigured = true;
+      const credentialsConfigured = audioAccessKeyConfigured && audioAccessSecretConfigured;
+      audioScreeningSettings = {
+        ...audioScreeningSettings,
+        credentialsConfigured,
+        ...configuredAudioScreeningStatus(audioScreeningSettings, credentialsConfigured)
+      };
+    },
+    async testAudioScreeningProvider(): Promise<AudioScreeningProviderTestResult> {
+      await wait();
+      const credentialsConfigured = audioAccessKeyConfigured && audioAccessSecretConfigured;
+      const configured = configuredAudioScreeningStatus(audioScreeningSettings, credentialsConfigured);
+      const testedAt = now();
+      const unavailable = configured.status === "ready";
+      const status = unavailable ? "provider_unavailable" : configured.status;
+      const message = unavailable
+        ? "Browser demo: no ACRCloud connection is made. Test the configured provider in the desktop app."
+        : configured.statusMessage;
+      audioScreeningSettings = {
+        ...audioScreeningSettings,
+        credentialsConfigured,
+        status,
+        statusMessage: message,
+        lastTestedAt: testedAt
+      };
+      return { status, message, testedAt };
     },
     async listGlobalEvidence() {
       await wait();
@@ -963,6 +1119,7 @@ export function createDemoApi(): DesktopApi {
       if (replaceEvidenceId && replaceIndex < 0) throw new Error("Die zu ersetzende Evidence wurde nicht gefunden.");
       if (replaceIndex >= 0) track.evidence[replaceIndex] = { ...next, id: replaceEvidenceId! };
       else track.evidence.push(next);
+      if (role === "release_wav") markAudioScreeningStale(track);
       track.documents.current = false;
       refresh(track);
       return clone(track);
@@ -970,7 +1127,9 @@ export function createDemoApi(): DesktopApi {
     async removeEvidence(trackId, evidenceId) {
       await wait();
       const track = mutableTrack(trackId);
+      const removed = track.evidence.find((item) => item.id === evidenceId);
       track.evidence = track.evidence.filter((item) => item.id !== evidenceId);
+      if (removed?.role === "release_wav") markAudioScreeningStale(track);
       track.documents.current = false;
       refresh(track);
       return clone(track);
@@ -1020,7 +1179,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.8",
+        templateVersion: "1.9",
         files: documentFiles
       };
       track.integrity.generated = false;
@@ -1083,6 +1242,95 @@ export function createDemoApi(): DesktopApi {
       track.integrity.mismatchFiles = [];
       refresh(track);
       return result(track, `${track.integrity.verifiedCount} von ${track.integrity.fileCount} Dateien erfolgreich verifiziert.`);
+    },
+    async runLocalAudioScreening(trackId, onProgress) {
+      const track = mutableTrack(trackId);
+      const source = releaseAudio(track);
+      if (!source?.sha256) throw new Error("Importiere zuerst die autoritative finale Release-Audiodatei.");
+      await demoProgress(onProgress, [
+        { stage: "preparing_audio", processedBytes: 0, totalBytes: source.sizeBytes, processedFiles: 0, totalFiles: 1, currentFile: source.relativePath },
+        { stage: "fingerprinting_audio", processedBytes: Math.round(source.sizeBytes * .65), totalBytes: source.sizeBytes, processedFiles: 0, totalFiles: 1, currentFile: source.relativePath },
+        { stage: "fingerprint_complete", processedBytes: source.sizeBytes, totalBytes: source.sizeBytes, processedFiles: 1, totalFiles: 1, currentFile: source.relativePath },
+        { stage: "saving_screening_result", processedBytes: source.sizeBytes, totalBytes: source.sizeBytes, processedFiles: 1, totalFiles: 1, currentFile: "03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json" },
+        { stage: "complete", processedBytes: source.sizeBytes, totalBytes: source.sizeBytes, processedFiles: 1, totalFiles: 1 }
+      ]);
+      track.audioScreening.local = {
+        status: "fingerprint_generated",
+        message: "Browser demo presentation only: no local audio file was analysed. Run this check in the desktop app for an authoritative result.",
+        engine: "Chromaprint",
+        engineVersion: "demo",
+        sourceEvidenceId: source.id,
+        sourceRelativePath: source.relativePath,
+        sourceSha256: source.sha256,
+        sourceSizeBytes: source.sizeBytes,
+        durationMilliseconds: source.metadata?.audioDurationMilliseconds ?? undefined,
+        fingerprintAlgorithm: "2",
+        generatedAt: now(),
+        artifactRelativePath: "03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json",
+        artifactSha256: "d".repeat(64)
+      };
+      track.documents.current = false;
+      track.integrity.generated = false;
+      track.integrity.verified = false;
+      refresh(track);
+      return result(track, "Browser-Demo: Der lokale Screening-Status wurde nur zur Oberflächenvorschau simuliert. Die Desktop-App erzeugt den echten Chromaprint-Fingerprint.");
+    },
+    async runExternalAudioScreening(trackId, onProgress) {
+      const track = mutableTrack(trackId);
+      const source = releaseAudio(track);
+      if (!source?.sha256) throw new Error("Importiere zuerst die autoritative finale Release-Audiodatei.");
+      const configured = configuredAudioScreeningStatus(
+        audioScreeningSettings,
+        audioAccessKeyConfigured && audioAccessSecretConfigured
+      );
+      if (configured.status !== "ready") {
+        const externalStatus = configured.status === "configuration_invalid"
+          ? "configuration_invalid"
+          : configured.status === "authentication_failed"
+            ? "authentication_failed"
+            : configured.status === "provider_unavailable"
+              ? "provider_unavailable"
+              : "skipped_not_configured";
+        track.audioScreening.external = {
+          provider: "ACRCloud",
+          status: externalStatus,
+          message: configured.statusMessage,
+          sourceEvidenceId: source.id,
+          sourceRelativePath: source.relativePath,
+          sourceSha256: source.sha256,
+          sourceSizeBytes: source.sizeBytes,
+          matches: []
+        };
+        track.documents.current = false;
+        track.integrity.generated = false;
+        track.integrity.verified = false;
+        refresh(track);
+        return result(track, "Die optionale externe Prüfung wurde übersprungen; die ACRCloud-Konfiguration ist nicht vollständig.");
+      }
+      await demoProgress(onProgress, [
+        { stage: "preparing_external_check", processedBytes: 0, totalBytes: source.sizeBytes, processedFiles: 0, totalFiles: 1, currentFile: source.relativePath },
+        { stage: "sending_provider_request", processedBytes: Math.round(source.sizeBytes * .3), totalBytes: source.sizeBytes, processedFiles: 0, totalFiles: 1, currentFile: source.relativePath },
+        { stage: "waiting_provider_response", processedBytes: Math.round(source.sizeBytes * .7), totalBytes: source.sizeBytes, processedFiles: 1, totalFiles: 1 },
+        { stage: "processing_provider_response", processedBytes: source.sizeBytes, totalBytes: source.sizeBytes, processedFiles: 1, totalFiles: 1 },
+        { stage: "saving_screening_result", processedBytes: source.sizeBytes, totalBytes: source.sizeBytes, processedFiles: 1, totalFiles: 1 },
+        { stage: "complete", processedBytes: source.sizeBytes, totalBytes: source.sizeBytes, processedFiles: 1, totalFiles: 1 }
+      ]);
+      track.audioScreening.external = {
+        provider: "ACRCloud",
+        status: "provider_unavailable",
+        message: "Browser demo: no ACRCloud request was sent. The desktop app is required for an authoritative provider response.",
+        sourceEvidenceId: source.id,
+        sourceRelativePath: source.relativePath,
+        sourceSha256: source.sha256,
+        sourceSizeBytes: source.sizeBytes,
+        checkedAt: now(),
+        matches: []
+      };
+      track.documents.current = false;
+      track.integrity.generated = false;
+      track.integrity.verified = false;
+      refresh(track);
+      return result(track, "Browser-Demo: Es wurde keine ACRCloud-Anfrage ausgeführt und kein Providerergebnis erzeugt.");
     },
     async validateTrack(trackId): Promise<ValidationResult> {
       await wait();
@@ -1158,6 +1406,7 @@ export function createDemoApi(): DesktopApi {
       track.documents.current = false;
       track.externalTimestamps = [];
       track.externalTimestampSummary = notRecordedExternalTimestampSummary();
+      track.audioScreening = clone(emptyAudioScreeningSummary);
       track.finalizationAnchors = [];
       refresh(track);
       return result(track, "Der bisherige Snapshot wurde archiviert und eine neue Revision angelegt.");
@@ -1187,6 +1436,7 @@ export function createDemoApi(): DesktopApi {
       track.steps = [];
       track.externalTimestamps = [];
       track.externalTimestampSummary = notRecordedExternalTimestampSummary();
+      track.audioScreening = clone(emptyAudioScreeningSummary);
       track.finalizationAnchors = [];
       refresh(track);
       return result(

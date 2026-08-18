@@ -1,8 +1,8 @@
 use crate::error::{AppError, Result};
 use crate::model::{
-    BlockingDeviation, EvidenceItem, EvidenceProvenance, EvidenceRole, ExternalTimestampRecord,
-    ExternalTimestampSummary, GlobalEvidenceItem, Profile, StepState, StepStatus,
-    TimestampSettings, TrackRecord,
+    AudioScreeningSecretInput, AudioScreeningSettings, BlockingDeviation, EvidenceItem,
+    EvidenceProvenance, EvidenceRole, ExternalTimestampRecord, ExternalTimestampSummary,
+    GlobalEvidenceItem, Profile, StepState, StepStatus, TimestampSettings, TrackRecord,
 };
 use crate::security::{atomic_write, atomic_write_new, contained_path, ensure_contained_directory};
 use crate::workflow;
@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const DATABASE_RELATIVE_PATH: &str = ".suno-doc/workspace.sqlite";
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 const TIMESTAMP_SECRETS_RELATIVE_PATH: &str = ".suno-doc/config/timestamp-secrets.json";
+const AUDIO_SCREENING_SECRETS_RELATIVE_PATH: &str = ".suno-doc/config/audio-screening-secrets.json";
 
 /// This type stays private to persistence so credentials can never become part
 /// of a serializable public settings DTO. The file is separate from SQLite,
@@ -23,6 +24,15 @@ const TIMESTAMP_SECRETS_RELATIVE_PATH: &str = ".suno-doc/config/timestamp-secret
 #[serde(rename_all = "camelCase", default)]
 struct TimestampSecrets {
     secret: String,
+}
+
+/// Kept deliberately private to persistence: neither credential may enter a
+/// serializable settings DTO, track JSON, manifest, certificate, or revision.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct AudioScreeningSecrets {
+    access_key: String,
+    access_secret: String,
 }
 
 #[derive(Debug, Clone)]
@@ -35,7 +45,7 @@ impl Persistence {
         ensure_contained_directory(root, Path::new(".suno-doc"))?;
         ensure_contained_directory(root, Path::new(".suno-doc/config"))?;
         ensure_contained_directory(root, Path::new(".suno-doc/global-evidence"))?;
-        ensure_timestamp_secret_gitignore(root)?;
+        ensure_secret_gitignore(root)?;
         let this = Self {
             root: root.to_owned(),
         };
@@ -784,6 +794,97 @@ impl Persistence {
         Ok(())
     }
 
+    /// Global non-secret settings for the optional ACRCloud operation. These
+    /// live outside `Profile` because editable track snapshots inherit that
+    /// profile and must never inherit provider configuration.
+    pub fn audio_screening_settings(&self) -> Result<AudioScreeningSettings> {
+        let json: Option<String> = self
+            .open()?
+            .query_row(
+                "SELECT data_json FROM audio_screening_settings WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|value| serde_json::from_str(&value).map_err(AppError::from))
+            .unwrap_or_else(|| Ok(AudioScreeningSettings::default()))
+    }
+
+    pub fn save_audio_screening_settings(&self, settings: &AudioScreeningSettings) -> Result<()> {
+        self.open()?.execute(
+            "INSERT INTO audio_screening_settings(singleton,data_json) VALUES(1,?1)
+             ON CONFLICT(singleton) DO UPDATE SET data_json=excluded.data_json",
+            [serde_json::to_string(settings)?],
+        )?;
+        Ok(())
+    }
+
+    /// Public callers can learn only whether a complete pair exists.
+    pub fn audio_screening_credentials_present(&self) -> Result<bool> {
+        Ok(self.audio_screening_credentials()?.is_some())
+    }
+
+    /// Credentials are intentionally crate-private and read only by the
+    /// dedicated ACRCloud adapter. A missing half-pair is treated as absent.
+    pub(crate) fn audio_screening_credentials(&self) -> Result<Option<(String, String)>> {
+        let path = contained_path(
+            &self.root,
+            Path::new(AUDIO_SCREENING_SECRETS_RELATIVE_PATH),
+            false,
+        )?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+        let secrets: AudioScreeningSecrets = serde_json::from_slice(&bytes)?;
+        let access_key = secrets.access_key.trim();
+        let access_secret = secrets.access_secret.trim();
+        Ok((!access_key.is_empty() && !access_secret.is_empty())
+            .then(|| (access_key.to_owned(), access_secret.to_owned())))
+    }
+
+    /// Applies only explicitly supplied fields. Submit empty strings for both
+    /// values to clear the credential pair; partial pairs are never retained.
+    pub fn save_audio_screening_secret(&self, input: AudioScreeningSecretInput) -> Result<()> {
+        if input.access_key.is_none() && input.access_secret.is_none() {
+            return Ok(());
+        }
+        let path = contained_path(
+            &self.root,
+            Path::new(AUDIO_SCREENING_SECRETS_RELATIVE_PATH),
+            false,
+        )?;
+        let existing = if path.exists() {
+            let bytes = std::fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+            serde_json::from_slice::<AudioScreeningSecrets>(&bytes)?
+        } else {
+            AudioScreeningSecrets::default()
+        };
+        let access_key = input
+            .access_key
+            .as_deref()
+            .map(str::trim)
+            .map(ToOwned::to_owned)
+            .unwrap_or(existing.access_key);
+        let access_secret = input
+            .access_secret
+            .as_deref()
+            .map(str::trim)
+            .map(ToOwned::to_owned)
+            .unwrap_or(existing.access_secret);
+        if access_key.is_empty() || access_secret.is_empty() {
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|error| AppError::io(&path, error))?;
+            }
+            return Ok(());
+        }
+        let contents = serde_json::to_vec(&AudioScreeningSecrets {
+            access_key,
+            access_secret,
+        })?;
+        atomic_write_secret(&path, &contents)
+    }
+
     /// An attachment attempt is separate from the immutable timestamp record:
     /// errors such as an unavailable provider have no provider-response file,
     /// but must remain visible and retryable for the same finalized snapshot.
@@ -878,26 +979,37 @@ fn atomic_write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
-fn ensure_timestamp_secret_gitignore(root: &Path) -> Result<()> {
+fn ensure_secret_gitignore(root: &Path) -> Result<()> {
     let path = contained_path(root, Path::new(".suno-doc/.gitignore"), false)?;
-    const RULE: &str = "/config/timestamp-secrets.json";
+    const TIMESTAMP_RULE: &str = "/config/timestamp-secrets.json";
+    const AUDIO_SCREENING_RULE: &str = "/config/audio-screening-secrets.json";
     if !path.exists() {
         return atomic_write_new(
             &path,
-            b"# Local timestamp-provider credentials; never export this file.\n/config/timestamp-secrets.json\n",
+            b"# Local provider credentials; never export these files.\n/config/timestamp-secrets.json\n/config/audio-screening-secrets.json\n",
         );
     }
     let content = std::fs::read_to_string(&path).map_err(|error| AppError::io(&path, error))?;
-    if content.lines().any(|line| line.trim() == RULE) {
+    let has_timestamp = content.lines().any(|line| line.trim() == TIMESTAMP_RULE);
+    let has_audio_screening = content
+        .lines()
+        .any(|line| line.trim() == AUDIO_SCREENING_RULE);
+    if has_timestamp && has_audio_screening {
         return Ok(());
     }
     let mut updated = content;
     if !updated.ends_with('\n') {
         updated.push('\n');
     }
-    updated.push_str("# Local timestamp-provider credentials; never export this file.\n");
-    updated.push_str(RULE);
-    updated.push('\n');
+    updated.push_str("# Local provider credentials; never export these files.\n");
+    if !has_timestamp {
+        updated.push_str(TIMESTAMP_RULE);
+        updated.push('\n');
+    }
+    if !has_audio_screening {
+        updated.push_str(AUDIO_SCREENING_RULE);
+        updated.push('\n');
+    }
     atomic_write(&path, updated.as_bytes())
 }
 
@@ -1021,6 +1133,15 @@ pub fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version=6;",
         )?;
     }
+    if version < 7 {
+        transaction.execute_batch(
+            "CREATE TABLE audio_screening_settings(
+               singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+               data_json TEXT NOT NULL
+             );
+             PRAGMA user_version=7;",
+        )?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -1101,13 +1222,13 @@ mod tests {
         let tables: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN
-                 ('metadata','profile','tracks','evidence','step_states','deviations','global_evidence','external_timestamp_records','timestamp_settings','timestamp_attachment_status')",
+                 ('metadata','profile','tracks','evidence','step_states','deviations','global_evidence','external_timestamp_records','timestamp_settings','timestamp_attachment_status','audio_screening_settings')",
                 [],
                 |row| row.get(0),
             )
             .expect("table count");
         assert_eq!(version, SCHEMA_VERSION);
-        assert_eq!(tables, 10);
+        assert_eq!(tables, 11);
     }
 
     #[test]
@@ -1180,6 +1301,74 @@ mod tests {
             assert_eq!(
                 std::fs::metadata(config)
                     .expect("secret permissions")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn audio_screening_settings_and_credentials_are_stored_separately() {
+        let directory = tempdir().expect("temporary workspace");
+        let persistence = Persistence::initialize(directory.path()).expect("persistence");
+        let access_key = ["test", "-access-key"].concat();
+        let access_secret = ["test", "-access-secret"].concat();
+        let settings = AudioScreeningSettings {
+            enabled: true,
+            host: "identify-eu-west-1.acrcloud.com".into(),
+            timeout_seconds: 20,
+            ..Default::default()
+        };
+        persistence
+            .save_audio_screening_settings(&settings)
+            .expect("save public settings");
+        persistence
+            .save_audio_screening_secret(AudioScreeningSecretInput {
+                access_key: Some(access_key.clone()),
+                access_secret: Some(access_secret.clone()),
+            })
+            .expect("save credentials");
+
+        assert!(persistence
+            .audio_screening_credentials_present()
+            .expect("credentials present"));
+        assert_eq!(
+            persistence
+                .audio_screening_credentials()
+                .expect("read adapter credentials"),
+            Some((access_key.clone(), access_secret.clone()))
+        );
+        let settings_json: String = persistence
+            .open()
+            .expect("connection")
+            .query_row(
+                "SELECT data_json FROM audio_screening_settings WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("settings json");
+        assert!(!settings_json.contains(&access_key));
+        assert!(!settings_json.contains(&access_secret));
+        assert!(!serde_json::to_string(&settings)
+            .expect("public settings JSON")
+            .contains(&access_secret));
+        let config = directory
+            .path()
+            .join(".suno-doc/config/audio-screening-secrets.json");
+        assert!(config.is_file());
+        assert!(
+            std::fs::read_to_string(directory.path().join(".suno-doc/.gitignore"))
+                .expect("workspace gitignore")
+                .contains("/config/audio-screening-secrets.json")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(config)
+                    .expect("credential permissions")
                     .permissions()
                     .mode()
                     & 0o777,

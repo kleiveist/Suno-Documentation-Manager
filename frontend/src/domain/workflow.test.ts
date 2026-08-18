@@ -18,6 +18,7 @@ import {
 } from "./workflow";
 import {
   emptyEvidenceMetadata,
+  emptyAudioScreeningSummary,
   emptyProfile,
   emptyTrackAutomation,
   emptyTrackFields,
@@ -96,7 +97,7 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.7",
+    workflowVersion: "1.8",
     profileSnapshot: structuredClone(profile),
     automation: emptyTrackAutomation(),
     fields,
@@ -106,6 +107,19 @@ function completeTrack(): TrackDetail {
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     externalTimestamps: [],
+    audioScreening: {
+      ...structuredClone(emptyAudioScreeningSummary),
+      local: {
+        status: "fingerprint_generated",
+        message: "Local record generated for the current release audio.",
+        sourceEvidenceId: "release_wav",
+        sourceRelativePath: "evidence/release_wav.dat",
+        sourceSha256: "a".repeat(64),
+        sourceSizeBytes: 42,
+        artifactRelativePath: "03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json",
+        artifactSha256: "b".repeat(64)
+      }
+    },
     finalizationAnchors: [],
     blockingDeviations: []
   };
@@ -202,6 +216,26 @@ describe("missing requirements", () => {
 
     expect(calculateMissingRequirements(track, profile)).toContainEqual(
       expect.objectContaining({ id: "export-date", stepId: "release" })
+    );
+  });
+
+  it("requires a current local Chromaprint record for the authoritative release audio", () => {
+    const track = completeTrack();
+    track.audioScreening.local.status = "stale";
+    expect(calculateMissingRequirements(track, profile)).toContainEqual(
+      expect.objectContaining({ id: "local-audio-screening", stepId: "release" })
+    );
+
+    track.audioScreening.local.status = "fingerprint_generated";
+    track.audioScreening.local.sourceSha256 = "f".repeat(64);
+    expect(calculateMissingRequirements(track, profile)).toContainEqual(
+      expect.objectContaining({ id: "local-audio-screening", stepId: "release" })
+    );
+
+    track.audioScreening.local.sourceSha256 = "a".repeat(64);
+    track.audioScreening.local.sourceRelativePath = "01_RELEASE/old-release.wav";
+    expect(calculateMissingRequirements(track, profile)).toContainEqual(
+      expect.objectContaining({ id: "local-audio-screening", stepId: "release" })
     );
   });
 
@@ -388,7 +422,7 @@ describe("missing requirements", () => {
     expect(subscriptionGenerationCoverageStatus([covered], track.fields)).toBe("YES");
     covered.coverageEnd = "2026-08-13";
     expect(subscriptionGenerationCoverageStatus([covered], track.fields)).toBe("NO");
-    expect(WORKFLOW_VERSION).toBe("1.7");
+    expect(WORKFLOW_VERSION).toBe("1.8");
   });
 
   it("requires a verified generated disclosure artifact for AI artwork", () => {

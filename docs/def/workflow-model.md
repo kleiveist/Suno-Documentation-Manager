@@ -7,9 +7,9 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-17 |
+| Last review | 2026-08-18 |
 | Audience | Product developers and acceptance owners |
-| Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md) |
+| Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md); [ATP-0017: Pre-release audio screening](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Purpose
 
@@ -41,7 +41,7 @@ The repository file [workflows/suno-track.toml](../../workflows/suno-track.toml)
 ```toml
 schema_version = 1
 id = "suno-track"
-version = "1.7"
+version = "1.8"
 name = "Suno Track Documentation"
 ```
 
@@ -104,9 +104,9 @@ Answer values are not interchangeable with step statuses:
 | 04 | `human-work` | Human Work | Separate instrumental, vocal-lyrics, and Suno lyrics/structure-field facts; complete style prompt; and guided human or post-export edits that actually occurred |
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
 | 06 | `ai-transparency` | AI Transparency | Separate factual Audio and Artwork assessments, including tri-state audio indicators and disclosure status; no legal AI assessment |
-| 07 | `release` | Release | Final release audio, guided release-note choices, and export facts |
+| 07 | `release` | Release | Final release audio, guided release-note choices, export facts, and the current automatic local Chromaprint screening summary |
 | 08 | `evidence-licenses` | Evidence & Licenses | Technical subscription-date coverage plus a portable Terms copy with required descriptive metadata for commercial intent |
-| 09 | `integrity` | Integrity | Current generated documents, SHA-256 list, complete native re-verification, and no mismatch |
+| 09 | `integrity` | Integrity | Current generated documents, SHA-256 list, complete native re-verification, no mismatch, and an optional explicitly started ACRCloud screening card |
 | 10 | `finalize` | Finalize | Blocking-deviation check and native certificate transaction |
 
 All ten steps exist exactly once. The UI shows one task-oriented step at a time and a dashboard summary rather than presenting every possible field in one form.
@@ -139,6 +139,7 @@ The following branch rules are mandatory:
 | AI-generated or AI-assisted artwork | Human/no-artwork branches retain their justified N/A reasons for artwork-only facts | Require AI original and one final artwork under Artwork plus applicable service, policy decision, disclosure result, and locally generated provenance/source lineage when disclosure applies; three negative artwork content checks do not deactivate the separate Audio assessment |
 | Real person, real event, trademark, or logo content check | End that question | Require a factual note and any configured evidence; do not decide legality |
 | External license evidence | Do not ask for unrelated license fields | Require evidence selection, contained copy, and integrity inclusion |
+| Authoritative release evidence | A missing/replaced/removed source leaves local screening `NOT RUN` or `STALE` and blocks the release requirement until the current managed bytes are fingerprinted | A supported managed release source is fingerprinted by the bundled verified Chromaprint engine and binds source Evidence ID/path/SHA-256 in portable screening artifacts |
 
 Changing a controller reevaluates and clears the requirement status of now-hidden dependent fields. Historical values are not silently presented as current answers; removal follows an explicit domain rule or confirmation.
 
@@ -205,12 +206,15 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 - the Final Suno Generation facts keep date, IDs, URL, model, plan at generation, metadata origin, and download/export date as distinct values rather than conflating an ID or date;
 - the Audio AI assessment records whether generative AI was used and, when positive, the AI system, six tri-state factual indicators, and disclosure status; commercial generative-AI use with disclosure `NOT DOCUMENTED` remains blocked, while deliberate `NO` is retained without legal evaluation;
 - every policy-required artwork disclosure has `generated_disclosure` provenance, the supported generator version, the exact configured text, a verified AI-original source ID, and bytes identical to final artwork;
+- the local audio-screening record has `FINGERPRINT GENERATED` status and is bound to the current authoritative release Evidence ID, relative path, and SHA-256; an engine/format/processing failure is not converted into a fingerprint;
 - generated documents match their normalized inputs and template versions;
 - `SHA256SUMS.txt` exists and covers the required current set;
 - native re-verification has verified every listed file; and
 - the selected workflow and application versions are recorded.
 
 External timestamp evidence is deliberately absent from this gate. It can be attached only after a successful technical finalization, when the selected manifest/certificate/hash anchor is stable. Its later addendum neither changes the original gate result nor upgrades `PASS` or `DOCUMENTATION COMPLETE` into a legal or evidentiary-strength conclusion.
+
+The optional ACRCloud result is also absent from the gate. It can be requested only from Step 09 after explicit workspace configuration, and it never runs automatically during import, document generation, hash operations, opening a workspace, validation, or finalization. Its provider statuses are technical comparison facts, not copyright, ownership, permission, infringement, legality, or release-clearance determinations.
 
 The Finalize button remains disabled before readiness, or the interface exposes an action that explains every blocking item. A TypeScript state change cannot bypass the native gate.
 
@@ -220,7 +224,7 @@ Opening or verifying a `FINALIZED` track recalculates the protected integrity st
 
 A finalized track is a read-only UI snapshot: ordinary field, evidence, document-generation, hash-generation, deviation, step-status, and evidence-metadata mutations are unavailable. Opening a finalized legacy snapshot does not parse its WAV files and backfill new facts. Navigation between every workflow step and the main application views remains available, as do evidence previews and read-only integrity verification. A stale browser draft belonging to the locked snapshot is discarded locally instead of being resubmitted on every navigation attempt. `Create new revision and edit` is visible for both valid and invalid finalized certificates without requiring prior invalidation.
 
-Revision creation archives the old certificate artifacts and revision metadata below `.archive/revisions/<revision-id>/`, marks the previous revision superseded when appropriate, and creates an active working revision. The new mutable revision may then analyze carried Suno WAV evidence and persist evidence-derived facts; the archived finalized snapshot remains unchanged. A new certificate requires the complete gate again.
+Revision creation archives the old certificate artifacts, current audio-screening documentation, and revision metadata below `.archive/revisions/<revision-id>/`, marks the previous revision superseded when appropriate, and creates an active working revision. The new mutable revision may then analyze carried Suno WAV evidence and persist evidence-derived/local-fingerprint facts; the archived finalized snapshot remains unchanged. An external provider conclusion is never copied to the new revision. A new certificate requires the complete gate again.
 
 ## Workflow versioning
 
@@ -228,7 +232,7 @@ Every track and certificate stores both `workflow_id` and `workflow_version`. A 
 
 ```text
 Finalized with workflow 1.0
-Current workflow version: 1.7
+Current workflow version: 1.8
 ```
 
 Re-evaluation is explicit. Until the stored track version matches the current workflow, new managed documents, hashes, and certificates are blocked so a certificate cannot name an older workflow while applying newer rules. Re-evaluation creates new working state and, after successful acceptance, a new revision; it never rewrites the meaning of an archived `1.0` result.
@@ -247,6 +251,7 @@ Re-evaluation is explicit. Until the stored track version matches the current wo
 | `REQ-WFL-008` | Valid structured Suno WAV metadata authoritatively derives the final-generation, production-end, and optional download/export dates without mutating a finalized snapshot. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
 | `REQ-WFL-009` | Audio and Artwork AI facts remain separate, and commercial generative-AI use cannot pass with an audio disclosure status of `NOT DOCUMENTED`. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
 | `REQ-WFL-010` | `NO`, `N/A`, and `NOT DOCUMENTED` remain distinct in evaluation and generated snapshots; `PASS` means only configured step-documentation completion. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
+| `REQ-WFL-011` | The current authoritative release evidence must have a real local Chromaprint record; optional ACRCloud screening is explicit, bounded, and never a finalization condition. | [ATP-0017](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Verification
 
@@ -266,6 +271,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 - Progress is an aid, not evidence of finalization; only the native gate can produce a certificate.
 - Historical imports can remain blocked indefinitely when facts cannot be recovered honestly.
 - A role or manually asserted disclosure flag cannot substitute for persisted local-generation lineage.
+- A target without a verified bundled Chromaprint engine cannot return a positive local screening result; it remains a controlled blocker until a supported target/source is used.
 - Version 0.1 intentionally supports one bounded workflow and no arbitrary extensions.
 
 ## Related documents
@@ -274,12 +280,14 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 - [Product architecture](product-architecture.md)
 - [Track documentation model](track-documentation-model.md)
 - [Persistence and recovery](persistence.md)
+- [Pre-release audio screening](pre-release-audio-screening.md)
 - [Finalizing a track](../usr/finalizing-a-track.md)
 
 ## Change log
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-18 | Raised the workflow to 1.8 for current local Chromaprint screening of authoritative release evidence and optional non-blocking explicit ACRCloud screening in Step 09. | Project team |
 | 2026-08-17 | Defined verified local Terms evidence plus an unavailable claim as a native-update rejection and blocking consistency/rendering contradiction without changing workflow version 1.7. | Project team |
 | 2026-08-17 | Raised the workflow to 1.7 for separated instrumental/vocal/Suno-field facts, complete Final Suno Generation and commercial Terms metadata, separate Audio/Artwork AI assessments, precise answer/status semantics, and post-finalization timestamp boundaries. | Project team |
 | 2026-08-17 | Raised the workflow to 1.6 for derived download/last-editing dates, the Step-07 desktop-editing decision, and joint subscription-period coverage. | Project team |

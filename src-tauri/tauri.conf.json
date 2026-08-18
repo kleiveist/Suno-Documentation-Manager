@@ -31,6 +31,13 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/fpcalc"
+    ],
+    "resources": [
+      "binaries/CHROMAPRINT-1.6.1-PROVENANCE.md",
+      "binaries/CHROMAPRINT-LICENSE.md"
+    ],
     "category": "Music",
     "shortDescription": "Offline documentation and integrity manager for music tracks",
     "longDescription": "A local desktop application for guided track documentation, evidence management, integrity verification, and completion certificates.",

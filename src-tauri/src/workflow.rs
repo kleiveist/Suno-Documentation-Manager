@@ -1,4 +1,5 @@
 use crate::audio_metadata::{has_suno_studio_marker, parse_suno_metadata};
+use crate::audio_screening;
 use crate::error::{AppError, Result};
 #[cfg(test)]
 use crate::model::DocumentationAnswer;
@@ -133,6 +134,7 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         "evidence",
         "generated_document",
         "hash_verification",
+        "audio_screening",
     ]
     .into_iter()
     .collect();
@@ -535,6 +537,18 @@ fn requirement_met(
                 && track.integrity.file_count > 0
                 && track.integrity.file_count == track.integrity.verified_count
                 && track.integrity.mismatch_files.is_empty()
+        }
+        "audio_screening" if requirement.key == "release.audio_screening_local" => {
+            let release = evidence
+                .iter()
+                .find(|item| verified_role(item, EvidenceRole::ReleaseWav));
+            release.is_some_and(|release| {
+                audio_screening::local_record_matches_source(
+                    &track.audio_screening.local,
+                    &track.id,
+                    release,
+                )
+            })
         }
         "field" if requirement.key == "ai_transparency.disclosure_result" => {
             let disclosed_artwork_present = evidence
@@ -1258,6 +1272,7 @@ mod tests {
                 disclosure_applied: applied,
                 ..Default::default()
             },
+            audio_screening: Default::default(),
             documents: Default::default(),
             integrity: Default::default(),
             certificate: Default::default(),
@@ -1908,14 +1923,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_7_configuration_is_accepted() {
+    fn valid_version_1_8_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.7");
+        validate_config(&config).expect("valid workflow 1.8");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.7");
+        assert_eq!(config.version, "1.8");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
@@ -1941,6 +1956,12 @@ mod tests {
         assert!(config.requirements.iter().any(|requirement| {
             requirement.key == "human_work.post_export_editing_performed"
                 && requirement.step_id == "release"
+        }));
+        assert!(config.requirements.iter().any(|requirement| {
+            requirement.key == "release.audio_screening_local"
+                && requirement.kind == "audio_screening"
+                && requirement.step_id == "release"
+                && requirement.required
         }));
     }
 

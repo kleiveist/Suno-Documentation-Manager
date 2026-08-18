@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-17 |
+| Last review | 2026-08-18 |
 | Audience | Product developers and documentation reviewers |
 | Related ATP | [Track and document acceptance plans](../atp/active/active.md) |
 
@@ -31,7 +31,7 @@ This document defines the facts, evidence roles, generated documents, folder str
 - visual form layout;
 - file-format transcoding of audio, video, or images other than the visible artwork disclosure;
 - ownership or legal-compliance determinations; and
-- remote evidence lookup.
+- automatic remote evidence lookup.
 
 ## Core model
 
@@ -42,6 +42,7 @@ This document defines the facts, evidence roles, generated documents, folder str
 | Workflow evaluation | Ten step states, applicability, reasons, missing requirements, and blocking deviations | Manifest and certificate for the finalized revision |
 | Evidence record | Role, original and managed names, relative destination, media type, technical audio properties, structured embedded metadata, size, SHA-256, import time, provenance, lineage, and role-specific factual metadata | Evidence file plus manifest entry |
 | Generated document | A versioned deterministic rendering of confirmed values and evidence references | Generated file in the track folder |
+| Audio-screening state | Current local fingerprint binding and optional explicit provider-result summary for the authoritative release source | Portable screening artifacts plus mutable track state; raw fingerprints/responses remain outside certificate summaries |
 | Integrity snapshot | Root-relative file set and SHA-256 digest for each included file | `03_DOCUMENTATION/SHA256SUMS.txt` |
 | Certificate snapshot | Final gate result, workflow/app versions, selected hashes, and disclaimer | Files below `06_CERTIFICATE/` |
 | Revision | Archived previous certificate state and a new mutable working state | `.archive/revisions/<revision-id>/` and current track state |
@@ -74,6 +75,8 @@ At minimum, the workflow can record the following confirmed facts:
 - Suno model, project URL, optional project/version ID, final-generation ID/Suno ID, final-generation date, optional download/export date, and last-editing date. The three dates can be evidence-derived under the rules below. A valid ID observed in the Suno export remains evidence-derived; compatible user-entered ID fields are shown only when present and are never conflated. No value is fetched from Suno;
 - Suno plan at generation, retained as unrestricted user-confirmed text;
 - whether the WAV was edited again on the desktop PC and the resulting last-editing date;
+- the current technical local screening record for authoritative release evidence: Chromaprint engine/version, algorithm, source Evidence ID/path/SHA-256, size, measured duration, generation time, and artifact path/hash; and
+- when the user explicitly requests it, a concise ACRCloud provider result bound to the same release source, bounded sample timings, response artifact path/hash, and provider-supplied match fields;
 - whether the track is instrumental;
 - whether sung or spoken vocal lyrics are actually present;
 - whether the Suno lyrics/structure field contains content, its one or more factual content types, its human/AI/mixed source, and the exact field text;
@@ -130,6 +133,12 @@ A negative answer ends the branch. A positive content-check answer can require a
 │   ├── Style.md
 │   └── suno_project.txt
 ├── 03_DOCUMENTATION/
+│   ├── AUDIO_SCREENING/
+│   │   ├── LOCAL_FINGERPRINT.json
+│   │   ├── LOCAL_FINGERPRINT.sha256
+│   │   ├── AUDIO_SCREENING.md
+│   │   ├── ACRCLOUD_SCREENING.json        # optional, explicit provider action only
+│   │   └── ACRCLOUD_RESPONSE.json          # optional, explicit provider action only
 │   ├── AI_USAGE.md
 │   ├── README.md
 │   └── SHA256SUMS.txt
@@ -163,7 +172,7 @@ Folder generation creates directories and managed text documents only when appro
 | Source code or source text (`.rb`, `.py`, `.txt`, `.md`, and other supported text-based formats) | `02_SUNO/` | Required only when code-based generation is confirmed |
 | Code-generated audio (`.wav` or `.mp3`) | `02_SUNO/` | Required together with source-code evidence when code-based generation is confirmed |
 | Subscription or payment evidence (PDF) | `04_LICENSES/` | Selected when its interval overlaps production or covers final generation; adjacent selected intervals jointly satisfy the production-period gate |
-| Final release audio (WAV, MP3, FLAC, M4A, AIFF, or OGG) | `01_RELEASE/` | Singular authoritative release output; the imported extension is preserved |
+| Final release audio (WAV, MP3, FLAC, M4A, AIFF, or OGG) | `01_RELEASE/` | Singular authoritative release output; the imported extension is preserved and triggers local screening while editable |
 | Additional release MP3 or MP4 | `01_RELEASE/` | Optional additional release representation |
 | Release artwork | `01_RELEASE/` | Final release package artwork when applicable |
 | AI artwork original | `05_ARTWORK/` | Required when an AI base image is declared |
@@ -189,6 +198,14 @@ For an editable track, a valid Suno final export authoritatively fills the final
 Replacement updates all applicable values to the new evidence date. Removal clears the system-owned values and re-enables manual fallbacks. Finalized and superseded snapshots are never analyzed or backfilled during normal loading. Creating a revision first produces mutable working state in which the carried WAV evidence can be analyzed while the archived snapshot remains immutable.
 
 The authoritative release-audio copy is named `01_RELEASE/<safe track title>.<imported extension>`. The native filename sanitizer preserves readable title text while replacing filesystem-invalid characters and rejecting traversal or absolute paths. Import and title-change operations never overwrite an occupied target. A title change renames managed release evidence and its relative metadata only through the native Rust boundary, with rollback on failure. Finalized tracks remain immutable.
+
+## Pre-release audio screening
+
+Audio screening is not an evidence role and does not create a substitute audio identity from SHA-256. For an editable track, import or replacement of the singular authoritative `release_wav` runs the packaged target-verified Chromaprint `fpcalc` engine against the managed source. The durable local record carries the actual fingerprint, but only `LOCAL_FINGERPRINT.json` contains that value. `AUDIO_SCREENING.md`, `03_DOCUMENTATION/README.md`, the manifest, Markdown certificate, and PDF show a concise status/source/artifact summary only.
+
+An optional ACRCloud request is available only after Settings stores a non-secret workspace configuration and private write-only credentials. It is initiated in Step 09 by the user, uses a bounded audio sample rather than a Chromaprint fingerprint, and archives a raw provider response only at `ACRCLOUD_RESPONSE.json`. The portable external summary includes source linkage, sample timing, request count, response path/hash, and at most five concise provider matches. It never includes a credential, request signature, raw fingerprint, or unrestricted provider output.
+
+Local `FINGERPRINT GENERATED` is required for the current release source before a new finalization. `NOT RUN`, `STALE`, engine availability, unsupported-format, configuration, provider, and processing states are not positive assertions. An optional provider match/no-match never blocks finalization and never states ownership, permission, infringement, legality, copyright safety, or release clearance. A replacement invalidates source linkage; a revision keeps the prior screening directory with the archived snapshot and begins a new state rather than transferring an external result.
 
 When an active, non-superseded track still has an exact managed legacy path such as `01_RELEASE/suno_final_export.wav`, loading may conservatively rename it to the title-based path and update the evidence record only if the managed provenance and role are unambiguous and the target is free. Indexed legacy, ambiguous, colliding, finalized, and superseded records remain unchanged.
 
@@ -250,7 +267,7 @@ This is a project transparency policy. The product does not label it as a univer
 
 ## Generated documents
 
-Template version `1.8` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, and complete evidence metadata; fact origins and automation results are additionally retained in the manifest and certificate snapshot. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
+Template version `1.9` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, complete evidence metadata, and current audio-screening state; fact origins and automation results are additionally retained in the manifest and certificate snapshot. The internal freshness digest may include the full local fingerprint, but managed prose never does. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
 
 Generated headings, explanatory prose, and guided-choice values are always English. German UI labels are mapped to their stable English values before rendering. An unknown legacy selection is represented by an English reclassification notice rather than copying potentially non-English unrestricted text into a generated choice field. User-authored factual content that must remain exact—such as lyrics, the Suno style prompt, a disclosure text, or an individually required factual note—is preserved verbatim and is not treated as generated prose.
 
@@ -259,7 +276,7 @@ Generated headings, explanatory prose, and guided-choice values are always Engli
 | `02_SUNO/suno_project.txt` | Final-generation date, IDs when present, project URL, metadata detection/origin, model, plan at generation, download/export date, code-generation and post-processing answers, selected operations, and applicable source-code plus generated-audio evidence paths |
 | `02_SUNO/Lyrics.md` | Separate instrumental/vocal/Suno-field answers, content types and source, and exact field text under `Vocal Lyrics` or `Suno Structure / Generation Instructions` as applicable; unclassified legacy values remain labeled legacy/`NOT DOCUMENTED` |
 | `02_SUNO/Style.md` | The complete style prompt entered in Suno |
-| `03_DOCUMENTATION/README.md` | Human-readable track documentation entry point |
+| `03_DOCUMENTATION/README.md` | Human-readable track documentation entry point, including a concise pre-release audio-screening status/source/artifact summary without a raw fingerprint or secret |
 | `03_DOCUMENTATION/AI_USAGE.md` | Separate Audio and Artwork assessments, exact `YES`/`NO`/`NOT DOCUMENTED` answers, confirmed AI systems, code-audio post-processing facts, human artwork changes, and disclosure facts |
 | `04_LICENSES/suno_account_and_license.md` | Snapshot of the plan at generation, technical subscription-date coverage, and selected Terms evidence with complete stored metadata |
 | `04_LICENSES/openai_image_generation.md` | AI image service facts when applicable; the historical file name does not imply an API integration |
@@ -292,12 +309,13 @@ Calculation and verification publish the actual processed byte and file counts f
 
 After the finalization gate passes, the product writes:
 
-- root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, certificate format `5.0`, with A–L sections for identity; the separated instrumental, vocal, and Suno-field facts; every source branch; selected human contribution; separate Audio and Artwork AI assessments; license/Terms/technical-coverage facts; the full evidence register; integrity anchors; and locally recorded earlier revision-archive references;
-- `DOCUMENTATION_CERTIFICATE.md`, certificate format `5.0`, with the same factual scope, evidence register, origin labels, status meanings, and explicit non-legal boundary;
-- `EVIDENCE_MANIFEST.json` schema `5`, including the complete `documented_facts` and `profile_snapshot`, fact-origin and answer-state definitions, separated lyrics and AI assessment values, Suno detection summary, generic byte-identical pairs, automatic role relationships, consistency results, statement scope, and full evidence metadata/lineage; and
+- root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, certificate format `5.1`, with A–L sections for identity; the separated instrumental, vocal, and Suno-field facts; every source branch; selected human contribution; separate Audio and Artwork AI assessments; license/Terms/technical-coverage facts; the full evidence register; integrity anchors; K.2 audio-screening summary; and locally recorded earlier revision-archive references;
+- `DOCUMENTATION_CERTIFICATE.md`, certificate format `5.1`, with the same factual scope, evidence register, origin labels, status meanings, K.2 screening summary, and explicit non-legal boundary;
+- `EVIDENCE_MANIFEST.json` schema `6`, including the complete `documented_facts` and `profile_snapshot`, fact-origin and answer-state definitions, separated lyrics and AI assessment values, Suno detection summary, generic byte-identical pairs, automatic role relationships, consistency results, a sanitized `audioScreening` section, statement scope, and full evidence metadata/lineage; and
 - `CERTIFICATE_SHA256.txt` covering the main hash list, evidence manifest, certificate document, and root-level PDF, but never itself.
 
 All four outputs are staged and verified as one finalization transaction. The PDF hash is external to the PDF to avoid a circular self-hash. Its trailer identifiers are derived deterministically from the certificate ID, so identical normalized certificate snapshots serialize to identical bytes. Publication, rollback, crash recovery, and revision archival carry the root PDF together with the certificate directory, and an occupied root-PDF destination is never silently replaced.
+The certificate/manifest screening summary excludes the full fingerprint, raw ACRCloud response, request signature, access key, and access secret. It is a technical comparison record only and does not state a rights or legal conclusion.
 
 The PDF renderer paginates long sections and wraps long URLs, UUIDs, paths, labels, and SHA-256 values without truncating their factual content. SHA-256 labels remain intact, full digests remain readable, and every page carries the Certificate ID plus `Seite X / Y`. The same normalized certificate snapshot produces the same factual content and deterministic bytes; transient UI state and random presentation data do not enter the renderer.
 
@@ -356,6 +374,7 @@ After authoritative native commit, the UI may present a reusable certificate sum
 | `REQ-HSH-001` | The correct included set is hashed and immediately verified; exclusions never enter the list. | [ATP-0007](../atp/active/ATP-0007-sha256-generation-and-verification.md) |
 | `REQ-CER-001` | A successful finalization writes a factual certificate, relative-path manifest, and certificate hashes. | [ATP-0009](../atp/active/ATP-0009-certificate-generation.md) |
 | `REQ-CER-002` | A post-finalization sidecar-v1 addendum is fully synchronized in staging, database-registered, then published; pins exact immutable record/Markdown/PDF bytes and publication-time integrity; records its certificate ID, stable anchor, claimed/actual/evidence hashes and provenance; and recomputes current or explicitly certificate-bound archived integrity without re-rendering, changing the base certificate, auto-adopting an orphan, or transferring to another revision. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
+| `REQ-AUD-001` | A current editable authoritative release source has a real bundled-Chromaprint fingerprint record and portable hash-covered summary; optional ACRCloud results are explicit, bounded, sanitized, and non-blocking. | [ATP-0017](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Verification
 
@@ -374,6 +393,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 - Some legacy filenames or unsupported media types may not be automatically classified and require explicit user selection.
 - `sha256sum` portability depends on filename encoding and platform conventions; the native verifier remains authoritative in the application.
 - Hashes detect changes but do not establish who created a file or whether its contents are lawful.
+- Audio-screening results are comparison records, not content or rights determinations; an unavailable bundled engine or provider remains non-positive.
 - A user can intentionally remove portable files outside the application; the next scan or verification reports the resulting missing item or mismatch.
 
 ## Related documents
@@ -381,6 +401,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 - [Product architecture](product-architecture.md)
 - [Persistence and recovery](persistence.md)
 - [Workflow model](workflow-model.md)
+- [Pre-release audio screening](pre-release-audio-screening.md)
 - [Finalizing a track](../usr/finalizing-a-track.md)
 - [Legacy track import](../dev/legacy-track-import.md)
 
@@ -388,6 +409,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-18 | Added portable local/optional-external audio-screening state and artifacts; advanced template to 1.9, manifest to 6, and certificate/PDF to 5.1. | Project team |
 | 2026-08-17 | Defined sidecar format v1, database-before-live publication recovery, immutable addendum-byte pinning, current/archived load verification, and the Terms availability invariant. | Project team |
 | 2026-08-17 | Defined the workflow-1.7 split for instrumental/vocal/Suno-field content, complete Final Suno Generation and Terms facts, separate Audio/Artwork AI assessments, exact answer/status semantics, and post-finalization timestamp addenda; advanced template to 1.8, manifest to 5, and certificate/PDF to 5.0. | Project team |
 | 2026-08-17 | Added workflow-1.6 download/last-editing derivation, joint subscription coverage, template 1.7, manifest schema 4, and certificate format 4.1. | Project team |

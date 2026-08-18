@@ -35,6 +35,7 @@ Generic template, backend, CI, database, container, and deployment pages retaine
 - 📝 [Deployment architecture — unavailable inherited reference](def/deployment-architecture.md)
 - 📝 [Provider-neutral persistence architecture — inherited template reference](def/persistence-architecture.md)
 - 📝 [Local persistence and recovery](def/persistence.md)
+- 📝 [Pre-release audio screening](def/pre-release-audio-screening.md)
 - 📝 [Suno Documentation Manager product architecture](def/product-architecture.md)
 - 📝 [Project profiles — inherited template reference](def/project-profiles.md)
 - 📝 [Track documentation model](def/track-documentation-model.md)

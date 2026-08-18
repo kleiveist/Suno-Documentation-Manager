@@ -2,10 +2,10 @@ use crate::certificate_pdf::{self, CertificatePdfSnapshot};
 use crate::error::{AppError, Result};
 use crate::integrity::HASH_FILE;
 use crate::model::{
-    BlockingDeviation, CertificateLanguage, CertificateRenderOptions, DocumentationAnswer,
-    EvidenceItem, EvidenceMetadata, EvidenceProvenance, EvidenceRole, FactOrigin, Profile,
-    StepState, StepStatus, SunoLyricsContentSource, SunoLyricsContentType, TrackFields,
-    TrackRecord,
+    AudioScreeningState, AudioScreeningStatus, BlockingDeviation, CertificateLanguage,
+    CertificateRenderOptions, DocumentationAnswer, EvidenceItem, EvidenceMetadata,
+    EvidenceProvenance, EvidenceRole, FactOrigin, Profile, StepState, StepStatus,
+    SunoLyricsContentSource, SunoLyricsContentType, TrackFields, TrackRecord,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
@@ -22,7 +22,7 @@ pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md"
 pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "5.0";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "5.1";
 
 /// Return a certificate label in the configured output language. Bilingual
 /// certificates deliberately retain both labels in the same immutable file,
@@ -133,6 +133,9 @@ fn german_certificate_paragraph(english: &str) -> String {
         "No external timestamp evidence recorded." => {
             "Kein externer Zeitstempelnachweis dokumentiert."
         }
+        "Audio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion." => {
+            "Audio-Screening-Ergebnisse sind ausschließlich technische Vergleichsdatensätze. Sie begründen keine Aussage zu Urheberschaft, Rechteinhaberschaft, Erlaubnis, Verletzung, Rechtmäßigkeit, Release-Freigabe oder einer sonstigen rechtlichen Schlussfolgerung."
+        }
         "This certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks." => {
             "Dieses Zertifikat bestätigt die erfassten Eingaben, den finalisierten Snapshot, registrierte Evidence, dokumentierte Herkunft, SHA-256-Werte und konfigurierte Workflow-Prüfungen."
         }
@@ -234,6 +237,63 @@ fn german_certificate_label(english: &str) -> String {
         (
             "K.1 Configured workflow checks",
             "K.1 Konfigurierte Workflow-Prüfungen",
+        ),
+        (
+            "K.2 Pre-release audio screening",
+            "K.2 Audio-Screening vor Veröffentlichung",
+        ),
+        (
+            "Pre-release audio screening",
+            "Audio-Screening vor Veröffentlichung",
+        ),
+        ("Local screening status", "Status des lokalen Screenings"),
+        ("Local engine", "Lokale Engine"),
+        ("Local engine version", "Version der lokalen Engine"),
+        ("Fingerprint algorithm", "Fingerprint-Algorithmus"),
+        ("Local source Evidence ID", "Lokale Quell-Evidence-ID"),
+        ("Local source path", "Lokaler Quellpfad"),
+        ("Local source SHA-256", "Lokaler Quell-SHA-256"),
+        ("Local source size (bytes)", "Lokale Quellgröße (Bytes)"),
+        ("Local measured duration (ms)", "Lokal gemessene Dauer (ms)"),
+        ("Local record path", "Pfad des lokalen Datensatzes"),
+        ("Local record SHA-256", "SHA-256 des lokalen Datensatzes"),
+        ("Local generated at", "Lokal erzeugt am"),
+        (
+            "External screening provider",
+            "Anbieter des externen Screenings",
+        ),
+        (
+            "External screening status",
+            "Status des externen Screenings",
+        ),
+        (
+            "External provider configured at snapshot",
+            "Externer Anbieter im Snapshot konfiguriert",
+        ),
+        ("External source Evidence ID", "Externe Quell-Evidence-ID"),
+        ("External source path", "Externer Quellpfad"),
+        ("External source SHA-256", "Externer Quell-SHA-256"),
+        ("External checked at", "Extern geprüft am"),
+        (
+            "External sample offset (ms)",
+            "Offset der externen Probe (ms)",
+        ),
+        (
+            "External sample duration (ms)",
+            "Dauer der externen Probe (ms)",
+        ),
+        (
+            "External source duration (ms)",
+            "Dauer der externen Quelle (ms)",
+        ),
+        ("External request count", "Anzahl externer Anfragen"),
+        ("External response archive", "Archiv der externen Antwort"),
+        ("External response SHA-256", "SHA-256 der externen Antwort"),
+        ("Provider matches", "Anbietertreffer"),
+        ("Provider match", "Anbietertreffer"),
+        (
+            "Provider-derived metadata",
+            "Vom Anbieter abgeleitete Metadaten",
         ),
         (
             "L. Technical certificate statement",
@@ -559,6 +619,171 @@ struct ManifestEvidence<'a> {
     metadata: serde_json::Value,
 }
 
+/// Sanitized portable screening snapshot for a new certificate manifest.
+///
+/// The full Chromaprint fingerprint is retained only in the dedicated local
+/// screening artifact; it is deliberately not copied into a certificate
+/// manifest. Raw provider response bytes, request signatures, and credentials
+/// are likewise excluded. This keeps the manifest reviewable while preserving
+/// the source/artifact binding needed for an integrity audit.
+fn audio_screening_manifest(state: &AudioScreeningState) -> serde_json::Value {
+    let local = &state.local;
+    let external = &state.external;
+    let matches = external.matches.iter().take(5).collect::<Vec<_>>();
+    json!({
+        "local": {
+            "schemaVersion": local.schema_version,
+            "status": local.status,
+            "engine": local.engine,
+            "engineVersion": local.engine_version,
+            "fingerprintAlgorithm": local.fingerprint_algorithm,
+            "sourceEvidenceId": local.source_evidence_id,
+            "sourceRelativePath": local.source_relative_path,
+            "sourceSha256": local.source_sha256,
+            "sourceSizeBytes": local.source_size_bytes,
+            "durationMilliseconds": local.duration_milliseconds,
+            "generatedAt": local.generated_at,
+            "artifactRelativePath": local.artifact_relative_path,
+            "artifactSha256": local.artifact_sha256,
+        },
+        "external": {
+            "schemaVersion": external.schema_version,
+            "provider": external.provider,
+            "status": external.status,
+            "sourceEvidenceId": external.source_evidence_id,
+            "sourceRelativePath": external.source_relative_path,
+            "sourceSha256": external.source_sha256,
+            "sourceSizeBytes": external.source_size_bytes,
+            "checkedAt": external.checked_at,
+            "sampleOffsetMilliseconds": external.sample_offset_milliseconds,
+            "sampleDurationMilliseconds": external.sample_duration_milliseconds,
+            "sourceDurationMilliseconds": external.source_duration_milliseconds,
+            "requestCount": external.request_count,
+            "responseRelativePath": external.response_relative_path,
+            "responseSha256": external.response_sha256,
+            "configuredAtSnapshot": external.configured_at_snapshot,
+            "matches": matches,
+        },
+        "statementScope": "technical comparison record only; no authorship, ownership, permission, infringement, legality, release-clearance, or legal conclusion",
+    })
+}
+
+/// The certificate's K.2 section intentionally contains a concise, factual
+/// screening summary. It never displays a raw local fingerprint, raw provider
+/// response, request signature, or credential.
+fn audio_screening_markdown(state: &AudioScreeningState) -> String {
+    let local = &state.local;
+    let external = &state.external;
+    let mut output = format!(
+        "- Local screening status [System verification]: **{}**\n- Local engine [System verification]: {}\n- Local engine version [System verification]: {}\n- Fingerprint algorithm [System verification]: {}\n- Local source Evidence ID [System verification]: {}\n- Local source path [System verification]: `{}`\n- Local source SHA-256 [System verification]: `{}`\n- Local source size (bytes) [System verification]: {}\n- Local measured duration (ms) [System verification]: {}\n- Local record path [System verification]: `{}`\n- Local record SHA-256 [System verification]: `{}`\n- Local generated at [System value]: {}\n\n- External screening provider [System value]: {}\n- External screening status [System verification]: **{}**\n- External provider configured at snapshot [System value]: {}\n- External source Evidence ID [System verification]: {}\n- External source path [System verification]: `{}`\n- External source SHA-256 [System verification]: `{}`\n- External checked at [System value]: {}\n- External sample offset (ms) [System value]: {}\n- External sample duration (ms) [System value]: {}\n- External source duration (ms) [System value]: {}\n- External request count [System value]: {}\n- External response archive [System verification]: `{}`\n- External response SHA-256 [System verification]: `{}`\n",
+        audio_screening_status_label(local.status),
+        documented(&local.engine),
+        documented(&local.engine_version),
+        documented(&local.fingerprint_algorithm),
+        documented(&local.source_evidence_id),
+        documented(&local.source_relative_path),
+        documented(&local.source_sha256),
+        local.source_size_bytes,
+        local
+            .duration_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        documented(&local.artifact_relative_path),
+        documented(&local.artifact_sha256),
+        local.generated_at.as_deref().unwrap_or("NOT DOCUMENTED"),
+        documented(&external.provider),
+        audio_screening_status_label(external.status),
+        recorded_bool(external.configured_at_snapshot),
+        documented(&external.source_evidence_id),
+        documented(&external.source_relative_path),
+        documented(&external.source_sha256),
+        external.checked_at.as_deref().unwrap_or("NOT DOCUMENTED"),
+        external
+            .sample_offset_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        external
+            .sample_duration_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        external
+            .source_duration_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        external.request_count,
+        external
+            .response_relative_path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED"),
+        external
+            .response_sha256
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED"),
+    );
+
+    if external.matches.is_empty() {
+        output.push_str("- Provider matches [Provider-derived metadata]: NONE RECORDED\n");
+    } else {
+        for (index, item) in external.matches.iter().take(5).enumerate() {
+            let artists = if item.artists.is_empty() {
+                "NOT DOCUMENTED".to_owned()
+            } else {
+                item.artists.join(", ")
+            };
+            let mut value = format!("{} — {artists}", documented(&item.title));
+            if let Some(album) = item
+                .album
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                value.push_str(&format!("; album {album}"));
+            }
+            if let Some(isrc) = item
+                .isrc
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                value.push_str(&format!("; ISRC {isrc}"));
+            }
+            if let Some(acrid) = item
+                .acrid
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                value.push_str(&format!("; ACRID {acrid}"));
+            }
+            if let Some(score) = item.score {
+                value.push_str(&format!("; score {score}"));
+            }
+            output.push_str(&format!(
+                "- Provider match {} [Provider-derived metadata]: {value}\n",
+                index + 1
+            ));
+        }
+    }
+    output.push_str("\nAudio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion.\n");
+    output
+}
+
+fn audio_screening_status_label(status: AudioScreeningStatus) -> &'static str {
+    match status {
+        AudioScreeningStatus::NotRun => "NOT RUN",
+        AudioScreeningStatus::FingerprintGenerated => "FINGERPRINT GENERATED",
+        AudioScreeningStatus::NoMatchDetected => "NO MATCH DETECTED",
+        AudioScreeningStatus::MatchDetected => "MATCH DETECTED",
+        AudioScreeningStatus::SkippedNotConfigured => "SKIPPED NOT CONFIGURED",
+        AudioScreeningStatus::ProviderUnavailable => "PROVIDER UNAVAILABLE",
+        AudioScreeningStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        AudioScreeningStatus::ConfigurationInvalid => "CONFIGURATION INVALID",
+        AudioScreeningStatus::EngineUnavailable => "ENGINE UNAVAILABLE",
+        AudioScreeningStatus::UnsupportedFormat => "UNSUPPORTED FORMAT",
+        AudioScreeningStatus::ProcessingFailed => "PROCESSING FAILED",
+        AudioScreeningStatus::Stale => "STALE",
+    }
+}
+
 fn phase_one_metadata(metadata: &EvidenceMetadata) -> Result<serde_json::Value> {
     let mut sanitized = serde_json::to_value(metadata)?;
     if let Some(object) = sanitized.as_object_mut() {
@@ -857,7 +1082,7 @@ fn generate_impl(
     let automatic_global_relationships =
         automatic_global_track_relationships(&track.id, &evidence_values);
     let manifest = json!({
-        "schema_version": 5,
+        "schema_version": 6,
         "track": {
             "id": track.id,
             "title": track.fields.title,
@@ -923,6 +1148,7 @@ fn generate_impl(
         },
         "steps": steps,
         "evidence": evidence_manifest,
+        "audio_screening": audio_screening_manifest(&track.audio_screening),
         "hashes": hashes,
         "certificate": {
             "id": certificate_id,
@@ -1064,13 +1290,14 @@ fn generate_impl(
     let human_contribution_md = human_contribution_markdown(&track.fields);
     let ai_audio_md = ai_audio_markdown(&track.fields);
     let ai_artwork_md = ai_artwork_markdown(&track.fields);
+    let audio_screening_md = audio_screening_markdown(&track.audio_screening);
     let revision_archives = if archived_revisions.is_empty() {
         "NONE RECORDED".to_owned()
     } else {
         archived_revisions.join(", ")
     };
     let english_certificate = format!(
-        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- Final generation ID [{final_generation_id_origin}]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: **NOT RECORDED**\n- No external timestamp evidence recorded.\n{}\nPost-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot.\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### Mandatory steps completed\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
+        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- Final generation ID [{final_generation_id_origin}]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: **NOT RECORDED**\n- No external timestamp evidence recorded.\n{}\nPost-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot.\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### K.1 Configured workflow checks\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n### K.2 Pre-release audio screening\n\n{audio_screening_md}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
         env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
@@ -2044,7 +2271,7 @@ fn certificate_format_requires_pdf(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(CERTIFICATE_FORMAT_VERSION | "4.1" | "4.0" | "3.0" | "2.0") => {
+        Some(CERTIFICATE_FORMAT_VERSION | "5.0" | "4.1" | "4.0" | "3.0" | "2.0") => {
             if !hashes.contains_key(PDF_FILE) {
                 return Err(AppError::Validation(
                     "This certificate format requires the root-level technical PDF hash.".into(),
@@ -2166,6 +2393,40 @@ mod tests {
         let sums = workspace.path().join("SHA256SUMS.txt");
         fs::write(&sums, content).expect("write SHA256SUMS fixture");
         parse_hashes(&sums)
+    }
+
+    #[test]
+    fn audio_screening_manifest_and_markdown_omit_sensitive_raw_values() {
+        let mut state = AudioScreeningState::default();
+        state.local.status = AudioScreeningStatus::FingerprintGenerated;
+        state.local.fingerprint = "RAW_CHROMAPRINT_MUST_NOT_APPEAR".into();
+        state.local.message = "ACCESS_SECRET_MUST_NOT_APPEAR".into();
+        state.local.artifact_relative_path =
+            "03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json".into();
+        state.local.artifact_sha256 = DIGEST.into();
+        state.external.status = AudioScreeningStatus::MatchDetected;
+        state.external.message = "RAW_PROVIDER_RESPONSE_MUST_NOT_APPEAR".into();
+        state
+            .external
+            .matches
+            .push(crate::model::AudioScreeningMatch {
+                title: "Provider title".into(),
+                artists: vec!["Provider artist".into()],
+                ..Default::default()
+            });
+
+        let manifest = audio_screening_manifest(&state).to_string();
+        let markdown = audio_screening_markdown(&state);
+        for forbidden in [
+            "RAW_CHROMAPRINT_MUST_NOT_APPEAR",
+            "ACCESS_SECRET_MUST_NOT_APPEAR",
+            "RAW_PROVIDER_RESPONSE_MUST_NOT_APPEAR",
+        ] {
+            assert!(!manifest.contains(forbidden), "manifest leaked {forbidden}");
+            assert!(!markdown.contains(forbidden), "markdown leaked {forbidden}");
+        }
+        assert!(manifest.contains("Provider title"));
+        assert!(markdown.contains("Provider artist"));
     }
 
     #[test]
@@ -2511,7 +2772,14 @@ mod tests {
         let manifest_path = workspace.path().join("manifest.json");
         let hashes = BTreeMap::from([(PDF_FILE.into(), DIGEST.into())]);
 
-        for version in ["2.0", "3.0", "4.0", "4.1", CERTIFICATE_FORMAT_VERSION] {
+        for version in [
+            "2.0",
+            "3.0",
+            "4.0",
+            "4.1",
+            "5.0",
+            CERTIFICATE_FORMAT_VERSION,
+        ] {
             fs::write(
                 &manifest_path,
                 format!("{{\"certificate\":{{\"format_version\":\"{version}\"}}}}\n"),

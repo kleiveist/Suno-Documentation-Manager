@@ -3,6 +3,9 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { createDemoApi } from "./demo";
 import type {
   ActionResult,
+  AudioScreeningProviderTestResult,
+  AudioScreeningSecretInput,
+  AudioScreeningSettings,
   EvidencePreview,
   FolderImportExecutionInput,
   FolderImportProposal,
@@ -44,6 +47,11 @@ export interface DesktopApi {
   /** Writes a secret to native secure storage; it is intentionally never returned. */
   updateTimestampSecret(secret: string | null): Promise<void>;
   testTimestampProvider(): Promise<TimestampProviderTestResult>;
+  getAudioScreeningSettings(): Promise<AudioScreeningSettings>;
+  updateAudioScreeningSettings(settings: AudioScreeningSettings): Promise<AudioScreeningSettings>;
+  /** Writes access credentials to native secure storage; they are intentionally never returned. */
+  updateAudioScreeningSecret(input: AudioScreeningSecretInput): Promise<void>;
+  testAudioScreeningProvider(): Promise<AudioScreeningProviderTestResult>;
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]>;
   importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle): Promise<GlobalEvidenceItem | null>;
   importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null>;
@@ -75,6 +83,8 @@ export interface DesktopApi {
   generateArtworkDisclosure(trackId: string, disclosureText?: string): Promise<ActionResult>;
   calculateHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
+  runLocalAudioScreening(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
+  runExternalAudioScreening(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   validateTrack(trackId: string): Promise<ValidationResult>;
   finalizeTrack(trackId: string, options?: FinalizeOptions, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   attachExternalTimestamp(trackId: string): Promise<TrackDetail>;
@@ -160,6 +170,22 @@ class TauriDesktopApi implements DesktopApi {
 
   testTimestampProvider(): Promise<TimestampProviderTestResult> {
     return command("test_timestamp_provider");
+  }
+
+  getAudioScreeningSettings(): Promise<AudioScreeningSettings> {
+    return command("get_audio_screening_settings");
+  }
+
+  updateAudioScreeningSettings(settings: AudioScreeningSettings): Promise<AudioScreeningSettings> {
+    return command("update_audio_screening_settings", { settings });
+  }
+
+  updateAudioScreeningSecret(input: AudioScreeningSecretInput): Promise<void> {
+    return command("update_audio_screening_secret", { input });
+  }
+
+  testAudioScreeningProvider(): Promise<AudioScreeningProviderTestResult> {
+    return command("test_audio_screening_provider");
   }
 
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]> {
@@ -306,6 +332,14 @@ class TauriDesktopApi implements DesktopApi {
 
   verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult> {
     return command("verify_hashes", { trackId, onProgress: progressChannel(onProgress) });
+  }
+
+  runLocalAudioScreening(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+    return command("run_local_audio_screening", { trackId, onProgress: progressChannel(onProgress) });
+  }
+
+  runExternalAudioScreening(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+    return command("run_external_audio_screening", { trackId, onProgress: progressChannel(onProgress) });
   }
 
   validateTrack(trackId: string): Promise<ValidationResult> {

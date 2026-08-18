@@ -23,6 +23,7 @@ Generic inherited feature pages describe template background only. The product d
 - 📝 [Deployment architecture — unavailable inherited reference](deployment-architecture.md)
 - 📝 [Provider-neutral persistence architecture — inherited template reference](persistence-architecture.md)
 - 📝 [Local persistence and recovery](persistence.md)
+- 📝 [Pre-release audio screening](pre-release-audio-screening.md)
 - 📝 [Suno Documentation Manager product architecture](product-architecture.md)
 - 📝 [Project profiles — inherited template reference](project-profiles.md)
 - 📝 [Track documentation model](track-documentation-model.md)

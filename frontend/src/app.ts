@@ -18,8 +18,16 @@ import {
 } from "./domain/workflow";
 import {
   emptyEvidenceMetadata,
+  emptyAudioScreeningSettings,
   emptyProfile,
   emptyTimestampSettings,
+  type AudioScreeningExternalSummary,
+  type AudioScreeningLocalSummary,
+  type AudioScreeningProviderTestResult,
+  type AudioScreeningProviderStatus,
+  type AudioScreeningSecretInput,
+  type AudioScreeningSettings,
+  type AudioScreeningStatus,
   type DocumentationAnswer,
   type EvidenceItem,
   type EvidencePreview,
@@ -70,7 +78,7 @@ import {
 type MainView = "dashboard" | "tracks" | "current" | "workspace" | "settings";
 type TrackTab = "overview" | "suno" | "artwork" | "release" | "evidence" | "certificate";
 type ToastKind = "success" | "error" | "info";
-export type LongOperationKind = "documents" | "hashes" | "verification" | "finalization";
+export type LongOperationKind = "documents" | "hashes" | "verification" | "finalization" | "audio_screening";
 
 interface ToastState {
   kind: ToastKind;
@@ -89,6 +97,8 @@ interface AppState {
   profile: GlobalProfile;
   timestampSettings: TimestampSettings;
   timestampProviderTest: TimestampProviderTestResult | null;
+  audioScreeningSettings: AudioScreeningSettings;
+  audioScreeningProviderTest: AudioScreeningProviderTestResult | null;
   tracks: TrackSummary[];
   albums: string[];
   track: TrackDetail | null;
@@ -123,6 +133,7 @@ export type WorkspaceScopedUiState = Pick<
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
   | "showCertificatePopup" | "folderImport"
   | "certificateBilingual" | "termsMetadataDialog" | "timestampSettings" | "timestampProviderTest"
+  | "audioScreeningSettings" | "audioScreeningProviderTest"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -144,6 +155,8 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     termsMetadataDialog: null,
     timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
     timestampProviderTest: null,
+    audioScreeningSettings: { ...emptyAudioScreeningSettings },
+    audioScreeningProviderTest: null,
     query: "",
     trackFilter: "all",
     draftDirty: false
@@ -238,13 +251,25 @@ export function operationProgressPercent(kind: LongOperationKind, progress: Oper
     if (progress.stage === "saving_final_snapshot") return 97;
     return 2;
   }
+  if (kind === "audio_screening") {
+    if (progress.stage === "preparing_audio") return 5;
+    if (progress.stage === "fingerprinting_audio") return Math.round(9 + ratio * 42);
+    if (progress.stage === "fingerprint_complete") return 55;
+    if (progress.stage === "preparing_external_check") return 62;
+    if (progress.stage === "sending_provider_request") return 70;
+    if (progress.stage === "waiting_provider_response") return 80;
+    if (progress.stage === "processing_provider_response") return 89;
+    if (progress.stage === "saving_screening_result") return 96;
+    return 2;
+  }
   if (progress.stage === "reading_hash_list") return 6;
   if (progress.stage === "verifying") return Math.round(10 + ratio * 82);
   if (progress.stage === "comparing_hashes") return 96;
   return 2;
 }
 
-export function operationStageLabel(stage: string): string {
+export function operationStageLabel(stage: string, kind?: LongOperationKind): string {
+  if (stage === "complete" && kind === "audio_screening") return "Prüfung abgeschlossen";
   return ({
     discovering_files: "Dateien werden erfasst",
     hashing: "Digitale Fingerabdrücke entstehen",
@@ -258,6 +283,14 @@ export function operationStageLabel(stage: string): string {
     writing_documents: "Dokumente werden sicher geschrieben",
     finalizing_documents: "Dokumentsatz wird aufgeräumt",
     saving_result: "Ergebnis wird lokal gespeichert",
+    preparing_audio: "Audio wird vorbereitet",
+    fingerprinting_audio: "Lokaler Audio-Fingerprint wird erzeugt",
+    fingerprint_complete: "Chromaprint-Fingerprint abgeschlossen",
+    preparing_external_check: "Externe Katalogprüfung wird vorbereitet",
+    sending_provider_request: "Audioausschnitt wird übertragen",
+    waiting_provider_response: "ACRCloud-Ergebnis wird erwartet",
+    processing_provider_response: "Provider-Ergebnis wird geprüft",
+    saving_screening_result: "Prüfergebnis wird lokal dokumentiert",
     complete: "Vorgang abgeschlossen",
     validating_finalization_gate: "Finalisierungs-Gate wird geprüft",
     collecting_final_snapshot: "Unveränderlicher Snapshot wird vorbereitet",
@@ -316,6 +349,18 @@ const OPERATION_PROGRESS_CONFIGURATION = {
       "Zertifikat, Evidence-Manifest und Zertifikats-Hashliste werden als zusammengehöriger Satz veröffentlicht.",
       "Vor dem Abschluss prüft die App die komplette SHA-256-Liste noch einmal von der Festplatte.",
       "Der finalisierte Snapshot bleibt unverändert; spätere Änderungen beginnen als ausdrücklich angelegte Revision."
+    ]
+  },
+  audio_screening: {
+    eyebrow: "Pre-Release Audio Screening",
+    title: "Audio wird technisch geprüft",
+    iconName: "tracks" as const,
+    steps: ["Audio vorbereiten", "Chromaprint erzeugen", "ACRCloud optional", "Ergebnis sichern"],
+    thresholds: [0, 8, 62, 96],
+    tips: [
+      "Der lokale Chromaprint-Fingerprint bleibt auf diesem Gerät und benötigt keine Netzwerkverbindung.",
+      "Eine ACRCloud-Anfrage wird nur nach der ausdrücklichen Aktion für diesen Track vorbereitet.",
+      "Ein Ergebnis dokumentiert technische Audio-Erkennung, keine Rechte-, Lizenz- oder Rechtsbewertung."
     ]
   }
 } as const;
@@ -507,6 +552,146 @@ export function externalTimestampStatusLabel(value: ExternalTimestampStatus): st
 
 export function timestampProviderIsReady(settings: TimestampSettings): boolean {
   return settings.enabled && settings.provider !== "disabled" && settings.status === "ready";
+}
+
+export function audioScreeningStatusLabel(value: AudioScreeningStatus): string {
+  return ({
+    not_run: "NOT RUN",
+    fingerprint_generated: "FINGERPRINT GENERATED",
+    no_match_detected: "NO MATCH DETECTED",
+    match_detected: "MATCH DETECTED",
+    skipped_not_configured: "SKIPPED – NOT CONFIGURED",
+    provider_unavailable: "PROVIDER UNAVAILABLE",
+    authentication_failed: "AUTHENTICATION FAILED",
+    configuration_invalid: "CONFIGURATION INVALID",
+    engine_unavailable: "ENGINE UNAVAILABLE",
+    unsupported_format: "UNSUPPORTED FORMAT",
+    processing_failed: "PROCESSING FAILED",
+    stale: "STALE"
+  } as const)[value];
+}
+
+export function audioScreeningProviderStatusLabel(value: AudioScreeningProviderStatus): string {
+  return ({
+    disabled: "DISABLED",
+    not_configured: "NOT CONFIGURED",
+    ready: "READY",
+    authentication_failed: "AUTHENTICATION FAILED",
+    provider_unavailable: "PROVIDER UNAVAILABLE",
+    configuration_invalid: "CONFIGURATION INVALID"
+  } as const)[value];
+}
+
+export function audioScreeningProviderIsReady(settings: AudioScreeningSettings): boolean {
+  return settings.enabled && settings.credentialsConfigured && settings.status === "ready";
+}
+
+/** A local fingerprint is current only when it remains bound to the exact authoritative release evidence. */
+export function localAudioScreeningIsCurrent(
+  local: Pick<AudioScreeningLocalSummary, "status" | "sourceEvidenceId" | "sourceRelativePath" | "sourceSha256" | "sourceSizeBytes">,
+  evidence: readonly Pick<EvidenceItem, "id" | "role" | "relativePath" | "sha256" | "sizeBytes" | "verified" | "verificationError">[]
+): boolean {
+  const release = evidence.find((item) =>
+    item.role === "release_wav" && item.verified && Boolean(item.sha256) && !item.verificationError
+  );
+  return local.status === "fingerprint_generated"
+    && Boolean(release)
+    && local.sourceEvidenceId === release!.id
+    && local.sourceRelativePath === release!.relativePath
+    && local.sourceSha256 === release!.sha256
+    && local.sourceSizeBytes === release!.sizeBytes;
+}
+
+/**
+ * Do not let a record from an earlier release path, hash or file size look
+ * current while the native layer records the next stale transition.
+ */
+export function visibleLocalAudioScreening(
+  local: AudioScreeningLocalSummary,
+  evidence: readonly EvidenceItem[]
+): AudioScreeningLocalSummary {
+  if (local.status === "fingerprint_generated" && !localAudioScreeningIsCurrent(local, evidence)) {
+    return {
+      ...local,
+      status: "stale",
+      message: "Der lokale Fingerprint ist nicht mehr an die aktuelle finale Release-Datei gebunden. Führe die lokale Prüfung erneut aus."
+    };
+  }
+  return local;
+}
+
+/**
+ * An external provider result is only presentation-current when its recorded
+ * source is the current authoritative release. Optional NOT RUN/SKIPPED
+ * states intentionally have no source binding and stay non-blocking.
+ */
+export function externalAudioScreeningIsCurrent(
+  external: Pick<AudioScreeningExternalSummary, "status" | "sourceEvidenceId" | "sourceRelativePath" | "sourceSha256" | "sourceSizeBytes">,
+  evidence: readonly Pick<EvidenceItem, "id" | "role" | "relativePath" | "sha256" | "sizeBytes" | "verified" | "verificationError">[]
+): boolean {
+  const hasSourceBinding = Boolean(
+    external.sourceEvidenceId
+    || external.sourceRelativePath
+    || external.sourceSha256
+    || external.sourceSizeBytes
+  );
+  if (!hasSourceBinding) return true;
+  const release = evidence.find((item) =>
+    item.role === "release_wav" && item.verified && Boolean(item.sha256) && !item.verificationError
+  );
+  return Boolean(release)
+    && external.sourceEvidenceId === release!.id
+    && external.sourceRelativePath === release!.relativePath
+    && external.sourceSha256 === release!.sha256
+    && external.sourceSizeBytes === release!.sizeBytes;
+}
+
+/**
+ * A legacy/new track can legitimately still carry `not_run` while its global
+ * provider configuration says that no external request can be made. Surface
+ * that as the more useful non-blocking skipped state without changing the
+ * persisted per-track result. Native code remains the authority for every
+ * recorded screening result.
+ */
+export function visibleExternalAudioScreening(
+  external: Pick<AudioScreeningExternalSummary, "status" | "message" | "sourceEvidenceId" | "sourceRelativePath" | "sourceSha256" | "sourceSizeBytes">,
+  settings: Pick<AudioScreeningSettings, "status">,
+  evidence: readonly Pick<EvidenceItem, "id" | "role" | "relativePath" | "sha256" | "sizeBytes" | "verified" | "verificationError">[] = []
+): Pick<AudioScreeningExternalSummary, "status" | "message"> {
+  if (external.status !== "not_run" && external.status !== "skipped_not_configured" && external.status !== "stale"
+    && !externalAudioScreeningIsCurrent(external, evidence)) {
+    return {
+      status: "stale",
+      message: "Das externe Katalogergebnis ist nicht mehr an die aktuelle finale Release-Datei gebunden. Starte die Prüfung bei Bedarf erneut."
+    };
+  }
+  if (external.status === "not_run" && (settings.status === "disabled" || settings.status === "not_configured")) {
+    return {
+      status: "skipped_not_configured",
+      message: settings.status === "disabled"
+        ? "ACRCloud ist nicht aktiviert; es wurde keine externe Katalogprüfung gestartet."
+        : "ACRCloud-Zugangsdaten fehlen; es wurde keine externe Katalogprüfung gestartet."
+    };
+  }
+  return external;
+}
+
+function audioScreeningStatusClass(status: AudioScreeningStatus): "is-valid" | "is-warning" | "" {
+  if (status === "fingerprint_generated" || status === "no_match_detected") return "is-valid";
+  if (["match_detected", "stale", "provider_unavailable", "authentication_failed", "configuration_invalid", "engine_unavailable", "unsupported_format", "processing_failed"].includes(status)) return "is-warning";
+  return "";
+}
+
+function formatAudioDuration(milliseconds: number | undefined): string {
+  if (!Number.isFinite(milliseconds) || !milliseconds || milliseconds < 0) return "Nicht dokumentiert";
+  const totalSeconds = Math.round(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function formatAudioTimestamp(milliseconds: number | undefined): string {
+  return formatAudioDuration(milliseconds);
 }
 
 export function externalTimestampSummaryFor(
@@ -849,6 +1034,8 @@ export class SunoDocumentationApp {
     profile: { ...emptyProfile },
     timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
     timestampProviderTest: null,
+    audioScreeningSettings: { ...emptyAudioScreeningSettings },
+    audioScreeningProviderTest: null,
     tracks: [],
     albums: [],
     track: null,
@@ -975,7 +1162,9 @@ export class SunoDocumentationApp {
         ? "discovering_files"
         : kind === "finalization"
           ? "validating_finalization_gate"
-          : "reading_hash_list";
+          : kind === "audio_screening"
+            ? "preparing_audio"
+            : "reading_hash_list";
     this.state.busy = true;
     this.state.busyLabel = label;
     this.state.operationProgress = {
@@ -1047,7 +1236,7 @@ export class SunoDocumentationApp {
     const percentLabel = current.querySelector<HTMLElement>('[data-operation-value="percent"]');
     if (percentLabel) percentLabel.textContent = `${percent}%`;
     const stageLabel = current.querySelector<HTMLElement>('[data-operation-value="stage"]');
-    if (stageLabel) stageLabel.textContent = operationStageLabel(progress.stage);
+    if (stageLabel) stageLabel.textContent = operationStageLabel(progress.stage, operation.kind);
     const detailLabel = current.querySelector<HTMLElement>('[data-operation-value="detail"]');
     if (detailLabel) detailLabel.textContent = detail;
 
@@ -1105,7 +1294,7 @@ export class SunoDocumentationApp {
           <div class="operation-orbit" aria-hidden="true"><i></i><i></i><i></i><span>${icon(configuration.iconName)}</span><b data-operation-value="percent">${percent}%</b></div>
           <div class="operation-stream" aria-hidden="true"><i>01</i><i>a7</i><i>f3</i><i>9c</i><i>42</i><i>e8</i></div>
         </div>
-        <div class="operation-status"><strong data-operation-value="stage">${escapeHtml(operationStageLabel(progress.stage))}</strong><span data-operation-value="detail">${escapeHtml(detail)}</span><code data-operation-value="file" title="${escapeHtml(progress.currentFile ?? "")}"${progress.currentFile ? "" : " hidden"}>${escapeHtml(progress.currentFile ?? "")}</code></div>
+        <div class="operation-status"><strong data-operation-value="stage">${escapeHtml(operationStageLabel(progress.stage, operation.kind))}</strong><span data-operation-value="detail">${escapeHtml(detail)}</span><code data-operation-value="file" title="${escapeHtml(progress.currentFile ?? "")}"${progress.currentFile ? "" : " hidden"}>${escapeHtml(progress.currentFile ?? "")}</code></div>
         <div class="operation-meter" data-operation-value="meter" role="progressbar" aria-label="Fortschritt" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><i data-operation-value="meter-bar" style="width:${percent}%"></i></div>
         <ol class="operation-steps">${configuration.steps.map((step, index) => `<li data-operation-step class="${index < activeStep ? "is-complete" : index === activeStep ? "is-active" : ""}"><span data-operation-step-badge="${index < activeStep ? "complete" : "pending"}">${index < activeStep ? icon("check") : index + 1}</span><strong>${escapeHtml(step)}</strong></li>`).join("")}</ol>
         <div class="operation-tip">${icon("info")}<p><strong>Währenddessen</strong><span data-operation-value="tip">${escapeHtml(tip)}</span></p></div>
@@ -1151,6 +1340,8 @@ export class SunoDocumentationApp {
       termsMetadataDialog: this.state.termsMetadataDialog,
       timestampSettings: this.state.timestampSettings,
       timestampProviderTest: this.state.timestampProviderTest,
+      audioScreeningSettings: this.state.audioScreeningSettings,
+      audioScreeningProviderTest: this.state.audioScreeningProviderTest,
       query: this.state.query,
       trackFilter: this.state.trackFilter,
       draftDirty: this.draftDirty
@@ -1158,10 +1349,10 @@ export class SunoDocumentationApp {
     Object.assign(this.state, resetState);
     this.draftDirty = draftDirty;
     const loaded = await this.withBusy("Workspace wird eingelesen …", async () => {
-      const [profile, timestampSettings, tracks, albums, workflow, globalEvidence] = await Promise.all([
-        this.api.getProfile(), this.api.getTimestampSettings(), this.api.listTracks(), this.api.listAlbums(), this.api.getWorkflow(), this.api.listGlobalEvidence()
+      const [profile, timestampSettings, audioScreeningSettings, tracks, albums, workflow, globalEvidence] = await Promise.all([
+        this.api.getProfile(), this.api.getTimestampSettings(), this.api.getAudioScreeningSettings(), this.api.listTracks(), this.api.listAlbums(), this.api.getWorkflow(), this.api.listGlobalEvidence()
       ]);
-      return { profile, timestampSettings, tracks, albums, workflow, globalEvidence };
+      return { profile, timestampSettings, audioScreeningSettings, tracks, albums, workflow, globalEvidence };
     });
     if (!loaded) {
       this.state.workspace = null;
@@ -1169,6 +1360,7 @@ export class SunoDocumentationApp {
     }
     this.state.profile = loaded.profile;
     this.state.timestampSettings = loaded.timestampSettings;
+    this.state.audioScreeningSettings = loaded.audioScreeningSettings;
     this.state.tracks = loaded.tracks;
     this.state.albums = loaded.albums;
     this.state.workflow = loaded.workflow;
@@ -1904,11 +2096,51 @@ export class SunoDocumentationApp {
             : `<div class="field-grid two-col">${this.automatedDateField("finalExportDate", "Datum der letzten Bearbeitung", finalDateValue, finalDateOrigin, true, "Kein gültiges WAV-Metadatum erkannt – bitte Datum manuell dokumentieren.")}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, releaseNoteChoices)}</div>`}
           <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Der ursprüngliche Quelldateiname wird getrennt vom verwalteten Pfad dokumentiert. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Finale Release-Audiodatei importieren"], ["release_mp3", "Zusätzliche MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
           body += this.filenameConfirmation(track, "release_wav", "releaseFilenameDifferenceConfirmed", draft.releaseFilenameDifferenceConfirmed, "Release-Datei");
+          body += this.renderPreReleaseAudioScreening(track);
         }
         break;
     }
     const locked = isTrackContentLocked(track.status);
     return `<form id="track-step-form" class="workflow-form ${locked ? "is-read-only" : ""}" data-step="${stepId}" ${locked ? `aria-label="Historischer Snapshot – schreibgeschützt"` : ""}><fieldset class="workflow-form-fields" ${locked ? "disabled" : ""}>${this.renderStepConsistencyIssues(track, stepId)}${body}</fieldset>${locked ? "" : `<div class="form-save"><span>${icon("shield")} Änderungen bleiben lokal im Workspace.</span><button class="button button--primary" type="submit">${icon("check")} Schritt speichern</button></div>`}</form>`;
+  }
+
+  private renderPreReleaseAudioScreening(track: TrackDetail): string {
+    const local = visibleLocalAudioScreening(track.audioScreening.local, track.evidence);
+    const external = track.audioScreening.external;
+    const externalCurrent = externalAudioScreeningIsCurrent(external, track.evidence);
+    const visibleExternal = visibleExternalAudioScreening(external, this.state.audioScreeningSettings, track.evidence);
+    const locked = isTrackContentLocked(track.status);
+    const release = track.evidence.find((item) => item.id === local.sourceEvidenceId)
+      ?? track.evidence.find((item) => item.role === "release_wav" && item.verified && Boolean(item.sha256));
+    const sourceLabel = release?.fileName ?? local.sourceRelativePath ?? "Keine aktuelle Release-Datei";
+    const canRunLocal = Boolean(track.evidence.some((item) => item.role === "release_wav" && item.verified && item.sha256));
+    const localCurrent = localAudioScreeningIsCurrent(track.audioScreening.local, track.evidence);
+    const localClass = audioScreeningStatusClass(local.status);
+    const externalClass = audioScreeningStatusClass(visibleExternal.status);
+    return `<section class="pre-release-screening">
+      <header><div><p class="overline">Pre-Release Audio Screening</p><h4>Technische Audio-Erkennung</h4><p>Die lokale Prüfung gehört zur aktuellen finalen Release-Datei. Die optionale externe Katalogprüfung ist kein Finalisierungsblocker.</p></div></header>
+      <div class="screening-summary-grid">
+        <article class="screening-summary ${localClass}">
+          <div class="screening-summary-head"><span>${icon("hash")}</span><div><small>Lokale Audio-Fingerprint-Prüfung</small><strong>Chromaprint</strong></div><b>${escapeHtml(audioScreeningStatusLabel(local.status))}</b></div>
+          <p>${escapeHtml(local.message)}</p>
+          <dl>
+            <div><dt>Quelle</dt><dd>${escapeHtml(sourceLabel)}</dd></div>
+            <div><dt>Source SHA-256</dt><dd>${local.sourceSha256 ? `<code>${escapeHtml(local.sourceSha256)}</code>` : "Nicht dokumentiert"}</dd></div>
+            <div><dt>Audio-Dauer</dt><dd>${formatAudioDuration(local.durationMilliseconds)}</dd></div>
+            <div><dt>Chromaprint</dt><dd>${escapeHtml([local.engine, local.engineVersion].filter(Boolean).join(" ") || "Nicht dokumentiert")}</dd></div>
+          </dl>
+          ${local.generatedAt ? `<small class="screening-checked-at">Erzeugt: ${formatDate(local.generatedAt, true)}</small>` : ""}
+          <button type="button" class="button button--secondary" data-action="run-local-audio-screening" ${locked || !canRunLocal ? "disabled" : ""}>${icon("scan")} Lokale Prüfung ${localCurrent ? "erneut" : "starten"}</button>
+        </article>
+        <article class="screening-summary ${externalClass}">
+          <div class="screening-summary-head"><span>${icon("tracks")}</span><div><small>Externe Katalogprüfung</small><strong>ACRCloud</strong></div><b>${escapeHtml(audioScreeningStatusLabel(visibleExternal.status))}</b></div>
+          <p>${escapeHtml(visibleExternal.message)}</p>
+          ${externalCurrent && external.checkedAt ? `<small class="screening-checked-at">Zuletzt geprüft: ${formatDate(external.checkedAt, true)}</small>` : ""}
+          ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="screening-match-warning">${icon("alert")} Ein externer Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</div>` : ""}
+        </article>
+      </div>
+      <p class="screening-disclaimer">${icon("info")} Die Prüfung ist eine technische Audio-Erkennung. Sie stellt keine Urheberrechts-, Lizenz- oder Nichtverletzungsprüfung dar.</p>
+    </section>`;
   }
 
   private renderEvidence(track: TrackDetail, embedded = false): string {
@@ -1993,8 +2225,47 @@ export class SunoDocumentationApp {
       <div class="integrity-actions"><article class="action-card">${icon("file")}<div><h4>1. Dokumente erzeugen</h4><p>Versionierte Markdown- und Textdokumente aus den aktuellen Angaben erstellen.</p><span>${track.documents.current ? "Aktuell · " + formatDate(track.documents.generatedAt, true) : "Ausstehend oder veraltet"}</span></div><button class="button button--secondary" data-action="generate-documents" ${locked ? "disabled" : ""}>Erzeugen</button></article>
       <article class="action-card">${icon("hash")}<div><h4>2. SHA-256 berechnen</h4><p>Alle relevanten Dateien in einer extern prüfbaren Hashliste erfassen.</p><span>${track.integrity.generated ? `${track.integrity.fileCount} Dateien` : "Ausstehend"}</span></div><button class="button button--secondary" data-action="calculate-hashes" ${locked || !track.documents.current ? "disabled" : ""}>Berechnen</button></article>
       <article class="action-card">${icon("shield")}<div><h4>3. Prüfsummen verifizieren</h4><p>Hashliste erneut lesen und jede erfasste Datei nativ überprüfen.</p><span>${track.integrity.verified ? formatDate(track.integrity.verifiedAt, true) : "Ausstehend"}</span></div><button class="button button--primary" data-action="verify-hashes" ${!track.integrity.generated ? "disabled" : ""}>Verifizieren</button></article></div>
+      ${this.renderAudioScreeningIntegritySection(track)}
       <div class="technical-note">${icon("info")}<p><strong>Unabhängig prüfbar.</strong> SHA256SUMS.txt bleibt möglichst mit <code>sha256sum -c</code> kompatibel. Zertifikat, Archiv und interne Verwaltungsdaten werden nicht in dieselbe Hashliste aufgenommen.</p></div>
     </div>`;
+  }
+
+  private renderAudioScreeningIntegritySection(track: TrackDetail): string {
+    const local = visibleLocalAudioScreening(track.audioScreening.local, track.evidence);
+    const external = track.audioScreening.external;
+    const settings = this.state.audioScreeningSettings;
+    const externalCurrent = externalAudioScreeningIsCurrent(external, track.evidence);
+    const visibleExternal = visibleExternalAudioScreening(external, settings, track.evidence);
+    const locked = isTrackContentLocked(track.status);
+    const localReady = localAudioScreeningIsCurrent(track.audioScreening.local, track.evidence);
+    const providerReady = audioScreeningProviderIsReady(settings);
+    const canRetryProvider = settings.enabled
+      && settings.credentialsConfigured
+      && settings.status !== "configuration_invalid";
+    const externalAction = locked
+      ? `<button class="button button--secondary" disabled>${icon("lock")} Snapshot geschützt</button>`
+      : !localReady
+        ? `<button class="button button--secondary" data-action="run-local-audio-screening">${icon("scan")} Zuerst lokale Prüfung</button>`
+        : providerReady || canRetryProvider
+          ? `<button class="button button--primary" data-action="run-external-audio-screening">${icon("upload")} ${external.status === "provider_unavailable" || external.status === "authentication_failed" ? "Erneut versuchen" : "ACRCloud-Prüfung starten"}</button>`
+          : `<button class="button button--secondary" data-action="open-audio-screening-settings">${icon("settings")} Zu Einstellungen</button>`;
+    const sample = externalCurrent && external.sampleOffsetMilliseconds !== undefined && external.sampleDurationMilliseconds !== undefined
+      ? `${formatAudioTimestamp(external.sampleOffsetMilliseconds)}–${formatAudioTimestamp(external.sampleOffsetMilliseconds + external.sampleDurationMilliseconds)}`
+      : "Nicht dokumentiert";
+    const matches = external.matches.length
+      ? `<div class="screening-match-list">${external.matches.map((match) => `<article><strong>${escapeHtml(match.title || "Titel nicht dokumentiert")}</strong><span>${escapeHtml((match.artists ?? []).join(", ") || "Artist nicht dokumentiert")}${match.album ? ` · ${escapeHtml(match.album)}` : ""}${match.score !== undefined ? ` · Score ${escapeHtml(String(match.score))}` : ""}</span>${match.isrc || match.acrid ? `<small>${match.isrc ? `ISRC ${escapeHtml(match.isrc)}` : ""}${match.isrc && match.acrid ? " · " : ""}${match.acrid ? `ACRID ${escapeHtml(match.acrid)}` : ""}</small>` : ""}</article>`).join("")}</div>`
+      : "";
+    return `<section class="panel audio-screening-integrity-section">
+      <div class="panel-heading"><div><p class="overline">Pre-Release Audio Screening</p><h3>Audio-Fingerprint</h3><p>Chromaprint ist ein akustischer Fingerprint und wird getrennt von der SHA-256-Dateiintegrität dargestellt. ACRCloud bleibt eine bewusste, optionale externe Prüfung.</p></div></div>
+      <div class="audio-screening-integrity-grid">
+        <article class="audio-screening-card ${audioScreeningStatusClass(local.status)}"><span>${icon("hash")}</span><div><small>Chromaprint · lokal</small><h4>${escapeHtml(audioScreeningStatusLabel(local.status))}</h4><p>${escapeHtml(local.message)}</p>${local.generatedAt ? `<small>Erzeugt: ${formatDate(local.generatedAt, true)}</small>` : ""}</div></article>
+        <article class="audio-screening-card ${audioScreeningStatusClass(visibleExternal.status)}"><span>${icon("tracks")}</span><div><small>ACRCloud · extern</small><h4>${escapeHtml(audioScreeningStatusLabel(visibleExternal.status))}</h4><p>${escapeHtml(visibleExternal.message)}</p>${externalCurrent && external.checkedAt ? `<small>Geprüft: ${formatDate(external.checkedAt, true)} · Sample: ${sample}</small>` : ""}</div></article>
+      </div>
+      ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="audio-screening-alert">${icon("alert")}<div><strong>ACRCloud meldet eine Audio-Übereinstimmung</strong><span>Der externe Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</span></div></div>${matches}` : ""}
+      ${!settings.enabled || !settings.credentialsConfigured ? `<p class="audio-screening-configuration">Extern: ÜBERSPRUNGEN – kein ACRCloud-Zugang eingerichtet. Die lokale Chromaprint-Prüfung bleibt davon unabhängig.</p>` : ""}
+      <div class="audio-screening-actions">${externalAction}</div>
+      <p class="screening-disclaimer">${icon("info")} Die Audio-Erkennung ist keine Urheberrechts-, Lizenz- oder Nichtverletzungsprüfung.</p>
+    </section>`;
   }
 
   private renderExternalTimestampSection(track: TrackDetail): string {
@@ -2148,6 +2419,7 @@ export class SunoDocumentationApp {
   private renderSettings(): string {
     const profile = this.state.profile;
     const timestampSettings = this.state.timestampSettings;
+    const audioScreeningSettings = this.state.audioScreeningSettings;
     const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
     const terms = this.state.globalEvidence.filter((item) => item.role === "suno_terms_rights");
     return `<div class="page-content settings-page">
@@ -2158,6 +2430,7 @@ export class SunoDocumentationApp {
         <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
         <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
         ${this.renderTimestampSettingsSection(timestampSettings)}
+        ${this.renderAudioScreeningSettingsSection(audioScreeningSettings)}
         <div class="form-save settings-save"><span>${icon("shield")} Stammdaten verbleiben in der lokalen Workspace-Datenbank.</span><button class="button button--primary" type="submit">${icon("check")} Einstellungen speichern</button></div>
       </form>
       <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
@@ -2185,6 +2458,28 @@ export class SunoDocumentationApp {
       <div class="timestamp-provider-status ${statusClass}"><div><strong>Status: ${escapeHtml(timestampProviderStatusLabel(status))}</strong><span>${escapeHtml(message || "Noch nicht getestet.")}</span>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-timestamp-provider" ${settings.enabled && settings.provider !== "disabled" ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
       <div data-timestamp-provider-configuration>${this.renderTimestampProviderConfiguration(settings)}</div>
       <p class="timestamp-settings-note">${icon("shield")} Zugangsdaten werden ausschließlich über die getrennte lokale sichere Konfiguration gespeichert. Sie erscheinen nie in Tracks, Evidenz, PDFs, Manifesten oder Revisionen.</p>
+    </div></div>`;
+  }
+
+  private renderAudioScreeningSettingsSection(settings: AudioScreeningSettings): string {
+    const result = this.state.audioScreeningProviderTest;
+    const status = result?.status ?? settings.status;
+    const message = result?.message ?? settings.statusMessage;
+    const testedAt = result?.testedAt ?? settings.lastTestedAt;
+    const statusClass = status === "ready" ? "is-valid" : status === "disabled" || status === "not_configured" ? "" : "is-warning";
+    const engineStatus = settings.localEngineAvailable ? "YES" : "NO";
+    const engineVersion = settings.localEngineVersion ? ` · ${settings.localEngineVersion}` : "";
+    return `<div class="settings-section audio-screening-settings-section"><div class="settings-section-copy"><span>06</span><div><h3>Pre-Release Audio Screening</h3><p>Lokaler Chromaprint-Fingerprint plus eine bewusst gestartete, optionale ACRCloud-Katalogprüfung.</p></div></div><div>
+      <div class="audio-screening-local-engine"><span>${icon("hash")}</span><div><strong>Lokale Prüfung: Chromaprint verfügbar: ${engineStatus}${escapeHtml(engineVersion)}</strong><small>Die lokale Fingerprint-Erzeugung benötigt keine Netzwerkverbindung.</small></div></div>
+      <label class="toggle-row"><span><strong>ACRCloud aktiviert</strong><small>Die externe Prüfung wird nie beim App-Start, Import, Hashing oder Finalisieren ausgelöst.</small></span><input type="checkbox" name="audioScreeningEnabled" aria-label="ACRCloud-Audio-Screening aktivieren" ${settings.enabled ? "checked" : ""}><i aria-hidden="true"></i></label>
+      <div class="field-grid two-col timestamp-settings-grid">
+        ${this.textField("audioScreeningHost", "ACRCloud Host", "z. B. identify-eu-west-1.acrcloud.com", settings.host)}
+        ${this.textField("audioScreeningTimeoutSeconds", "Timeout (Sekunden, max. 120)", "30", String(settings.timeoutSeconds), false, "number")}
+        <label class="field"><span class="field-label">Access Key</span><input type="password" name="audioScreeningAccessKey" autocomplete="new-password" placeholder="Nur lokal sicher speichern"></label>
+        <label class="field"><span class="field-label">Access Secret</span><input type="password" name="audioScreeningAccessSecret" autocomplete="new-password" placeholder="Nur lokal sicher speichern"></label>
+      </div>
+      <div class="timestamp-provider-status ${statusClass}"><div><strong>Status: ${escapeHtml(audioScreeningProviderStatusLabel(status))}</strong><span>${escapeHtml(message || "Noch nicht getestet.")}</span><small>${settings.credentialsConfigured ? "Access Key und Access Secret sind lokal konfiguriert; Werte werden nie angezeigt." : "Noch keine vollständigen lokalen Zugangsdaten hinterlegt."}</small>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-audio-screening-provider" ${settings.enabled ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
+      <p class="timestamp-settings-note">${icon("shield")} SunoDM zeigt kein ACRCloud-Loginfenster. Lege das Projekt bei ACRCloud an und hinterlege hier nur Host, Access Key und Access Secret. Die Zugangsdaten bleiben getrennt von Trackdaten, Evidenz, PDFs, Manifesten und Revisionen.</p>
     </div></div>`;
   }
 
@@ -2247,11 +2542,40 @@ export class SunoDocumentationApp {
     };
   }
 
+  private readAudioScreeningSettings(form: HTMLFormElement): AudioScreeningSettings {
+    const data = new FormData(form);
+    const previous = this.state.audioScreeningSettings;
+    const read = (name: string, fallback: string): string => {
+      const value = data.get(name);
+      return typeof value === "string" ? value : fallback;
+    };
+    const timeoutCandidate = Number(read("audioScreeningTimeoutSeconds", String(previous.timeoutSeconds)));
+    const timeoutSeconds = Number.isFinite(timeoutCandidate) && timeoutCandidate > 0
+      ? Math.min(Math.trunc(timeoutCandidate), 120)
+      : previous.timeoutSeconds;
+    return {
+      ...previous,
+      enabled: data.get("audioScreeningEnabled") === "on",
+      host: read("audioScreeningHost", previous.host).trim(),
+      timeoutSeconds
+    };
+  }
+
   private readTimestampSecret(form: HTMLFormElement): string | null | undefined {
     const data = new FormData(form);
     if (data.get("timestampClearSecret") === "on") return null;
     const value = data.get("timestampSecret");
     return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+
+  private readAudioScreeningSecret(form: HTMLFormElement): AudioScreeningSecretInput | undefined {
+    const data = new FormData(form);
+    const accessKey = data.get("audioScreeningAccessKey");
+    const accessSecret = data.get("audioScreeningAccessSecret");
+    const input: AudioScreeningSecretInput = {};
+    if (typeof accessKey === "string" && accessKey.trim()) input.accessKey = accessKey;
+    if (typeof accessSecret === "string" && accessSecret.trim()) input.accessSecret = accessSecret;
+    return Object.keys(input).length ? input : undefined;
   }
 
   private async updateTimestampSettingsFromForm(
@@ -2264,6 +2588,19 @@ export class SunoDocumentationApp {
     if (secret !== undefined) await this.api.updateTimestampSecret(secret);
     const test = testProvider ? await this.api.testTimestampProvider() : null;
     const refreshed = await this.api.getTimestampSettings();
+    return { settings: refreshed, test };
+  }
+
+  private async updateAudioScreeningSettingsFromForm(
+    form: HTMLFormElement,
+    testProvider = false
+  ): Promise<{ settings: AudioScreeningSettings; test: AudioScreeningProviderTestResult | null }> {
+    const settings = this.readAudioScreeningSettings(form);
+    const secret = this.readAudioScreeningSecret(form);
+    await this.api.updateAudioScreeningSettings(settings);
+    if (secret) await this.api.updateAudioScreeningSecret(secret);
+    const test = testProvider ? await this.api.testAudioScreeningProvider() : null;
+    const refreshed = await this.api.getAudioScreeningSettings();
     return { settings: refreshed, test };
   }
 
@@ -2670,6 +3007,13 @@ export class SunoDocumentationApp {
           this.render();
         }
         break;
+      case "open-audio-screening-settings":
+        if (await this.flushDraft()) {
+          this.state.view = "settings";
+          this.state.activeStep = null;
+          this.render();
+        }
+        break;
       case "test-timestamp-provider": {
         const form = button.closest<HTMLFormElement>("#profile-form");
         if (!form) break;
@@ -2682,6 +3026,21 @@ export class SunoDocumentationApp {
           this.state.timestampProviderTest = outcome.test;
           const successful = outcome.test?.status === "ready";
           this.showToast(successful ? "success" : "info", "Verbindungstest", outcome.test?.message ?? outcome.settings.statusMessage);
+        }
+        break;
+      }
+      case "test-audio-screening-provider": {
+        const form = button.closest<HTMLFormElement>("#profile-form");
+        if (!form) break;
+        const outcome = await this.withBusy(
+          "ACRCloud-Konfiguration wird geprüft …",
+          () => this.updateAudioScreeningSettingsFromForm(form, true)
+        );
+        if (outcome) {
+          this.state.audioScreeningSettings = outcome.settings;
+          this.state.audioScreeningProviderTest = outcome.test;
+          const successful = outcome.test?.status === "ready";
+          this.showToast(successful ? "success" : "info", "ACRCloud-Verbindung", outcome.test?.message ?? outcome.settings.statusMessage);
         }
         break;
       }
@@ -2705,6 +3064,8 @@ export class SunoDocumentationApp {
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
+      case "run-local-audio-screening": await this.runProgressAction("audio_screening", "Lokaler Chromaprint-Fingerprint wird erzeugt …", (onProgress) => this.api.runLocalAudioScreening(this.requireTrack().id, onProgress)); break;
+      case "run-external-audio-screening": await this.runProgressAction("audio_screening", "ACRCloud-Prüfung wird vorbereitet …", (onProgress) => this.api.runExternalAudioScreening(this.requireTrack().id, onProgress)); break;
       case "calculate-hashes": await this.runProgressAction("hashes", "SHA-256 wird berechnet …", (onProgress) => this.api.calculateHashes(this.requireTrack().id, onProgress)); break;
       case "verify-hashes": await this.runProgressAction("verification", "Prüfsummen werden verifiziert …", (onProgress) => this.api.verifyHashes(this.requireTrack().id, onProgress), true); break;
       case "finalize-track": await this.finalizeTrack(); break;
@@ -2887,12 +3248,15 @@ export class SunoDocumentationApp {
       };
       const saved = await this.withBusy("Einstellungen werden gespeichert …", async () => ({
         profile: await this.api.updateProfile(profile),
-        timestamp: await this.updateTimestampSettingsFromForm(form)
+        timestamp: await this.updateTimestampSettingsFromForm(form),
+        audioScreening: await this.updateAudioScreeningSettingsFromForm(form)
       }));
       if (saved) {
         this.state.profile = saved.profile;
         this.state.timestampSettings = saved.timestamp.settings;
         this.state.timestampProviderTest = null;
+        this.state.audioScreeningSettings = saved.audioScreening.settings;
+        this.state.audioScreeningProviderTest = null;
         await this.refreshTracks();
         this.showToast("success", "Einstellungen gespeichert", "Offene Tracks wurden aktualisiert; finalisierte Track-Snapshots bleiben unverändert.");
       }

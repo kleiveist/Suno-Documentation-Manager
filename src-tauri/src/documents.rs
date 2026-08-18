@@ -1,7 +1,8 @@
 use crate::error::{AppError, Result};
 use crate::model::{
-    DocumentPreview, DocumentationAnswer, EvidenceItem, EvidenceRole, OperationProgress, Profile,
-    StepState, SunoLyricsContentSource, SunoLyricsContentType, TrackFields, TrackRecord,
+    AudioScreeningState, AudioScreeningStatus, DocumentPreview, DocumentationAnswer, EvidenceItem,
+    EvidenceRole, OperationProgress, Profile, StepState, SunoLyricsContentSource,
+    SunoLyricsContentType, TrackFields, TrackRecord,
 };
 use crate::security::{atomic_write, contained_path, portable_relative, sha256_bytes};
 use serde::Serialize;
@@ -11,7 +12,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.8";
+pub const TEMPLATE_VERSION: &str = "1.9";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
 const TEXT_MARKER_HEADER: &str = "# suno-documentation-manager:template-v1\n";
@@ -35,6 +36,10 @@ struct Fingerprint<'a> {
     workflow_version: &'a str,
     profile: &'a Profile,
     fields: &'a crate::model::TrackFields,
+    /// Includes the durable state (including the local fingerprint) only in
+    /// the internal freshness digest. It is never rendered into a managed
+    /// Markdown/text document by this module.
+    audio_screening: &'a AudioScreeningState,
     evidence: Vec<(
         &'a str,
         &'a str,
@@ -71,6 +76,7 @@ pub fn input_fingerprint(
         workflow_version: &track.workflow_version,
         profile,
         fields: &normalized_fields,
+        audio_screening: &track.audio_screening,
         evidence: evidence_values,
     })?;
     Ok(sha256_bytes(&value))
@@ -722,6 +728,130 @@ fn evidence_list(evidence: &[EvidenceItem]) -> String {
         .collect()
 }
 
+/// Render the portable, review-friendly screening summary without exposing the
+/// full local fingerprint, raw ACRCloud response, request signature, or any
+/// credential. The complete fingerprint remains only in the dedicated local
+/// JSON artifact, which is integrity-protected with the rest of the phase-one
+/// documentation.
+fn audio_screening_documentation_summary(state: &AudioScreeningState) -> String {
+    let local = &state.local;
+    let external = &state.external;
+    let matches = if external.matches.is_empty() {
+        "NONE RECORDED".to_owned()
+    } else {
+        external
+            .matches
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(index, item)| {
+                let artists = if item.artists.is_empty() {
+                    "NOT DOCUMENTED".to_owned()
+                } else {
+                    item.artists.join(", ")
+                };
+                let mut value = format!("{} — {}", value_or_missing(&item.title), artists);
+                if let Some(album) = item
+                    .album
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    value.push_str(&format!("; album {album}"));
+                }
+                if let Some(isrc) = item
+                    .isrc
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    value.push_str(&format!("; ISRC {isrc}"));
+                }
+                if let Some(acrid) = item
+                    .acrid
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    value.push_str(&format!("; ACRID {acrid}"));
+                }
+                if let Some(score) = item.score {
+                    value.push_str(&format!("; score {score}"));
+                }
+                format!("- Provider match {}: {value}\n", index + 1)
+            })
+            .collect::<String>()
+    };
+    let match_block = if matches == "NONE RECORDED" {
+        "- Provider matches: NONE RECORDED\n".to_owned()
+    } else {
+        matches
+    };
+
+    format!(
+        "## Pre-release audio screening\n\n- Local screening status [System verification]: {}\n- Local engine [System verification]: {}\n- Local engine version [System verification]: {}\n- Fingerprint algorithm [System verification]: {}\n- Local source Evidence ID [System verification]: {}\n- Local source path [System verification]: {}\n- Local source SHA-256 [System verification]: {}\n- Local source size (bytes) [System verification]: {}\n- Local measured duration (ms) [System verification]: {}\n- Local record path [System verification]: {}\n- Local record SHA-256 [System verification]: {}\n- Local generated at [System value]: {}\n\n- External screening provider [System value]: {}\n- External screening status [System verification]: {}\n- External provider configured at snapshot [System value]: {}\n- External source Evidence ID [System verification]: {}\n- External source path [System verification]: {}\n- External source SHA-256 [System verification]: {}\n- External checked at [System value]: {}\n- External sample offset (ms) [System value]: {}\n- External sample duration (ms) [System value]: {}\n- External source duration (ms) [System value]: {}\n- External request count [System value]: {}\n- External response archive [System verification]: {}\n- External response SHA-256 [System verification]: {}\n{match_block}\nAudio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion.\n",
+        audio_screening_status_label(local.status),
+        value_or_missing(&local.engine),
+        value_or_missing(&local.engine_version),
+        value_or_missing(&local.fingerprint_algorithm),
+        value_or_missing(&local.source_evidence_id),
+        value_or_missing(&local.source_relative_path),
+        value_or_missing(&local.source_sha256),
+        local.source_size_bytes,
+        local
+            .duration_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        value_or_missing(&local.artifact_relative_path),
+        value_or_missing(&local.artifact_sha256),
+        local.generated_at.as_deref().unwrap_or("NOT DOCUMENTED"),
+        value_or_missing(&external.provider),
+        audio_screening_status_label(external.status),
+        yes_no(external.configured_at_snapshot),
+        value_or_missing(&external.source_evidence_id),
+        value_or_missing(&external.source_relative_path),
+        value_or_missing(&external.source_sha256),
+        external.checked_at.as_deref().unwrap_or("NOT DOCUMENTED"),
+        external
+            .sample_offset_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        external
+            .sample_duration_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        external
+            .source_duration_milliseconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        external.request_count,
+        external
+            .response_relative_path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED"),
+        external
+            .response_sha256
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED"),
+    )
+}
+
+fn audio_screening_status_label(status: AudioScreeningStatus) -> &'static str {
+    match status {
+        AudioScreeningStatus::NotRun => "NOT RUN",
+        AudioScreeningStatus::FingerprintGenerated => "FINGERPRINT GENERATED",
+        AudioScreeningStatus::NoMatchDetected => "NO MATCH DETECTED",
+        AudioScreeningStatus::MatchDetected => "MATCH DETECTED",
+        AudioScreeningStatus::SkippedNotConfigured => "SKIPPED NOT CONFIGURED",
+        AudioScreeningStatus::ProviderUnavailable => "PROVIDER UNAVAILABLE",
+        AudioScreeningStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        AudioScreeningStatus::ConfigurationInvalid => "CONFIGURATION INVALID",
+        AudioScreeningStatus::EngineUnavailable => "ENGINE UNAVAILABLE",
+        AudioScreeningStatus::UnsupportedFormat => "UNSUPPORTED FORMAT",
+        AudioScreeningStatus::ProcessingFailed => "PROCESSING FAILED",
+        AudioScreeningStatus::Stale => "STALE",
+    }
+}
+
 fn render(
     track: &TrackRecord,
     profile: &Profile,
@@ -1052,6 +1182,7 @@ fn render(
     } else {
         ""
     };
+    let audio_screening_summary = audio_screening_documentation_summary(&track.audio_screening);
     let mut values = BTreeMap::new();
     values.insert(
         "02_SUNO/suno_project.txt".into(),
@@ -1093,7 +1224,7 @@ fn render(
     values.insert(
         "03_DOCUMENTATION/README.md".into(),
         format!(
-            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at generation: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Last editing date: {}\n- Final generation date [{}]: {}\n- Final generation ID [{}]: {}\n- Suno project URL: {}\n- Download/export date [{}]: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n- Instrumental track: {}\n- Vocal lyrics present: {}\n- Suno lyrics/structure field content: {}\n{}{}\n## Workflow status\n\n- Documentation status meaning: configured documentation requirements completed.\n- PASS means: Configured documentation requirements for this step were satisfied.\n- The authoritative evaluated step results are stored in the completion certificate after finalization.\n\n## External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: NOT RECORDED\n- No external timestamp evidence recorded.\n{}\n## Evidence\n\n{}",
+            "{}# Track documentation: {}\n\nTemplate version: `{}`\nWorkflow: `{}` version `{}`\n\n## Snapshot\n\n- Artist: {}\n- Suno profile: {}\n- Suno handle: {}\n- Suno plan at generation: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n- Commercial use intended: {}\n- Production period: {} to {}\n- Last editing date: {}\n- Final generation date [{}]: {}\n- Final generation ID [{}]: {}\n- Suno project URL: {}\n- Download/export date [{}]: {}\n- Actual release filename: {}\n- Actual Suno export filename: {}\n- Instrumental track: {}\n- Vocal lyrics present: {}\n- Suno lyrics/structure field content: {}\n{}{}\n{}\n## Workflow status\n\n- Documentation status meaning: configured documentation requirements completed.\n- PASS means: Configured documentation requirements for this step were satisfied.\n- The authoritative evaluated step results are stored in the completion certificate after finalization.\n\n## External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: NOT RECORDED\n- No external timestamp evidence recorded.\n{}\n## Evidence\n\n{}",
             marker(), f.title, TEMPLATE_VERSION, track.workflow_id, track.workflow_version,
             value_or_missing(&profile.artist_name), value_or_missing(&profile.suno_profile_name),
             value_or_missing(&profile.suno_handle), value_or_missing(&f.suno_plan_at_generation),
@@ -1115,6 +1246,7 @@ fn render(
             yes_no(f.suno_lyrics_field_content),
             source_declarations,
             confirmed_work,
+            audio_screening_summary,
             timestamp_recommendation,
             evidence_list(evidence)
         ),
@@ -1224,6 +1356,7 @@ mod tests {
             library: Default::default(),
             field_origins: Default::default(),
             fields,
+            audio_screening: Default::default(),
             documents: crate::model::DocumentState::default(),
             integrity: crate::model::IntegrityState::default(),
             certificate: crate::model::CertificateState::default(),
@@ -1400,8 +1533,8 @@ mod tests {
             first_generation.insert(relative, actual);
         }
         assert!(
-            combined.contains("Template version: `1.8`")
-                || combined.contains("Template version: 1.8")
+            combined.contains("Template version: `1.9`")
+                || combined.contains("Template version: 1.9")
         );
         assert!(combined.contains("Suno Structure / Generation Instructions"));
         assert!(combined.contains("Vocal lyrics present [User-confirmed fact]: NO"));
@@ -1801,6 +1934,34 @@ mod tests {
         assert!(!combined.contains("legacy-timestamp.pdf"));
         assert!(combined
             .contains("External timestamp evidence at technical finalization: NOT RECORDED"));
+    }
+
+    #[test]
+    fn audio_screening_changes_freshness_and_readme_without_raw_fingerprint() {
+        let (mut track, profile, evidence) = fixture_input();
+        let before = input_fingerprint(&track, &profile, &evidence).expect("initial fingerprint");
+        track.audio_screening.local.status = AudioScreeningStatus::FingerprintGenerated;
+        track.audio_screening.local.engine_version = "1.6.1".into();
+        track.audio_screening.local.source_evidence_id = "release-wav".into();
+        track.audio_screening.local.source_relative_path = "01_RELEASE/golden-signal.wav".into();
+        track.audio_screening.local.source_sha256 = "1".repeat(64);
+        track.audio_screening.local.fingerprint = "RAW_FINGERPRINT_MUST_NOT_RENDER".into();
+        track.audio_screening.local.message = "ACCESS_SECRET_MUST_NOT_RENDER".into();
+        track.audio_screening.local.artifact_relative_path =
+            "03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json".into();
+        track.audio_screening.local.artifact_sha256 = "2".repeat(64);
+
+        assert_ne!(
+            before,
+            input_fingerprint(&track, &profile, &evidence).expect("screening fingerprint")
+        );
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let readme = &rendered["03_DOCUMENTATION/README.md"];
+        assert!(readme.contains("## Pre-release audio screening"));
+        assert!(readme.contains("FINGERPRINT GENERATED"));
+        assert!(readme.contains("LOCAL_FINGERPRINT.json"));
+        assert!(!readme.contains("RAW_FINGERPRINT_MUST_NOT_RENDER"));
+        assert!(!readme.contains("ACCESS_SECRET_MUST_NOT_RENDER"));
     }
 
     #[test]

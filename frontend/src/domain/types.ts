@@ -136,6 +136,107 @@ export interface TimestampProviderTestResult {
   capabilities: TimestampProviderCapabilities;
 }
 
+/**
+ * Audio-screening results are technical observations, not a legal, rights or
+ * infringement assessment. The full local fingerprint and raw provider
+ * response deliberately remain in the portable track documentation and are
+ * never returned to the browser UI.
+ */
+export type AudioScreeningStatus =
+  | "not_run"
+  | "fingerprint_generated"
+  | "no_match_detected"
+  | "match_detected"
+  | "skipped_not_configured"
+  | "provider_unavailable"
+  | "authentication_failed"
+  | "configuration_invalid"
+  | "engine_unavailable"
+  | "unsupported_format"
+  | "processing_failed"
+  | "stale";
+
+/** State of the optional ACRCloud configuration itself, separate from a track result. */
+export type AudioScreeningProviderStatus =
+  | "disabled"
+  | "not_configured"
+  | "ready"
+  | "authentication_failed"
+  | "provider_unavailable"
+  | "configuration_invalid";
+
+export interface AudioScreeningMatch {
+  title?: string;
+  artists?: string[];
+  album?: string;
+  isrc?: string;
+  acrid?: string;
+  score?: number;
+}
+
+export interface AudioScreeningLocalSummary {
+  status: AudioScreeningStatus;
+  message: string;
+  engine?: string;
+  engineVersion?: string;
+  sourceEvidenceId?: string;
+  sourceRelativePath?: string;
+  sourceSha256?: string;
+  sourceSizeBytes?: number;
+  durationMilliseconds?: number;
+  fingerprintAlgorithm?: string;
+  generatedAt?: string;
+  artifactRelativePath?: string;
+  artifactSha256?: string;
+}
+
+export interface AudioScreeningExternalSummary {
+  provider: "ACRCloud";
+  status: AudioScreeningStatus;
+  message: string;
+  sourceEvidenceId?: string;
+  sourceRelativePath?: string;
+  sourceSha256?: string;
+  sourceSizeBytes?: number;
+  checkedAt?: string;
+  sampleOffsetMilliseconds?: number;
+  sampleDurationMilliseconds?: number;
+  sourceDurationMilliseconds?: number;
+  requestCount?: number;
+  responseRelativePath?: string;
+  responseSha256?: string;
+  matches: AudioScreeningMatch[];
+}
+
+export interface AudioScreeningSummary {
+  local: AudioScreeningLocalSummary;
+  external: AudioScreeningExternalSummary;
+}
+
+export interface AudioScreeningSettings {
+  enabled: boolean;
+  host: string;
+  timeoutSeconds: number;
+  status: AudioScreeningProviderStatus;
+  statusMessage: string;
+  credentialsConfigured: boolean;
+  lastTestedAt?: string;
+  localEngineAvailable: boolean;
+  localEngineVersion?: string;
+}
+
+/** Write-only inputs; native secure storage never returns either field. */
+export interface AudioScreeningSecretInput {
+  accessKey?: string;
+  accessSecret?: string;
+}
+
+export interface AudioScreeningProviderTestResult {
+  status: AudioScreeningProviderStatus;
+  message: string;
+  testedAt: string;
+}
+
 export type ExternalTimestampType =
   | "qualified_electronic_timestamp_user_declared"
   | "electronic_timestamp"
@@ -526,6 +627,7 @@ export interface TrackDetail extends TrackSummary {
   certificate: CertificateState;
   externalTimestamps: ExternalTimestampRecord[];
   externalTimestampSummary?: ExternalTimestampSummary;
+  audioScreening: AudioScreeningSummary;
   finalizationAnchors: FinalizationAnchor[];
   blockingDeviations?: BlockingDeviation[];
   missingItems?: string[];
@@ -632,6 +734,29 @@ export const emptyTimestampSettings: TimestampSettings = {
   },
   status: "disabled",
   statusMessage: "External timestamp service is disabled."
+};
+
+export const emptyAudioScreeningSummary: AudioScreeningSummary = {
+  local: {
+    status: "not_run",
+    message: "The local Chromaprint screening has not run for the current release file."
+  },
+  external: {
+    provider: "ACRCloud",
+    status: "not_run",
+    message: "The optional ACRCloud check has not been requested.",
+    matches: []
+  }
+};
+
+export const emptyAudioScreeningSettings: AudioScreeningSettings = {
+  enabled: false,
+  host: "",
+  timeoutSeconds: 30,
+  status: "disabled",
+  statusMessage: "Optional ACRCloud screening is not configured.",
+  credentialsConfigured: false,
+  localEngineAvailable: false
 };
 
 export function emptyEvidenceMetadata(): EvidenceMetadata {

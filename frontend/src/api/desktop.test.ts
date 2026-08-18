@@ -125,6 +125,37 @@ describe("runtime selection", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(4, "test_timestamp_provider", undefined);
   });
 
+  it("keeps audio-screening settings, write-only credentials and track checks on narrow native commands", async () => {
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+    const settings = {
+      enabled: true,
+      host: "identify-eu-west-1.acrcloud.com",
+      timeoutSeconds: 30,
+      status: "ready" as const,
+      statusMessage: "Ready",
+      credentialsConfigured: true,
+      localEngineAvailable: true,
+      localEngineVersion: "1.6.1"
+    };
+    invokeMock.mockResolvedValue({ message: "done" });
+
+    await api.getAudioScreeningSettings();
+    await api.updateAudioScreeningSettings(settings);
+    await api.updateAudioScreeningSecret({ accessKey: "write-only-key", accessSecret: "write-only-secret" });
+    await api.testAudioScreeningProvider();
+    await api.runLocalAudioScreening("track-1");
+    await api.runExternalAudioScreening("track-1");
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_audio_screening_settings", undefined);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "update_audio_screening_settings", { settings });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "update_audio_screening_secret", {
+      input: { accessKey: "write-only-key", accessSecret: "write-only-secret" }
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "test_audio_screening_provider", undefined);
+    expect(invokeMock.mock.calls[4]).toEqual(["run_local_audio_screening", expect.objectContaining({ trackId: "track-1", onProgress: expect.anything() })]);
+    expect(invokeMock.mock.calls[5]).toEqual(["run_external_audio_screening", expect.objectContaining({ trackId: "track-1", onProgress: expect.anything() })]);
+  });
+
   it("preserves an explicit null in a track patch sent to the native command", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);

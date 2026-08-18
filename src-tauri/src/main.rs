@@ -3,6 +3,7 @@
 mod application;
 mod artwork;
 mod audio_metadata;
+mod audio_screening;
 mod certificate;
 mod certificate_pdf;
 mod commands;
@@ -31,6 +32,10 @@ fn main() {
             commands::update_timestamp_settings,
             commands::update_timestamp_secret,
             commands::test_timestamp_provider,
+            commands::get_audio_screening_settings,
+            commands::update_audio_screening_settings,
+            commands::update_audio_screening_secret,
+            commands::test_audio_screening_provider,
             commands::list_global_evidence,
             commands::import_global_evidence,
             commands::import_global_terms_evidence,
@@ -62,6 +67,8 @@ fn main() {
             commands::generate_artwork_disclosure,
             commands::calculate_hashes,
             commands::verify_hashes,
+            commands::run_local_audio_screening,
+            commands::run_external_audio_screening,
             commands::validate_track,
             commands::finalize_track,
             commands::attach_configured_external_timestamp,

@@ -2,19 +2,24 @@ use crate::application::WorkspaceApp;
 use crate::error::{AppError, Result};
 use crate::folder_import::{FolderImportExecutionInput, FolderImportProposal};
 use crate::model::{
-    ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
+    ActionResult, AudioScreeningProviderTestResult, AudioScreeningSecretInput,
+    AudioScreeningSettings, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
     EvidencePreview, EvidenceRole, FinalizeOptions, GlobalEvidenceItem, OperationProgress, Profile,
     StepStatus, SubscriptionBillingCycle, TimestampProviderTestResult, TimestampSecretInput,
     TimestampSettings, TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackPatchRequest,
     TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{ipc::Channel, State};
 
 #[derive(Default)]
 pub struct AppState {
-    workspace: Mutex<Option<WorkspaceApp>>,
+    // Long-running native operations execute on blocking workers.  Keep the
+    // workspace mutex shared with those workers rather than cloning the app
+    // and releasing the coordinator: a release replacement must not race an
+    // older screening/finalization save and overwrite the newer state.
+    workspace: Arc<Mutex<Option<WorkspaceApp>>>,
 }
 
 impl AppState {
@@ -106,14 +111,57 @@ pub fn update_timestamp_secret(
 pub async fn test_timestamp_provider(
     state: State<'_, AppState>,
 ) -> Result<TimestampProviderTestResult> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
-    tauri::async_runtime::spawn_blocking(move || workspace.test_timestamp_provider())
-        .await
-        .map_err(|error| AppError::Data(format!("Timestamp provider test failed: {error}")))?
+    let workspace = Arc::clone(&state.workspace);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        guard
+            .as_ref()
+            .ok_or(AppError::NoWorkspace)?
+            .test_timestamp_provider()
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("Timestamp provider test failed: {error}")))?
+}
+
+#[tauri::command]
+pub fn get_audio_screening_settings(state: State<'_, AppState>) -> Result<AudioScreeningSettings> {
+    with_workspace(&state, WorkspaceApp::audio_screening_settings)
+}
+
+#[tauri::command]
+pub fn update_audio_screening_settings(
+    state: State<'_, AppState>,
+    settings: AudioScreeningSettings,
+) -> Result<AudioScreeningSettings> {
+    with_workspace(&state, |app| app.update_audio_screening_settings(settings))
+}
+
+#[tauri::command]
+pub fn update_audio_screening_secret(
+    state: State<'_, AppState>,
+    input: AudioScreeningSecretInput,
+) -> Result<()> {
+    with_workspace(&state, |app| app.update_audio_screening_secret(input))
+}
+
+#[tauri::command]
+pub async fn test_audio_screening_provider(
+    state: State<'_, AppState>,
+) -> Result<AudioScreeningProviderTestResult> {
+    let workspace = Arc::clone(&state.workspace);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        guard
+            .as_ref()
+            .ok_or(AppError::NoWorkspace)?
+            .test_audio_screening_provider()
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("Audio-screening provider test failed: {error}")))?
 }
 
 #[tauri::command]
@@ -181,13 +229,15 @@ pub async fn attach_configured_external_timestamp(
     state: State<'_, AppState>,
     track_id: String,
 ) -> Result<TrackDetail> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace = Arc::clone(&state.workspace);
     tauri::async_runtime::spawn_blocking(move || {
-        workspace.attach_configured_external_timestamp(&track_id)
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        guard
+            .as_ref()
+            .ok_or(AppError::NoWorkspace)?
+            .attach_configured_external_timestamp(&track_id)
     })
     .await
     .map_err(|error| AppError::Data(format!("Timestamp attachment task failed: {error}")))?
@@ -245,14 +295,18 @@ pub async fn execute_folder_import(
     state: State<'_, AppState>,
     input: FolderImportExecutionInput,
 ) -> Result<Vec<TrackDetail>> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
-    tauri::async_runtime::spawn_blocking(move || workspace.import_folder(input))
-        .await
-        .map_err(|error| AppError::Data(format!("Folder import task failed: {error}")))?
+    let workspace = Arc::clone(&state.workspace);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        guard
+            .as_ref()
+            .ok_or(AppError::NoWorkspace)?
+            .import_folder(input)
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("Folder import task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -265,14 +319,18 @@ pub async fn load_track_cover(
     state: State<'_, AppState>,
     track_id: String,
 ) -> Result<Option<TrackCoverPreview>> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
-    tauri::async_runtime::spawn_blocking(move || workspace.track_cover(&track_id))
-        .await
-        .map_err(|error| AppError::Data(format!("Track cover task failed: {error}")))?
+    let workspace = Arc::clone(&state.workspace);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        guard
+            .as_ref()
+            .ok_or(AppError::NoWorkspace)?
+            .track_cover(&track_id)
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("Track cover task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -363,29 +421,39 @@ pub async fn import_evidence(
     else {
         return Ok(None);
     };
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace = Arc::clone(&state.workspace);
     tauri::async_runtime::spawn_blocking(move || match replace_evidence_id {
-        Some(evidence_id) => workspace
-            .replace_evidence_with_metadata_from(
-                &track_id,
-                &evidence_id,
-                role,
-                &source,
-                metadata.unwrap_or_default(),
-            )
-            .map(Some),
-        None => workspace
-            .import_evidence_with_metadata_from(
-                &track_id,
-                role,
-                &source,
-                metadata.unwrap_or_default(),
-            )
-            .map(Some),
+        Some(evidence_id) => {
+            let guard = workspace
+                .lock()
+                .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+            guard
+                .as_ref()
+                .ok_or(AppError::NoWorkspace)?
+                .replace_evidence_with_metadata_from(
+                    &track_id,
+                    &evidence_id,
+                    role,
+                    &source,
+                    metadata.unwrap_or_default(),
+                )
+                .map(Some)
+        }
+        None => {
+            let guard = workspace
+                .lock()
+                .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+            guard
+                .as_ref()
+                .ok_or(AppError::NoWorkspace)?
+                .import_evidence_with_metadata_from(
+                    &track_id,
+                    role,
+                    &source,
+                    metadata.unwrap_or_default(),
+                )
+                .map(Some)
+        }
     })
     .await
     .map_err(|error| AppError::Data(format!("Evidence import task failed: {error}")))?
@@ -406,13 +474,15 @@ pub async fn preview_evidence(
     track_id: String,
     evidence_id: String,
 ) -> Result<EvidencePreview> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace = Arc::clone(&state.workspace);
     tauri::async_runtime::spawn_blocking(move || {
-        workspace.preview_evidence(&track_id, &evidence_id)
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        guard
+            .as_ref()
+            .ok_or(AppError::NoWorkspace)?
+            .preview_evidence(&track_id, &evidence_id)
     })
     .await
     .map_err(|error| AppError::Data(format!("Evidence preview task failed: {error}")))?
@@ -441,13 +511,13 @@ pub async fn generate_documents(
     adopt_existing: bool,
     on_progress: Channel<OperationProgress>,
 ) -> Result<ActionResult> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace = Arc::clone(&state.workspace);
     tauri::async_runtime::spawn_blocking(move || {
-        workspace.generate_documents_with_progress(&track_id, adopt_existing, &mut |progress| {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        let app = guard.as_ref().ok_or(AppError::NoWorkspace)?;
+        app.generate_documents_with_progress(&track_id, adopt_existing, &mut |progress| {
             let _ = on_progress.send(progress);
         })
     })
@@ -472,13 +542,13 @@ pub async fn calculate_hashes(
     track_id: String,
     on_progress: Channel<OperationProgress>,
 ) -> Result<ActionResult> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace = Arc::clone(&state.workspace);
     tauri::async_runtime::spawn_blocking(move || {
-        workspace.calculate_hashes_with_progress(&track_id, &mut |progress| {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        let app = guard.as_ref().ok_or(AppError::NoWorkspace)?;
+        app.calculate_hashes_with_progress(&track_id, &mut |progress| {
             let _ = on_progress.send(progress);
         })
     })
@@ -492,18 +562,58 @@ pub async fn verify_hashes(
     track_id: String,
     on_progress: Channel<OperationProgress>,
 ) -> Result<ActionResult> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace = Arc::clone(&state.workspace);
     tauri::async_runtime::spawn_blocking(move || {
-        workspace.verify_hashes_with_progress(&track_id, &mut |progress| {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        let app = guard.as_ref().ok_or(AppError::NoWorkspace)?;
+        app.verify_hashes_with_progress(&track_id, &mut |progress| {
             let _ = on_progress.send(progress);
         })
     })
     .await
     .map_err(|error| AppError::Data(format!("SHA-256 verification task failed: {error}")))?
+}
+
+#[tauri::command]
+pub async fn run_local_audio_screening(
+    state: State<'_, AppState>,
+    track_id: String,
+    on_progress: Channel<OperationProgress>,
+) -> Result<ActionResult> {
+    let workspace = Arc::clone(&state.workspace);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        let app = guard.as_ref().ok_or(AppError::NoWorkspace)?;
+        app.run_local_audio_screening_with_progress(&track_id, &mut |progress| {
+            let _ = on_progress.send(progress);
+        })
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("Local audio-screening task failed: {error}")))?
+}
+
+#[tauri::command]
+pub async fn run_external_audio_screening(
+    state: State<'_, AppState>,
+    track_id: String,
+    on_progress: Channel<OperationProgress>,
+) -> Result<ActionResult> {
+    let workspace = Arc::clone(&state.workspace);
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        let app = guard.as_ref().ok_or(AppError::NoWorkspace)?;
+        app.run_external_audio_screening_with_progress(&track_id, &mut |progress| {
+            let _ = on_progress.send(progress);
+        })
+    })
+    .await
+    .map_err(|error| AppError::Data(format!("External audio-screening task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -518,13 +628,13 @@ pub async fn finalize_track(
     options: Option<FinalizeOptions>,
     on_progress: Channel<OperationProgress>,
 ) -> Result<ActionResult> {
-    let workspace = state
-        .lock()?
-        .as_ref()
-        .cloned()
-        .ok_or(AppError::NoWorkspace)?;
+    let workspace = Arc::clone(&state.workspace);
     tauri::async_runtime::spawn_blocking(move || {
-        workspace.finalize_track_with_options_and_progress(
+        let guard = workspace
+            .lock()
+            .map_err(|_| AppError::Data("Workspace state lock is unavailable.".into()))?;
+        let app = guard.as_ref().ok_or(AppError::NoWorkspace)?;
+        app.finalize_track_with_options_and_progress(
             &track_id,
             options.unwrap_or_default(),
             &mut |progress| {

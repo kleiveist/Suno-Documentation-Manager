@@ -60,4 +60,5 @@ src-tauri/gen/schemas/**
 *.dmg
 *.msi
 *.exe
+!src-tauri/binaries/fpcalc-x86_64-pc-windows-msvc.exe
 *.app

@@ -7,9 +7,9 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-17 |
+| Last review | 2026-08-18 |
 | Audience | Suno Documentation Manager users |
-| Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md) |
+| Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md); [ATP-0017: Pre-release audio screening](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Purpose
 
@@ -36,7 +36,7 @@ This guide explains how to open the local desktop application, create or select 
 
 Choose a local folder that you can read and write and that can contain one child folder per track. Keep an independent backup appropriate for your music projects. Normal product use does not require an account, backend service, or internet connection.
 
-The application asks only for documentation facts. Do not enter credentials or unrelated personal data. A birthday, private telephone number, private email address, Google account, and other private account details are not required global fields.
+The application asks only for documentation facts. Do not enter credentials or unrelated personal data. A birthday, private telephone number, private email address, Google account, and other private account details are not required global fields. Optional provider credentials are requested only in their dedicated Settings section, remain write-only, and are not copied into a track or certificate.
 
 ## Launch the application
 
@@ -85,6 +85,12 @@ Open `Einstellungen` and enter the minimal defaults:
 The project default transparency policy is `Always add visible AI disclosure`. This is a project transparency choice, not a statement that a particular watermark is universally required by law. The default disclosure text is `AI-assisted` and can be configured.
 
 Saving global settings updates all open tracks and marks their generated documents stale, so artist name, Suno profile, handle, plan, and policy do not remain `Not documented`. Opening an older workspace also assigns its already saved global values to every non-finalized track. Fulfilled legacy steps then leave `Nicht verifiziert` automatically. Finalized and superseded tracks are not rewritten. Generated documents contain the profile snapshot actually assigned to that track.
+
+## Optional ACRCloud audio-screening settings
+
+The local release fingerprint does not need an account or a separate installation: SunoDM uses its bundled Chromaprint engine when you import or replace the authoritative release audio. The external ACRCloud comparison is separate and remains disabled until you choose to configure it.
+
+Under `Einstellungen` → `Pre-release audio screening`, enter the ACRCloud host, enable the provider, and save the access key and access secret. The fields are write-only: after saving, the UI can report only whether a complete credential pair exists. Use `Provider testen` to check the configured endpoint; this does not upload track audio. Then open Step 09 and choose the external screening action for one specific track. It sends a bounded release-audio sample only after that click, never the local Chromaprint fingerprint. It is optional and cannot block finalization.
 
 ## Register subscription evidence
 
@@ -186,7 +192,9 @@ In `06 AI Transparency`, complete Audio and Artwork as separate factual sections
 
 Known service values are displayed consistently in new suggestions, for example `ChatGPT / OpenAI`, but every custom or historical free-text value remains unchanged.
 
-In `07 Release`, choose any applicable release-note labels and import the final audio. The managed authoritative copy keeps its real audio extension and is named from the safe track title, for example `01_RELEASE/Neon Universe.wav` or `01_RELEASE/Neon Universe.mp3`. A collision is reported instead of overwritten. Renaming an editable track updates managed release evidence through the native operation; finalized tracks require the existing revision workflow first.
+In `07 Release`, choose any applicable release-note labels and import the final audio. The managed authoritative copy keeps its real audio extension and is named from the safe track title, for example `01_RELEASE/Neon Universe.wav` or `01_RELEASE/Neon Universe.mp3`. A collision is reported instead of overwritten. The local Chromaprint screening starts against that managed source and Step 07 shows its technical status/source binding; it does not upload audio or make a legal conclusion. Renaming an editable track updates managed release evidence through the native operation; finalized tracks require the existing revision workflow first.
+
+In `09 Integrity`, generate and verify the normal SHA-256 set. The local screening files under `03_DOCUMENTATION/AUDIO_SCREENING/` are included automatically. If you configured ACRCloud and deliberately want the optional comparison, use its explicit action here. A provider response, unavailable provider, authentication failure, or no-match does not change whether the normal integrity operation passes.
 
 ## Import evidence
 
@@ -256,6 +264,7 @@ For a manual smoke check, use a temporary workspace containing no private or pro
 6. Reassign the album track to `Singles` and confirm its folder path and documentation state do not change.
 7. Import a disposable evidence file and confirm the source still exists.
 8. Attempt the same destination again and confirm that the application reports a collision.
+9. Import a disposable final release file and confirm that Step 07 reports a local fingerprint record without exposing its raw fingerprint in the track view.
 
 Executed results and outstanding manual checks are recorded in [ATP-0001](../atp/active/ATP-0001-workspace-creation-and-loading.md), [ATP-0002](../atp/active/ATP-0002-track-creation.md), [ATP-0014](../atp/active/ATP-0014-track-library-organization.md), and the relevant evidence ATP.
 
@@ -276,12 +285,14 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 - [Track library organization model](../def/track-library-model.md)
 - [Workflow model](../def/workflow-model.md)
 - [Persistence and recovery](../def/persistence.md)
+- [Pre-release audio screening](../def/pre-release-audio-screening.md)
 - [Legacy track import](../dev/legacy-track-import.md)
 
 ## Change log
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-18 | Added the bundled local fingerprint and explicit optional ACRCloud Settings/Step-09 guidance. | Project team |
 | 2026-08-17 | Clarified that verified local Terms evidence cannot coexist with an unavailable claim. | Project team |
 | 2026-08-17 | Documented workflow 1.7 Terms metadata, complete Final Suno Generation, separated instrumental/vocal/Suno-field facts, distinct Audio/Artwork AI assessments, provider suggestions, and exact `NO`/`N/A`/`NOT DOCUMENTED` semantics. | Project team |
 | 2026-08-16 | Explained conditional code-audio post-processing, free model/plan suggestions, artwork process selections and factual checks, and safe title-based release filenames. | Project team |

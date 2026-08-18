@@ -7,9 +7,9 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-17 |
+| Last review | 2026-08-18 |
 | Audience | Product developers and recovery reviewers |
-| Related ATP | [ATP-0011: Local persistence and recovery](../atp/active/ATP-0011-local-persistence-and-recovery.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md) |
+| Related ATP | [ATP-0011: Local persistence and recovery](../atp/active/ATP-0011-local-persistence-and-recovery.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md); [ATP-0017: Pre-release audio screening](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Purpose
 
@@ -44,6 +44,9 @@ The product uses bounded authority rather than treating every copy as equally au
 | Album or single library placement | `.suno-doc/workspace.sqlite` track JSON | Missing or unrecoverable placement defaults to `single`; the portable track folder does not encode album membership |
 | Imported evidence and release assets | Track folder | Database references store role and root-relative path; file contents are not database blobs |
 | Generated documentation | Track folder | Regenerated only through explicit managed-document rules |
+| Pre-release local screening records and optional provider-response archive | Track folder plus mutable track JSON state | The portable artifacts are phase-one SHA-256 inputs; raw fingerprints are not copied into certificates/manifests |
+| Non-secret optional ACRCloud settings | `.suno-doc/workspace.sqlite` | Global workspace operational state, never copied into profile or track snapshots |
+| ACRCloud credentials | `.suno-doc/config/audio-screening-secrets.json` | Private write-only configuration, excluded from exports and SQLite |
 | Final hashes, manifest, certificate, timestamp addenda, and archived revisions | Track folder | Treated as the authoritative finalized snapshot and revision-bound post-finalization records |
 | Registered reusable subscription and Suno terms evidence | `.suno-doc/global-evidence/` plus SQLite coverage and factual descriptive metadata | Evidence is copied into each applicable track before finalization so the track remains self-contained |
 
@@ -78,13 +81,14 @@ The database indexes at least these logical data sets:
 - evidence roles, relative paths, media types, sizes, hashes, import metadata, provenance, and local derivation fields;
 - generated-document template versions and freshness markers;
 - external-timestamp records keyed to their track and finalized certificate ID; and
+- non-secret optional ACRCloud screening settings, while its credential pair remains in a restricted private configuration file; and
 - UI working state that is not part of a finalized certificate.
 
 Large media, PDFs, archives, and generated portable artifacts remain files. SQLite stores metadata and references, not duplicate binary evidence payloads.
 
 ## Schema and migrations
 
-The current SQLite schema version is `5`, stored in `PRAGMA user_version`. Schema version 2 added evidence provenance and disclosure-lineage columns. Schema version 3 added `metadata_json` to each track-evidence record for original import filename and role-specific metadata. Schema version 4 added the same conservative field to workspace-global evidence. Existing rows received an empty object; no historical title, provider, date, or source was invented. Schema version 5 adds `external_timestamp_records`, keyed by timestamp-record ID and indexed by track ID, certificate ID, import time, and record ID. The complete typed record is retained as JSON while the identifying columns support deterministic revision-bound lookup.
+The current SQLite schema version is `7`, stored in `PRAGMA user_version`. Schema version 2 added evidence provenance and disclosure-lineage columns. Schema version 3 added `metadata_json` to each track-evidence record for original import filename and role-specific metadata. Schema version 4 added the same conservative field to workspace-global evidence. Existing rows received an empty object; no historical title, provider, date, or source was invented. Schema version 5 adds `external_timestamp_records`, keyed by timestamp-record ID and indexed by track ID, certificate ID, import time, and record ID. Schema version 6 adds singleton timestamp settings and current attachment presentation state. Schema version 7 adds singleton non-secret `audio_screening_settings`. The complete typed timestamp record is retained as JSON while the identifying columns support deterministic revision-bound lookup.
 
 | Column | Purpose |
 | --- | --- |
@@ -101,7 +105,7 @@ The former `lyricsSource` and `lyricsText` properties are read through legacy al
 
 The former `sunoPlanAtCreation` property is read only into the separate `legacySunoPlanAtCreation` compatibility value. It is not an alias for, copied into, or rendered as the new `sunoPlanAtGeneration` fact. For an older record without an explicitly confirmed `sunoPlanAtGeneration`, the plan at generation remains empty/`NOT DOCUMENTED` and continues to block any requirement that needs it until the user confirms the value in mutable state. The legacy value remains visible as historical user data without asserting that it was the plan used for the final generation. Reading an older record is therefore non-destructive; a later mutable save can materialize only answers actually supplied by the user. Finalized and superseded records are never rewritten merely to adopt the new names.
 
-Most of these JSON additions require no relational migration. Schema 5 advances `PRAGMA user_version` specifically because post-finalization timestamp records need their own certificate-bound table rather than entering the immutable pre-finalization track snapshot. Existing ordinary evidence rows that used the historical external-timestamp role are not silently promoted to this table or assigned to a certificate.
+Most of these JSON additions require no relational migration. Schema 5 advances `PRAGMA user_version` specifically because post-finalization timestamp records need their own certificate-bound table rather than entering the immutable pre-finalization track snapshot. Schema 7 adds only global non-secret ACRCloud settings; local screening state is an additive defaulted field in mutable track JSON and older finalized snapshots are not rewritten or backfilled. The access key/secret pair is intentionally outside SQLite in a restricted `.suno-doc/config/audio-screening-secrets.json` file and is ignored by the workspace credential `.gitignore` rule. Existing ordinary evidence rows that used the historical external-timestamp role are not silently promoted to this table or assigned to a certificate.
 
 An active managed final-audio record at the exact historical `01_RELEASE/suno_final_export.<supported extension>` path can be migrated lazily to the safe title-based filename when the target is unused. The operation updates the file and evidence path together and marks generated documents stale. It never applies to finalized or superseded snapshots, indexed legacy provenance, ambiguous paths, or collisions.
 
@@ -168,6 +172,14 @@ If metadata or track-state persistence fails, the operation attempts to move the
 6. Record the template version and freshness metadata.
 
 A crash leaves either the previous managed document or the complete new document. Recovery reports and safely removes or quarantines an identifiable stale temporary file only through a documented native operation.
+
+### Pre-release audio screening
+
+The authoritative release evidence is the sole source for local screening. On import or explicit replacement of that editable `release_wav` evidence, the application clears or marks prior screening state stale, runs the packaged verified Chromaprint engine against the contained managed file, writes the new local JSON, detached local-record SHA-256, and Markdown summary atomically below `03_DOCUMENTATION/AUDIO_SCREENING/`, and persists the matching state with source Evidence ID/path/SHA-256 in the same tracked update path. A persistence failure must not leave a state that claims a new source while only the old local artifact is live; recovery keeps the prior bytes or reports the incomplete result as non-positive.
+
+The optional ACRCloud operation is a separate explicit mutable-track action. It first reads the write-only credential pair from the private workspace configuration, builds a bounded sample from the managed release bytes, performs one bounded HTTPS request, and atomically writes the structured external record plus only a safe raw provider response under `03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_SCREENING.json` and `ACRCLOUD_RESPONSE.json`. It persists the provider status, source binding, sample timings, response artifact path/hash, and concise provider match facts, but never a credential or request signature. A disabled setting, incomplete credentials, network failure, unsupported input, or provider error is a stored non-positive technical result. This operation is not retried at startup and is never called by finalization.
+
+`03_DOCUMENTATION/AUDIO_SCREENING/` is ordinary current documentation rather than `EvidenceRole` data. Its live files are included in `SHA256SUMS.txt`; archive copies are excluded with the rest of `.archive/`. A new revision first retains the previous screening directory with its prior phase-one snapshot and begins a fresh mutable screening state for its own release source.
 
 ### Finalization
 
@@ -281,6 +293,7 @@ Album membership is another workspace-index-only value. A track-only copy retain
 | `REQ-PER-009` | Global Suno Terms registration accepts one signature-checked PDF with title, provider/source, retrieval date, and optional factual context, and places the same hashed evidence/metadata into each new or editable project without mutating finalized snapshots. Verified local Terms evidence cannot be persisted or rendered together with an unavailable claim. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
 | `REQ-PER-010` | Schema 5 persists post-finalization timestamp records separately by track and certificate ID. Sidecar v1 is fully staged and parent-synchronized before database registration, then published; live-parent synchronization precedes any compensating database rollback. Startup recovers only registered pending state and never adopts an unregistered live sidecar. Current and archived records are reverified from exact immutable bytes and explicit revision-certificate binding, and `Other` anchors remain exact phase-one SHA256SUMS entries. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
 | `REQ-PER-011` | Legacy lyrics and plan-at-creation fields remain readable but never infer vocal/Suno-field semantics or satisfy the separate plan-at-generation fact; missing new semantics stay `NOT DOCUMENTED`. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
+| `REQ-PER-012` | Schema 7 stores only non-secret optional ACRCloud settings; credentials remain private, screening artifacts are portable/hash-covered, and existing finalized snapshots are not backfilled. | [ATP-0017](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Verification
 
@@ -304,6 +317,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 - The version 1 migration cannot reconstruct derivation that was not stored; non-legacy version 1 evidence is therefore backfilled conservatively as `managed_copy`.
 - Path containment is not descriptor-relative across the complete operation and does not protect a workspace from a hostile same-user concurrent writer.
 - Timestamp sidecar directory-entry durability uses explicit parent-directory `fsync` on Unix. Non-Unix platforms retain atomic, synchronized file writes but directory synchronization is best effort.
+- ACRCloud credential protection relies on the local user account and restricted private config file; portable folders and SQLite intentionally cannot reconstruct credentials.
 
 ## Related documents
 
@@ -311,6 +325,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 - [Track documentation model](track-documentation-model.md)
 - [Track library organization model](track-library-model.md)
 - [Workflow model](workflow-model.md)
+- [Pre-release audio screening](pre-release-audio-screening.md)
 - [Legacy track import](../dev/legacy-track-import.md)
 - [Provider-neutral template persistence guidance](persistence-architecture.md)
 
@@ -318,6 +333,7 @@ Executed and outstanding recovery, migration-failure, and index-loss results are
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-18 | Raised SQLite schema to 7 for non-secret audio-screening settings and documented private credentials, portable screening artifacts, and revision isolation. | Project team |
 | 2026-08-17 | Documented sidecar-v1 immutable byte pinning, stage-before-registration publication and startup reconciliation, current/archived byte-based reverification, and the native Terms availability invariant. | Project team |
 | 2026-08-17 | Clarified that legacy plan-at-creation never populates plan at generation, restricted `Other` timestamp anchors to unchanged main-hash entries, and defined independent load-time sidecar integrity reporting. | Project team |
 | 2026-08-17 | Raised SQLite schema to 5 for certificate-bound external-timestamp records and documented their staged sidecar transaction, stable anchors, mismatch persistence, revision isolation, enriched Terms metadata, and non-inferential lyrics migration. | Project team |

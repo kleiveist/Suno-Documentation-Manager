@@ -1,3 +1,4 @@
+use crate::audio_screening;
 use crate::certificate;
 use crate::documents;
 use crate::error::{AppError, Result};
@@ -6,7 +7,9 @@ use crate::external_timestamp;
 use crate::folder_import::{self, FolderImportExecutionInput, FolderImportProposal};
 use crate::integrity;
 use crate::model::{
-    ActionResult, BlockingDeviation, CertificateRenderOptions, CertificateState, CreateTrackInput,
+    ActionResult, AudioScreeningProviderStatus, AudioScreeningProviderTestResult,
+    AudioScreeningSecretInput, AudioScreeningSettings, AudioScreeningStatus, AudioScreeningSummary,
+    BlockingDeviation, CertificateRenderOptions, CertificateState, CreateTrackInput,
     DeviationInput, DocumentPreview, DocumentState, EvidenceDerivedField, EvidenceItem,
     EvidenceMetadata, EvidencePreview, EvidenceProvenance, EvidenceRole, ExternalTimestampInput,
     ExternalTimestampRecord, ExternalTimestampStatus, ExternalTimestampSummary, FinalizationAnchor,
@@ -45,7 +48,7 @@ pub const TRACK_FOLDERS: [&str; 8] = [
 const SINGLES_DIRECTORY: &str = "Singles";
 const TRACK_IDENTITY_FILE: &str = ".summary/track.json";
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WorkspaceApp {
     root: PathBuf,
     persistence: Persistence,
@@ -388,6 +391,66 @@ impl WorkspaceApp {
         Ok(result)
     }
 
+    /// Returns only global, non-secret ACRCloud configuration. The local
+    /// engine status is checked from the app-controlled sidecar; credentials
+    /// are represented only by a boolean derived from the private file.
+    pub fn audio_screening_settings(&self) -> Result<AudioScreeningSettings> {
+        let mut settings = self.persistence.audio_screening_settings()?;
+        let credentials_present = self.persistence.audio_screening_credentials_present()?;
+        audio_screening::apply_provider_configuration_status(&mut settings, credentials_present);
+        Ok(settings)
+    }
+
+    pub fn update_audio_screening_settings(
+        &self,
+        mut settings: AudioScreeningSettings,
+    ) -> Result<AudioScreeningSettings> {
+        // Never trust UI-provided state labels, credential flags, engine data,
+        // or timestamps. All four are derived in the native layer.
+        let previous = self.persistence.audio_screening_settings()?;
+        settings.status = AudioScreeningProviderStatus::Disabled;
+        settings.status_message.clear();
+        settings.credentials_configured = false;
+        settings.local_engine_available = false;
+        settings.local_engine_version.clear();
+        settings.last_tested_at = previous.last_tested_at;
+        if settings.timeout_seconds == 0 {
+            settings.timeout_seconds = 30;
+        }
+        if let Ok(normalized) = audio_screening::normalize_acrcloud_host(&settings.host) {
+            settings.host = normalized;
+        }
+        let credentials_present = self.persistence.audio_screening_credentials_present()?;
+        audio_screening::apply_provider_configuration_status(&mut settings, credentials_present);
+        self.persistence.save_audio_screening_settings(&settings)?;
+        Ok(settings)
+    }
+
+    /// Stores the pair outside all serializable workspace state. No credential
+    /// is returned, logged, added to a profile, or copied to a track.
+    pub fn update_audio_screening_secret(&self, input: AudioScreeningSecretInput) -> Result<()> {
+        self.persistence.save_audio_screening_secret(input)?;
+        let mut settings = self.persistence.audio_screening_settings()?;
+        let credentials_present = self.persistence.audio_screening_credentials_present()?;
+        audio_screening::apply_provider_configuration_status(&mut settings, credentials_present);
+        self.persistence.save_audio_screening_settings(&settings)
+    }
+
+    /// This sends no audio and no credentials. It is a bounded HTTPS
+    /// reachability/configuration test for the explicitly configured host.
+    pub fn test_audio_screening_provider(&self) -> Result<AudioScreeningProviderTestResult> {
+        let mut settings = self.persistence.audio_screening_settings()?;
+        let credentials_present = self.persistence.audio_screening_credentials_present()?;
+        let result = audio_screening::test_acrcloud_provider(&settings, credentials_present);
+        settings.status = result.status;
+        settings.status_message = result.message.clone();
+        settings.credentials_configured = credentials_present;
+        settings.last_tested_at = Some(result.tested_at.clone());
+        audio_screening::refresh_local_engine_status(&mut settings);
+        self.persistence.save_audio_screening_settings(&settings)?;
+        Ok(result)
+    }
+
     pub fn create_track(&self, input: CreateTrackInput) -> Result<TrackDetail> {
         validate_track_title(&input.title)?;
         let profile = self.profile()?;
@@ -449,6 +512,7 @@ impl WorkspaceApp {
             library,
             field_origins: Default::default(),
             fields,
+            audio_screening: Default::default(),
             documents: DocumentState::default(),
             integrity: IntegrityState::default(),
             certificate: CertificateState::default(),
@@ -707,6 +771,7 @@ impl WorkspaceApp {
             track.fields.suno_export_filename_difference_confirmed = None;
         }
         validate_track_fields(&track.fields)?;
+        let mut authoritative_release_renamed = false;
         if track.fields != previous_fields || track.field_origins != previous_origins {
             let mut release_renames = Vec::new();
             if track.fields.title != previous_fields.title {
@@ -726,6 +791,15 @@ impl WorkspaceApp {
                         return Err(error);
                     }
                 }
+            }
+            authoritative_release_renamed = release_renames
+                .iter()
+                .any(|(_, updated)| updated.role == EvidenceRole::ReleaseWav);
+            if authoritative_release_renamed {
+                // A managed filename is part of the screening source binding.
+                // The bytes may be identical, but an old path must never keep
+                // a prior fingerprint or provider result current.
+                audio_screening::mark_screening_stale(&mut track.audio_screening);
             }
             mark_content_changed(&mut track);
             track.status = TrackStatus::Active;
@@ -751,7 +825,20 @@ impl WorkspaceApp {
             }
             self.write_track_identity(&track)?;
         }
-        self.detail_from_record(track, false)
+        if authoritative_release_renamed {
+            self.archive_current_audio_screening_artifacts(&track)?;
+        }
+        let detail = self.detail_from_record(track, false)?;
+        if authoritative_release_renamed {
+            return self
+                .run_local_audio_screening_with_progress(id, &mut |_| {})
+                .map(|result| result.track.unwrap_or(detail.clone()))
+                // The rename itself is already durable. If a local sidecar
+                // cannot be produced immediately, persist STALE rather than
+                // presenting the old binding as current.
+                .or(Ok(detail));
+        }
+        Ok(detail)
     }
 
     pub fn update_track_library(
@@ -1311,6 +1398,9 @@ impl WorkspaceApp {
             let mut all_evidence = self.persistence.evidence(id)?;
             all_evidence.push(item.clone());
             reconcile_evidence_derived_fields(&mut track, &all_evidence);
+            if role == EvidenceRole::ReleaseWav {
+                audio_screening::mark_screening_stale(&mut track.audio_screening);
+            }
             mark_content_changed(&mut track);
             if role == EvidenceRole::ReleaseWav {
                 track.fields.release_filename_difference_confirmed = None;
@@ -1328,7 +1418,21 @@ impl WorkspaceApp {
             let _ = fs::remove_file(&managed_path);
             return Err(error);
         }
-        self.detail_from_record(track, false)
+        if role == EvidenceRole::ReleaseWav {
+            self.archive_current_audio_screening_artifacts(&track)?;
+        }
+        let detail = self.detail_from_record(track, false)?;
+        if role == EvidenceRole::ReleaseWav {
+            return self
+                .run_local_audio_screening_with_progress(id, &mut |_| {})
+                .map(|result| result.track.unwrap_or(detail.clone()))
+                // The evidence import remains durable if a subsequent local
+                // best-effort run hits an unexpected filesystem error. The
+                // unfulfilled workflow requirement then makes the condition
+                // visible rather than presenting an old fingerprint as PASS.
+                .or(Ok(detail));
+        }
+        Ok(detail)
     }
 
     #[cfg(test)]
@@ -1412,6 +1516,9 @@ impl WorkspaceApp {
                 .ok_or_else(|| AppError::EvidenceNotFound(item.id.clone()))?;
             *stored = item.clone();
             reconcile_evidence_derived_fields(&mut track, &all_evidence);
+            if role == EvidenceRole::ReleaseWav {
+                audio_screening::mark_screening_stale(&mut track.audio_screening);
+            }
             mark_content_changed(&mut track);
             if role == EvidenceRole::ReleaseWav {
                 track.fields.release_filename_difference_confirmed = None;
@@ -1425,12 +1532,23 @@ impl WorkspaceApp {
             self.persistence
                 .save_track_and_evidence(&track, std::slice::from_ref(&item))
         })?;
-        self.detail_from_record(track, false)
+        if role == EvidenceRole::ReleaseWav {
+            self.archive_current_audio_screening_artifacts(&track)?;
+        }
+        let detail = self.detail_from_record(track, false)?;
+        if role == EvidenceRole::ReleaseWav {
+            return self
+                .run_local_audio_screening_with_progress(id, &mut |_| {})
+                .map(|result| result.track.unwrap_or(detail.clone()))
+                .or(Ok(detail));
+        }
+        Ok(detail)
     }
 
     pub fn remove_evidence(&self, id: &str, evidence_id: &str) -> Result<TrackDetail> {
         let mut track = self.mutable_track(id)?;
         let item = self.persistence.evidence_item(id, evidence_id)?;
+        let removed_authoritative_release = item.role == EvidenceRole::ReleaseWav;
         if item.provenance == EvidenceProvenance::IndexedLegacy {
             let track_root = self.track_root(&track)?;
             let path = contained_path(&track_root, Path::new(&item.relative_path), false)?;
@@ -1483,6 +1601,9 @@ impl WorkspaceApp {
             }
             let remaining_evidence = self.persistence.evidence(id)?;
             reconcile_evidence_derived_fields(&mut track, &remaining_evidence);
+            if item.role == EvidenceRole::ReleaseWav {
+                audio_screening::mark_screening_stale(&mut track.audio_screening);
+            }
             mark_content_changed(&mut track);
             if item.role == EvidenceRole::ReleaseWav {
                 track.fields.release_filename_difference_confirmed = None;
@@ -1505,6 +1626,9 @@ impl WorkspaceApp {
                 return Err(AppError::Data(format!(
                     "Legacy evidence removal failed ({error}); rollback was incomplete."
                 )));
+            }
+            if removed_authoritative_release {
+                self.archive_current_audio_screening_artifacts(&track)?;
             }
             return self.detail_from_record(track, false);
         }
@@ -1540,6 +1664,9 @@ impl WorkspaceApp {
         }
         let remaining_evidence = self.persistence.evidence(id)?;
         reconcile_evidence_derived_fields(&mut track, &remaining_evidence);
+        if item.role == EvidenceRole::ReleaseWav {
+            audio_screening::mark_screening_stale(&mut track.audio_screening);
+        }
         mark_content_changed(&mut track);
         if item.provenance == EvidenceProvenance::GeneratedDisclosure {
             track.fields.disclosure_applied = None;
@@ -1570,6 +1697,9 @@ impl WorkspaceApp {
         }
         if let Some(directory) = removal_dir.as_deref() {
             let _ = fs::remove_dir(directory);
+        }
+        if removed_authoritative_release {
+            self.archive_current_audio_screening_artifacts(&track)?;
         }
         self.detail_from_record(track, false)
     }
@@ -1692,14 +1822,33 @@ impl WorkspaceApp {
             }
         }
         let mut mismatch = false;
+        let mut authoritative_release_mismatch = false;
         for item in items {
             if evidence_id.is_none() || evidence_id == Some(item.id.as_str()) {
+                let is_authoritative_release = item.role == EvidenceRole::ReleaseWav;
                 let verified = evidence::verify(&track_root, item)?;
                 mismatch |= !verified.verified;
+                authoritative_release_mismatch |= is_authoritative_release && !verified.verified;
                 self.persistence.save_evidence(id, &verified)?;
             }
         }
-        if mismatch && track.status == TrackStatus::Finalized {
+        if authoritative_release_mismatch
+            && !matches!(
+                track.status,
+                TrackStatus::Finalized | TrackStatus::Superseded
+            )
+        {
+            // The byte-integrity verifier discovered that the authoritative
+            // source no longer matches the recorded release.  Preserve old
+            // screening artifacts below `.archive` and make both levels
+            // visibly stale; do not leave a prior positive record live.
+            audio_screening::mark_screening_stale(&mut track.audio_screening);
+            mark_content_changed(&mut track);
+            track.status = TrackStatus::Active;
+            track.updated_at = now();
+            self.persistence.save_track(&track)?;
+            self.archive_current_audio_screening_artifacts(&track)?;
+        } else if mismatch && track.status == TrackStatus::Finalized {
             invalidate_state(
                 &mut track,
                 "Evidence integrity mismatch detected after finalization",
@@ -1735,6 +1884,7 @@ impl WorkspaceApp {
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
         let stored = self.persistence.stored_steps(id)?;
+        self.ensure_current_audio_screening_artifacts(&track, &evidence)?;
         let evaluation = workflow::evaluate(
             &track,
             &track.profile_snapshot,
@@ -1892,6 +2042,7 @@ impl WorkspaceApp {
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
         let stored = self.persistence.stored_steps(id)?;
+        self.ensure_current_audio_screening_artifacts(&track, &evidence)?;
         let evaluation = workflow::evaluate(
             &track,
             &track.profile_snapshot,
@@ -1965,6 +2116,340 @@ impl WorkspaceApp {
         });
         Ok(ActionResult {
             message,
+            track: Some(self.detail_from_record(track, false)?),
+        })
+    }
+
+    /// Explicit retry endpoint for the fully local stage. Imports and
+    /// replacements also call this after persisting new release evidence; it
+    /// never performs a network request.
+    pub fn run_local_audio_screening_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
+        let mut track = self.mutable_track(id)?;
+        let evidence = self.persistence.evidence(id)?;
+        let release = evidence
+            .iter()
+            .find(|item| {
+                item.role == EvidenceRole::ReleaseWav
+                    && item.verified
+                    && item.verification_error.is_none()
+                    && item.sha256.is_some()
+            })
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "Import and verify the authoritative final release audio before audio screening."
+                        .into(),
+                )
+            })?;
+        let root = self.track_root(&track)?;
+        let record = audio_screening::local_fingerprint(
+            &contained_path(&root, Path::new(&release.relative_path), true)?,
+            &track.id,
+            &release,
+            &root,
+            |stage, message| {
+                on_progress(OperationProgress {
+                    stage: stage.into(),
+                    current_file: Some(message.into()),
+                    ..OperationProgress::default()
+                });
+            },
+        )?;
+        track.audio_screening.local = record;
+        self.ensure_release_unchanged_after_screening(&mut track, &release, &root)?;
+        // A fresh local result belongs to this release only.  Do not carry an
+        // old provider result (or its STALE invalidation marker) across an
+        // explicit release replacement; the optional level starts clean and
+        // is then represented from the current global configuration.
+        if track.audio_screening.local.status == AudioScreeningStatus::FingerprintGenerated
+            && (track.audio_screening.external.status == AudioScreeningStatus::Stale
+                || !audio_screening::external_record_matches_source(
+                    &track.audio_screening.external,
+                    &track.id,
+                    &release,
+                ))
+        {
+            track.audio_screening.external = Default::default();
+        }
+        self.record_external_configuration_status_if_unrun(&mut track)?;
+        // `local_fingerprint` writes the initial portable summary together
+        // with its JSON record. The optional-provider status is resolved only
+        // afterwards, so refresh just the Markdown summary to keep the
+        // portable record and the persisted state in lockstep.
+        audio_screening::refresh_screening_markdown(
+            &root,
+            &track.audio_screening.local,
+            &track.audio_screening.external,
+        )?;
+        // A local record changes portable documentation artifacts. It has no
+        // bearing on a valid external result for the same source bytes.
+        mark_content_changed(&mut track);
+        track.status = TrackStatus::Active;
+        track.updated_at = now();
+        self.persistence.save_track(&track)?;
+        Ok(ActionResult {
+            message: format!(
+                "Local Chromaprint screening recorded: {}.",
+                audio_screening::audio_screening_status_label(track.audio_screening.local.status)
+            ),
+            track: Some(self.detail_from_record(track, false)?),
+        })
+    }
+
+    /// A missing optional provider is a documented skip, not a failed local
+    /// screening or a legal conclusion. Once a record exists (including a
+    /// stale record after release replacement), it is never overwritten here.
+    fn record_external_configuration_status_if_unrun(&self, track: &mut TrackRecord) -> Result<()> {
+        if track.audio_screening.external.status != AudioScreeningStatus::NotRun {
+            return Ok(());
+        }
+        let settings = self.persistence.audio_screening_settings()?;
+        let credentials_present = self.persistence.audio_screening_credentials_present()?;
+        let (status, message) =
+            audio_screening::provider_configuration_status(&settings, credentials_present);
+        match status {
+            AudioScreeningProviderStatus::Ready => {}
+            AudioScreeningProviderStatus::Disabled
+            | AudioScreeningProviderStatus::NotConfigured => {
+                track.audio_screening.external.status = AudioScreeningStatus::SkippedNotConfigured;
+                track.audio_screening.external.message = message;
+            }
+            AudioScreeningProviderStatus::ConfigurationInvalid => {
+                track.audio_screening.external.status = AudioScreeningStatus::ConfigurationInvalid;
+                track.audio_screening.external.message = message;
+            }
+            AudioScreeningProviderStatus::AuthenticationFailed => {
+                track.audio_screening.external.status = AudioScreeningStatus::AuthenticationFailed;
+                track.audio_screening.external.message = message;
+            }
+            AudioScreeningProviderStatus::ProviderUnavailable => {
+                track.audio_screening.external.status = AudioScreeningStatus::ProviderUnavailable;
+                track.audio_screening.external.message = message;
+            }
+        }
+        Ok(())
+    }
+
+    /// The portable screening directory is system-owned.  Once the source
+    /// binding is no longer current, preserve the old technical record below
+    /// `.archive` instead of leaving a positive-looking result in the live
+    /// track tree.  A subsequent local run publishes a fresh directory.
+    fn archive_current_audio_screening_artifacts(&self, track: &TrackRecord) -> Result<()> {
+        let root = self.track_root(track)?;
+        audio_screening::archive_current_screening_artifacts(&root)?;
+        Ok(())
+    }
+
+    /// `audio_screening` operates on a private, byte-verified snapshot so an
+    /// external edit cannot change the audio consumed by fpcalc/ACRCloud.
+    /// Re-verify the managed source immediately before accepting the produced
+    /// record, too: otherwise an out-of-band edit during the long operation
+    /// could make its old snapshot appear current in the database.
+    fn ensure_release_unchanged_after_screening(
+        &self,
+        track: &mut TrackRecord,
+        release: &EvidenceItem,
+        root: &Path,
+    ) -> Result<()> {
+        let verification = evidence::verify(root, release.clone());
+        let still_current = verification.as_ref().is_ok_and(|item| {
+            item.verified
+                && item.verification_error.is_none()
+                && item.id == release.id
+                && item.relative_path == release.relative_path
+                && item.sha256 == release.sha256
+                && item.size_bytes == release.size_bytes
+        });
+        if still_current {
+            return Ok(());
+        }
+
+        // Keep the evidence record honest when verification produced a
+        // controlled mismatch/missing result.  A low-level filesystem error
+        // still results in a stale screening state below, without exposing
+        // its raw path or decoder details to the user.
+        if let Ok(verified) = verification {
+            self.persistence.save_evidence(&track.id, &verified)?;
+        }
+        audio_screening::mark_screening_stale(&mut track.audio_screening);
+        mark_content_changed(track);
+        track.status = TrackStatus::Active;
+        track.updated_at = now();
+        self.persistence.save_track(track)?;
+        self.archive_current_audio_screening_artifacts(track)?;
+        Err(AppError::Validation(
+            "The authoritative release audio changed while audio screening was running. The result was discarded; verify or replace the release file and run screening again."
+                .into(),
+        ))
+    }
+
+    /// Track state stores the expected hashes for the portable local record
+    /// and (when retained) the raw provider response.  Hash generation must
+    /// never make a modified artifact look current merely by hashing its new
+    /// bytes into SHA256SUMS, so verify these state-to-artifact anchors before
+    /// documents, hashes, or finalization use them.
+    fn ensure_current_audio_screening_artifacts(
+        &self,
+        track: &TrackRecord,
+        evidence: &[EvidenceItem],
+    ) -> Result<()> {
+        let root = self.track_root(track)?;
+
+        // Stale state is a durable invalidation marker. If a filesystem
+        // failure prevented the best-effort archival move, never let
+        // document/hash generation re-adopt the still-live old directory.
+        // A local rerun (or a fresh release import) repairs it by archiving
+        // and publishing a new source-bound artifact set.
+        if matches!(
+            track.audio_screening.local.status,
+            AudioScreeningStatus::Stale
+        ) || matches!(
+            track.audio_screening.external.status,
+            AudioScreeningStatus::Stale
+        ) {
+            let live_directory = contained_path(
+                &root,
+                Path::new(audio_screening::AUDIO_SCREENING_DIR),
+                false,
+            )?;
+            match fs::symlink_metadata(&live_directory) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(AppError::Symlink(live_directory.display().to_string()));
+                }
+                Ok(_) => {
+                    return Err(AppError::Validation(
+                        "Stale audio-screening artifacts are still present in the live track directory. Run the local screening again after restoring or replacing the release audio."
+                            .into(),
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AppError::io(&live_directory, error)),
+            }
+        }
+
+        let Some(release) = evidence.iter().find(|item| {
+            item.role == EvidenceRole::ReleaseWav
+                && item.verified
+                && item.verification_error.is_none()
+                && item.sha256.is_some()
+        }) else {
+            return Ok(());
+        };
+
+        if audio_screening::local_record_matches_source(
+            &track.audio_screening.local,
+            &track.id,
+            release,
+        ) && !audio_screening::local_artifact_is_current(&root, &track.audio_screening.local)
+            .unwrap_or(false)
+        {
+            return Err(AppError::Validation(
+                "The local audio-screening record no longer matches its portable artifact. Run the local Chromaprint screening again before continuing."
+                    .into(),
+            ));
+        }
+
+        if audio_screening::external_record_matches_source(
+            &track.audio_screening.external,
+            &track.id,
+            release,
+        ) && !audio_screening::external_response_artifact_is_current(
+            &root,
+            &track.audio_screening.external,
+        )
+        .unwrap_or(false)
+        {
+            return Err(AppError::Validation(
+                "The external audio-screening response no longer matches its portable artifact. Run the explicit ACRCloud screening again before continuing."
+                    .into(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// The sole call path that can upload an audio sample. The Tauri command is
+    /// reached only from the explicit Step-09 user action; it is never invoked
+    /// by opening a workspace, importing evidence, generating hashes, or
+    /// finalizing a track.
+    pub fn run_external_audio_screening_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut impl FnMut(OperationProgress),
+    ) -> Result<ActionResult> {
+        let mut track = self.mutable_track(id)?;
+        let evidence = self.persistence.evidence(id)?;
+        let release = evidence
+            .iter()
+            .find(|item| {
+                item.role == EvidenceRole::ReleaseWav
+                    && item.verified
+                    && item.verification_error.is_none()
+                    && item.sha256.is_some()
+            })
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "Import and verify the authoritative final release audio before external screening."
+                        .into(),
+                )
+            })?;
+        if !audio_screening::local_record_matches_source(
+            &track.audio_screening.local,
+            &track.id,
+            &release,
+        ) {
+            return Err(AppError::Validation(
+                "Generate a current local Chromaprint fingerprint for the authoritative release audio before starting external screening."
+                    .into(),
+            ));
+        }
+        let root = self.track_root(&track)?;
+        if !audio_screening::local_artifact_is_current(&root, &track.audio_screening.local)
+            .unwrap_or(false)
+        {
+            return Err(AppError::Validation(
+                "The current local Chromaprint record is missing or has changed. Run the local screening again before starting external screening."
+                    .into(),
+            ));
+        }
+        let settings = self.persistence.audio_screening_settings()?;
+        let credentials = self.persistence.audio_screening_credentials()?;
+        let record = audio_screening::run_external_audio_screening_with_credentials(
+            &settings,
+            credentials
+                .as_ref()
+                .map(|(access_key, access_secret)| (access_key.as_str(), access_secret.as_str())),
+            &contained_path(&root, Path::new(&release.relative_path), true)?,
+            &track.id,
+            &release,
+            &root,
+            Some(&track.audio_screening.local),
+            |stage, message| {
+                on_progress(OperationProgress {
+                    stage: stage.into(),
+                    current_file: Some(message.into()),
+                    ..OperationProgress::default()
+                });
+            },
+        )?;
+        track.audio_screening.external = record;
+        self.ensure_release_unchanged_after_screening(&mut track, &release, &root)?;
+        mark_content_changed(&mut track);
+        track.status = TrackStatus::Active;
+        track.updated_at = now();
+        self.persistence.save_track(&track)?;
+        Ok(ActionResult {
+            message: format!(
+                "External ACRCloud screening recorded: {}.",
+                audio_screening::audio_screening_status_label(
+                    track.audio_screening.external.status
+                )
+            ),
             track: Some(self.detail_from_record(track, false)?),
         })
     }
@@ -2059,6 +2544,50 @@ impl WorkspaceApp {
         });
         // Re-read all state after validation so the certificate uses exactly the gate input.
         track = self.persistence.track(id)?;
+        // Freeze the optional provider's actual configuration state only in
+        // the immutable certificate snapshot. Persisting this presentation
+        // fact on the editable track after the documentation-currentness gate
+        // would immediately make the documentation stale.
+        let mut certificate_track = track.clone();
+        let screening_settings = self.persistence.audio_screening_settings()?;
+        let screening_credentials_present =
+            self.persistence.audio_screening_credentials_present()?;
+        let (screening_provider_status, screening_provider_message) =
+            audio_screening::provider_configuration_status(
+                &screening_settings,
+                screening_credentials_present,
+            );
+        certificate_track
+            .audio_screening
+            .external
+            .configured_at_snapshot = Some(matches!(
+            screening_provider_status,
+            AudioScreeningProviderStatus::Ready
+        ));
+        if certificate_track.audio_screening.external.status == AudioScreeningStatus::NotRun
+            && !matches!(
+                screening_provider_status,
+                AudioScreeningProviderStatus::Ready
+            )
+        {
+            certificate_track.audio_screening.external.status = match screening_provider_status {
+                AudioScreeningProviderStatus::Disabled
+                | AudioScreeningProviderStatus::NotConfigured => {
+                    AudioScreeningStatus::SkippedNotConfigured
+                }
+                AudioScreeningProviderStatus::ConfigurationInvalid => {
+                    AudioScreeningStatus::ConfigurationInvalid
+                }
+                AudioScreeningProviderStatus::AuthenticationFailed => {
+                    AudioScreeningStatus::AuthenticationFailed
+                }
+                AudioScreeningProviderStatus::ProviderUnavailable => {
+                    AudioScreeningStatus::ProviderUnavailable
+                }
+                AudioScreeningProviderStatus::Ready => AudioScreeningStatus::NotRun,
+            };
+            certificate_track.audio_screening.external.message = screening_provider_message;
+        }
         // Certificate language is intentionally resolved from the current
         // workspace setting rather than the editable track profile snapshot.
         // A language-only settings update must not invalidate documents or
@@ -2070,6 +2599,7 @@ impl WorkspaceApp {
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
         let stored = self.persistence.stored_steps(id)?;
+        self.ensure_current_audio_screening_artifacts(&track, &evidence)?;
         let evaluation = workflow::evaluate(
             &track,
             &track.profile_snapshot,
@@ -2131,8 +2661,8 @@ impl WorkspaceApp {
         let publication = match failure.and_then(FinalizationFailure::certificate_failure) {
             Some(certificate_failure) => certificate::generate_with_failure(
                 &track_root,
-                &track,
-                &track.profile_snapshot,
+                &certificate_track,
+                &certificate_track.profile_snapshot,
                 &evaluation.steps,
                 &evidence,
                 &deviations,
@@ -2144,8 +2674,8 @@ impl WorkspaceApp {
             ),
             None => certificate::generate(
                 &track_root,
-                &track,
-                &track.profile_snapshot,
+                &certificate_track,
+                &certificate_track.profile_snapshot,
                 &evaluation.steps,
                 &evidence,
                 &deviations,
@@ -2158,8 +2688,8 @@ impl WorkspaceApp {
         #[cfg(not(test))]
         let publication = certificate::generate(
             &track_root,
-            &track,
-            &track.profile_snapshot,
+            &certificate_track,
+            &certificate_track.profile_snapshot,
             &evaluation.steps,
             &evidence,
             &deviations,
@@ -2697,6 +3227,15 @@ impl WorkspaceApp {
         let certificate_existed = live_certificate.exists();
         let live_pdf = contained_path(&root, Path::new(certificate::PDF_FILE), false)?;
         let pdf_existed = regular_file_if_present(&live_pdf, "The technical documentation PDF")?;
+        // Screening artifacts are part of the integrity-protected phase-one
+        // snapshot. Move them with the certificate rather than leaving an old
+        // fingerprint or provider response in the live revision workspace.
+        let live_audio_screening =
+            contained_path(&root, Path::new("03_DOCUMENTATION/AUDIO_SCREENING"), false)?;
+        let audio_screening_existed = regular_directory_if_present(
+            &live_audio_screening,
+            "The pre-release audio-screening directory",
+        )?;
         let stage_relative = PathBuf::from(".archive/revision-staging").join(&revision_id);
         let stage = ensure_contained_directory(&root, &stage_relative)?;
         let live_hashes = contained_path(&root, Path::new(integrity::HASH_FILE), false)?;
@@ -2729,6 +3268,7 @@ impl WorkspaceApp {
         }
         let staged_certificate = stage.join("certificate");
         let staged_pdf = stage.join(certificate::PDF_FILE);
+        let staged_audio_screening = stage.join("03_DOCUMENTATION/AUDIO_SCREENING");
         let certificate_staging = if certificate_existed {
             fs::rename(&live_certificate, &staged_certificate)
                 .map_err(|error| AppError::io(&live_certificate, error))
@@ -2755,9 +3295,39 @@ impl WorkspaceApp {
             }
             pdf_moved = true;
         }
+        let mut audio_screening_moved = false;
+        if audio_screening_existed {
+            if let Some(parent) = staged_audio_screening.parent() {
+                fs::create_dir_all(parent).map_err(|error| AppError::io(parent, error))?;
+            }
+            if let Err(error) = fs::rename(&live_audio_screening, &staged_audio_screening) {
+                return Err(rollback_revision_state(
+                    &live_certificate,
+                    &staged_certificate,
+                    &live_pdf,
+                    &staged_pdf,
+                    &stage,
+                    certificate_existed,
+                    pdf_moved,
+                    AppError::io(&live_audio_screening, error),
+                ));
+            }
+            audio_screening_moved = true;
+        }
         if let Err(error) =
             ensure_contained_directory(&root, Path::new(certificate::CERTIFICATE_DIR))
         {
+            let restore_error = if audio_screening_moved {
+                restore_audio_screening_directory(&staged_audio_screening, &live_audio_screening)
+                    .err()
+            } else {
+                None
+            };
+            if let Some(restore_error) = restore_error {
+                return Err(AppError::Data(format!(
+                    "Revision failed ({error}); audio-screening rollback failed: {restore_error}"
+                )));
+            }
             return Err(rollback_revision_state(
                 &live_certificate,
                 &staged_certificate,
@@ -2770,6 +3340,17 @@ impl WorkspaceApp {
             ));
         }
         if let Err(error) = fs::rename(&stage, &archive) {
+            let restore_error = if audio_screening_moved {
+                restore_audio_screening_directory(&staged_audio_screening, &live_audio_screening)
+                    .err()
+            } else {
+                None
+            };
+            if let Some(restore_error) = restore_error {
+                return Err(AppError::Data(format!(
+                    "Revision archive publication failed ({error}); audio-screening rollback failed: {restore_error}"
+                )));
+            }
             return Err(rollback_revision_state(
                 &live_certificate,
                 &staged_certificate,
@@ -2785,11 +3366,24 @@ impl WorkspaceApp {
         track.certificate = CertificateState::default();
         track.documents.current = false;
         track.integrity = IntegrityState::default();
+        track.audio_screening = Default::default();
         track.updated_at = now();
         if let Err(error) = self
             .persistence
             .save_track_and_evidence(&track, &analyzed_evidence)
         {
+            let archived_audio_screening = archive.join("03_DOCUMENTATION/AUDIO_SCREENING");
+            let restore_error = if audio_screening_moved {
+                restore_audio_screening_directory(&archived_audio_screening, &live_audio_screening)
+                    .err()
+            } else {
+                None
+            };
+            if let Some(restore_error) = restore_error {
+                return Err(AppError::Data(format!(
+                    "Revision database save failed ({error}); audio-screening rollback failed: {restore_error}"
+                )));
+            }
             return Err(rollback_revision_state(
                 &live_certificate,
                 &archive.join("certificate"),
@@ -2801,9 +3395,20 @@ impl WorkspaceApp {
                 error,
             ));
         }
+        let detail = self.detail_from_record(track, false)?;
+        let detail = if analyzed_evidence
+            .iter()
+            .any(|item| item.role == EvidenceRole::ReleaseWav)
+        {
+            self.run_local_audio_screening_with_progress(id, &mut |_| {})
+                .map(|result| result.track.unwrap_or(detail.clone()))
+                .unwrap_or(detail)
+        } else {
+            detail
+        };
         Ok(ActionResult {
             message: format!("Previous certificate archived as revision {revision_id}."),
-            track: Some(self.detail_from_record(track, false)?),
+            track: Some(detail),
         })
     }
 
@@ -2854,6 +3459,26 @@ impl WorkspaceApp {
         }
         self.persistence.save_track_clearing_steps(&track)?;
 
+        // A workflow upgrade can make an older editable track subject to the
+        // new local-screening requirement even though no release file was
+        // imported in this invocation.  Keep that path automatic and local;
+        // archived finalizations have already run this as part of
+        // `create_revision` above.
+        let has_verified_release = evidence.iter().any(|item| {
+            item.role == EvidenceRole::ReleaseWav
+                && item.verified
+                && item.verification_error.is_none()
+                && item.sha256.is_some()
+        });
+        let detail = self.detail_from_record(track, false)?;
+        let detail = if !archived && has_verified_release {
+            self.run_local_audio_screening_with_progress(id, &mut |_| {})
+                .map(|result| result.track.unwrap_or(detail.clone()))
+                .unwrap_or(detail)
+        } else {
+            detail
+        };
+
         Ok(ActionResult {
             message: if archived {
                 format!(
@@ -2866,7 +3491,7 @@ impl WorkspaceApp {
                     current.id, current.version
                 )
             },
-            track: Some(self.detail_from_record(track, false)?),
+            track: Some(detail),
         })
     }
 
@@ -2902,6 +3527,7 @@ impl WorkspaceApp {
                     library,
                     field_origins: Default::default(),
                     fields,
+                    audio_screening: Default::default(),
                     documents: DocumentState {
                         generated: false,
                         current: false,
@@ -3548,6 +4174,9 @@ impl WorkspaceApp {
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(&track.id)?;
         let stored = self.persistence.stored_steps(&track.id)?;
+        let screening_artifact_error = self
+            .ensure_current_audio_screening_artifacts(&track, &evidence)
+            .err();
         let first = workflow::evaluate(
             &track,
             &track.profile_snapshot,
@@ -3578,6 +4207,9 @@ impl WorkspaceApp {
         let mut blocking_items = Vec::new();
         if let Some(message) = workflow_version_mismatch(&track)? {
             blocking_items.push(message);
+        }
+        if let Some(error) = screening_artifact_error {
+            blocking_items.push(format!("Pre-release audio screening: {error}"));
         }
         for step in &evaluation.steps {
             if matches!(
@@ -3727,6 +4359,7 @@ impl WorkspaceApp {
             profile_snapshot: track.profile_snapshot.clone(),
             automation,
             fields: track.fields.clone(),
+            audio_screening: AudioScreeningSummary::from(&track.audio_screening),
             steps: evaluation.steps,
             evidence,
             external_timestamps,
@@ -3773,6 +4406,7 @@ impl WorkspaceApp {
             profile_snapshot: track.profile_snapshot.clone(),
             automation,
             fields: track.fields.clone(),
+            audio_screening: AudioScreeningSummary::from(&track.audio_screening),
             steps: evaluation.steps,
             evidence,
             external_timestamps,
@@ -4520,6 +5154,40 @@ fn rollback_revision_state(
             "Revision failed ({cause}); {}",
             rollback_errors.join("; ")
         ))
+    }
+}
+
+/// `AUDIO_SCREENING` is system-owned and may be moved only as a whole. The
+/// caller has already resolved both paths under the managed track root; this
+/// helper still refuses links and collisions before restoring an interrupted
+/// revision transaction.
+fn restore_audio_screening_directory(staged: &Path, live: &Path) -> Result<()> {
+    if !staged.exists() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(staged).map_err(|error| AppError::io(staged, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::Symlink(staged.display().to_string()));
+    }
+    if live.exists() {
+        return Err(AppError::Collision(live.display().to_string()));
+    }
+    let parent = live.parent().ok_or_else(|| {
+        AppError::Validation("Audio-screening directory has no live parent.".into())
+    })?;
+    fs::create_dir_all(parent).map_err(|error| AppError::io(parent, error))?;
+    fs::rename(staged, live).map_err(|error| AppError::io(live, error))
+}
+
+fn regular_directory_if_present(path: &Path, label: &str) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(AppError::Symlink(path.display().to_string()))
+        }
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => Err(AppError::Validation(format!("{label} is not a directory."))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(AppError::io(path, error)),
     }
 }
 
@@ -5900,9 +6568,11 @@ mod tests {
         fs::create_dir_all(fixture_root).expect("fixture directory");
         let suno_export = fixture_root.join("suno-export.wav");
         let release_master = fixture_root.join("release-master.wav");
-        let suno_bytes = b"RIFF\x08\0\0\0WAVEsuno evidence".to_vec();
-        let mut release_bytes = suno_bytes.clone();
-        *release_bytes.last_mut().expect("non-empty audio fixture") ^= 1;
+        // The current workflow requires a genuine local Chromaprint result.
+        // Use non-trivial PCM fixtures so the bundled engine can produce one;
+        // the two deterministic signals intentionally differ.
+        let suno_bytes = p0_screening_wav(None, 17);
+        let release_bytes = p0_screening_wav(None, 23);
         fs::write(&suno_export, &suno_bytes).expect("Suno fixture");
         fs::write(&release_master, &release_bytes).expect("one-byte-different release fixture");
         app.import_evidence_from(&updated.id, EvidenceRole::SunoFinalExport, &suno_export)
@@ -5944,6 +6614,212 @@ mod tests {
             .expect("finalization")
             .track
             .expect("finalized track detail")
+    }
+
+    #[test]
+    fn removing_release_audio_archives_live_screening_artifacts_and_marks_state_stale() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Remove Release Screening",
+        );
+        let root = app.root().join(&ready.relative_path);
+        let live = root.join(audio_screening::AUDIO_SCREENING_DIR);
+        assert!(live.join("LOCAL_FINGERPRINT.json").is_file());
+        let release = ready
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release evidence");
+
+        let removed = app
+            .remove_evidence(&ready.id, &release.id)
+            .expect("remove release evidence");
+
+        assert_eq!(
+            removed.audio_screening.local.status,
+            AudioScreeningStatus::Stale
+        );
+        assert!(!live.exists(), "old screening must not remain live");
+        let archive_entries = fs::read_dir(root.join(".archive/audio-screening"))
+            .expect("screening archive")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("screening archive entries");
+        assert!(archive_entries.iter().any(|entry| {
+            entry
+                .path()
+                .join("AUDIO_SCREENING/LOCAL_FINGERPRINT.json")
+                .is_file()
+        }));
+    }
+
+    #[test]
+    fn release_byte_mismatch_stales_and_archives_screening_before_new_docs_or_hashes() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Mutated Release Screening",
+        );
+        let root = app.root().join(&ready.relative_path);
+        let release = ready
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release evidence");
+        fs::write(
+            root.join(&release.relative_path),
+            p0_screening_wav(None, 91),
+        )
+        .expect("out-of-band source mutation");
+
+        let verified = app
+            .verify_evidence(&ready.id, Some(&release.id))
+            .expect("record controlled mismatch");
+
+        assert_eq!(
+            verified.audio_screening.local.status,
+            AudioScreeningStatus::Stale
+        );
+        assert!(!root.join(audio_screening::AUDIO_SCREENING_DIR).exists());
+        assert!(matches!(
+            app.generate_documents(&ready.id, false),
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            app.calculate_hashes(&ready.id),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn altered_local_fingerprint_artifact_blocks_documents_hashes_and_finalization() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Altered Fingerprint Artifact",
+        );
+        let root = app.root().join(&ready.relative_path);
+        let fingerprint = root.join(audio_screening::LOCAL_FINGERPRINT_FILE);
+        let mut bytes = fs::read(&fingerprint).expect("local fingerprint artifact");
+        bytes.extend_from_slice(b"\nmutated outside SunoDM\n");
+        fs::write(&fingerprint, bytes).expect("mutate local fingerprint artifact");
+
+        assert!(matches!(
+            app.generate_documents(&ready.id, false),
+            Err(AppError::Validation(message)) if message.contains("local audio-screening record")
+        ));
+        assert!(matches!(
+            app.calculate_hashes(&ready.id),
+            Err(AppError::Validation(message)) if message.contains("local audio-screening record")
+        ));
+        let finalization = app.finalize_track(&ready.id);
+        assert!(
+            matches!(finalization, Err(AppError::Validation(message)) if message.contains("audio screening"))
+        );
+        assert!(!root.join(certificate::CERTIFICATE_FILE).exists());
+    }
+
+    #[test]
+    fn editable_workflow_upgrade_automatically_generates_current_local_screening() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Editable Screening Upgrade",
+        );
+        let root = app.root().join(&ready.relative_path);
+        let mut legacy = app.persistence.track(&ready.id).expect("stored track");
+        legacy.workflow_version = "1.7".into();
+        legacy.audio_screening = Default::default();
+        app.persistence
+            .save_track(&legacy)
+            .expect("simulate old workflow");
+        fs::remove_dir_all(root.join(audio_screening::AUDIO_SCREENING_DIR))
+            .expect("remove simulated pre-feature directory");
+
+        let upgraded = app
+            .re_evaluate_track(&ready.id)
+            .expect("upgrade editable track")
+            .track
+            .expect("upgraded detail");
+
+        assert_eq!(upgraded.workflow_version, "1.8");
+        assert_eq!(
+            upgraded.audio_screening.local.status,
+            AudioScreeningStatus::FingerprintGenerated
+        );
+        assert!(root.join(audio_screening::LOCAL_FINGERPRINT_FILE).is_file());
+    }
+
+    #[test]
+    fn release_replacement_resets_optional_external_state_without_blocking_finalization() {
+        let directory = tempdir().expect("temporary directory");
+        let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
+        app.update_profile(complete_profile()).expect("profile");
+        let ready = prepare_ready_track(
+            &app,
+            &directory.path().join("fixtures"),
+            "Replacement Optional Provider",
+        );
+        assert_eq!(
+            ready.audio_screening.external.status,
+            AudioScreeningStatus::SkippedNotConfigured
+        );
+        let release = ready
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::ReleaseWav)
+            .expect("release evidence");
+        let replacement_source = directory.path().join("replacement-release.wav");
+        fs::write(&replacement_source, p0_screening_wav(None, 101))
+            .expect("replacement release source");
+
+        let replaced = app
+            .replace_evidence_from(
+                &ready.id,
+                &release.id,
+                EvidenceRole::ReleaseWav,
+                &replacement_source,
+            )
+            .expect("replace release and rerun local screening");
+
+        assert_eq!(
+            replaced.audio_screening.local.status,
+            AudioScreeningStatus::FingerprintGenerated
+        );
+        assert_eq!(
+            replaced.audio_screening.external.status,
+            AudioScreeningStatus::SkippedNotConfigured
+        );
+        app.generate_documents(&ready.id, false)
+            .expect("documents after replacement");
+        app.calculate_hashes(&ready.id)
+            .expect("hashes after replacement");
+        let validation = app.validate_track(&ready.id).expect("finalization gate");
+        assert!(
+            validation.valid,
+            "missing={:?}; blocking={:?}",
+            validation.missing_items, validation.blocking_items
+        );
+        assert_eq!(
+            app.finalize_track(&ready.id)
+                .expect("finalization remains allowed")
+                .track
+                .expect("finalized detail")
+                .status,
+            TrackStatus::Finalized
+        );
     }
 
     fn custom_timestamp_settings(
@@ -7635,7 +8511,7 @@ mod tests {
         assert_eq!(created.library.album_title.as_deref(), Some("Night Drive"));
         assert_eq!(created.relative_path, "Night Drive/Album Track");
         assert!(workspace.join("Night Drive/Album Track").is_dir());
-        assert_eq!(crate::persistence::SCHEMA_VERSION, 5);
+        assert_eq!(crate::persistence::SCHEMA_VERSION, 7);
         drop(app);
 
         let reopened = WorkspaceApp::open(&workspace, false).expect("reopened workspace");
@@ -9054,7 +9930,7 @@ mod tests {
         let subscription_one = fixture_root.join("subscription-one.pdf");
         let subscription_two = fixture_root.join("subscription-two.pdf");
         let terms_source = fixture_root.join("suno-terms.pdf");
-        let final_audio = p0_pcm_wav(Some(&p0_suno_comment("2026-08-02T06:38:06Z")));
+        let final_audio = p0_screening_wav(Some(&p0_suno_comment("2026-08-02T06:38:06Z")), 31);
         fs::write(&suno_export, &final_audio).expect("Suno fixture");
         fs::write(&release_master, &final_audio).expect("byte-identical release fixture");
         fs::write(&release_mp3, b"ID3\x04\0\0release mp3 fixture").expect("release MP3 fixture");
@@ -9537,10 +10413,8 @@ mod tests {
         let suno_export = fixture_root.join("cross-check-suno.wav");
         let release_master = fixture_root.join("cross-check-release.wav");
         let final_artwork = fixture_root.join("cross-check-final.png");
-        fs::write(&suno_export, b"RIFF\x08\0\0\0WAVEsuno cross-check")
-            .expect("Suno export fixture");
-        fs::write(&release_master, b"RIFF\x08\0\0\0WAVErelease cross-check")
-            .expect("release fixture");
+        fs::write(&suno_export, p0_screening_wav(None, 41)).expect("Suno export fixture");
+        fs::write(&release_master, p0_screening_wav(None, 47)).expect("release fixture");
         image::RgbaImage::from_pixel(64, 64, image::Rgba([32, 64, 96, 255]))
             .save(&final_artwork)
             .expect("final artwork fixture");
@@ -11254,13 +12128,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_upgrade_archives_finalized_v17_and_requires_fresh_v18_outputs() {
+    fn workflow_upgrade_archives_finalized_v18_and_requires_fresh_v19_outputs() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
         let finalized =
             finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
-        assert_eq!(finalized.workflow_version, "1.7");
+        assert_eq!(finalized.workflow_version, "1.8");
         let track_root = app.root().join(&finalized.relative_path);
         let certificate_before = certificate_file_snapshot(&track_root);
         let hashes_before =
@@ -11277,17 +12151,17 @@ mod tests {
             )
             .expect("stored old-workflow override");
 
-        let workflow_v18 = workflow::config_with_version_for_test("1.8")
-            .expect("test-only workflow 1.8 configuration");
+        let workflow_v19 = workflow::config_with_version_for_test("1.9")
+            .expect("test-only workflow 1.9 configuration");
         let upgraded = app
-            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v18)
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v19)
             .expect("explicit workflow reevaluation")
             .track
             .expect("upgraded track detail");
 
         assert_eq!(upgraded.status, TrackStatus::Active);
         assert_eq!(upgraded.workflow_id, "suno-track");
-        assert_eq!(upgraded.workflow_version, "1.8");
+        assert_eq!(upgraded.workflow_version, "1.9");
         assert!(!upgraded.documents.current);
         assert!(!upgraded.integrity.generated);
         assert!(!upgraded.integrity.verified);
@@ -11326,7 +12200,7 @@ mod tests {
         }
 
         assert!(matches!(
-            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v18),
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v19),
             Err(AppError::Validation(_))
         ));
         assert_eq!(
@@ -11359,7 +12233,33 @@ mod tests {
         p0_pcm_wav_with_info_entries(&entries)
     }
 
+    /// A longer, non-silent PCM fixture for tests that deliberately exercise
+    /// the real bundled Chromaprint sidecar. Keep the regular P0 WAV tiny so
+    /// metadata-parser tests retain their existing 10 ms assertions.
+    fn p0_screening_wav(comment: Option<&str>, seed: u8) -> Vec<u8> {
+        let entries = comment
+            .map(|value| vec![(*b"ICMT", value.as_bytes().to_vec())])
+            .unwrap_or_default();
+        let frames = 48_000_usize * 4;
+        let mut audio = Vec::with_capacity(frames * 4);
+        for frame in 0..frames {
+            let phase = (frame * (17 + usize::from(seed))) % 109;
+            let sample = ((phase as i32 * 2 - 108) * 220) as i16;
+            for _ in 0..2 {
+                audio.extend_from_slice(&sample.to_le_bytes());
+            }
+        }
+        p0_pcm_wav_with_info_entries_and_audio(&entries, &audio)
+    }
+
     fn p0_pcm_wav_with_info_entries(entries: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+        p0_pcm_wav_with_info_entries_and_audio(entries, &vec![0; 1_920])
+    }
+
+    fn p0_pcm_wav_with_info_entries_and_audio(
+        entries: &[([u8; 4], Vec<u8>)],
+        audio: &[u8],
+    ) -> Vec<u8> {
         fn append_chunk(destination: &mut Vec<u8>, id: &[u8; 4], payload: &[u8]) {
             destination.extend_from_slice(id);
             destination.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -11379,7 +12279,7 @@ mod tests {
 
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, b"fmt ", &fmt);
-        append_chunk(&mut chunks, b"data", &vec![0; 1_920]);
+        append_chunk(&mut chunks, b"data", audio);
         if !entries.is_empty() {
             let mut info = b"INFO".to_vec();
             for (id, entry) in entries {
@@ -12580,11 +13480,11 @@ mod tests {
 
         let upgraded = app
             .re_evaluate_track(&track.id)
-            .expect("explicit 1.7 reevaluation")
+            .expect("explicit 1.8 reevaluation")
             .track
             .expect("reevaluated track");
 
-        assert_eq!(upgraded.workflow_version, "1.7");
+        assert_eq!(upgraded.workflow_version, "1.8");
         assert_eq!(upgraded.fields.suno_final_generation_date, "2026-08-17");
         assert_eq!(upgraded.fields.production_end_date, "2026-08-17");
         assert_eq!(
@@ -12632,7 +13532,7 @@ mod tests {
             .expect("explicit reevaluation")
             .track
             .expect("reevaluated track");
-        assert_eq!(upgraded.workflow_version, "1.7");
+        assert_eq!(upgraded.workflow_version, "1.8");
     }
 
     #[test]
