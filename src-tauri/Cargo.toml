@@ -26,4 +26,5 @@ thiserror = "2"
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 walkdir = "2"

@@ -17,6 +17,17 @@ async function finalizeGravity(api: ReturnType<typeof createDemoApi>, bilingual 
   return settle(api.finalizeTrack("gravity", { bilingual }));
 }
 
+async function configureFreeTsa(api: ReturnType<typeof createDemoApi>, autoAfterFinalization = false) {
+  const settings = await settle(api.getTimestampSettings());
+  return settle(api.updateTimestampSettings({
+    ...settings,
+    custom: { ...settings.custom },
+    enabled: true,
+    provider: "free_tsa",
+    autoAfterFinalization
+  }));
+}
+
 afterEach(() => vi.useRealTimers());
 
 describe("demo track library", () => {
@@ -350,11 +361,12 @@ describe("demo evidence controls", () => {
 });
 
 describe("demo external timestamp attachment", () => {
-  it("registers an exact anchor match after finalization and does not carry it into a new revision", async () => {
+  it("uses the configured provider and the evidence-manifest anchor automatically after finalization", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
     const finalized = await finalizeGravity(api);
+    expect(finalized.track!.externalTimestampSummary).toEqual(expect.objectContaining({ status: "not_recorded" }));
     expect(finalized.track!.finalizationAnchors).toEqual([
       {
         artifact: "evidence_manifest",
@@ -389,61 +401,76 @@ describe("demo external timestamp attachment", () => {
     ]);
     const anchor = finalized.track!.finalizationAnchors.find((item) => item.artifact === "evidence_manifest")!;
 
-    const timestamped = await settle(api.attachExternalTimestamp("gravity", {
-      provider: "Example TSA",
-      timestampType: "external_integrity_timestamp",
-      timestampValue: "2026-08-17T12:00:00Z",
-      referencedArtifact: "evidence_manifest",
-      otherReferencedArtifact: "",
-      referencedSha256: anchor.sha256,
-      externalReferenceId: "tsa-1",
-      providerVerificationUrl: "https://example.test/tsa-1",
-      note: ""
-    }));
+    await configureFreeTsa(api);
+    const timestamped = await settle(api.attachExternalTimestamp("gravity"));
 
-    const record = timestamped!.externalTimestamps[0];
+    const record = timestamped.externalTimestamps[0];
     const sidecarDirectory = `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${record.id}`;
     expect(record).toEqual(expect.objectContaining({
       certificateId: finalized.track!.certificate.certificateId,
+      provider: "FreeTSA",
+      timestampType: "external_integrity_timestamp",
+      referencedArtifact: "evidence_manifest",
       referencedHashMatch: true,
       actualSha256: anchor.sha256,
-      provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison",
+      provenance: "Automatic provider response; structural and digest checks",
       recordRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD.json`,
       markdownRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.md`,
       pdfRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.pdf`,
       hashListRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD_SHA256.txt`,
       integrityVerified: true,
-      integrityIssues: []
+      integrityIssues: [],
+      providerMetadata: expect.objectContaining({
+        protocol: "RFC 3161",
+        providerResponseFileName: "TIMESTAMP_RESPONSE.tsr",
+        providerResponseSha256: "f".repeat(64),
+        providerDigestMatch: true,
+        verificationResult: "attached",
+        signatureVerified: null,
+        trustChainVerified: null
+      })
+    }));
+    expect(timestamped.externalTimestampSummary).toEqual(expect.objectContaining({
+      status: "attached",
+      provider: "FreeTSA",
+      recordId: record.id
     }));
 
     const revision = await settle(api.createRevision("gravity"));
     expect(revision.track!.externalTimestamps).toEqual([]);
+    expect(revision.track!.externalTimestampSummary).toEqual(expect.objectContaining({ status: "not_recorded" }));
     expect(revision.track!.finalizationAnchors).toEqual([]);
   });
 
-  it("keeps a referenced hash mismatch separate from sidecar-integrity verification", async () => {
+  it("keeps technical finalization complete when no provider is configured", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
-    await finalizeGravity(api);
+    const finalized = await finalizeGravity(api);
 
-    const timestamped = await settle(api.attachExternalTimestamp("gravity", {
-      provider: "Example TSA",
-      timestampType: "electronic_timestamp",
-      timestampValue: "",
-      referencedArtifact: "evidence_manifest",
-      otherReferencedArtifact: "",
-      referencedSha256: "0".repeat(64),
-      externalReferenceId: "",
-      providerVerificationUrl: "",
-      note: ""
-    }));
+    expect(finalized.track).toEqual(expect.objectContaining({ status: "FINALIZED" }));
+    expect(finalized.track!.certificate.valid).toBe(true);
+    expect(finalized.track!.externalTimestampSummary).toEqual(expect.objectContaining({ status: "not_recorded" }));
 
-    expect(timestamped!.externalTimestamps[0]).toEqual(expect.objectContaining({
-      referencedHashMatch: false,
-      integrityVerified: true,
-      integrityIssues: []
-    }));
+    const attempted = await settle(api.attachExternalTimestamp("gravity"));
+    expect(attempted.externalTimestamps).toEqual([]);
+    expect(attempted.externalTimestampSummary).toEqual(expect.objectContaining({ status: "provider_unavailable" }));
+  });
+
+  it("can attach automatically after phase-one finalization without creating a duplicate", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    await configureFreeTsa(api, true);
+
+    const finalized = await finalizeGravity(api);
+    expect(finalized.track!.status).toBe("FINALIZED");
+    expect(finalized.track!.externalTimestampSummary).toEqual(expect.objectContaining({ status: "attached" }));
+    expect(finalized.track!.externalTimestamps).toHaveLength(1);
+
+    const retry = await settle(api.attachExternalTimestamp("gravity"));
+    expect(retry.externalTimestamps).toHaveLength(1);
+    expect(retry.externalTimestampSummary).toEqual(expect.objectContaining({ status: "attached" }));
   });
 });
 

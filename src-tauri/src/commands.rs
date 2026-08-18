@@ -3,10 +3,10 @@ use crate::error::{AppError, Result};
 use crate::folder_import::{FolderImportExecutionInput, FolderImportProposal};
 use crate::model::{
     ActionResult, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
-    EvidencePreview, EvidenceRole, ExternalTimestampInput, FinalizeOptions, GlobalEvidenceItem,
-    OperationProgress, Profile, StepStatus, SubscriptionBillingCycle, TrackCoverPreview,
-    TrackDetail, TrackLibraryPlacement, TrackPatchRequest, TrackSummary, ValidationResult,
-    WorkspaceScan, WorkspaceSummary,
+    EvidencePreview, EvidenceRole, FinalizeOptions, GlobalEvidenceItem, OperationProgress, Profile,
+    StepStatus, SubscriptionBillingCycle, TimestampProviderTestResult, TimestampSecretInput,
+    TimestampSettings, TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackPatchRequest,
+    TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Mutex, MutexGuard};
@@ -82,6 +82,41 @@ pub fn update_profile(state: State<'_, AppState>, profile: Profile) -> Result<Pr
 }
 
 #[tauri::command]
+pub fn get_timestamp_settings(state: State<'_, AppState>) -> Result<TimestampSettings> {
+    with_workspace(&state, WorkspaceApp::timestamp_settings)
+}
+
+#[tauri::command]
+pub fn update_timestamp_settings(
+    state: State<'_, AppState>,
+    settings: TimestampSettings,
+) -> Result<TimestampSettings> {
+    with_workspace(&state, |app| app.update_timestamp_settings(settings))
+}
+
+#[tauri::command]
+pub fn update_timestamp_secret(
+    state: State<'_, AppState>,
+    input: TimestampSecretInput,
+) -> Result<()> {
+    with_workspace(&state, |app| app.update_timestamp_secret(input))
+}
+
+#[tauri::command]
+pub async fn test_timestamp_provider(
+    state: State<'_, AppState>,
+) -> Result<TimestampProviderTestResult> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || workspace.test_timestamp_provider())
+        .await
+        .map_err(|error| AppError::Data(format!("Timestamp provider test failed: {error}")))?
+}
+
+#[tauri::command]
 pub fn list_global_evidence(state: State<'_, AppState>) -> Result<Vec<GlobalEvidenceItem>> {
     with_workspace(&state, WorkspaceApp::global_evidence)
 }
@@ -142,23 +177,20 @@ pub fn update_global_terms_evidence_metadata(
 }
 
 #[tauri::command]
-pub fn attach_external_timestamp(
+pub async fn attach_configured_external_timestamp(
     state: State<'_, AppState>,
     track_id: String,
-    input: ExternalTimestampInput,
-) -> Result<Option<TrackDetail>> {
-    let role = EvidenceRole::ExternalTimestamp;
-    let Some(source) = rfd::FileDialog::new()
-        .set_title("External timestamp evidence auswählen")
-        .add_filter("Timestamp evidence", role.allowed_extensions())
-        .pick_file()
-    else {
-        return Ok(None);
-    };
-    with_workspace(&state, |app| {
-        app.attach_external_timestamp_from(&track_id, &source, input)
-            .map(Some)
+) -> Result<TrackDetail> {
+    let workspace = state
+        .lock()?
+        .as_ref()
+        .cloned()
+        .ok_or(AppError::NoWorkspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace.attach_configured_external_timestamp(&track_id)
     })
+    .await
+    .map_err(|error| AppError::Data(format!("Timestamp attachment task failed: {error}")))?
 }
 
 #[tauri::command]

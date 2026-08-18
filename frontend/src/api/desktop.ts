@@ -4,7 +4,6 @@ import { createDemoApi } from "./demo";
 import type {
   ActionResult,
   EvidencePreview,
-  ExternalTimestampInput,
   FolderImportExecutionInput,
   FolderImportProposal,
   EvidenceMetadata,
@@ -18,6 +17,8 @@ import type {
   StepId,
   StepStatus,
   SubscriptionBillingCycle,
+  TimestampProviderTestResult,
+  TimestampSettings,
   TrackCreateInput,
   TrackCoverPreview,
   TrackDetail,
@@ -38,6 +39,11 @@ export interface DesktopApi {
   scanWorkspace(): Promise<ScanResult>;
   getProfile(): Promise<GlobalProfile>;
   updateProfile(profile: GlobalProfile): Promise<GlobalProfile>;
+  getTimestampSettings(): Promise<TimestampSettings>;
+  updateTimestampSettings(settings: TimestampSettings): Promise<TimestampSettings>;
+  /** Writes a secret to native secure storage; it is intentionally never returned. */
+  updateTimestampSecret(secret: string | null): Promise<void>;
+  testTimestampProvider(): Promise<TimestampProviderTestResult>;
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]>;
   importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle): Promise<GlobalEvidenceItem | null>;
   importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null>;
@@ -71,7 +77,7 @@ export interface DesktopApi {
   verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   validateTrack(trackId: string): Promise<ValidationResult>;
   finalizeTrack(trackId: string, options?: FinalizeOptions, onProgress?: OperationProgressHandler): Promise<ActionResult>;
-  attachExternalTimestamp(trackId: string, input: ExternalTimestampInput): Promise<TrackDetail | null>;
+  attachExternalTimestamp(trackId: string): Promise<TrackDetail>;
   invalidateCertificate(trackId: string): Promise<ActionResult>;
   createRevision(trackId: string): Promise<ActionResult>;
   reEvaluateTrack(trackId: string): Promise<ActionResult>;
@@ -138,6 +144,22 @@ class TauriDesktopApi implements DesktopApi {
 
   updateProfile(profile: GlobalProfile): Promise<GlobalProfile> {
     return command("update_profile", { profile });
+  }
+
+  getTimestampSettings(): Promise<TimestampSettings> {
+    return command("get_timestamp_settings");
+  }
+
+  updateTimestampSettings(settings: TimestampSettings): Promise<TimestampSettings> {
+    return command("update_timestamp_settings", { settings });
+  }
+
+  updateTimestampSecret(secret: string | null): Promise<void> {
+    return command("update_timestamp_secret", { input: { secret } });
+  }
+
+  testTimestampProvider(): Promise<TimestampProviderTestResult> {
+    return command("test_timestamp_provider");
   }
 
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]> {
@@ -298,13 +320,8 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
-  async attachExternalTimestamp(trackId: string, input: ExternalTimestampInput): Promise<TrackDetail | null> {
-    try {
-      return await command<TrackDetail | null>("attach_external_timestamp", { trackId, input });
-    } catch (error) {
-      if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
-      throw error;
-    }
+  attachExternalTimestamp(trackId: string): Promise<TrackDetail> {
+    return command("attach_configured_external_timestamp", { trackId });
   }
 
   invalidateCertificate(trackId: string): Promise<ActionResult> {

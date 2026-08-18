@@ -81,24 +81,48 @@ describe("runtime selection", () => {
     });
   });
 
-  it("attaches external timestamp evidence to a finalized track through its dedicated command", async () => {
+  it("uses the configured provider to attach an external timestamp to a finalized track", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
-    const input = {
-      provider: "Example TSA",
-      timestampType: "external_integrity_timestamp" as const,
-      timestampValue: "2026-08-17T12:00:00Z",
-      referencedArtifact: "evidence_manifest" as const,
-      otherReferencedArtifact: "",
-      referencedSha256: "a".repeat(64),
-      externalReferenceId: "tsa-1",
-      providerVerificationUrl: "https://example.test/verify/tsa-1",
-      note: "User supplied"
+    await api.attachExternalTimestamp("track-1");
+
+    expect(invokeMock).toHaveBeenCalledWith("attach_configured_external_timestamp", { trackId: "track-1" });
+  });
+
+  it("keeps global timestamp settings and write-only credentials on narrow native commands", async () => {
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+    const settings = {
+      enabled: true,
+      provider: "free_tsa" as const,
+      autoAfterFinalization: false,
+      custom: {
+        providerName: "",
+        endpoint: "",
+        authenticationMode: "none" as const,
+        username: "",
+        clientCertificatePath: "",
+        caCertificatePath: "",
+        policyOid: "",
+        timeoutSeconds: 20
+      },
+      status: "ready" as const,
+      statusMessage: "Ready"
     };
+    invokeMock
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ status: "ready", message: "Provider reachable" });
 
-    await api.attachExternalTimestamp("track-1", input);
+    await expect(api.getTimestampSettings()).resolves.toEqual(settings);
+    await api.updateTimestampSettings(settings);
+    await api.updateTimestampSecret("write-only-token");
+    await api.testTimestampProvider();
 
-    expect(invokeMock).toHaveBeenCalledWith("attach_external_timestamp", { trackId: "track-1", input });
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_timestamp_settings", undefined);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "update_timestamp_settings", { settings });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "update_timestamp_secret", { input: { secret: "write-only-token" } });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "test_timestamp_provider", undefined);
   });
 
   it("preserves an explicit null in a track patch sent to the native command", async () => {

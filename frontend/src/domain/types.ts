@@ -57,6 +57,85 @@ export type SubscriptionBillingCycle = "monthly" | "annual";
 export type TrackLibrarySection = "single" | "album";
 export type CertificateLanguage = "de" | "en";
 
+/**
+ * A configured provider is deliberately kept separate from track data.  The
+ * provider only ever receives the selected snapshot digest; secrets are held
+ * by the native secure configuration mechanism and are never represented
+ * here.
+ */
+export type TimestampProviderKind =
+  | "disabled"
+  | "free_tsa"
+  | "open_timestamps"
+  | "sigstore_public_tsa"
+  | "custom_rfc3161";
+
+export type TimestampAuthenticationMode = "none" | "basic" | "bearer_token" | "api_key" | "client_certificate";
+
+export type ExternalTimestampStatus =
+  | "not_recorded"
+  | "requesting"
+  | "attached"
+  | "verified"
+  | "verification_failed"
+  | "provider_unavailable"
+  | "authentication_failed"
+  | "anchor_mismatch"
+  | "disabled"
+  | "ready"
+  | "configuration_incomplete"
+  | "authentication_required"
+  | "connection_failed"
+  | "unsupported_response"
+  | "verification_configuration_incomplete";
+
+/** The native model uses one factual status set for provider and attachment state. */
+export type TimestampProviderStatus = ExternalTimestampStatus;
+
+export interface TimestampProviderCapabilities {
+  rfc3161: boolean;
+  openTimestamps: boolean;
+  requiresAuthentication: boolean;
+  supportsSha256: boolean;
+  supportsOfflineVerification: boolean;
+  returnsSignedTimestamp: boolean;
+  externalTrustRootAvailable: boolean;
+  /** Informational only; never a legal qualification. */
+  qualificationStatus: string;
+}
+
+export interface TimestampCustomSettings {
+  providerName: string;
+  endpoint: string;
+  authenticationMode: TimestampAuthenticationMode;
+  /** A non-secret account name, if the selected authentication method needs one. */
+  username: string;
+  /** Local configuration paths only. Private key material is never exposed here. */
+  clientCertificatePath: string;
+  caCertificatePath: string;
+  policyOid: string;
+  timeoutSeconds: number;
+}
+
+export interface TimestampSettings {
+  enabled: boolean;
+  provider: TimestampProviderKind;
+  autoAfterFinalization: boolean;
+  custom: TimestampCustomSettings;
+  /** Read-only provider state calculated by the native adapter. */
+  status: TimestampProviderStatus;
+  statusMessage: string;
+  lastTestedAt?: string;
+}
+
+export interface TimestampProviderTestResult {
+  provider: TimestampProviderKind;
+  status: TimestampProviderStatus;
+  message: string;
+  testedAt: string;
+  capabilities: TimestampProviderCapabilities;
+}
+
 export type ExternalTimestampType =
   | "qualified_electronic_timestamp_user_declared"
   | "electronic_timestamp"
@@ -279,18 +358,6 @@ export interface FinalizeOptions {
   bilingual: boolean;
 }
 
-export interface ExternalTimestampInput {
-  provider: string;
-  timestampType: ExternalTimestampType;
-  timestampValue: string;
-  referencedArtifact: TimestampReferencedArtifact;
-  otherReferencedArtifact: string;
-  referencedSha256: string;
-  externalReferenceId: string;
-  providerVerificationUrl: string;
-  note: string;
-}
-
 export interface ExternalTimestampRecord {
   id: string;
   certificateId: string;
@@ -309,12 +376,46 @@ export interface ExternalTimestampRecord {
   evidenceSha256: string;
   importedAt: string;
   provenance: string;
+  /** Absent for legacy manually recorded timestamp evidence. */
+  providerMetadata?: TimestampProviderMetadata;
   recordRelativePath: string;
   markdownRelativePath: string;
   pdfRelativePath: string;
   hashListRelativePath: string;
   integrityVerified: boolean;
   integrityIssues: string[];
+}
+
+export interface TimestampProviderMetadata {
+  adapter: string;
+  protocol: string;
+  requestAlgorithm: string;
+  responseFormat: string;
+  providerEndpointIdentifier: string;
+  /** Untouched provider response bytes retained alongside the usable proof. */
+  providerResponseFileName: string;
+  providerResponseSha256: string;
+  referencedRevisionId: string;
+  issuer: string;
+  certificateSubject: string;
+  certificateSerialNumber: string;
+  policyOid: string;
+  responseStructureValid: boolean | null;
+  providerDigestMatch: boolean | null;
+  signatureVerified: boolean | null;
+  trustChainVerified: boolean | null;
+  verificationResult: ExternalTimestampStatus;
+  verificationMessage: string;
+  verificationTimestamp: string;
+}
+
+/** A compact, current-snapshot status for the normal finalization UI. */
+export interface ExternalTimestampSummary {
+  status: ExternalTimestampStatus;
+  message: string;
+  provider: string;
+  recordId?: string;
+  updatedAt?: string;
 }
 
 export interface FinalizationAnchor {
@@ -424,6 +525,7 @@ export interface TrackDetail extends TrackSummary {
   integrity: IntegrityState;
   certificate: CertificateState;
   externalTimestamps: ExternalTimestampRecord[];
+  externalTimestampSummary?: ExternalTimestampSummary;
   finalizationAnchors: FinalizationAnchor[];
   blockingDeviations?: BlockingDeviation[];
   missingItems?: string[];
@@ -512,6 +614,24 @@ export const emptyProfile: GlobalProfile = {
   artworkTransparencyPolicy: "always",
   disclosureText: "AI-assisted",
   certificateLanguage: "en"
+};
+
+export const emptyTimestampSettings: TimestampSettings = {
+  enabled: false,
+  provider: "disabled",
+  autoAfterFinalization: false,
+  custom: {
+    providerName: "",
+    endpoint: "",
+    authenticationMode: "none",
+    username: "",
+    clientCertificatePath: "",
+    caCertificatePath: "",
+    policyOid: "",
+    timeoutSeconds: 15
+  },
+  status: "disabled",
+  statusMessage: "External timestamp service is disabled."
 };
 
 export function emptyEvidenceMetadata(): EvidenceMetadata {

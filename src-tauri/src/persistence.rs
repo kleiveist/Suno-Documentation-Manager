@@ -1,15 +1,29 @@
 use crate::error::{AppError, Result};
 use crate::model::{
     BlockingDeviation, EvidenceItem, EvidenceProvenance, EvidenceRole, ExternalTimestampRecord,
-    GlobalEvidenceItem, Profile, StepState, StepStatus, TrackRecord,
+    ExternalTimestampSummary, GlobalEvidenceItem, Profile, StepState, StepStatus,
+    TimestampSettings, TrackRecord,
 };
-use crate::security::{contained_path, ensure_contained_directory};
+use crate::security::{atomic_write, atomic_write_new, contained_path, ensure_contained_directory};
 use crate::workflow;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 pub const DATABASE_RELATIVE_PATH: &str = ".suno-doc/workspace.sqlite";
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
+const TIMESTAMP_SECRETS_RELATIVE_PATH: &str = ".suno-doc/config/timestamp-secrets.json";
+
+/// This type stays private to persistence so credentials can never become part
+/// of a serializable public settings DTO. The file is separate from SQLite,
+/// profile JSON, tracks, revisions, and certificate artifacts.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct TimestampSecrets {
+    secret: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct Persistence {
@@ -21,6 +35,7 @@ impl Persistence {
         ensure_contained_directory(root, Path::new(".suno-doc"))?;
         ensure_contained_directory(root, Path::new(".suno-doc/config"))?;
         ensure_contained_directory(root, Path::new(".suno-doc/global-evidence"))?;
+        ensure_timestamp_secret_gitignore(root)?;
         let this = Self {
             root: root.to_owned(),
         };
@@ -704,6 +719,202 @@ impl Persistence {
         }
         Ok(result)
     }
+
+    /// Global, non-secret provider settings. This deliberately has its own
+    /// singleton table instead of living in `Profile`, because profiles are
+    /// copied into editable track snapshots.
+    pub fn timestamp_settings(&self) -> Result<TimestampSettings> {
+        let json: Option<String> = self
+            .open()?
+            .query_row(
+                "SELECT data_json FROM timestamp_settings WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|value| serde_json::from_str(&value).map_err(AppError::from))
+            .unwrap_or_else(|| Ok(TimestampSettings::default()))
+    }
+
+    pub fn save_timestamp_settings(&self, settings: &TimestampSettings) -> Result<()> {
+        self.open()?.execute(
+            "INSERT INTO timestamp_settings(singleton,data_json) VALUES(1,?1)
+             ON CONFLICT(singleton) DO UPDATE SET data_json=excluded.data_json",
+            [serde_json::to_string(settings)?],
+        )?;
+        Ok(())
+    }
+
+    /// Returns only presence to public callers. The plaintext is read only by
+    /// the provider adapter while creating an HTTP Authorization header.
+    pub fn timestamp_secret_present(&self) -> Result<bool> {
+        Ok(self.timestamp_secret()?.is_some())
+    }
+
+    pub(crate) fn timestamp_secret(&self) -> Result<Option<String>> {
+        let path = contained_path(
+            &self.root,
+            Path::new(TIMESTAMP_SECRETS_RELATIVE_PATH),
+            false,
+        )?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+        let secrets: TimestampSecrets = serde_json::from_slice(&bytes)?;
+        Ok((!secrets.secret.trim().is_empty()).then_some(secrets.secret))
+    }
+
+    pub fn save_timestamp_secret(&self, secret: Option<&str>) -> Result<()> {
+        let path = contained_path(
+            &self.root,
+            Path::new(TIMESTAMP_SECRETS_RELATIVE_PATH),
+            false,
+        )?;
+        let Some(secret) = secret.map(str::trim).filter(|value| !value.is_empty()) else {
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|error| AppError::io(&path, error))?;
+            }
+            return Ok(());
+        };
+        let contents = serde_json::to_vec(&TimestampSecrets {
+            secret: secret.to_owned(),
+        })?;
+        atomic_write_secret(&path, &contents)?;
+        Ok(())
+    }
+
+    /// An attachment attempt is separate from the immutable timestamp record:
+    /// errors such as an unavailable provider have no provider-response file,
+    /// but must remain visible and retryable for the same finalized snapshot.
+    pub fn timestamp_attachment_summary(
+        &self,
+        track_id: &str,
+        certificate_id: &str,
+    ) -> Result<Option<ExternalTimestampSummary>> {
+        let json: Option<String> = self
+            .open()?
+            .query_row(
+                "SELECT data_json FROM timestamp_attachment_status
+                 WHERE track_id=?1 AND certificate_id=?2",
+                params![track_id, certificate_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|value| serde_json::from_str(&value).map_err(AppError::from))
+            .transpose()
+    }
+
+    pub fn save_timestamp_attachment_summary(
+        &self,
+        track_id: &str,
+        certificate_id: &str,
+        summary: &ExternalTimestampSummary,
+    ) -> Result<()> {
+        self.open()?.execute(
+            "INSERT INTO timestamp_attachment_status(track_id,certificate_id,updated_at,data_json)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(track_id,certificate_id) DO UPDATE SET
+               updated_at=excluded.updated_at,data_json=excluded.data_json",
+            params![
+                track_id,
+                certificate_id,
+                summary.updated_at.as_deref().unwrap_or_default(),
+                serde_json::to_string(summary)?
+            ],
+        )?;
+        Ok(())
+    }
+}
+
+/// Atomic secret writer which applies the restrictive Unix mode before any
+/// secret bytes are written. The generic artifact writer intentionally cannot
+/// make that promise because normal evidence files have different permissions.
+fn atomic_write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::Validation("Timestamp secret configuration has no parent.".into())
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| AppError::io(parent, error))?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            AppError::Validation("Timestamp secret configuration name is invalid.".into())
+        })?;
+    let temporary = parent.join(format!(".{name}.{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        #[cfg(unix)]
+        let options = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true).mode(0o600);
+            options
+        };
+        #[cfg(not(unix))]
+        let options = {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            options
+        };
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| AppError::io(&temporary, error))?;
+        // Keep this explicit even when OpenOptionsExt::mode is available: a
+        // restrictive umask or an existing platform policy cannot loosen it.
+        restrict_secret_permissions(&temporary)?;
+        file.write_all(bytes)
+            .map_err(|error| AppError::io(&temporary, error))?;
+        file.sync_all()
+            .map_err(|error| AppError::io(&temporary, error))?;
+        std::fs::rename(&temporary, path).map_err(|error| AppError::io(path, error))?;
+        if let Ok(directory) = std::fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn ensure_timestamp_secret_gitignore(root: &Path) -> Result<()> {
+    let path = contained_path(root, Path::new(".suno-doc/.gitignore"), false)?;
+    const RULE: &str = "/config/timestamp-secrets.json";
+    if !path.exists() {
+        return atomic_write_new(
+            &path,
+            b"# Local timestamp-provider credentials; never export this file.\n/config/timestamp-secrets.json\n",
+        );
+    }
+    let content = std::fs::read_to_string(&path).map_err(|error| AppError::io(&path, error))?;
+    if content.lines().any(|line| line.trim() == RULE) {
+        return Ok(());
+    }
+    let mut updated = content;
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str("# Local timestamp-provider credentials; never export this file.\n");
+    updated.push_str(RULE);
+    updated.push('\n');
+    atomic_write(&path, updated.as_bytes())
+}
+
+#[cfg(unix)]
+fn restrict_secret_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| AppError::io(path, error))
+}
+
+#[cfg(not(unix))]
+fn restrict_secret_permissions(_path: &Path) -> Result<()> {
+    // Windows ACL configuration is environment-specific. The secret remains
+    // isolated from all project artifacts; the OS account's normal ACL is the
+    // security boundary on this platform.
+    Ok(())
 }
 
 pub fn migrate(connection: &mut Connection) -> Result<()> {
@@ -792,6 +1003,24 @@ pub fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version=5;",
         )?;
     }
+    if version < 6 {
+        transaction.execute_batch(
+            "CREATE TABLE timestamp_settings(
+               singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+               data_json TEXT NOT NULL
+             );
+             CREATE TABLE timestamp_attachment_status(
+               track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+               certificate_id TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               data_json TEXT NOT NULL,
+               PRIMARY KEY(track_id,certificate_id)
+             );
+             CREATE INDEX timestamp_attachment_status_track
+             ON timestamp_attachment_status(track_id,updated_at);
+             PRAGMA user_version=6;",
+        )?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -872,13 +1101,91 @@ mod tests {
         let tables: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN
-                 ('metadata','profile','tracks','evidence','step_states','deviations','global_evidence','external_timestamp_records')",
+                 ('metadata','profile','tracks','evidence','step_states','deviations','global_evidence','external_timestamp_records','timestamp_settings','timestamp_attachment_status')",
                 [],
                 |row| row.get(0),
             )
             .expect("table count");
         assert_eq!(version, SCHEMA_VERSION);
-        assert_eq!(tables, 8);
+        assert_eq!(tables, 10);
+    }
+
+    #[test]
+    fn timestamp_settings_and_secrets_are_stored_separately() {
+        let directory = tempdir().expect("temporary workspace");
+        let persistence = Persistence::initialize(directory.path()).expect("persistence");
+        let secret = "never-export-this-timestamp-token";
+        let settings = TimestampSettings {
+            enabled: true,
+            provider: crate::model::TimestampProviderKind::CustomRfc3161,
+            auto_after_finalization: true,
+            custom: crate::model::CustomRfc3161Settings {
+                provider_name: "Private TSA".into(),
+                endpoint: "https://timestamp.example.test/rfc3161".into(),
+                authentication_mode: crate::model::TimestampAuthenticationMode::BearerToken,
+                timeout_seconds: 12,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        persistence
+            .save_timestamp_settings(&settings)
+            .expect("save non-secret settings");
+        persistence
+            .save_timestamp_secret(Some(secret))
+            .expect("save secret");
+
+        assert_eq!(
+            persistence
+                .timestamp_settings()
+                .expect("load settings")
+                .provider,
+            crate::model::TimestampProviderKind::CustomRfc3161
+        );
+        assert!(persistence
+            .timestamp_secret_present()
+            .expect("secret presence"));
+        assert_eq!(
+            persistence
+                .timestamp_secret()
+                .expect("read secret")
+                .as_deref(),
+            Some(secret)
+        );
+        let config = directory
+            .path()
+            .join(".suno-doc/config/timestamp-secrets.json");
+        assert!(config.is_file());
+        let settings_json: String = persistence
+            .open()
+            .expect("connection")
+            .query_row(
+                "SELECT data_json FROM timestamp_settings WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("settings json");
+        assert!(!settings_json.contains(secret));
+        assert!(!serde_json::to_string(&settings)
+            .expect("public settings JSON")
+            .contains(secret));
+        assert!(
+            std::fs::read_to_string(directory.path().join(".suno-doc/.gitignore"))
+                .expect("workspace gitignore")
+                .contains("/config/timestamp-secrets.json")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(config)
+                    .expect("secret permissions")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]

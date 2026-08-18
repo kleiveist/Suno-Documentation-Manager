@@ -13,6 +13,7 @@ import { trackLibraryAssignment } from "../domain/track-library";
 import {
   emptyEvidenceMetadata,
   emptyProfile,
+  emptyTimestampSettings,
   emptyTrackAutomation,
   emptyTrackFields,
   type ActionResult,
@@ -20,10 +21,10 @@ import {
   type ConsistencyIssue,
   type EvidenceItem,
   type EvidenceMetadata,
-  type ExternalTimestampInput,
   type FolderImportExecutionInput,
   type FolderImportProposal,
   type EvidenceRole,
+  type ExternalTimestampSummary,
   type FactOrigin,
   type FinalizeOptions,
   type GlobalProfile,
@@ -32,6 +33,9 @@ import {
   type ScanResult,
   type StepId,
   type StepStatus,
+  type TimestampProviderKind,
+  type TimestampProviderCapabilities,
+  type TimestampSettings,
   type TrackCreateInput,
   type TrackDetail,
   type TrackLibraryAssignment,
@@ -224,6 +228,7 @@ function makeTrack(
     },
     certificate: { valid: false },
     externalTimestamps: [],
+    externalTimestampSummary: notRecordedExternalTimestampSummary(),
     finalizationAnchors: []
   };
   refresh(track);
@@ -257,6 +262,77 @@ function sameTrackDocumentationProfile(left: GlobalProfile, right: GlobalProfile
     && left.defaultAiImageService === right.defaultAiImageService
     && left.artworkTransparencyPolicy === right.artworkTransparencyPolicy
     && left.disclosureText === right.disclosureText;
+}
+
+function timestampProviderLabel(provider: TimestampProviderKind): string {
+  switch (provider) {
+    case "free_tsa": return "FreeTSA";
+    case "open_timestamps": return "OpenTimestamps";
+    case "sigstore_public_tsa": return "Sigstore Public TSA";
+    case "custom_rfc3161": return "Custom RFC 3161";
+    default: return "Disabled";
+  }
+}
+
+function notRecordedExternalTimestampSummary(): ExternalTimestampSummary {
+  return {
+    status: "not_recorded",
+    message: "External timestamp evidence is optional and is not required for technical finalization.",
+    provider: ""
+  };
+}
+
+function timestampProviderCapabilities(provider: TimestampProviderKind): TimestampProviderCapabilities {
+  const rfc3161 = provider === "free_tsa" || provider === "sigstore_public_tsa" || provider === "custom_rfc3161";
+  return {
+    rfc3161,
+    openTimestamps: provider === "open_timestamps",
+    requiresAuthentication: provider === "custom_rfc3161",
+    supportsSha256: provider !== "disabled",
+    supportsOfflineVerification: provider === "open_timestamps",
+    returnsSignedTimestamp: rfc3161,
+    externalTrustRootAvailable: provider === "sigstore_public_tsa",
+    qualificationStatus: "unknown"
+  };
+}
+
+function configuredTimestampProviderStatus(
+  settings: TimestampSettings,
+  timestampSecretConfigured = false
+): Pick<TimestampSettings, "status" | "statusMessage"> {
+  if (!settings.enabled || settings.provider === "disabled") {
+    return { status: "disabled", statusMessage: "External timestamp service is disabled." };
+  }
+  if (settings.provider !== "custom_rfc3161") {
+    return { status: "ready", statusMessage: `${timestampProviderLabel(settings.provider)} is ready for a timestamp request.` };
+  }
+  if (!settings.custom.providerName.trim() || !settings.custom.endpoint.trim()) {
+    return {
+      status: "configuration_incomplete",
+      statusMessage: "Enter a provider name and TSA endpoint for Custom RFC 3161."
+    };
+  }
+  if (settings.custom.authenticationMode === "basic" && !settings.custom.username.trim()) {
+    return { status: "authentication_required", statusMessage: "Enter the account name and configure its secret separately." };
+  }
+  if (["basic", "bearer_token", "api_key"].includes(settings.custom.authenticationMode) && !timestampSecretConfigured) {
+    return { status: "authentication_required", statusMessage: "Configure the provider token in secure local settings." };
+  }
+  if (settings.custom.authenticationMode === "client_certificate" && !settings.custom.clientCertificatePath.trim()) {
+    return { status: "authentication_required", statusMessage: "Select a configured client certificate for this provider." };
+  }
+  return { status: "ready", statusMessage: `${settings.custom.providerName.trim()} is ready for a timestamp request.` };
+}
+
+function normalizeTimestampSettings(next: TimestampSettings, timestampSecretConfigured = false): TimestampSettings {
+  const custom = { ...emptyTimestampSettings.custom, ...clone(next.custom ?? emptyTimestampSettings.custom) };
+  const normalized: TimestampSettings = {
+    ...emptyTimestampSettings,
+    ...clone(next),
+    custom
+  };
+  const status = configuredTimestampProviderStatus(normalized, timestampSecretConfigured);
+  return { ...normalized, ...status };
 }
 
 function reconcileAutomaticDate(
@@ -400,6 +476,10 @@ export function createDemoApi(): DesktopApi {
   const tracks = new Map<string, TrackDetail>();
   const albums = new Map<string, string>();
   let globalEvidence: GlobalEvidenceItem[] = [{ ...evidence("subscription_payment", "subscription_2026-07.pdf"), coverageStart: "2026-07-01", coverageEnd: "2026-07-31" }];
+  let timestampSettings: TimestampSettings = clone(emptyTimestampSettings);
+  // The browser demo deliberately stores only this non-sensitive state bit;
+  // native builds keep the actual credential outside workspace data.
+  let timestampSecretConfigured = false;
 
   const attachGlobalToTrack = (track: TrackDetail, item: GlobalEvidenceItem): void => {
     if (track.evidence.some((entry) => entry.sourceGlobalEvidenceId === item.id)) return;
@@ -442,6 +522,103 @@ export function createDemoApi(): DesktopApi {
     return track;
   };
   const result = (track: TrackDetail, message: string): ActionResult => ({ message, track: clone(track) });
+
+  const attachConfiguredTimestamp = (track: TrackDetail): TrackDetail => {
+    if (track.status !== "FINALIZED" || !track.certificate.valid || !track.certificate.certificateId) {
+      throw new Error("Ein externer Zeitstempel kann erst nach der technischen Finalisierung angehängt werden.");
+    }
+    if (["attached", "verified"].includes(track.externalTimestampSummary?.status ?? "not_recorded")) return track;
+    if (timestampSettings.status !== "ready") {
+      track.externalTimestampSummary = {
+        status: timestampSettings.status === "authentication_required" ? "authentication_failed" : "provider_unavailable",
+        message: timestampSettings.statusMessage,
+        provider: timestampProviderLabel(timestampSettings.provider)
+      };
+      return track;
+    }
+    const anchor = track.finalizationAnchors.find((item) => item.artifact === "evidence_manifest");
+    if (!anchor) {
+      track.externalTimestampSummary = {
+        status: "anchor_mismatch",
+        message: "The finalized evidence-manifest anchor is not available.",
+        provider: timestampProviderLabel(timestampSettings.provider)
+      };
+      return track;
+    }
+
+    const timestampedAt = now();
+    const verificationMessage = "Structural and digest checks completed; provider signature and trust verification are not asserted.";
+    track.externalTimestampSummary = {
+      status: "requesting",
+      message: "External timestamp request is being prepared.",
+      provider: timestampProviderLabel(timestampSettings.provider)
+    };
+    const id = crypto.randomUUID();
+    const provider = timestampProviderLabel(timestampSettings.provider);
+    const evidenceFileName = timestampSettings.provider === "open_timestamps"
+      ? "EVIDENCE_MANIFEST.json.ots"
+      : timestampSettings.provider === "custom_rfc3161" || timestampSettings.provider === "free_tsa"
+        ? "TIMESTAMP_RESPONSE.tsr"
+        : "TIMESTAMP_RESPONSE.json";
+    track.externalTimestamps.push({
+      id,
+      certificateId: track.certificate.certificateId,
+      provider,
+      timestampType: "external_integrity_timestamp",
+      timestampValue: timestampedAt,
+      referencedArtifact: "evidence_manifest",
+      referencedArtifactPath: anchor.relativePath,
+      referencedSha256: anchor.sha256,
+      actualSha256: anchor.sha256,
+      referencedHashMatch: true,
+      externalReferenceId: `demo-${id.slice(0, 8)}`,
+      providerVerificationUrl: "",
+      note: "",
+      evidenceFileName,
+      evidenceSha256: "f".repeat(64),
+      importedAt: timestampedAt,
+      provenance: "Automatic provider response; structural and digest checks",
+      providerMetadata: {
+        adapter: `demo-${timestampSettings.provider}`,
+        protocol: timestampSettings.provider === "open_timestamps" ? "OpenTimestamps" : "RFC 3161",
+        requestAlgorithm: "SHA-256",
+        responseFormat: timestampSettings.provider === "open_timestamps" ? ".ots proof" : "RFC 3161 TimeStampResp",
+        providerEndpointIdentifier: timestampSettings.provider === "custom_rfc3161"
+          ? timestampSettings.custom.endpoint
+          : provider,
+        providerResponseFileName: evidenceFileName,
+        providerResponseSha256: "f".repeat(64),
+        referencedRevisionId: `demo-finalized-snapshot-${track.id}`,
+        issuer: "",
+        certificateSubject: "",
+        certificateSerialNumber: "",
+        policyOid: timestampSettings.provider === "custom_rfc3161" ? timestampSettings.custom.policyOid : "",
+        responseStructureValid: true,
+        providerDigestMatch: true,
+        signatureVerified: null,
+        trustChainVerified: null,
+        verificationResult: "attached",
+        verificationMessage,
+        verificationTimestamp: timestampedAt
+      },
+      recordRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/TIMESTAMP_RECORD.json`,
+      markdownRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/EXTERNAL_TIMESTAMP_ADDENDUM.md`,
+      pdfRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/EXTERNAL_TIMESTAMP_ADDENDUM.pdf`,
+      hashListRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/TIMESTAMP_RECORD_SHA256.txt`,
+      integrityVerified: true,
+      integrityIssues: []
+    });
+    track.externalTimestampSummary = {
+      // A stored RFC-3161 response with a matching digest is ATTACHED until a
+      // provider-specific signature/trust verification is actually available.
+      status: "attached",
+      message: "External timestamp response attached; structural and digest checks completed.",
+      provider,
+      recordId: id,
+      updatedAt: timestampedAt
+    };
+    return track;
+  };
 
   return {
     mode: "demo",
@@ -500,6 +677,40 @@ export function createDemoApi(): DesktopApi {
         refresh(track);
       }
       return clone(profile);
+    },
+    async getTimestampSettings() {
+      await wait();
+      return clone(timestampSettings);
+    },
+    async updateTimestampSettings(next) {
+      await wait();
+      timestampSettings = normalizeTimestampSettings(next, timestampSecretConfigured);
+      return clone(timestampSettings);
+    },
+    async updateTimestampSecret(secret) {
+      await wait();
+      timestampSecretConfigured = Boolean(secret?.trim());
+      const status = configuredTimestampProviderStatus(timestampSettings, timestampSecretConfigured);
+      timestampSettings = { ...timestampSettings, ...status };
+    },
+    async testTimestampProvider() {
+      await wait();
+      const status = configuredTimestampProviderStatus(timestampSettings, timestampSecretConfigured);
+      const testedAt = now();
+      timestampSettings = {
+        ...timestampSettings,
+        ...status,
+        lastTestedAt: testedAt
+      };
+      return {
+        provider: timestampSettings.provider,
+        status: timestampSettings.status,
+        message: timestampSettings.status === "ready"
+          ? "Provider reachable. Timestamp service ready."
+          : timestampSettings.statusMessage,
+        testedAt,
+        capabilities: timestampProviderCapabilities(timestampSettings.provider)
+      };
     },
     async listGlobalEvidence() {
       await wait();
@@ -914,43 +1125,15 @@ export function createDemoApi(): DesktopApi {
       ];
       refresh(track);
       track.status = "FINALIZED";
+      if (timestampSettings.enabled && timestampSettings.autoAfterFinalization) {
+        attachConfiguredTimestamp(track);
+      }
       return result(track, "Dokumentation finalisiert und Zertifikat erzeugt.");
     },
-    async attachExternalTimestamp(trackId, input: ExternalTimestampInput) {
+    async attachExternalTimestamp(trackId) {
       await wait();
       const track = get(trackId);
-      if (track.status !== "FINALIZED" || !track.certificate.valid || !track.certificate.certificateId) {
-        throw new Error("Ein externer Zeitstempel kann erst nach der technischen Finalisierung angehängt werden.");
-      }
-      const anchor = track.finalizationAnchors.find((item) => item.artifact === input.referencedArtifact);
-      const actualSha256 = anchor?.sha256;
-      const id = crypto.randomUUID();
-      track.externalTimestamps.push({
-        id,
-        certificateId: track.certificate.certificateId,
-        provider: input.provider,
-        timestampType: input.timestampType,
-        timestampValue: input.timestampValue,
-        referencedArtifact: input.referencedArtifact,
-        referencedArtifactPath: anchor?.relativePath || input.otherReferencedArtifact,
-        referencedSha256: input.referencedSha256,
-        actualSha256: actualSha256 ?? "",
-        referencedHashMatch: actualSha256 ? actualSha256.toLocaleLowerCase() === input.referencedSha256.trim().toLocaleLowerCase() : null,
-        externalReferenceId: input.externalReferenceId,
-        providerVerificationUrl: input.providerVerificationUrl,
-        note: input.note,
-        evidenceFileName: "external_timestamp_evidence.pdf",
-        evidenceSha256: "f".repeat(64),
-        importedAt: now(),
-        provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison",
-        recordRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/TIMESTAMP_RECORD.json`,
-        markdownRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/EXTERNAL_TIMESTAMP_ADDENDUM.md`,
-        pdfRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/EXTERNAL_TIMESTAMP_ADDENDUM.pdf`,
-        hashListRelativePath: `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${id}/TIMESTAMP_RECORD_SHA256.txt`,
-        integrityVerified: true,
-        integrityIssues: []
-      });
-      return clone(track);
+      return clone(attachConfiguredTimestamp(track));
     },
     async invalidateCertificate(trackId) {
       await wait();
@@ -974,6 +1157,7 @@ export function createDemoApi(): DesktopApi {
       track.integrity.mismatchFiles = [];
       track.documents.current = false;
       track.externalTimestamps = [];
+      track.externalTimestampSummary = notRecordedExternalTimestampSummary();
       track.finalizationAnchors = [];
       refresh(track);
       return result(track, "Der bisherige Snapshot wurde archiviert und eine neue Revision angelegt.");
@@ -1002,6 +1186,7 @@ export function createDemoApi(): DesktopApi {
       };
       track.steps = [];
       track.externalTimestamps = [];
+      track.externalTimestampSummary = notRecordedExternalTimestampSummary();
       track.finalizationAnchors = [];
       refresh(track);
       return result(

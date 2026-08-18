@@ -7,6 +7,7 @@ import {
   canonicalGuidedChoiceValue,
   canCreateTrackRevision,
   documentationAnswerLabel,
+  externalTimestampSummaryFor,
   externalTimestampIntegrityPresentation,
   externalTimestampMatchLabel,
   externalTimestampTypeLabel,
@@ -27,6 +28,9 @@ import {
   singleChoiceFieldMarkup,
   termsMetadataComplete,
   timestampArtifactLabel,
+  timestampProviderIsReady,
+  timestampProviderStatusLabel,
+  externalTimestampStatusLabel,
   serializeMultiChoiceValue,
   trackSummaryFromDetail,
   trackCheckSummary,
@@ -36,7 +40,7 @@ import {
   workflowUpgradePresentation
 } from "./app";
 import { evidenceRoleFileTypes, WORKFLOW_STEPS } from "./domain/workflow";
-import { emptyEvidenceMetadata, emptyProfile, emptyTrackAutomation, emptyTrackFields, type TrackDetail } from "./domain/types";
+import { emptyEvidenceMetadata, emptyProfile, emptyTimestampSettings, emptyTrackAutomation, emptyTrackFields, type TrackDetail } from "./domain/types";
 import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
 
 describe("theme", () => {
@@ -172,6 +176,25 @@ describe("navigation", () => {
     expect(timestampArtifactLabel("certificate_pdf")).toBe("Certificate PDF");
   });
 
+  it("keeps global provider readiness separate from optional per-track timestamp evidence", () => {
+    expect(timestampProviderStatusLabel("ready")).toBe("Ready");
+    expect(externalTimestampStatusLabel("not_recorded")).toBe("NOT RECORDED");
+    expect(timestampProviderIsReady({
+      ...emptyTimestampSettings,
+      custom: { ...emptyTimestampSettings.custom },
+      enabled: true,
+      provider: "free_tsa",
+      status: "ready"
+    })).toBe(true);
+    expect(timestampProviderIsReady({
+      ...emptyTimestampSettings,
+      custom: { ...emptyTimestampSettings.custom },
+      enabled: false,
+      provider: "free_tsa",
+      status: "ready"
+    })).toBe(false);
+  });
+
   it("keeps referenced-hash and addendum-integrity results visibly separate", () => {
     expect(externalTimestampMatchLabel(true)).toBe("YES");
     expect(externalTimestampIntegrityPresentation({
@@ -185,6 +208,39 @@ describe("navigation", () => {
       integrityVerified: true,
       integrityIssues: []
     })).toEqual({ label: "VERIFIED", issues: [] });
+  });
+
+  it("does not promote legacy manually recorded timestamp evidence to verified", () => {
+    const summary = externalTimestampSummaryFor({
+      externalTimestamps: [{
+        id: "legacy-timestamp",
+        certificateId: "SDM-legacy",
+        provider: "Legacy TSA",
+        timestampType: "electronic_timestamp",
+        timestampValue: "2026-08-17T12:00:00Z",
+        referencedArtifact: "evidence_manifest",
+        referencedArtifactPath: "06_CERTIFICATE/EVIDENCE_MANIFEST.json",
+        referencedSha256: "a".repeat(64),
+        actualSha256: "a".repeat(64),
+        referencedHashMatch: true,
+        externalReferenceId: "",
+        providerVerificationUrl: "",
+        note: "",
+        evidenceFileName: "legacy.tsr",
+        evidenceSha256: "b".repeat(64),
+        importedAt: "2026-08-17T12:00:00Z",
+        provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison",
+        recordRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/TIMESTAMP_RECORD.json",
+        markdownRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/EXTERNAL_TIMESTAMP_ADDENDUM.md",
+        pdfRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/EXTERNAL_TIMESTAMP_ADDENDUM.pdf",
+        hashListRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/TIMESTAMP_RECORD_SHA256.txt",
+        integrityVerified: true,
+        integrityIssues: []
+      }]
+    });
+
+    expect(summary.status).toBe("attached");
+    expect(summary.message).toContain("Legacy manually recorded");
   });
 
   it("starts the generation plan empty and presents a legacy plan only as historical data", () => {
@@ -285,7 +341,23 @@ describe("navigation", () => {
       showCertificatePopup: true,
       certificateBilingual: true,
       termsMetadataDialog: { evidenceId: null, metadata: emptyEvidenceMetadata() },
-      showExternalTimestampDialog: true,
+      timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom }, enabled: true, provider: "free_tsa", status: "ready" },
+      timestampProviderTest: {
+        provider: "free_tsa",
+        status: "ready",
+        message: "Provider reachable",
+        testedAt: "2026-08-18T12:00:00Z",
+        capabilities: {
+          rfc3161: true,
+          openTimestamps: false,
+          requiresAuthentication: false,
+          supportsSha256: true,
+          supportsOfflineVerification: false,
+          returnsSignedTimestamp: true,
+          externalTrustRootAvailable: false,
+          qualificationStatus: "unknown"
+        }
+      },
       query: "old workspace query",
       trackFilter: "finalized",
       draftDirty: true
@@ -308,7 +380,8 @@ describe("navigation", () => {
       showCertificatePopup: false,
       certificateBilingual: false,
       termsMetadataDialog: null,
-      showExternalTimestampDialog: false,
+      timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
+      timestampProviderTest: null,
       query: "",
       trackFilter: "all",
       draftDirty: false

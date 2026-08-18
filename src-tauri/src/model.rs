@@ -158,7 +158,7 @@ impl EvidenceRole {
             Self::SunoTermsRights => &["pdf"],
             Self::ExternalTimestamp => &[
                 "pdf", "txt", "md", "json", "html", "htm", "png", "jpg", "jpeg", "tsr", "tst",
-                "p7s",
+                "p7s", "ots",
             ],
             Self::ReleaseArtwork
             | Self::ArtworkSunoOriginal
@@ -344,6 +344,201 @@ pub enum TimestampReferencedArtifact {
     Other,
 }
 
+/// The globally configured provider used for post-finalization timestamp
+/// evidence.  These are deliberately provider *kinds*, rather than free-form
+/// labels, so the workflow can select a dedicated adapter without putting
+/// provider-specific behavior into the UI.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampProviderKind {
+    #[default]
+    Disabled,
+    FreeTsa,
+    OpenTimestamps,
+    SigstorePublicTsa,
+    CustomRfc3161,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampAuthenticationMode {
+    #[default]
+    None,
+    Basic,
+    BearerToken,
+    ApiKey,
+    ClientCertificate,
+}
+
+/// A visible, non-legal status for global provider configuration and an
+/// individual post-finalization attachment attempt.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalTimestampStatus {
+    #[default]
+    NotRecorded,
+    Requesting,
+    Attached,
+    Verified,
+    VerificationFailed,
+    ProviderUnavailable,
+    AuthenticationFailed,
+    AnchorMismatch,
+    Disabled,
+    Ready,
+    ConfigurationIncomplete,
+    AuthenticationRequired,
+    ConnectionFailed,
+    UnsupportedResponse,
+    VerificationConfigurationIncomplete,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TimestampProviderCapabilities {
+    pub rfc3161: bool,
+    pub open_timestamps: bool,
+    pub requires_authentication: bool,
+    pub supports_sha256: bool,
+    pub supports_offline_verification: bool,
+    pub returns_signed_timestamp: bool,
+    pub external_trust_root_available: bool,
+    /// Intentionally only an informational capability. A successful provider
+    /// response must never be presented as a qualified timestamp solely from
+    /// this value.
+    pub qualification_status: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomRfc3161Settings {
+    pub provider_name: String,
+    pub endpoint: String,
+    pub authentication_mode: TimestampAuthenticationMode,
+    pub username: String,
+    pub client_certificate_path: String,
+    pub ca_certificate_path: String,
+    pub policy_oid: String,
+    pub timeout_seconds: u32,
+}
+
+/// Public global settings. Secrets are deliberately absent: they are held in
+/// a separate local configuration file and are never copied to a profile,
+/// track, revision, manifest, or certificate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TimestampSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: TimestampProviderKind,
+    #[serde(default)]
+    pub auto_after_finalization: bool,
+    #[serde(default)]
+    pub custom: CustomRfc3161Settings,
+    /// Derived on read/update; update payloads cannot choose a misleading
+    /// status. It is persisted only as harmless UX history.
+    #[serde(default)]
+    pub status: ExternalTimestampStatus,
+    #[serde(default)]
+    pub status_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<String>,
+}
+
+impl Default for TimestampSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: TimestampProviderKind::Disabled,
+            auto_after_finalization: false,
+            custom: CustomRfc3161Settings {
+                timeout_seconds: 15,
+                ..Default::default()
+            },
+            status: ExternalTimestampStatus::Disabled,
+            status_message: "External timestamp service is disabled.".into(),
+            last_tested_at: None,
+        }
+    }
+}
+
+/// Write-only input for a Custom RFC 3161 secret. It intentionally does not
+/// implement `Serialize`, which prevents accidental inclusion in returned DTOs
+/// or normal JSON persistence.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimestampSecretInput {
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TimestampProviderTestResult {
+    pub provider: TimestampProviderKind,
+    pub status: ExternalTimestampStatus,
+    pub message: String,
+    pub tested_at: String,
+    pub capabilities: TimestampProviderCapabilities,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TimestampProviderMetadata {
+    pub adapter: String,
+    pub protocol: String,
+    pub request_algorithm: String,
+    pub response_format: String,
+    pub provider_endpoint_identifier: String,
+    /// Name and hash of the untouched bytes received from the provider. For
+    /// RFC 3161 this is normally the main `.tsr` evidence file; OpenTimestamps
+    /// additionally archives its raw calendar response next to a usable `.ots`
+    /// detached proof wrapper.
+    pub provider_response_file_name: String,
+    pub provider_response_sha256: String,
+    /// Immutable phase-one snapshot identity captured when this evidence was
+    /// attached. It is distinct from the certificate ID.
+    pub referenced_revision_id: String,
+    pub issuer: String,
+    pub certificate_subject: String,
+    pub certificate_serial_number: String,
+    pub policy_oid: String,
+    pub response_structure_valid: Option<bool>,
+    pub provider_digest_match: Option<bool>,
+    pub signature_verified: Option<bool>,
+    pub trust_chain_verified: Option<bool>,
+    #[serde(default)]
+    pub verification_result: ExternalTimestampStatus,
+    pub verification_message: String,
+    pub verification_timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalTimestampSummary {
+    pub status: ExternalTimestampStatus,
+    pub message: String,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+impl Default for ExternalTimestampSummary {
+    fn default() -> Self {
+        Self {
+            status: ExternalTimestampStatus::NotRecorded,
+            message:
+                "No external timestamp evidence has been recorded for this finalized snapshot."
+                    .into(),
+            provider: String::new(),
+            record_id: None,
+            updated_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalTimestampInput {
@@ -388,6 +583,10 @@ pub struct ExternalTimestampRecord {
     pub pdf_sha256: String,
     pub imported_at: String,
     pub provenance: String,
+    /// Provider-derived response metadata. Legacy manually recorded evidence
+    /// leaves this absent and is never silently promoted to verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<TimestampProviderMetadata>,
     pub record_relative_path: String,
     pub markdown_relative_path: String,
     pub pdf_relative_path: String,
@@ -1099,6 +1298,11 @@ pub struct CertificateRenderOptions {
 pub struct CertificateState {
     pub valid: bool,
     pub certificate_id: Option<String>,
+    /// Stable identity of this phase-one finalization snapshot. This differs
+    /// from the human-facing certificate ID so a later timestamp addendum can
+    /// bind to the original snapshot even after it is archived as a revision.
+    #[serde(default)]
+    pub finalization_snapshot_id: Option<String>,
     pub finalized_at: Option<String>,
     pub workflow_version: Option<String>,
     /// The actual language used to render this immutable certificate set.
@@ -1197,6 +1401,8 @@ pub struct TrackDetail {
     pub evidence: Vec<EvidenceItem>,
     #[serde(default)]
     pub external_timestamps: Vec<ExternalTimestampRecord>,
+    #[serde(default)]
+    pub external_timestamp_summary: ExternalTimestampSummary,
     #[serde(default)]
     pub finalization_anchors: Vec<FinalizationAnchor>,
     pub documents: DocumentState,

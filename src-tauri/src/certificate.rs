@@ -166,8 +166,8 @@ fn german_certificate_paragraph(english: &str) -> String {
         "Post-finalization technical evidence record – no legal qualification asserted" => {
             "Technischer Evidenzdatensatz nach der Finalisierung – keine rechtliche Qualifizierung behauptet"
         }
-        "The application records the external timestamp evidence and its referenced hash. It does not independently determine the timestamp's legal qualification unless explicitly technically verified." => {
-            "Die Anwendung dokumentiert den externen Zeitstempelnachweis und seinen referenzierten Hash. Sie bestimmt dessen rechtliche Qualifizierung nicht selbstständig, sofern diese nicht ausdrücklich technisch verifiziert wurde."
+        "The application records the external timestamp evidence and its referenced hash. It does not determine any legal qualification of the timestamp." => {
+            "Die Anwendung dokumentiert den externen Zeitstempelnachweis und seinen referenzierten Hash. Sie trifft keine Aussage über eine rechtliche Qualifizierung des Zeitstempels."
         }
         _ => return german_certificate_label(english),
     };

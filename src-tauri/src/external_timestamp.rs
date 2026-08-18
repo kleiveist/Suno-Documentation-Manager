@@ -4,8 +4,10 @@ use crate::error::{AppError, Result};
 use crate::evidence;
 use crate::integrity;
 use crate::model::{
-    ExternalTimestampInput, ExternalTimestampRecord, FinalizationAnchor,
-    TimestampReferencedArtifact, TimestampType,
+    CustomRfc3161Settings, ExternalTimestampInput, ExternalTimestampRecord,
+    ExternalTimestampStatus, FinalizationAnchor, TimestampAuthenticationMode,
+    TimestampProviderCapabilities, TimestampProviderKind, TimestampProviderMetadata,
+    TimestampProviderTestResult, TimestampReferencedArtifact, TimestampSettings, TimestampType,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new_hashed, ensure_contained_directory,
@@ -14,7 +16,9 @@ use crate::security::{
 use chrono::Utc;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use url::Url;
 use uuid::Uuid;
 
@@ -24,9 +28,1149 @@ const RECORD_FILE: &str = "TIMESTAMP_RECORD.json";
 const MARKDOWN_FILE: &str = "EXTERNAL_TIMESTAMP_ADDENDUM.md";
 const PDF_FILE: &str = "EXTERNAL_TIMESTAMP_ADDENDUM.pdf";
 const HASH_LIST_FILE: &str = "TIMESTAMP_RECORD_SHA256.txt";
+const PROVIDER_RESPONSE_FILE_PREFIX: &str = "PROVIDER_RESPONSE";
 const SIDECAR_FORMAT_VERSION: u32 = 1;
 const HASH_LIST_V1_HEADER: &str = "# SunoDM external timestamp sidecar SHA-256 v1\n";
-const DISCLAIMER: &str = "The application records the external timestamp evidence and its referenced hash. It does not independently determine the timestamp's legal qualification unless explicitly technically verified.";
+const DISCLAIMER: &str = "The application records the external timestamp evidence and its referenced hash. It does not determine any legal qualification of the timestamp.";
+
+/// Centrally defined public presets. They intentionally live only here, so
+/// UI components and archive records cannot drift into provider-specific
+/// endpoint logic.
+pub const FREETSA_ENDPOINT: &str = "https://freetsa.org/tsr";
+pub const SIGSTORE_PUBLIC_TSA_ENDPOINT: &str = "https://timestamp.sigstore.dev/api/v1/timestamp";
+/// Public chain endpoint retained for a future explicit CMS/trust-chain
+/// verifier. It is intentionally not treated as proof of verification today.
+#[allow(dead_code)]
+pub const SIGSTORE_PUBLIC_TSA_CERTCHAIN_ENDPOINT: &str =
+    "https://timestamp.sigstore.dev/api/v1/timestamp/certchain";
+pub const OPEN_TIMESTAMPS_POOL_ENDPOINT: &str = "https://a.pool.opentimestamps.org/digest";
+const MAX_PROVIDER_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
+// `RemoteCalendar.submit` returns a serialized `Timestamp`, not a complete
+// detached proof file. A usable OpenTimestamps `.ots` file wraps that response
+// with this official DetachedTimestampFile prefix, version and SHA-256 file
+// hash operation before the original digest and timestamp serialization.
+const OPEN_TIMESTAMPS_DETACHED_MAGIC: &[u8] = &[
+    0x00, b'O', b'p', b'e', b'n', b'T', b'i', b'm', b'e', b's', b't', b'a', b'm', b'p', b's', 0x00,
+    0x00, b'P', b'r', b'o', b'o', b'f', 0x00, 0xbf, 0x89, 0xe2, 0xe8, 0x84, 0xe8, 0x92, 0x94,
+];
+const OPEN_TIMESTAMPS_DETACHED_VERSION: u8 = 0x01;
+const OPEN_TIMESTAMPS_SHA256_FILE_HASH_OP: u8 = 0x08;
+
+#[derive(Debug, Clone)]
+pub struct ProviderFailure {
+    pub status: ExternalTimestampStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderRawResponse {
+    /// Byte-for-byte provider response kept in addition to the evidence
+    /// artifact when an adapter must wrap or otherwise derive that artifact.
+    pub bytes: Vec<u8>,
+    /// A conservative, non-user-controlled filename extension for the raw
+    /// response archive. It is deliberately independent of evidence types.
+    pub extension: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderTimestampResponse {
+    pub provider: String,
+    pub evidence_extension: String,
+    /// The managed timestamp-evidence artifact. For RFC 3161 this is the
+    /// untouched `.tsr`; for OpenTimestamps it is a complete detached `.ots`
+    /// proof which embeds the untouched calendar response.
+    pub evidence_bytes: Vec<u8>,
+    /// An optional untouched provider response archive. OpenTimestamps needs
+    /// this because its `/digest` response is only a serialized Timestamp, not
+    /// itself a complete `.ots` detached proof.
+    pub raw_provider_response: Option<ProviderRawResponse>,
+    pub timestamp_value: String,
+    pub external_reference_id: String,
+    pub provider_verification_url: String,
+    pub note: String,
+    pub metadata: TimestampProviderMetadata,
+    pub status: ExternalTimestampStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct HttpRequest {
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    timeout_seconds: u32,
+}
+
+#[derive(Debug, Clone)]
+struct HttpResponse {
+    status: u16,
+    body: Vec<u8>,
+}
+
+/// Kept behind a narrow interface so provider parsing and attachment behavior
+/// can be tested with deterministic byte-for-byte fake responses without a
+/// network connection or a real TSA account.
+trait TimestampHttpTransport {
+    fn post(&self, request: HttpRequest) -> std::result::Result<HttpResponse, ProviderFailure>;
+}
+
+struct UreqTimestampHttpTransport;
+
+impl TimestampHttpTransport for UreqTimestampHttpTransport {
+    fn post(&self, request: HttpRequest) -> std::result::Result<HttpResponse, ProviderFailure> {
+        let timeout = Duration::from_secs(u64::from(request.timeout_seconds.max(1)));
+        let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+        let mut outgoing = agent.post(&request.url);
+        for (name, value) in request.headers {
+            outgoing = outgoing.set(&name, &value);
+        }
+        match outgoing.send_bytes(&request.body) {
+            Ok(response) => read_http_response(response),
+            Err(ureq::Error::Status(_, response)) => read_http_response(response),
+            Err(ureq::Error::Transport(_)) => Err(ProviderFailure {
+                status: ExternalTimestampStatus::ProviderUnavailable,
+                message: "Timestamp provider could not be reached.".into(),
+            }),
+        }
+    }
+}
+
+fn read_http_response(
+    response: ureq::Response,
+) -> std::result::Result<HttpResponse, ProviderFailure> {
+    let status = response.status() as u16;
+    let mut reader = response.into_reader().take(MAX_PROVIDER_RESPONSE_BYTES + 1);
+    let mut body = Vec::new();
+    reader.read_to_end(&mut body).map_err(|_| ProviderFailure {
+        status: ExternalTimestampStatus::ProviderUnavailable,
+        message: "Timestamp provider response could not be read.".into(),
+    })?;
+    if body.len() as u64 > MAX_PROVIDER_RESPONSE_BYTES {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::UnsupportedResponse,
+            message: "Timestamp provider response exceeds the supported size limit.".into(),
+        });
+    }
+    Ok(HttpResponse { status, body })
+}
+
+trait TimestampProviderAdapter {
+    fn display_name(&self, settings: &TimestampSettings) -> String;
+    fn capabilities(&self) -> TimestampProviderCapabilities;
+    fn request(
+        &self,
+        settings: &TimestampSettings,
+        secret: Option<&str>,
+        digest: &str,
+        transport: &dyn TimestampHttpTransport,
+    ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure>;
+}
+
+struct Rfc3161TimestampAdapter {
+    provider: &'static str,
+    endpoint: &'static str,
+    adapter: &'static str,
+    trust_root_available: bool,
+}
+
+struct OpenTimestampsAdapter;
+
+struct CustomRfc3161Adapter;
+
+fn provider_adapter(kind: TimestampProviderKind) -> Option<Box<dyn TimestampProviderAdapter>> {
+    match kind {
+        TimestampProviderKind::FreeTsa => Some(Box::new(Rfc3161TimestampAdapter {
+            provider: "FreeTSA",
+            endpoint: FREETSA_ENDPOINT,
+            adapter: "freetsa_rfc3161",
+            trust_root_available: false,
+        })),
+        TimestampProviderKind::SigstorePublicTsa => Some(Box::new(Rfc3161TimestampAdapter {
+            provider: "Sigstore Public TSA",
+            endpoint: SIGSTORE_PUBLIC_TSA_ENDPOINT,
+            adapter: "sigstore_public_tsa_rfc3161",
+            trust_root_available: true,
+        })),
+        TimestampProviderKind::OpenTimestamps => Some(Box::new(OpenTimestampsAdapter)),
+        TimestampProviderKind::CustomRfc3161 => Some(Box::new(CustomRfc3161Adapter)),
+        TimestampProviderKind::Disabled => None,
+    }
+}
+
+pub fn provider_capabilities(kind: TimestampProviderKind) -> TimestampProviderCapabilities {
+    provider_adapter(kind)
+        .map(|adapter| adapter.capabilities())
+        .unwrap_or_default()
+}
+
+pub fn provider_display_name(settings: &TimestampSettings) -> String {
+    provider_adapter(settings.provider)
+        .map(|adapter| adapter.display_name(settings))
+        .unwrap_or_else(|| "Disabled".into())
+}
+
+/// Validate public settings without performing a network operation. The
+/// returned text is suitable for the UI and never includes credentials.
+pub fn settings_status(
+    settings: &TimestampSettings,
+    secret_available: bool,
+) -> (ExternalTimestampStatus, String) {
+    if !settings.enabled || settings.provider == TimestampProviderKind::Disabled {
+        return (
+            ExternalTimestampStatus::Disabled,
+            "External timestamp service is disabled.".into(),
+        );
+    }
+    if settings.provider != TimestampProviderKind::CustomRfc3161 {
+        return (
+            ExternalTimestampStatus::Ready,
+            "Timestamp service is ready to attach external timestamp evidence.".into(),
+        );
+    }
+    match validate_custom_settings(&settings.custom, secret_available) {
+        Ok(()) => (
+            ExternalTimestampStatus::Ready,
+            "Custom RFC 3161 timestamp service is configured.".into(),
+        ),
+        Err(failure) => (failure.status, failure.message),
+    }
+}
+
+fn validate_custom_settings(
+    custom: &CustomRfc3161Settings,
+    secret_available: bool,
+) -> std::result::Result<(), ProviderFailure> {
+    if custom.endpoint.trim().is_empty() {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::ConfigurationIncomplete,
+            message: "Custom RFC 3161 TSA endpoint is required.".into(),
+        });
+    }
+    let parsed = Url::parse(custom.endpoint.trim()).map_err(|_| ProviderFailure {
+        status: ExternalTimestampStatus::ConfigurationIncomplete,
+        message: "Custom RFC 3161 TSA endpoint is not a valid HTTP(S) URL.".into(),
+    })?;
+    if !matches!(parsed.scheme(), "https" | "http")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::ConfigurationIncomplete,
+            message: "Custom RFC 3161 TSA endpoint must be a plain HTTP(S) URL without embedded credentials or query values."
+                .into(),
+        });
+    }
+    if custom.timeout_seconds == 0 || custom.timeout_seconds > 120 {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::ConfigurationIncomplete,
+            message: "Custom RFC 3161 timeout must be between 1 and 120 seconds.".into(),
+        });
+    }
+    if !custom.policy_oid.trim().is_empty() && !valid_oid(custom.policy_oid.trim()) {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::ConfigurationIncomplete,
+            message: "Custom RFC 3161 policy OID is invalid.".into(),
+        });
+    }
+    match custom.authentication_mode {
+        TimestampAuthenticationMode::None => Ok(()),
+        TimestampAuthenticationMode::ClientCertificate => {
+            if custom.client_certificate_path.trim().is_empty() {
+                return Err(ProviderFailure {
+                    status: ExternalTimestampStatus::ConfigurationIncomplete,
+                    message: "A client certificate path is required for client-certificate authentication."
+                        .into(),
+                });
+            }
+            Err(ProviderFailure {
+                status: ExternalTimestampStatus::VerificationConfigurationIncomplete,
+                message: "Client-certificate authentication is prepared but is not enabled by this provider adapter yet."
+                    .into(),
+            })
+        }
+        TimestampAuthenticationMode::Basic => {
+            if custom.username.trim().is_empty() {
+                return Err(ProviderFailure {
+                    status: ExternalTimestampStatus::ConfigurationIncomplete,
+                    message: "A username is required for Basic authentication.".into(),
+                });
+            }
+            if !secret_available {
+                return Err(ProviderFailure {
+                    status: ExternalTimestampStatus::AuthenticationRequired,
+                    message:
+                        "A password or token is required for the configured timestamp service."
+                            .into(),
+                });
+            }
+            Ok(())
+        }
+        TimestampAuthenticationMode::BearerToken | TimestampAuthenticationMode::ApiKey => {
+            if !secret_available {
+                return Err(ProviderFailure {
+                    status: ExternalTimestampStatus::AuthenticationRequired,
+                    message:
+                        "A password or token is required for the configured timestamp service."
+                            .into(),
+                });
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn test_provider(
+    settings: &TimestampSettings,
+    secret: Option<&str>,
+) -> TimestampProviderTestResult {
+    test_provider_with_transport(settings, secret, &UreqTimestampHttpTransport)
+}
+
+fn test_provider_with_transport(
+    settings: &TimestampSettings,
+    secret: Option<&str>,
+    transport: &dyn TimestampHttpTransport,
+) -> TimestampProviderTestResult {
+    let tested_at = Utc::now().to_rfc3339();
+    let secret_available = secret.is_some_and(|value| !value.trim().is_empty());
+    let (configuration_status, configuration_message) = settings_status(settings, secret_available);
+    let capabilities = provider_capabilities(settings.provider);
+    if configuration_status != ExternalTimestampStatus::Ready {
+        return TimestampProviderTestResult {
+            provider: settings.provider,
+            status: configuration_status,
+            message: configuration_message,
+            tested_at,
+            capabilities,
+        };
+    }
+    match request_timestamp_with_transport(settings, secret, &"00".repeat(32), transport) {
+        Ok(response) => {
+            let (status, message) =
+                if response.status == ExternalTimestampStatus::VerificationFailed {
+                    (
+                    ExternalTimestampStatus::UnsupportedResponse,
+                    "Provider responded, but its test response could not be technically verified."
+                        .into(),
+                )
+                } else {
+                    (
+                        ExternalTimestampStatus::Ready,
+                        "Timestamp service ready.".into(),
+                    )
+                };
+            TimestampProviderTestResult {
+                provider: settings.provider,
+                status,
+                message,
+                tested_at,
+                capabilities,
+            }
+        }
+        Err(failure) => TimestampProviderTestResult {
+            provider: settings.provider,
+            status: match failure.status {
+                ExternalTimestampStatus::ProviderUnavailable => {
+                    ExternalTimestampStatus::ConnectionFailed
+                }
+                other => other,
+            },
+            message: failure.message,
+            tested_at,
+            capabilities,
+        },
+    }
+}
+
+pub fn request_timestamp(
+    settings: &TimestampSettings,
+    secret: Option<&str>,
+    digest: &str,
+) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
+    request_timestamp_with_transport(settings, secret, digest, &UreqTimestampHttpTransport)
+}
+
+fn request_timestamp_with_transport(
+    settings: &TimestampSettings,
+    secret: Option<&str>,
+    digest: &str,
+    transport: &dyn TimestampHttpTransport,
+) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::AnchorMismatch,
+            message: "Timestamp anchor digest is not a SHA-256 value.".into(),
+        });
+    }
+    let secret_available = secret.is_some_and(|value| !value.trim().is_empty());
+    let (status, message) = settings_status(settings, secret_available);
+    if status != ExternalTimestampStatus::Ready {
+        return Err(ProviderFailure { status, message });
+    }
+    let adapter = provider_adapter(settings.provider).ok_or_else(|| ProviderFailure {
+        status: ExternalTimestampStatus::Disabled,
+        message: "External timestamp service is disabled.".into(),
+    })?;
+    adapter.request(settings, secret, digest, transport)
+}
+
+impl TimestampProviderAdapter for Rfc3161TimestampAdapter {
+    fn display_name(&self, _settings: &TimestampSettings) -> String {
+        self.provider.into()
+    }
+
+    fn capabilities(&self) -> TimestampProviderCapabilities {
+        TimestampProviderCapabilities {
+            rfc3161: true,
+            open_timestamps: false,
+            requires_authentication: false,
+            supports_sha256: true,
+            supports_offline_verification: true,
+            returns_signed_timestamp: true,
+            external_trust_root_available: self.trust_root_available,
+            qualification_status: "unknown_not_qualified".into(),
+        }
+    }
+
+    fn request(
+        &self,
+        settings: &TimestampSettings,
+        secret: Option<&str>,
+        digest: &str,
+        transport: &dyn TimestampHttpTransport,
+    ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
+        request_rfc3161(
+            self.provider,
+            self.endpoint,
+            self.adapter,
+            None,
+            settings,
+            secret,
+            digest,
+            transport,
+        )
+    }
+}
+
+impl TimestampProviderAdapter for CustomRfc3161Adapter {
+    fn display_name(&self, settings: &TimestampSettings) -> String {
+        let name = settings.custom.provider_name.trim();
+        if name.is_empty() {
+            "Custom RFC 3161".into()
+        } else {
+            name.into()
+        }
+    }
+
+    fn capabilities(&self) -> TimestampProviderCapabilities {
+        TimestampProviderCapabilities {
+            rfc3161: true,
+            open_timestamps: false,
+            requires_authentication: true,
+            supports_sha256: true,
+            supports_offline_verification: true,
+            returns_signed_timestamp: true,
+            external_trust_root_available: false,
+            qualification_status: "unknown_not_qualified".into(),
+        }
+    }
+
+    fn request(
+        &self,
+        settings: &TimestampSettings,
+        secret: Option<&str>,
+        digest: &str,
+        transport: &dyn TimestampHttpTransport,
+    ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
+        let provider = self.display_name(settings);
+        request_rfc3161(
+            &provider,
+            settings.custom.endpoint.trim(),
+            "custom_rfc3161",
+            Some(&settings.custom),
+            settings,
+            secret,
+            digest,
+            transport,
+        )
+    }
+}
+
+impl TimestampProviderAdapter for OpenTimestampsAdapter {
+    fn display_name(&self, _settings: &TimestampSettings) -> String {
+        "OpenTimestamps".into()
+    }
+
+    fn capabilities(&self) -> TimestampProviderCapabilities {
+        TimestampProviderCapabilities {
+            rfc3161: false,
+            open_timestamps: true,
+            requires_authentication: false,
+            supports_sha256: true,
+            supports_offline_verification: true,
+            returns_signed_timestamp: false,
+            external_trust_root_available: false,
+            qualification_status: "unknown_not_qualified".into(),
+        }
+    }
+
+    fn request(
+        &self,
+        settings: &TimestampSettings,
+        _secret: Option<&str>,
+        digest: &str,
+        transport: &dyn TimestampHttpTransport,
+    ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
+        let body = decode_sha256_hex(digest).map_err(|message| ProviderFailure {
+            status: ExternalTimestampStatus::AnchorMismatch,
+            message,
+        })?;
+        let response = transport.post(HttpRequest {
+            url: OPEN_TIMESTAMPS_POOL_ENDPOINT.into(),
+            headers: vec![
+                (
+                    "Content-Type".into(),
+                    "application/vnd.opentimestamps.v1".into(),
+                ),
+                ("Accept".into(), "application/vnd.opentimestamps.v1".into()),
+            ],
+            body,
+            timeout_seconds: configured_timeout_seconds(settings),
+        })?;
+        ensure_successful_provider_http_response(&response)?;
+        if response.body.is_empty() {
+            return Err(ProviderFailure {
+                status: ExternalTimestampStatus::UnsupportedResponse,
+                message: "OpenTimestamps returned an empty proof.".into(),
+            });
+        }
+        // A calendar response is only a serialized OTS `Timestamp`. Build the
+        // official DetachedTimestampFile wrapper around the exact requested
+        // SHA-256 digest so `ots verify` can consume `TIMESTAMP_EVIDENCE.ots`.
+        // Keep the response itself byte-for-byte as a separate provider
+        // artifact; it remains useful for independent parser diagnostics.
+        let raw_provider_response = response.body;
+        let evidence_bytes = open_timestamps_detached_proof(digest, &raw_provider_response)
+            .map_err(|message| ProviderFailure {
+                status: ExternalTimestampStatus::AnchorMismatch,
+                message,
+            })?;
+        Ok(ProviderTimestampResponse {
+            provider: "OpenTimestamps".into(),
+            evidence_extension: "ots".into(),
+            evidence_bytes,
+            raw_provider_response: Some(ProviderRawResponse {
+                bytes: raw_provider_response,
+                // The raw response is not a complete `.ots` file, so give it
+                // a neutral extension rather than misleading a verifier.
+                extension: "bin".into(),
+            }),
+            timestamp_value: String::new(),
+            external_reference_id: String::new(),
+            provider_verification_url: OPEN_TIMESTAMPS_POOL_ENDPOINT.into(),
+            note: "OpenTimestamps detached proof and the unchanged calendar response were archived. Proof verification or upgrade may be performed later. No legal qualification is determined."
+                .into(),
+            metadata: TimestampProviderMetadata {
+                adapter: "open_timestamps".into(),
+                protocol: "OpenTimestamps / Bitcoin-backed timestamp proof".into(),
+                request_algorithm: "SHA-256".into(),
+                response_format: "OpenTimestamps DetachedTimestampFile (.ots); raw calendar Timestamp response archived separately".into(),
+                provider_endpoint_identifier: OPEN_TIMESTAMPS_POOL_ENDPOINT.into(),
+                response_structure_valid: None,
+                // The detached proof wrapper is locally bound to the exact
+                // digest selected from the finalized manifest. This is not a
+                // provider-signature or calendar-attestation verification.
+                provider_digest_match: Some(true),
+                verification_result: ExternalTimestampStatus::Attached,
+                verification_message: "Detached proof is locally bound to the requested SHA-256; explicit OpenTimestamps verification or upgrade is pending."
+                    .into(),
+                verification_timestamp: Utc::now().to_rfc3339(),
+                ..Default::default()
+            },
+            // Initial OTS calendar proofs are deliberately not represented as
+            // RFC 3161 verification. They remain ATTACHED until an explicit
+            // proof verification/upgrade confirms them.
+            status: ExternalTimestampStatus::Attached,
+            message: "OpenTimestamps detached proof attached; later verification or upgrade is available."
+                .into(),
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_rfc3161(
+    provider: &str,
+    endpoint: &str,
+    adapter: &str,
+    custom: Option<&CustomRfc3161Settings>,
+    settings: &TimestampSettings,
+    secret: Option<&str>,
+    digest: &str,
+    transport: &dyn TimestampHttpTransport,
+) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
+    let policy_oid = custom
+        .map(|value| value.policy_oid.trim())
+        .filter(|value| !value.is_empty());
+    let request = rfc3161_request(digest, policy_oid).map_err(|message| ProviderFailure {
+        status: ExternalTimestampStatus::ConfigurationIncomplete,
+        message,
+    })?;
+    let mut headers = vec![
+        ("Content-Type".into(), "application/timestamp-query".into()),
+        ("Accept".into(), "application/timestamp-reply".into()),
+    ];
+    headers.extend(authentication_headers(custom, secret)?);
+    let response = transport.post(HttpRequest {
+        url: endpoint.into(),
+        headers,
+        body: request,
+        timeout_seconds: configured_timeout_seconds(settings),
+    })?;
+    ensure_successful_provider_http_response(&response)?;
+    if response.body.is_empty() {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::UnsupportedResponse,
+            message: "Timestamp provider returned an empty response.".into(),
+        });
+    }
+    let parsed = parse_rfc3161_response(&response.body, digest);
+    let structure_and_digest_match = parsed.digest_match == Some(true);
+    // The local parser validates the RFC 3161 container and message imprint,
+    // but does not yet implement CMS signature/trust-chain verification. Do
+    // not overstate that limited check as a cryptographically verified TSA.
+    let status = if structure_and_digest_match {
+        ExternalTimestampStatus::Attached
+    } else {
+        ExternalTimestampStatus::VerificationFailed
+    };
+    let message = if structure_and_digest_match {
+        "RFC 3161 response structure and SHA-256 message imprint match the requested anchor; CMS signature and trust-chain verification are not asserted."
+            .into()
+    } else {
+        format!(
+            "Timestamp response was archived, but technical digest verification failed: {}",
+            parsed.error.as_deref().unwrap_or(
+                "the returned message imprint does not match the requested SHA-256 digest"
+            )
+        )
+    };
+    Ok(ProviderTimestampResponse {
+        provider: provider.into(),
+        evidence_extension: "tsr".into(),
+        evidence_bytes: response.body,
+        raw_provider_response: None,
+        timestamp_value: parsed.timestamp_value,
+        external_reference_id: parsed.serial_number,
+        provider_verification_url: endpoint.into(),
+        note: format!(
+            "{message} No legal qualification, eIDAS qualification, or legally binding effect is determined by SunoDM."
+        ),
+        metadata: TimestampProviderMetadata {
+            adapter: adapter.into(),
+            protocol: "RFC 3161 Timestamp Protocol".into(),
+            request_algorithm: "SHA-256".into(),
+            response_format: "RFC 3161 TimeStampResp (.tsr)".into(),
+            provider_endpoint_identifier: endpoint.into(),
+            policy_oid: parsed.policy_oid,
+            response_structure_valid: Some(parsed.error.is_none()),
+            provider_digest_match: parsed.digest_match,
+            signature_verified: None,
+            trust_chain_verified: None,
+            verification_result: status,
+            verification_message: message.clone(),
+            verification_timestamp: Utc::now().to_rfc3339(),
+            ..Default::default()
+        },
+        status,
+        message,
+    })
+}
+
+fn ensure_successful_provider_http_response(
+    response: &HttpResponse,
+) -> std::result::Result<(), ProviderFailure> {
+    if (200..300).contains(&response.status) {
+        return Ok(());
+    }
+    if matches!(response.status, 401 | 403) {
+        return Err(ProviderFailure {
+            status: ExternalTimestampStatus::AuthenticationFailed,
+            message: "Timestamp provider rejected the configured authentication.".into(),
+        });
+    }
+    Err(ProviderFailure {
+        status: ExternalTimestampStatus::ProviderUnavailable,
+        message: format!(
+            "Timestamp provider returned HTTP status {}.",
+            response.status
+        ),
+    })
+}
+
+fn configured_timeout_seconds(settings: &TimestampSettings) -> u32 {
+    if settings.provider == TimestampProviderKind::CustomRfc3161 {
+        settings.custom.timeout_seconds.max(1)
+    } else {
+        15
+    }
+}
+
+fn authentication_headers(
+    custom: Option<&CustomRfc3161Settings>,
+    secret: Option<&str>,
+) -> std::result::Result<Vec<(String, String)>, ProviderFailure> {
+    let Some(custom) = custom else {
+        return Ok(Vec::new());
+    };
+    let secret = secret.map(str::trim).filter(|value| !value.is_empty());
+    match custom.authentication_mode {
+        TimestampAuthenticationMode::None => Ok(Vec::new()),
+        TimestampAuthenticationMode::Basic => {
+            let secret = secret.ok_or_else(|| ProviderFailure {
+                status: ExternalTimestampStatus::AuthenticationRequired,
+                message: "A password or token is required for the configured timestamp service."
+                    .into(),
+            })?;
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD
+                .encode(format!("{}:{secret}", custom.username.trim()));
+            Ok(vec![("Authorization".into(), format!("Basic {encoded}"))])
+        }
+        TimestampAuthenticationMode::BearerToken => {
+            let secret = secret.ok_or_else(|| ProviderFailure {
+                status: ExternalTimestampStatus::AuthenticationRequired,
+                message: "A password or token is required for the configured timestamp service."
+                    .into(),
+            })?;
+            Ok(vec![("Authorization".into(), format!("Bearer {secret}"))])
+        }
+        TimestampAuthenticationMode::ApiKey => {
+            let secret = secret.ok_or_else(|| ProviderFailure {
+                status: ExternalTimestampStatus::AuthenticationRequired,
+                message: "A password or token is required for the configured timestamp service."
+                    .into(),
+            })?;
+            Ok(vec![("X-API-Key".into(), secret.into())])
+        }
+        TimestampAuthenticationMode::ClientCertificate => Err(ProviderFailure {
+            status: ExternalTimestampStatus::VerificationConfigurationIncomplete,
+            message: "Client-certificate authentication is prepared but is not enabled by this provider adapter yet."
+                .into(),
+        }),
+    }
+}
+
+fn decode_sha256_hex(value: &str) -> std::result::Result<Vec<u8>, String> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Timestamp anchor digest is not a SHA-256 value.".into());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|_| "Invalid SHA-256 digest.".into())
+        })
+        .collect()
+}
+
+fn valid_oid(value: &str) -> bool {
+    let mut values = value
+        .split('.')
+        .map(|part| part.parse::<u64>())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .ok();
+    let Some(values) = values.take() else {
+        return false;
+    };
+    values.len() >= 2 && values[0] <= 2 && (values[0] < 2 || values[1] <= 39)
+}
+
+/// Encode the proof format used by the official OpenTimestamps
+/// `DetachedTimestampFile.serialize` implementation for a SHA-256 file hash.
+/// The timestamp bytes are deliberately appended without parsing or altering
+/// them, so the raw calendar response survives unchanged inside the proof.
+fn open_timestamps_detached_proof(
+    digest: &str,
+    serialized_timestamp: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    let digest = decode_sha256_hex(digest)?;
+    if digest.len() != 32 {
+        return Err("OpenTimestamps detached proofs require a SHA-256 digest.".into());
+    }
+    let mut proof = Vec::with_capacity(
+        OPEN_TIMESTAMPS_DETACHED_MAGIC.len() + 2 + digest.len() + serialized_timestamp.len(),
+    );
+    proof.extend_from_slice(OPEN_TIMESTAMPS_DETACHED_MAGIC);
+    proof.push(OPEN_TIMESTAMPS_DETACHED_VERSION);
+    proof.push(OPEN_TIMESTAMPS_SHA256_FILE_HASH_OP);
+    proof.extend_from_slice(&digest);
+    proof.extend_from_slice(serialized_timestamp);
+    Ok(proof)
+}
+
+fn rfc3161_request(digest: &str, policy_oid: Option<&str>) -> std::result::Result<Vec<u8>, String> {
+    // RFC 3161 TimeStampReq (v1), carrying only the SHA-256 message imprint.
+    // No user, track, title, media, or project payload is placed in the
+    // request.
+    let digest = decode_sha256_hex(digest)?;
+    let sha256_algorithm = der_sequence(&[der_oid("2.16.840.1.101.3.4.2.1")?, der_tlv(0x05, &[])]);
+    let message_imprint = der_sequence(&[sha256_algorithm, der_tlv(0x04, &digest)]);
+    let mut elements = vec![der_integer_unsigned(&[1]), message_imprint];
+    if let Some(policy_oid) = policy_oid {
+        elements.push(der_oid(policy_oid)?);
+    }
+    // A nonce makes distinct requests distinguishable. It is generated as a
+    // positive ASN.1 INTEGER; no nonce is stored in evidence because it is not
+    // needed to verify the selected local anchor.
+    let nonce = Uuid::new_v4();
+    elements.push(der_integer_unsigned(nonce.as_bytes()));
+    elements.push(der_tlv(0x01, &[0xff])); // certReq = TRUE
+    Ok(der_sequence(&elements))
+}
+
+fn der_sequence(elements: &[Vec<u8>]) -> Vec<u8> {
+    let mut content = Vec::new();
+    for element in elements {
+        content.extend_from_slice(element);
+    }
+    der_tlv(0x30, &content)
+}
+
+fn der_tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut result = vec![tag];
+    result.extend_from_slice(&der_length(content.len()));
+    result.extend_from_slice(content);
+    result
+}
+
+fn der_length(length: usize) -> Vec<u8> {
+    if length < 128 {
+        return vec![length as u8];
+    }
+    let mut bytes = length.to_be_bytes().to_vec();
+    while bytes.first() == Some(&0) {
+        bytes.remove(0);
+    }
+    let mut result = vec![0x80 | bytes.len() as u8];
+    result.extend_from_slice(&bytes);
+    result
+}
+
+fn der_integer_unsigned(value: &[u8]) -> Vec<u8> {
+    let mut content = value.to_vec();
+    while content.len() > 1 && content.first() == Some(&0) {
+        content.remove(0);
+    }
+    if content.first().is_some_and(|byte| byte & 0x80 != 0) {
+        content.insert(0, 0);
+    }
+    der_tlv(0x02, &content)
+}
+
+fn der_oid(value: &str) -> std::result::Result<Vec<u8>, String> {
+    let arcs = value
+        .split('.')
+        .map(|part| {
+            part.parse::<u64>()
+                .map_err(|_| "Invalid object identifier.".into())
+        })
+        .collect::<std::result::Result<Vec<_>, String>>()?;
+    if arcs.len() < 2 || arcs[0] > 2 || (arcs[0] < 2 && arcs[1] > 39) {
+        return Err("Invalid object identifier.".into());
+    }
+    let mut encoded = encode_base128(arcs[0] * 40 + arcs[1]);
+    for arc in arcs.iter().skip(2) {
+        encoded.extend_from_slice(&encode_base128(*arc));
+    }
+    Ok(der_tlv(0x06, &encoded))
+}
+
+fn encode_base128(mut value: u64) -> Vec<u8> {
+    let mut bytes = vec![(value & 0x7f) as u8];
+    value >>= 7;
+    while value > 0 {
+        bytes.push(0x80 | (value & 0x7f) as u8);
+        value >>= 7;
+    }
+    bytes.reverse();
+    bytes
+}
+
+#[derive(Clone, Copy)]
+struct DerElement<'a> {
+    tag: u8,
+    content: &'a [u8],
+}
+
+fn der_element(bytes: &[u8]) -> std::result::Result<(DerElement<'_>, &[u8]), String> {
+    if bytes.len() < 2 {
+        return Err("DER element is truncated.".into());
+    }
+    let tag = bytes[0];
+    let first_length = bytes[1];
+    let (length, header_length) = if first_length & 0x80 == 0 {
+        (first_length as usize, 2)
+    } else {
+        let count = (first_length & 0x7f) as usize;
+        if count == 0 || count > std::mem::size_of::<usize>() || bytes.len() < 2 + count {
+            return Err("DER length is invalid.".into());
+        }
+        let mut length = 0_usize;
+        for byte in &bytes[2..2 + count] {
+            length = length
+                .checked_mul(256)
+                .and_then(|value| value.checked_add(*byte as usize))
+                .ok_or_else(|| "DER length overflows.".to_owned())?;
+        }
+        if length < 128 {
+            return Err("DER length is not canonical.".into());
+        }
+        (length, 2 + count)
+    };
+    let end = header_length
+        .checked_add(length)
+        .ok_or_else(|| "DER element length overflows.".to_owned())?;
+    if end > bytes.len() {
+        return Err("DER element is truncated.".into());
+    }
+    Ok((
+        DerElement {
+            tag,
+            content: &bytes[header_length..end],
+        },
+        &bytes[end..],
+    ))
+}
+
+fn der_elements(mut bytes: &[u8]) -> std::result::Result<Vec<DerElement<'_>>, String> {
+    let mut output = Vec::new();
+    while !bytes.is_empty() {
+        let (element, remaining) = der_element(bytes)?;
+        output.push(element);
+        bytes = remaining;
+    }
+    Ok(output)
+}
+
+fn der_sequence_content(bytes: &[u8]) -> std::result::Result<&[u8], String> {
+    let (element, remaining) = der_element(bytes)?;
+    if element.tag != 0x30 || !remaining.is_empty() {
+        return Err("Expected one DER SEQUENCE.".into());
+    }
+    Ok(element.content)
+}
+
+fn der_oid_text(element: DerElement<'_>) -> std::result::Result<String, String> {
+    if element.tag != 0x06 || element.content.is_empty() {
+        return Err("Expected an object identifier.".into());
+    }
+    let mut bytes = element.content.iter().copied();
+    let first = decode_base128(&mut bytes)?;
+    let (first_arc, second_arc) = if first < 40 {
+        (0, first)
+    } else if first < 80 {
+        (1, first - 40)
+    } else {
+        (2, first - 80)
+    };
+    let mut arcs = vec![first_arc.to_string(), second_arc.to_string()];
+    while bytes.clone().next().is_some() {
+        arcs.push(decode_base128(&mut bytes)?.to_string());
+    }
+    Ok(arcs.join("."))
+}
+
+fn decode_base128(
+    iterator: &mut std::iter::Copied<std::slice::Iter<'_, u8>>,
+) -> std::result::Result<u64, String> {
+    let mut value = 0_u64;
+    let mut count = 0_u8;
+    loop {
+        let byte = iterator
+            .next()
+            .ok_or_else(|| "Object identifier is truncated.".to_owned())?;
+        value = value
+            .checked_mul(128)
+            .and_then(|current| current.checked_add((byte & 0x7f) as u64))
+            .ok_or_else(|| "Object identifier is too large.".to_owned())?;
+        count = count.saturating_add(1);
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if count > 10 {
+            return Err("Object identifier is too large.".into());
+        }
+    }
+    Ok(value)
+}
+
+fn der_integer_hex(element: DerElement<'_>) -> std::result::Result<String, String> {
+    if element.tag != 0x02 || element.content.is_empty() || element.content[0] & 0x80 != 0 {
+        return Err("Expected a non-negative INTEGER.".into());
+    }
+    Ok(element
+        .content
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn der_integer_status(element: DerElement<'_>) -> std::result::Result<u64, String> {
+    let raw = der_integer_hex(element)?;
+    let normalized = raw.trim_start_matches('0');
+    if normalized.is_empty() {
+        return Ok(0);
+    }
+    u64::from_str_radix(normalized, 16)
+        .map_err(|_| "Timestamp response status is too large.".into())
+}
+
+#[derive(Default)]
+struct ParsedRfc3161Response {
+    timestamp_value: String,
+    serial_number: String,
+    policy_oid: String,
+    digest_match: Option<bool>,
+    error: Option<String>,
+}
+
+fn parse_rfc3161_response(bytes: &[u8], expected_digest: &str) -> ParsedRfc3161Response {
+    match parse_rfc3161_response_inner(bytes, expected_digest) {
+        Ok(value) => value,
+        Err(error) => ParsedRfc3161Response {
+            error: Some(error),
+            ..Default::default()
+        },
+    }
+}
+
+fn parse_rfc3161_response_inner(
+    bytes: &[u8],
+    expected_digest: &str,
+) -> std::result::Result<ParsedRfc3161Response, String> {
+    let response = der_elements(der_sequence_content(bytes)?)?;
+    let status_info = response
+        .first()
+        .copied()
+        .ok_or_else(|| "RFC 3161 response has no status information.".to_owned())?;
+    if status_info.tag != 0x30 {
+        return Err("RFC 3161 status information is invalid.".into());
+    }
+    let status = der_elements(status_info.content)?
+        .first()
+        .copied()
+        .ok_or_else(|| "RFC 3161 response status is missing.".to_owned())?;
+    let status = der_integer_status(status)?;
+    if !matches!(status, 0 | 1) {
+        return Err(format!(
+            "Timestamp authority rejected the request (RFC 3161 status {status})."
+        ));
+    }
+    let token = response
+        .get(1)
+        .copied()
+        .ok_or_else(|| "RFC 3161 response has no timestamp token.".to_owned())?;
+    let token_contents = der_elements(token.content)?;
+    if token.tag != 0x30 || token_contents.len() < 2 {
+        return Err("RFC 3161 timestamp token is invalid.".into());
+    }
+    if der_oid_text(token_contents[0])? != "1.2.840.113549.1.7.2" {
+        return Err("RFC 3161 timestamp token is not CMS SignedData.".into());
+    }
+    let signed_wrapper = token_contents[1];
+    if signed_wrapper.tag != 0xa0 {
+        return Err("RFC 3161 CMS SignedData wrapper is missing.".into());
+    }
+    let (signed_data, remaining) = der_element(signed_wrapper.content)?;
+    if signed_data.tag != 0x30 || !remaining.is_empty() {
+        return Err("RFC 3161 CMS SignedData is invalid.".into());
+    }
+    let signed_values = der_elements(signed_data.content)?;
+    let encapsulated = signed_values
+        .get(2)
+        .copied()
+        .ok_or_else(|| "RFC 3161 CMS encapsulated content is missing.".to_owned())?;
+    if encapsulated.tag != 0x30 {
+        return Err("RFC 3161 CMS encapsulated content is invalid.".into());
+    }
+    let encapsulated_values = der_elements(encapsulated.content)?;
+    if encapsulated_values.len() < 2
+        || der_oid_text(encapsulated_values[0])? != "1.2.840.113549.1.9.16.1.4"
+        || encapsulated_values[1].tag != 0xa0
+    {
+        return Err("RFC 3161 CMS payload is not TSTInfo.".into());
+    }
+    let (tst_octet, remaining) = der_element(encapsulated_values[1].content)?;
+    if tst_octet.tag != 0x04 || !remaining.is_empty() {
+        return Err("RFC 3161 TSTInfo payload is invalid.".into());
+    }
+    parse_tst_info(tst_octet.content, expected_digest)
+}
+
+fn parse_tst_info(
+    bytes: &[u8],
+    expected_digest: &str,
+) -> std::result::Result<ParsedRfc3161Response, String> {
+    let values = der_elements(der_sequence_content(bytes)?)?;
+    if values.len() < 5 || values[0].tag != 0x02 || values[1].tag != 0x06 || values[2].tag != 0x30 {
+        return Err("RFC 3161 TSTInfo structure is invalid.".into());
+    }
+    let policy_oid = der_oid_text(values[1])?;
+    let imprint_values = der_elements(values[2].content)?;
+    if imprint_values.len() != 2 || imprint_values[0].tag != 0x30 || imprint_values[1].tag != 0x04 {
+        return Err("RFC 3161 message imprint is invalid.".into());
+    }
+    let algorithm = der_elements(imprint_values[0].content)?
+        .first()
+        .copied()
+        .ok_or_else(|| "RFC 3161 message imprint algorithm is missing.".to_owned())?;
+    if der_oid_text(algorithm)? != "2.16.840.1.101.3.4.2.1" {
+        return Err("RFC 3161 response does not use SHA-256 message imprint.".into());
+    }
+    let returned_digest = imprint_values[1]
+        .content
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let serial_number = der_integer_hex(values[3])?;
+    if values[4].tag != 0x18 {
+        return Err("RFC 3161 generation time is missing.".into());
+    }
+    let timestamp_value = generalized_time_to_rfc3339(values[4].content)?;
+    Ok(ParsedRfc3161Response {
+        timestamp_value,
+        serial_number,
+        policy_oid,
+        digest_match: Some(returned_digest.eq_ignore_ascii_case(expected_digest)),
+        error: None,
+    })
+}
+
+fn generalized_time_to_rfc3339(bytes: &[u8]) -> std::result::Result<String, String> {
+    let value = std::str::from_utf8(bytes)
+        .map_err(|_| "RFC 3161 generation time is not UTF-8.".to_owned())?;
+    if let Ok(value) = chrono::DateTime::parse_from_str(value, "%Y%m%d%H%M%SZ") {
+        return Ok(value.to_rfc3339());
+    }
+    // GeneralizedTime may include fractional seconds. Preserve a valid UTC
+    // timestamp in RFC 3339 form without accepting a local/ambiguous zone.
+    if let Some(value) = value.strip_suffix('Z') {
+        let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+        let datetime = chrono::NaiveDateTime::parse_from_str(whole, "%Y%m%d%H%M%S")
+            .map_err(|_| "RFC 3161 generation time is invalid.".to_owned())?;
+        let fraction = fraction.trim_end_matches('0');
+        let base = datetime.format("%Y-%m-%dT%H:%M:%S").to_string();
+        return Ok(if fraction.is_empty() {
+            format!("{base}Z")
+        } else {
+            format!("{base}.{fraction}Z")
+        });
+    }
+    Err("RFC 3161 generation time must use UTC (Z).".into())
+}
 
 #[derive(Debug)]
 pub struct StagedExternalTimestamp {
@@ -44,7 +1188,58 @@ pub fn stage(
     source: &Path,
     input: ExternalTimestampInput,
 ) -> Result<StagedExternalTimestamp> {
+    stage_with_provider_metadata(track_root, certificate_id, source, input, None, None)
+}
+
+/// Stage an immutable provider response that SunoDM itself requested. All
+/// values are derived from the configured adapter and its raw response; the
+/// caller supplies only the already-selected finalized anchor identity.
+pub fn stage_provider_response(
+    track_root: &Path,
+    certificate_id: &str,
+    referenced_revision_id: &str,
+    referenced_sha256: &str,
+    source: &Path,
+    response: ProviderTimestampResponse,
+) -> Result<StagedExternalTimestamp> {
+    let mut metadata = response.metadata;
+    metadata.referenced_revision_id = referenced_revision_id.to_owned();
+    let raw_provider_response = response.raw_provider_response;
+    let input = ExternalTimestampInput {
+        provider: response.provider,
+        timestamp_type: TimestampType::ExternalIntegrityTimestamp,
+        timestamp_value: response.timestamp_value,
+        referenced_artifact: TimestampReferencedArtifact::EvidenceManifest,
+        other_referenced_artifact: String::new(),
+        referenced_sha256: referenced_sha256.to_owned(),
+        external_reference_id: response.external_reference_id,
+        provider_verification_url: response.provider_verification_url,
+        note: response.note,
+    };
+    stage_with_provider_metadata(
+        track_root,
+        certificate_id,
+        source,
+        input,
+        Some(metadata),
+        raw_provider_response.as_ref(),
+    )
+}
+
+fn stage_with_provider_metadata(
+    track_root: &Path,
+    certificate_id: &str,
+    source: &Path,
+    input: ExternalTimestampInput,
+    provider_metadata: Option<TimestampProviderMetadata>,
+    raw_provider_response: Option<&ProviderRawResponse>,
+) -> Result<StagedExternalTimestamp> {
     validate_input(&input)?;
+    if raw_provider_response.is_some() && provider_metadata.is_none() {
+        return Err(AppError::Validation(
+            "A raw provider response archive requires provider-derived metadata.".into(),
+        ));
+    }
     evidence::validate_type(&crate::model::EvidenceRole::ExternalTimestamp, source)?;
     let evidence_file_name = source
         .file_name()
@@ -112,10 +1307,31 @@ pub fn stage(
     let live_pdf_relative = live_relative.join(PDF_FILE);
     let live_hash_list_relative = live_relative.join(HASH_LIST_FILE);
     let imported_at = Utc::now().to_rfc3339();
+    let raw_provider_response_name = raw_provider_response
+        .map(provider_response_artifact_name)
+        .transpose()?;
+    let mut provider_metadata = provider_metadata;
 
     let staging = (|| -> Result<StagedExternalTimestamp> {
         let evidence_path = stage_directory.join(&managed_evidence_name);
         let (evidence_sha256, _) = copy_new_hashed(source, &evidence_path)?;
+        let provider_response_sha256 = if let Some(raw_provider_response) = raw_provider_response {
+            let raw_name = raw_provider_response_name.as_deref().ok_or_else(|| {
+                AppError::Data("Raw provider response archive name is missing.".into())
+            })?;
+            let raw_path = stage_directory.join(raw_name);
+            atomic_write_new(&raw_path, &raw_provider_response.bytes)?;
+            sha256_file(&raw_path)?
+        } else {
+            evidence_sha256.clone()
+        };
+        if let Some(metadata) = provider_metadata.as_mut() {
+            metadata.provider_response_file_name = raw_provider_response_name
+                .clone()
+                .unwrap_or_else(|| managed_evidence_name.clone());
+            metadata.provider_response_sha256 = provider_response_sha256;
+        }
+        let automatic_record = provider_metadata.is_some();
         let mut record = ExternalTimestampRecord {
             id: id.clone(),
             certificate_id: certificate_id.to_owned(),
@@ -136,8 +1352,13 @@ pub fn stage(
             markdown_sha256: String::new(),
             pdf_sha256: String::new(),
             imported_at,
-            provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison"
-                .into(),
+            provenance: if automatic_record {
+                "Provider-derived metadata; managed provider response; system-verified finalized anchor comparison"
+                    .into()
+            } else {
+                "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison".into()
+            },
+            provider_metadata,
             record_relative_path: portable_relative(&live_record_relative),
             markdown_relative_path: portable_relative(&live_markdown_relative),
             pdf_relative_path: portable_relative(&live_pdf_relative),
@@ -156,7 +1377,11 @@ pub fn stage(
         let record_bytes = immutable_record_bytes(&record)?;
         atomic_write_new(&stage_directory.join(RECORD_FILE), &record_bytes)?;
 
-        let hashes = artifact_hashes(&stage_directory, &managed_evidence_name)?;
+        let hashes = artifact_hashes_with_provider_response(
+            &stage_directory,
+            &managed_evidence_name,
+            raw_provider_response_name.as_deref(),
+        )?;
         let hash_list = render_hash_list(record.sidecar_format_version, &hashes)?;
         atomic_write_new(&stage_directory.join(HASH_LIST_FILE), hash_list.as_bytes())?;
         verify_staged_hashes(&stage_directory, &hashes)?;
@@ -278,13 +1503,19 @@ fn verify_record_in_directory(
         ));
     }
     let managed_evidence_name = format!("TIMESTAMP_EVIDENCE.{extension}");
-    let expected_names = BTreeSet::from([
+    let provider_response_name = provider_response_name_for_record(record, &managed_evidence_name)?;
+    let mut expected_names = BTreeSet::from([
         RECORD_FILE.to_owned(),
         managed_evidence_name.clone(),
         MARKDOWN_FILE.to_owned(),
         PDF_FILE.to_owned(),
         HASH_LIST_FILE.to_owned(),
     ]);
+    if let Some(provider_response_name) = &provider_response_name {
+        if provider_response_name != &managed_evidence_name {
+            expected_names.insert(provider_response_name.clone());
+        }
+    }
     let mut actual_names = BTreeSet::new();
     for entry in fs::read_dir(&directory).map_err(|error| AppError::io(&directory, error))? {
         let entry = entry.map_err(|error| AppError::io(&directory, error))?;
@@ -349,7 +1580,11 @@ fn verify_record_in_directory(
 
     // Verify the exact immutable bytes that were published. Do not re-render
     // Markdown or PDF: renderer changes must not invalidate historical records.
-    let hashes = artifact_hashes(directory, &managed_evidence_name)?;
+    let hashes = artifact_hashes_with_provider_response(
+        directory,
+        &managed_evidence_name,
+        provider_response_name.as_deref(),
+    )?;
     let evidence_sha256 = hashes
         .get(&managed_evidence_name)
         .ok_or_else(|| AppError::Data("External timestamp evidence hash is missing.".into()))?;
@@ -357,6 +1592,19 @@ fn verify_record_in_directory(
         return Err(AppError::Validation(
             "External timestamp evidence SHA-256 no longer matches its registered value.".into(),
         ));
+    }
+    if let (Some(metadata), Some(provider_response_name)) =
+        (&record.provider_metadata, provider_response_name.as_deref())
+    {
+        let provider_response_sha256 = hashes
+            .get(provider_response_name)
+            .ok_or_else(|| AppError::Data("Provider response archive hash is missing.".into()))?;
+        if provider_response_sha256 != &metadata.provider_response_sha256 {
+            return Err(AppError::Validation(
+                "Provider response archive SHA-256 no longer matches its immutable metadata."
+                    .into(),
+            ));
+        }
     }
     let expected_hash_list = render_hash_list(stored_record.sidecar_format_version, &hashes)?;
     let hash_list_path = directory.join(HASH_LIST_FILE);
@@ -638,10 +1886,85 @@ fn immutable_records_match(
     stored == registered
 }
 
+fn provider_response_artifact_name(raw_provider_response: &ProviderRawResponse) -> Result<String> {
+    let extension = raw_provider_response.extension.trim().to_ascii_lowercase();
+    if extension.is_empty()
+        || extension.len() > 16
+        || !extension
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return Err(AppError::Validation(
+            "Provider response archive extension is invalid.".into(),
+        ));
+    }
+    Ok(format!("{PROVIDER_RESPONSE_FILE_PREFIX}.{extension}"))
+}
+
+/// Resolve the optional extra raw-provider artifact recorded in a modern
+/// automatic sidecar. Empty metadata remains valid for older automatic
+/// records created before raw-response archive fields existed.
+fn provider_response_name_for_record(
+    record: &ExternalTimestampRecord,
+    managed_evidence_name: &str,
+) -> Result<Option<String>> {
+    let Some(metadata) = &record.provider_metadata else {
+        return Ok(None);
+    };
+    let name = metadata.provider_response_file_name.trim();
+    let digest = metadata.provider_response_sha256.trim();
+    if name.is_empty() && digest.is_empty() {
+        return Ok(None);
+    }
+    if name.is_empty() || digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(AppError::Validation(
+            "Provider response archive metadata is incomplete or invalid.".into(),
+        ));
+    }
+    if name == managed_evidence_name {
+        return Ok(Some(name.to_owned()));
+    }
+    let extension = name
+        .strip_prefix(&format!("{PROVIDER_RESPONSE_FILE_PREFIX}."))
+        .ok_or_else(|| {
+            AppError::Validation(
+                "Provider response archive has an unexpected managed filename.".into(),
+            )
+        })?;
+    if extension.is_empty()
+        || extension.len() > 16
+        || !extension
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return Err(AppError::Validation(
+            "Provider response archive filename is invalid.".into(),
+        ));
+    }
+    Ok(Some(name.to_owned()))
+}
+
 fn artifact_hashes(directory: &Path, evidence_name: &str) -> Result<BTreeMap<String, String>> {
+    artifact_hashes_with_provider_response(directory, evidence_name, None)
+}
+
+fn artifact_hashes_with_provider_response(
+    directory: &Path,
+    evidence_name: &str,
+    provider_response_name: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
     let mut hashes = BTreeMap::new();
     for name in [RECORD_FILE, evidence_name, MARKDOWN_FILE, PDF_FILE] {
         hashes.insert(name.to_owned(), sha256_file(&directory.join(name))?);
+    }
+    if let Some(provider_response_name) = provider_response_name {
+        if provider_response_name != evidence_name {
+            hashes.insert(
+                provider_response_name.to_owned(),
+                sha256_file(&directory.join(provider_response_name))?,
+            );
+        }
     }
     Ok(hashes)
 }
@@ -778,6 +2101,61 @@ pub fn finalization_anchors(track_root: &Path) -> Result<Vec<FinalizationAnchor>
             })
         })
         .collect()
+}
+
+/// Resolve the one automatic timestamp anchor from the immutable phase-one
+/// certificate hash set, then rehash the live manifest before any provider
+/// request is made. This deliberately does not accept a UI-selected hash.
+pub fn finalized_manifest_anchor(track_root: &Path) -> Result<FinalizationAnchor> {
+    let certificate_hashes = contained_path(
+        track_root,
+        Path::new(certificate::CERTIFICATE_HASH_FILE),
+        true,
+    )?;
+    let content = fs::read_to_string(&certificate_hashes)
+        .map_err(|error| AppError::io(&certificate_hashes, error))?;
+    let mut expected = None;
+    for (index, line) in content.lines().enumerate() {
+        let (digest, path) = line.split_once("  ").ok_or_else(|| {
+            AppError::Data(format!(
+                "Invalid finalized certificate hash entry on line {}.",
+                index + 1
+            ))
+        })?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(AppError::Data(format!(
+                "Invalid finalized certificate digest on line {}.",
+                index + 1
+            )));
+        }
+        if path == certificate::MANIFEST_FILE {
+            if expected.replace(digest.to_ascii_lowercase()).is_some() {
+                return Err(AppError::Data(
+                    "Finalized certificate hash set contains the evidence manifest more than once."
+                        .into(),
+                ));
+            }
+        }
+    }
+    let expected = expected.ok_or_else(|| {
+        AppError::Data(
+            "Finalized certificate hash set does not contain EVIDENCE_MANIFEST.json.".into(),
+        )
+    })?;
+    let manifest = contained_path(track_root, Path::new(certificate::MANIFEST_FILE), true)?;
+    let actual = sha256_file(&manifest)?;
+    if actual != expected {
+        return Err(AppError::Validation(
+            "INTEGRITY CHECK FAILED: The selected timestamp anchor no longer matches the finalized snapshot."
+                .into(),
+        ));
+    }
+    Ok(FinalizationAnchor {
+        artifact: TimestampReferencedArtifact::EvidenceManifest,
+        label: "Evidence manifest (recommended timestamp anchor)".into(),
+        relative_path: certificate::MANIFEST_FILE.into(),
+        sha256: expected,
+    })
 }
 
 fn referenced_artifact_path(input: &ExternalTimestampInput) -> Result<PathBuf> {
@@ -935,12 +2313,20 @@ fn render_pdf(record: &ExternalTimestampRecord) -> Result<Vec<u8>> {
         external_reference_id: &record.external_reference_id,
         provider_verification_url: &record.provider_verification_url,
         note: &record.note,
+        provider_metadata: record.provider_metadata.as_ref(),
     })
 }
 
 fn render_markdown(record: &ExternalTimestampRecord) -> String {
+    let automatic = record.provider_metadata.is_some();
+    let provider_origin = if automatic {
+        "Provider-derived metadata"
+    } else {
+        "Legacy user-recorded fact"
+    };
+    let provider_metadata_md = provider_metadata_markdown(record);
     format!(
-        "# SunoDM External Timestamp Evidence Addendum\n\n> Post-finalization technical evidence record — no legal qualification asserted.\n\n## Certificate association\n\n- Certificate ID: `{}`\n- Timestamp record ID: `{}`\n- Imported at [System value]: {}\n\n## External Timestamp Evidence\n\n- Provider / issuer [User-confirmed fact]: {}\n- Timestamp type [User-confirmed fact]: {}\n- Timestamp value [User-confirmed fact]: {}\n- Referenced artifact [User-confirmed fact]: {}\n- Referenced artifact path [System value]: `{}`\n- Referenced SHA-256 [User-confirmed fact]: `{}`\n- Actual artifact SHA-256 [System verification]: `{}`\n- Referenced hash match [System verification]: **{}**\n- Timestamp evidence filename [Evidence-derived metadata]: {}\n- Timestamp evidence SHA-256 [System verification]: `{}`\n- External reference ID [User-confirmed fact]: {}\n- Provider verification URL [User-confirmed fact]: {}\n- Note [User-confirmed fact]: {}\n- Provenance [System value]: {}\n\n{}\n",
+        "# SunoDM External Timestamp Evidence Addendum\n\n> Post-finalization technical evidence record — no legal qualification asserted.\n\n## Certificate association\n\n- Certificate ID: `{}`\n- Timestamp record ID: `{}`\n- Imported at [System value]: {}\n\n## External Timestamp Evidence\n\n- Provider / issuer [{provider_origin}]: {}\n- Timestamp type [{provider_origin}]: {}\n- Timestamp value [{provider_origin}]: {}\n- Referenced artifact [System value]: {}\n- Referenced artifact path [System value]: `{}`\n- Referenced SHA-256 [System verification]: `{}`\n- Actual artifact SHA-256 [System verification]: `{}`\n- Referenced hash match [System verification]: **{}**\n- Timestamp evidence filename [Evidence-derived metadata]: {}\n- Timestamp evidence SHA-256 [System verification]: `{}`\n- External reference ID [{provider_origin}]: {}\n- Provider verification URL [{provider_origin}]: {}\n- Note [{provider_origin}]: {}\n- Provenance [System value]: {}\n{provider_metadata_md}\n{}\n",
         md(&record.certificate_id),
         md(&record.id),
         md(&record.imported_at),
@@ -964,6 +2350,64 @@ fn render_markdown(record: &ExternalTimestampRecord) -> String {
         documented_md(&record.provenance),
         DISCLAIMER,
     )
+}
+
+fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
+    let Some(metadata) = &record.provider_metadata else {
+        return "\n- Record source [System value]: Legacy manually recorded timestamp evidence\n- Provider response verification [System verification]: NOT RECORDED (legacy manually recorded timestamp evidence)\n".into();
+    };
+    format!(
+        "\n### Provider response metadata\n\n- Record source [System value]: Automatically attached provider response\n- Referenced finalization snapshot ID [System value]: `{}`\n- Provider adapter [Provider-derived metadata]: {}\n- Protocol [Provider-derived metadata]: {}\n- Request algorithm [System value]: {}\n- Response format [Provider-derived metadata]: {}\n- Provider endpoint identifier [Provider-derived metadata]: {}\n- Archived raw provider response [System value]: {}\n- Archived raw provider response SHA-256 [System verification]: `{}`\n- Provider response structure valid [System verification]: {}\n- Provider digest match [System verification]: {}\n- CMS signature verified [System verification]: {}\n- Trust chain verified [System verification]: {}\n- Provider verification result [System verification]: {}\n- Provider verification message [System verification]: {}\n- Provider verification timestamp [System verification]: {}\n- Timestamp issuer [Provider-derived metadata]: {}\n- Timestamp certificate subject [Provider-derived metadata]: {}\n- Timestamp certificate serial number [Provider-derived metadata]: {}\n- Policy OID [Provider-derived metadata]: {}\n",
+        documented_md(&metadata.referenced_revision_id),
+        documented_md(&metadata.adapter),
+        documented_md(&metadata.protocol),
+        documented_md(&metadata.request_algorithm),
+        documented_md(&metadata.response_format),
+        documented_md(&metadata.provider_endpoint_identifier),
+        documented_md(&metadata.provider_response_file_name),
+        documented_md(&metadata.provider_response_sha256),
+        optional_bool_label(metadata.response_structure_valid),
+        optional_bool_label(metadata.provider_digest_match),
+        optional_bool_label(metadata.signature_verified),
+        optional_bool_label(metadata.trust_chain_verified),
+        timestamp_status_label(metadata.verification_result),
+        documented_md(&metadata.verification_message),
+        documented_md(&metadata.verification_timestamp),
+        documented_md(&metadata.issuer),
+        documented_md(&metadata.certificate_subject),
+        documented_md(&metadata.certificate_serial_number),
+        documented_md(&metadata.policy_oid),
+    )
+}
+
+fn optional_bool_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "YES",
+        Some(false) => "NO",
+        None => "NOT VERIFIED",
+    }
+}
+
+pub fn timestamp_status_label(value: ExternalTimestampStatus) -> &'static str {
+    match value {
+        ExternalTimestampStatus::NotRecorded => "NOT RECORDED",
+        ExternalTimestampStatus::Requesting => "REQUESTING",
+        ExternalTimestampStatus::Attached => "ATTACHED",
+        ExternalTimestampStatus::Verified => "VERIFIED",
+        ExternalTimestampStatus::VerificationFailed => "VERIFICATION FAILED",
+        ExternalTimestampStatus::ProviderUnavailable => "PROVIDER UNAVAILABLE",
+        ExternalTimestampStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        ExternalTimestampStatus::AnchorMismatch => "ANCHOR MISMATCH",
+        ExternalTimestampStatus::Disabled => "DISABLED",
+        ExternalTimestampStatus::Ready => "READY",
+        ExternalTimestampStatus::ConfigurationIncomplete => "CONFIGURATION INCOMPLETE",
+        ExternalTimestampStatus::AuthenticationRequired => "AUTHENTICATION REQUIRED",
+        ExternalTimestampStatus::ConnectionFailed => "CONNECTION FAILED",
+        ExternalTimestampStatus::UnsupportedResponse => "UNSUPPORTED RESPONSE",
+        ExternalTimestampStatus::VerificationConfigurationIncomplete => {
+            "VERIFICATION CONFIGURATION INCOMPLETE"
+        }
+    }
 }
 
 fn md(value: &str) -> String {
@@ -1010,7 +2454,71 @@ pub fn referenced_artifact_label(value: TimestampReferencedArtifact) -> &'static
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
     use tempfile::tempdir;
+
+    struct MockTransport {
+        calls: Cell<u32>,
+        requests: RefCell<Vec<HttpRequest>>,
+        response: std::result::Result<HttpResponse, ProviderFailure>,
+    }
+
+    impl MockTransport {
+        fn successful(body: Vec<u8>) -> Self {
+            Self {
+                calls: Cell::new(0),
+                requests: RefCell::new(Vec::new()),
+                response: Ok(HttpResponse { status: 200, body }),
+            }
+        }
+    }
+
+    impl TimestampHttpTransport for MockTransport {
+        fn post(&self, request: HttpRequest) -> std::result::Result<HttpResponse, ProviderFailure> {
+            self.calls.set(self.calls.get() + 1);
+            self.requests.borrow_mut().push(request);
+            self.response.clone()
+        }
+    }
+
+    fn free_tsa_settings() -> TimestampSettings {
+        TimestampSettings {
+            enabled: true,
+            provider: TimestampProviderKind::FreeTsa,
+            ..Default::default()
+        }
+    }
+
+    fn rfc3161_response_for_digest(digest: &str) -> Vec<u8> {
+        let digest = decode_sha256_hex(digest).expect("digest bytes");
+        let algorithm = der_sequence(&[
+            der_oid("2.16.840.1.101.3.4.2.1").expect("SHA-256 OID"),
+            der_tlv(0x05, &[]),
+        ]);
+        let imprint = der_sequence(&[algorithm, der_tlv(0x04, &digest)]);
+        let tst_info = der_sequence(&[
+            der_integer_unsigned(&[1]),
+            der_oid("1.2.3.4").expect("policy OID"),
+            imprint,
+            der_integer_unsigned(&[42]),
+            der_tlv(0x18, b"20260818120000Z"),
+        ]);
+        let encapsulated = der_sequence(&[
+            der_oid("1.2.840.113549.1.9.16.1.4").expect("TSTInfo OID"),
+            der_tlv(0xa0, &der_tlv(0x04, &tst_info)),
+        ]);
+        let signed_data = der_sequence(&[
+            der_integer_unsigned(&[1]),
+            der_tlv(0x31, &[]),
+            encapsulated,
+            der_tlv(0x31, &[]),
+        ]);
+        let token = der_sequence(&[
+            der_oid("1.2.840.113549.1.7.2").expect("SignedData OID"),
+            der_tlv(0xa0, &signed_data),
+        ]);
+        der_sequence(&[der_sequence(&[der_integer_unsigned(&[0])]), token])
+    }
 
     #[test]
     fn qualified_type_is_explicitly_user_declared() {
@@ -1024,6 +2532,202 @@ mod tests {
     fn markdown_keeps_no_and_not_documented_distinct() {
         assert_eq!(documented_md(""), "NOT DOCUMENTED");
         assert_eq!(documented_md("NO"), "NO");
+    }
+
+    #[test]
+    fn rfc3161_mock_response_with_wrong_digest_is_archived_as_verification_failed() {
+        let requested_digest = "11".repeat(32);
+        let returned_digest = "22".repeat(32);
+        let mock = MockTransport::successful(rfc3161_response_for_digest(&returned_digest));
+
+        let response =
+            request_timestamp_with_transport(&free_tsa_settings(), None, &requested_digest, &mock)
+                .expect("provider response is retained for diagnosis");
+
+        assert_eq!(mock.calls.get(), 1);
+        assert_eq!(response.status, ExternalTimestampStatus::VerificationFailed);
+        assert_eq!(
+            response.metadata.provider_digest_match,
+            Some(false),
+            "the returned TSTInfo digest must not be accepted"
+        );
+        assert_eq!(
+            response.metadata.verification_result,
+            ExternalTimestampStatus::VerificationFailed
+        );
+        assert!(mock.requests.borrow()[0]
+            .body
+            .windows(32)
+            .any(|window| window
+                == decode_sha256_hex(&requested_digest)
+                    .expect("digest")
+                    .as_slice()));
+    }
+
+    #[test]
+    fn provider_test_reports_an_unusable_rfc3161_response() {
+        let mock = MockTransport::successful(b"not an RFC 3161 response".to_vec());
+
+        let result = test_provider_with_transport(&free_tsa_settings(), None, &mock);
+
+        assert_eq!(mock.calls.get(), 1);
+        assert_eq!(result.status, ExternalTimestampStatus::UnsupportedResponse);
+        assert!(result.message.contains("could not be technically verified"));
+    }
+
+    #[test]
+    fn open_timestamps_uses_native_ots_proof_and_remains_attached() {
+        let digest = "ab".repeat(32);
+        // The real calendar response is a serialized Timestamp, not an `.ots`
+        // file. Its bytes must survive unchanged both inside the wrapper and
+        // in the separate raw provider-response archive.
+        let raw_calendar_response = b"OpenTimestamps fixture Timestamp\0".to_vec();
+        let mock = MockTransport::successful(raw_calendar_response.clone());
+        let settings = TimestampSettings {
+            enabled: true,
+            provider: TimestampProviderKind::OpenTimestamps,
+            ..Default::default()
+        };
+
+        let response = request_timestamp_with_transport(&settings, None, &digest, &mock)
+            .expect("OTS proof response");
+
+        assert_eq!(response.evidence_extension, "ots");
+        assert_eq!(
+            response.evidence_bytes,
+            open_timestamps_detached_proof(&digest, &raw_calendar_response)
+                .expect("detached proof")
+        );
+        assert!(response
+            .evidence_bytes
+            .starts_with(OPEN_TIMESTAMPS_DETACHED_MAGIC));
+        let prefix_length = OPEN_TIMESTAMPS_DETACHED_MAGIC.len();
+        assert_eq!(
+            response.evidence_bytes[prefix_length],
+            OPEN_TIMESTAMPS_DETACHED_VERSION
+        );
+        assert_eq!(
+            response.evidence_bytes[prefix_length + 1],
+            OPEN_TIMESTAMPS_SHA256_FILE_HASH_OP
+        );
+        assert_eq!(
+            &response.evidence_bytes[prefix_length + 2..prefix_length + 34],
+            decode_sha256_hex(&digest).expect("digest").as_slice()
+        );
+        assert_eq!(
+            &response.evidence_bytes[prefix_length + 34..],
+            raw_calendar_response.as_slice()
+        );
+        let raw_archive = response
+            .raw_provider_response
+            .as_ref()
+            .expect("raw provider archive");
+        assert_eq!(raw_archive.extension, "bin");
+        assert_eq!(raw_archive.bytes, raw_calendar_response);
+        assert_eq!(response.status, ExternalTimestampStatus::Attached);
+        assert!(response.metadata.protocol.contains("OpenTimestamps"));
+        assert!(!response.metadata.protocol.contains("RFC 3161"));
+        assert_eq!(response.metadata.provider_digest_match, Some(true));
+    }
+
+    #[test]
+    fn open_timestamps_sidecar_keeps_detached_proof_and_raw_response_integrity_bound() {
+        let directory = tempdir().expect("temporary track root");
+        let track_root = directory.path();
+        fs::create_dir_all(track_root.join(certificate::CERTIFICATE_DIR))
+            .expect("certificate directory");
+        let manifest = track_root.join(certificate::MANIFEST_FILE);
+        fs::write(&manifest, b"{\"finalized\":true}\n").expect("manifest");
+        let manifest_digest = sha256_file(&manifest).expect("manifest digest");
+        fs::write(
+            track_root.join(certificate::CERTIFICATE_HASH_FILE),
+            format!("{manifest_digest}  {}\n", certificate::MANIFEST_FILE),
+        )
+        .expect("certificate hash set");
+
+        let digest = manifest_digest.clone();
+        let raw_calendar_response = b"serialized-calendar-timestamp".to_vec();
+        let settings = TimestampSettings {
+            enabled: true,
+            provider: TimestampProviderKind::OpenTimestamps,
+            ..Default::default()
+        };
+        let response = request_timestamp_with_transport(
+            &settings,
+            None,
+            &digest,
+            &MockTransport::successful(raw_calendar_response.clone()),
+        )
+        .expect("OTS response");
+        let proof_bytes = response.evidence_bytes.clone();
+        let proof_source = track_root.join("provider-proof.ots");
+        fs::write(&proof_source, &proof_bytes).expect("proof source");
+
+        let staged = stage_provider_response(
+            track_root,
+            "certificate-fixture",
+            "finalization-snapshot-fixture",
+            &manifest_digest,
+            &proof_source,
+            response,
+        )
+        .expect("stage automatic OTS proof");
+        let metadata = staged
+            .record
+            .provider_metadata
+            .as_ref()
+            .expect("provider metadata");
+        assert_eq!(
+            metadata.provider_response_file_name,
+            "PROVIDER_RESPONSE.bin"
+        );
+        let stage_directory = track_root.join(STAGING_DIR).join(&staged.record.id);
+        assert_eq!(
+            fs::read(stage_directory.join("TIMESTAMP_EVIDENCE.ots")).expect("detached proof"),
+            proof_bytes
+        );
+        assert_eq!(
+            fs::read(stage_directory.join("PROVIDER_RESPONSE.bin")).expect("raw response"),
+            raw_calendar_response
+        );
+        assert_eq!(
+            metadata.provider_response_sha256,
+            sha256_file(&stage_directory.join("PROVIDER_RESPONSE.bin")).expect("raw hash")
+        );
+        let hash_list =
+            fs::read_to_string(stage_directory.join(HASH_LIST_FILE)).expect("hash list");
+        assert!(hash_list.contains("PROVIDER_RESPONSE.bin"));
+        verify_record_in_directory(track_root, &stage_directory, &staged.record, None)
+            .expect("sidecar verifies including raw response");
+        discard_staged(track_root, &staged).expect("discard test stage");
+    }
+
+    #[test]
+    fn tampered_finalized_manifest_prevents_provider_request() {
+        let directory = tempdir().expect("temporary track root");
+        let track_root = directory.path();
+        fs::create_dir_all(track_root.join(certificate::CERTIFICATE_DIR))
+            .expect("certificate directory");
+        let manifest = track_root.join(certificate::MANIFEST_FILE);
+        fs::write(&manifest, b"{\"finalized\":true}\n").expect("manifest");
+        let expected = sha256_file(&manifest).expect("finalized hash");
+        fs::write(
+            track_root.join(certificate::CERTIFICATE_HASH_FILE),
+            format!("{expected}  {}\n", certificate::MANIFEST_FILE),
+        )
+        .expect("certificate hash set");
+        fs::write(&manifest, b"{\"tampered\":true}\n").expect("tampered manifest");
+        let mock = MockTransport::successful(rfc3161_response_for_digest(&"00".repeat(32)));
+
+        if let Ok(anchor) = finalized_manifest_anchor(track_root) {
+            let _ =
+                request_timestamp_with_transport(&free_tsa_settings(), None, &anchor.sha256, &mock);
+        }
+        assert_eq!(mock.calls.get(), 0, "no digest request may leave the app");
+        assert!(finalized_manifest_anchor(track_root)
+            .expect_err("tampered anchor is rejected")
+            .to_string()
+            .contains("INTEGRITY CHECK FAILED"));
     }
 
     #[test]

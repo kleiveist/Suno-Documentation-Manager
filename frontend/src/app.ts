@@ -19,12 +19,14 @@ import {
 import {
   emptyEvidenceMetadata,
   emptyProfile,
+  emptyTimestampSettings,
   type DocumentationAnswer,
   type EvidenceItem,
   type EvidencePreview,
   type EvidenceMetadata,
-  type ExternalTimestampInput,
   type ExternalTimestampRecord,
+  type ExternalTimestampStatus,
+  type ExternalTimestampType,
   type FinalizeOptions,
   type FolderImportProposal,
   type GlobalEvidenceItem,
@@ -41,6 +43,11 @@ import {
   type TrackLibraryAssignment,
   type TrackSummary,
   type TimestampReferencedArtifact,
+  type TimestampAuthenticationMode,
+  type TimestampProviderKind,
+  type TimestampProviderStatus,
+  type TimestampProviderTestResult,
+  type TimestampSettings,
   type WorkflowDefinitionDto,
   type WorkspaceSummary
 } from "./domain/types";
@@ -80,6 +87,8 @@ interface ActiveOperationProgress {
 interface AppState {
   workspace: WorkspaceSummary | null;
   profile: GlobalProfile;
+  timestampSettings: TimestampSettings;
+  timestampProviderTest: TimestampProviderTestResult | null;
   tracks: TrackSummary[];
   albums: string[];
   track: TrackDetail | null;
@@ -104,7 +113,6 @@ interface AppState {
   showCertificatePopup: boolean;
   certificateBilingual: boolean;
   termsMetadataDialog: { evidenceId: string | null; metadata: EvidenceMetadata } | null;
-  showExternalTimestampDialog: boolean;
   theme: ColorTheme;
   toast: ToastState | null;
 }
@@ -114,7 +122,7 @@ export type WorkspaceScopedUiState = Pick<
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" | "albums" |
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
   | "showCertificatePopup" | "folderImport"
-  | "certificateBilingual" | "termsMetadataDialog" | "showExternalTimestampDialog"
+  | "certificateBilingual" | "termsMetadataDialog" | "timestampSettings" | "timestampProviderTest"
 > & { draftDirty: boolean };
 
 export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): WorkspaceScopedUiState {
@@ -134,7 +142,8 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     showCertificatePopup: false,
     certificateBilingual: false,
     termsMetadataDialog: null,
-    showExternalTimestampDialog: false,
+    timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
+    timestampProviderTest: null,
     query: "",
     trackFilter: "all",
     draftDirty: false
@@ -446,12 +455,92 @@ export function externalTimestampIntegrityPresentation(
   };
 }
 
+export function timestampProviderLabel(value: TimestampProviderKind): string {
+  return ({
+    disabled: "Disabled",
+    free_tsa: "FreeTSA",
+    open_timestamps: "OpenTimestamps",
+    sigstore_public_tsa: "Sigstore Public TSA",
+    custom_rfc3161: "Custom RFC 3161"
+  } as const)[value];
+}
+
+export function timestampProviderStatusLabel(value: TimestampProviderStatus): string {
+  return ({
+    not_recorded: "NOT RECORDED",
+    requesting: "REQUESTING",
+    attached: "ATTACHED",
+    verified: "VERIFIED",
+    verification_failed: "Verification failed",
+    provider_unavailable: "Provider unavailable",
+    authentication_failed: "Authentication failed",
+    anchor_mismatch: "Anchor mismatch",
+    disabled: "Disabled",
+    ready: "Ready",
+    configuration_incomplete: "Configuration incomplete",
+    authentication_required: "Authentication required",
+    connection_failed: "Connection failed",
+    unsupported_response: "Unsupported response",
+    verification_configuration_incomplete: "Verification configuration incomplete"
+  } as const)[value];
+}
+
+export function externalTimestampStatusLabel(value: ExternalTimestampStatus): string {
+  return ({
+    not_recorded: "NOT RECORDED",
+    requesting: "REQUESTING",
+    attached: "ATTACHED",
+    verified: "VERIFIED",
+    verification_failed: "VERIFICATION FAILED",
+    provider_unavailable: "PROVIDER UNAVAILABLE",
+    authentication_failed: "AUTHENTICATION FAILED",
+    anchor_mismatch: "ANCHOR MISMATCH",
+    disabled: "DISABLED",
+    ready: "READY",
+    configuration_incomplete: "CONFIGURATION INCOMPLETE",
+    authentication_required: "AUTHENTICATION REQUIRED",
+    connection_failed: "CONNECTION FAILED",
+    unsupported_response: "UNSUPPORTED RESPONSE",
+    verification_configuration_incomplete: "VERIFICATION CONFIGURATION INCOMPLETE"
+  } as const)[value];
+}
+
+export function timestampProviderIsReady(settings: TimestampSettings): boolean {
+  return settings.enabled && settings.provider !== "disabled" && settings.status === "ready";
+}
+
+export function externalTimestampSummaryFor(
+  track: Pick<TrackDetail, "externalTimestampSummary" | "externalTimestamps">
+): { status: ExternalTimestampStatus; message: string; provider?: string; recordId?: string; updatedAt?: string } {
+  if (track.externalTimestampSummary) return track.externalTimestampSummary;
+  const record = track.externalTimestamps.at(-1);
+  if (!record) {
+    return {
+      status: "not_recorded",
+      message: "Der Track ist technisch vollständig finalisiert. Ein externer Zeitstempel wurde für diesen Zertifikatssnapshot noch nicht hinterlegt.",
+      provider: ""
+    };
+  }
+  const legacy = /user-confirmed|manually recorded/i.test(record.provenance);
+  return {
+    // Sidecar/hash integrity is not a provider-response verification. Legacy
+    // manual records must never be promoted to VERIFIED by UI inference.
+    status: "attached",
+    message: legacy
+      ? "Legacy manually recorded timestamp evidence is attached and has not been automatically promoted to verified."
+      : "A timestamp response is attached; review its technical verification details.",
+    provider: record.provider,
+    recordId: record.id,
+    updatedAt: record.importedAt
+  };
+}
+
 export function legacySunoPlanNoticeMarkup(value: string): string {
   if (!value.trim()) return "";
   return `<div class="legacy-data-notice">${icon("info")}<div><strong>Historischer Tarif bei Erstellung – keine Aussage zum Tarif bei der finalen Generation</strong><p>${escapeHtml(value)}</p><small>Dieser unverändert erhaltene Altwert füllt „Suno-Tarif bei der finalen Generation“ nicht aus und erfüllt die aktuelle Workflow-Anforderung nicht.</small></div></div>`;
 }
 
-export function externalTimestampTypeLabel(value: ExternalTimestampInput["timestampType"]): string {
+export function externalTimestampTypeLabel(value: ExternalTimestampType): string {
   return ({
     qualified_electronic_timestamp_user_declared: "Qualified electronic timestamp – user declared",
     electronic_timestamp: "Electronic timestamp",
@@ -758,6 +847,8 @@ export class SunoDocumentationApp {
   private readonly state: AppState = {
     workspace: null,
     profile: { ...emptyProfile },
+    timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
+    timestampProviderTest: null,
     tracks: [],
     albums: [],
     track: null,
@@ -782,7 +873,6 @@ export class SunoDocumentationApp {
     showCertificatePopup: false,
     certificateBilingual: false,
     termsMetadataDialog: null,
-    showExternalTimestampDialog: false,
     theme: "light",
     toast: null
   };
@@ -1059,7 +1149,8 @@ export class SunoDocumentationApp {
       showCertificatePopup: this.state.showCertificatePopup,
       certificateBilingual: this.state.certificateBilingual,
       termsMetadataDialog: this.state.termsMetadataDialog,
-      showExternalTimestampDialog: this.state.showExternalTimestampDialog,
+      timestampSettings: this.state.timestampSettings,
+      timestampProviderTest: this.state.timestampProviderTest,
       query: this.state.query,
       trackFilter: this.state.trackFilter,
       draftDirty: this.draftDirty
@@ -1067,16 +1158,17 @@ export class SunoDocumentationApp {
     Object.assign(this.state, resetState);
     this.draftDirty = draftDirty;
     const loaded = await this.withBusy("Workspace wird eingelesen …", async () => {
-      const [profile, tracks, albums, workflow, globalEvidence] = await Promise.all([
-        this.api.getProfile(), this.api.listTracks(), this.api.listAlbums(), this.api.getWorkflow(), this.api.listGlobalEvidence()
+      const [profile, timestampSettings, tracks, albums, workflow, globalEvidence] = await Promise.all([
+        this.api.getProfile(), this.api.getTimestampSettings(), this.api.listTracks(), this.api.listAlbums(), this.api.getWorkflow(), this.api.listGlobalEvidence()
       ]);
-      return { profile, tracks, albums, workflow, globalEvidence };
+      return { profile, timestampSettings, tracks, albums, workflow, globalEvidence };
     });
     if (!loaded) {
       this.state.workspace = null;
       return;
     }
     this.state.profile = loaded.profile;
+    this.state.timestampSettings = loaded.timestampSettings;
     this.state.tracks = loaded.tracks;
     this.state.albums = loaded.albums;
     this.state.workflow = loaded.workflow;
@@ -1185,8 +1277,6 @@ export class SunoDocumentationApp {
           ? this.renderCertificatePopupDialog()
           : this.state.termsMetadataDialog
             ? this.renderTermsMetadataDialog()
-            : this.state.showExternalTimestampDialog
-              ? this.renderExternalTimestampDialog()
           : this.state.showNewTrack
           ? this.renderNewTrackDialog()
           : this.state.showTrackLibrary
@@ -1383,38 +1473,6 @@ export class SunoDocumentationApp {
         </div>
         ${this.textArea("factualNote", "Sachlicher Hinweis", "Optionaler Kontext ohne rechtliche Schlussfolgerung", metadata.factualNote)}
         <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon(editing ? "check" : "upload")} ${editing ? "Metadaten speichern" : "PDF auswählen und registrieren"}</button></div>
-      </form>
-    </section></div>`;
-  }
-
-  private renderExternalTimestampDialog(): string {
-    const track = this.state.track;
-    if (!track || track.status !== "FINALIZED") return "";
-    const allAnchorOptions: Array<[string, string]> = [
-      ["", "Bitte Integritätsanker auswählen"],
-      ...track.finalizationAnchors.map((anchor): [string, string] => [anchor.artifact, anchor.label]),
-      ["other", "Anderes Artefakt"]
-    ];
-    const anchorOptions = allAnchorOptions.filter(([value], index, values) =>
-      values.findIndex(([candidate]) => candidate === value) === index
-    );
-    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal timestamp-evidence-modal" role="dialog" aria-modal="true" aria-labelledby="timestamp-evidence-title" data-modal-panel>
-      <div class="modal-head"><div><p class="overline">Nachgelagerter Evidenzanhang</p><h2 id="timestamp-evidence-title">Externen Zeitstempel anhängen</h2></div><button class="icon-button" data-action="close-modal" aria-label="Dialog schließen">${icon("close")}</button></div>
-      <form id="external-timestamp-form" class="form-stack">
-        <div class="evidence-guidance">${icon("info")}<p>Der externe Nachweis wird an diesen finalisierten Zertifikatssnapshot gebunden. Der ursprüngliche Manifest-Anker bleibt unverändert; SunoDM bewertet die rechtliche Qualität des Zeitstempels nicht.</p></div>
-        <div class="timestamp-anchor-list">${track.finalizationAnchors.map((anchor) => `<article><strong>${escapeHtml(anchor.label)}</strong><small>${escapeHtml(anchor.relativePath)}</small><code>${escapeHtml(anchor.sha256)}</code></article>`).join("")}</div>
-        <div class="field-grid two-col">
-          ${this.textField("provider", "Timestamp provider / issuer", "Provider oder Aussteller", "", true)}
-          ${this.selectField("timestampType", "Timestamp type", "", [["", "Bitte auswählen"], ["qualified_electronic_timestamp_user_declared", "Qualified electronic timestamp – user declared"], ["electronic_timestamp", "Electronic timestamp"], ["external_integrity_timestamp", "External integrity timestamp"], ["other", "Other"], ["not_documented", "Not documented"]], true)}
-          ${this.textField("timestampValue", "Timestamp value", "Datum/Uhrzeit mit Zeitzone, soweit vorhanden", "")}
-          ${this.selectField("referencedArtifact", "Referenced artifact", "", anchorOptions, true)}
-          ${this.textField("referencedSha256", "Referenced SHA-256", "64-stelliger Hash aus dem externen Nachweis", "", true)}
-          ${this.textField("otherReferencedArtifact", "Anderes referenziertes Artefakt", "Nur bei Other", "")}
-          ${this.textField("externalReferenceId", "External reference ID", "Optional", "")}
-          ${this.textField("providerVerificationUrl", "Provider verification URL", "Optional", "", false, "url")}
-        </div>
-        ${this.textArea("note", "Sachliche Notiz", "Optional; keine rechtliche Bewertung", "")}
-        <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Abbrechen</button><button class="button button--primary" type="submit">${icon("upload")} Nachweisdatei auswählen und anhängen</button></div>
       </form>
     </section></div>`;
   }
@@ -1942,20 +2000,79 @@ export class SunoDocumentationApp {
   private renderExternalTimestampSection(track: TrackDetail): string {
     if (!isTrackContentLocked(track.status)) return "";
     const records = track.externalTimestamps ?? [];
-    const anchors = track.finalizationAnchors ?? [];
+    const summary = externalTimestampSummaryFor(track);
+    const record = summary.recordId
+      ? records.find((item) => item.id === summary.recordId) ?? records.at(-1)
+      : records.at(-1);
     const canAttach = track.status === "FINALIZED" && track.certificate.valid;
+    const providerReady = timestampProviderIsReady(this.state.timestampSettings);
+    const retry = [
+      "provider_unavailable",
+      "authentication_failed",
+      "verification_failed",
+      "anchor_mismatch",
+      "connection_failed",
+      "unsupported_response",
+      "verification_configuration_incomplete"
+    ].includes(summary.status);
+    const isFailure = retry;
+    const legacyFallback = !track.externalTimestampSummary
+      && Boolean(record && /user-confirmed|manually recorded/i.test(record.provenance));
+    const alreadyAttached = summary.status === "verified" || (summary.status === "attached" && !legacyFallback);
+    const statusClass = summary.status === "verified"
+      ? "is-valid"
+      : isFailure
+        ? "is-warning"
+        : "";
+    const action = !canAttach
+      ? ""
+      : alreadyAttached
+        ? `<button class="button button--secondary" disabled>${icon("check")} ${summary.status === "verified" ? "Bereits verifiziert" : "Timestamp angehängt"}</button>`
+        : providerReady
+          ? `<button class="button button--secondary" data-action="attach-external-timestamp">${icon("upload")} ${retry ? "Erneut versuchen" : "Externen Zeitstempel anhängen"}</button>`
+          : `<button class="button button--secondary" data-action="open-timestamp-settings">${icon("settings")} Zu End-Einstellungen → 05 Externer Zeitstempel</button>`;
+    const statusIcon = summary.status === "verified" ? "check" : summary.status === "not_recorded" || isFailure ? "alert" : "info";
+    const recordMarkup = record
+      ? (() => {
+          const integrity = externalTimestampIntegrityPresentation(record);
+          const legacy = /user-confirmed|manually recorded/i.test(record.provenance);
+          return `<article class="timestamp-record ${record.integrityVerified ? "" : "is-integrity-invalid"}">
+            <header><div><strong>${escapeHtml(summary.provider || record.provider)}</strong><small>${legacy ? "Legacy manually recorded timestamp evidence" : "Provider-derived metadata"}</small></div><span class="verification ${integrity.label === "VERIFIED" ? "is-valid" : ""}">Addendum integrity: ${integrity.label}</span></header>
+            <dl>
+              <div><dt>Timestamp</dt><dd>${escapeHtml(record.timestampValue || "Not documented")}</dd></div>
+              <div><dt>Referenced artifact</dt><dd>${escapeHtml(timestampArtifactLabel(record.referencedArtifact))}</dd></div>
+              <div><dt>Referenced SHA-256</dt><dd><code>${escapeHtml(record.referencedSha256)}</code></dd></div>
+              <div><dt>Verification status</dt><dd>${escapeHtml(externalTimestampStatusLabel(summary.status))}</dd></div>
+            </dl>
+            <details><summary>Details anzeigen</summary>
+              <dl>
+                <div><dt>Anchor path</dt><dd>${escapeHtml(record.referencedArtifactPath)}</dd></div>
+                <div><dt>Timestamp evidence</dt><dd>${escapeHtml(record.evidenceFileName)} · <code>${escapeHtml(record.evidenceSha256)}</code></dd></div>
+                <div><dt>Imported at</dt><dd>${formatDate(record.importedAt, true)}</dd></div>
+                <div><dt>Provenance</dt><dd>${escapeHtml(record.provenance)}</dd></div>
+              </dl>
+              ${record.providerMetadata ? `<dl>
+                <div><dt>Protocol</dt><dd>${escapeHtml(record.providerMetadata.protocol || "Not documented")}</dd></div>
+                <div><dt>Adapter</dt><dd>${escapeHtml(record.providerMetadata.adapter || "Not documented")}</dd></div>
+                ${record.providerMetadata.providerResponseFileName || record.providerMetadata.providerResponseSha256 ? `<div><dt>Raw provider proof</dt><dd>${escapeHtml(record.providerMetadata.providerResponseFileName || "Not documented")}${record.providerMetadata.providerResponseSha256 ? ` · <code>${escapeHtml(record.providerMetadata.providerResponseSha256)}</code>` : ""}</dd></div>` : ""}
+                <div><dt>Provider digest match</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.providerDigestMatch)}</dd></div>
+                <div><dt>Verification result</dt><dd>${escapeHtml(externalTimestampStatusLabel(record.providerMetadata.verificationResult))}</dd></div>
+                ${record.providerMetadata.issuer ? `<div><dt>Timestamp issuer</dt><dd>${escapeHtml(record.providerMetadata.issuer)}</dd></div>` : ""}
+                ${record.providerMetadata.policyOid ? `<div><dt>Policy OID</dt><dd>${escapeHtml(record.providerMetadata.policyOid)}</dd></div>` : ""}
+              </dl>` : ""}
+              ${record.externalReferenceId ? `<p>External reference ID: ${escapeHtml(record.externalReferenceId)}</p>` : ""}
+              ${record.providerVerificationUrl ? `<p>Provider verification URL: ${escapeHtml(record.providerVerificationUrl)}</p>` : ""}
+              ${integrity.issues.length ? `<p>${escapeHtml(integrity.issues.join(" · "))}</p>` : ""}
+            </details>
+          </article>`;
+        })()
+      : "";
     return `<section class="panel external-timestamp-section">
-      <div class="panel-heading"><div><p class="overline">Post-finalization attachment</p><h3>External Timestamp Evidence</h3><p>Ein externer Nachweis kann ausschließlich an einen bereits bestehenden Integritätsanker dieses Zertifikatssnapshots angehängt werden. Er verändert den ursprünglichen Manifest-/Hash-Snapshot nicht.</p></div>${canAttach ? `<button class="button button--secondary" data-action="open-external-timestamp">${icon("upload")} Externen Zeitstempel anhängen</button>` : ""}</div>
-      ${anchors.length ? `<div class="timestamp-anchor-list">${anchors.map((anchor) => `<article><strong>${escapeHtml(anchor.label)}</strong><small>${escapeHtml(anchor.relativePath)}</small><code>${escapeHtml(anchor.sha256)}</code></article>`).join("")}</div>` : `<div class="neutral-message">${icon("info")}<div><strong>Finalization anchors: NOT RECORDED</strong><span>Dieser Snapshot stellt keine auswählbaren lokalen Anker bereit.</span></div></div>`}
-      ${records.length ? `<div class="timestamp-record-list">${records.map((record) => {
-        const match = externalTimestampMatchLabel(record.referencedHashMatch);
-        const addendumIntegrity = externalTimestampIntegrityPresentation(record);
-        const integrityIssues = addendumIntegrity.issues.length
-          ? addendumIntegrity.issues.join(" · ")
-          : "Die nachgelagerten Timestamp-Dateien konnten nicht vollständig verifiziert werden.";
-        return `<article class="timestamp-record ${record.referencedHashMatch === false ? "is-mismatch" : ""} ${record.integrityVerified ? "" : "is-integrity-invalid"}"><header><div><strong>${escapeHtml(record.provider)}</strong><small>${escapeHtml(externalTimestampTypeLabel(record.timestampType))}</small></div><div class="timestamp-record-statuses"><span class="verification ${record.referencedHashMatch === true ? "is-valid" : ""}">Referenced hash match: ${match}</span><span class="verification ${record.integrityVerified ? "is-valid" : ""}">Addendum integrity: ${addendumIntegrity.label}</span></div></header>${record.integrityVerified ? "" : `<div class="danger-banner timestamp-integrity-issues">${icon("alert")}<div><strong>External timestamp addendum integrity: FAILED</strong><span>${escapeHtml(integrityIssues)}</span></div></div>`}<dl><div><dt>Timestamp</dt><dd>${escapeHtml(record.timestampValue || "Not documented")}</dd></div><div><dt>Referenced artifact</dt><dd>${escapeHtml(timestampArtifactLabel(record.referencedArtifact))} · ${escapeHtml(record.referencedArtifactPath)}</dd></div><div><dt>Referenced SHA-256</dt><dd><code>${escapeHtml(record.referencedSha256)}</code></dd></div><div><dt>Actual local SHA-256</dt><dd><code>${escapeHtml(record.actualSha256 || "Not verified")}</code></dd></div><div><dt>Timestamp evidence</dt><dd>${escapeHtml(record.evidenceFileName)} · <code>${escapeHtml(record.evidenceSha256)}</code></dd></div><div><dt>Imported at</dt><dd>${formatDate(record.importedAt, true)}</dd></div>${record.externalReferenceId ? `<div><dt>External reference ID</dt><dd>${escapeHtml(record.externalReferenceId)}</dd></div>` : ""}${record.providerVerificationUrl ? `<div><dt>Provider verification URL</dt><dd>${escapeHtml(record.providerVerificationUrl)}</dd></div>` : ""}<div><dt>Provenance</dt><dd>${escapeHtml(record.provenance)}</dd></div></dl><details><summary>Addendum paths</summary><ul><li>${escapeHtml(record.recordRelativePath)}</li><li>${escapeHtml(record.markdownRelativePath)}</li><li>${escapeHtml(record.pdfRelativePath)}</li><li>${escapeHtml(record.hashListRelativePath)}</li></ul></details></article>`;
-      }).join("")}</div>` : `<div class="${track.fields.commercialUseIntended ? "danger-banner is-warning" : "neutral-message"}">${icon("info")}<div><strong>External timestamp evidence: NOT RECORDED</strong><span>${track.fields.commercialUseIntended ? "For long-term evidentiary preservation, an external timestamp can be added after technical finalization." : "Ein externer Zeitstempel ist ein optionaler zusätzlicher Evidenzanker."}</span></div></div>`}
-      <p class="certificate-disclaimer">The application records the external timestamp evidence and its referenced hash. It does not independently determine the timestamp's legal qualification unless explicitly technically verified.</p>
+      <div class="panel-heading"><div><p class="overline">Post-finalization attachment</p><h3>External Timestamp Evidence</h3><p>Der Timestamp-Anchor wird automatisch aus dem finalisierten Zertifikatssnapshot bestimmt. Der ursprüngliche Manifest-/Hash-Snapshot bleibt unverändert.</p></div>${action}</div>
+      <div class="timestamp-summary ${statusClass}">${icon(statusIcon)}<div><strong>External Timestamp Evidence: ${escapeHtml(externalTimestampStatusLabel(summary.status))}</strong><span>${escapeHtml(summary.message)}</span></div></div>
+      ${summary.status === "not_recorded" ? `<p class="timestamp-summary-copy">Der Track ist technisch vollständig finalisiert. Ein externer Zeitstempel wurde für diesen Zertifikatssnapshot noch nicht hinterlegt.</p>${providerReady ? "" : `<p class="timestamp-summary-copy">Kein externer Timestamp-Dienst eingerichtet.</p>`}` : ""}
+      ${recordMarkup}
+      <p class="certificate-disclaimer">This records technical external timestamp evidence. No legal qualification of the timestamp is determined by Suno Documentation Manager.</p>
     </section>`;
   }
 
@@ -2030,6 +2147,7 @@ export class SunoDocumentationApp {
 
   private renderSettings(): string {
     const profile = this.state.profile;
+    const timestampSettings = this.state.timestampSettings;
     const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
     const terms = this.state.globalEvidence.filter((item) => item.role === "suno_terms_rights");
     return `<div class="page-content settings-page">
@@ -2039,6 +2157,7 @@ export class SunoDocumentationApp {
         <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.suggestedTextField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. ChatGPT / OpenAI oder eigener Wert", profile.defaultAiImageService, aiSystemSuggestions)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
         <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
         <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
+        ${this.renderTimestampSettingsSection(timestampSettings)}
         <div class="form-save settings-save"><span>${icon("shield")} Stammdaten verbleiben in der lokalen Workspace-Datenbank.</span><button class="button button--primary" type="submit">${icon("check")} Einstellungen speichern</button></div>
       </form>
       <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
@@ -2048,6 +2167,110 @@ export class SunoDocumentationApp {
         ${terms.length ? `<div class="global-evidence-list terms-evidence-list">${terms.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Provider nicht dokumentiert")} · Abruf ${formatDate(item.metadata?.retrievalDate)}</small><small>${escapeHtml(item.metadata?.sourceUrl || "Source URL: Not documented")} · ${escapeHtml(item.fileName)}</small></div><span class="verification ${termsMetadataComplete(item.metadata) ? "is-valid" : ""}">${termsMetadataComplete(item.metadata) ? icon("check") + " Vollständig" : "Metadaten fehlen"}</span><button class="button button--small button--secondary" data-edit-global-terms="${item.id}">Metadaten bearbeiten</button><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globale Nutzungsbedingungen entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch keine globale PDF mit Suno-Nutzungsbedingungen registriert.</p>`}
       </section>
     </div>`;
+  }
+
+  private renderTimestampSettingsSection(settings: TimestampSettings): string {
+    const result = this.state.timestampProviderTest;
+    const status = result?.status ?? settings.status;
+    const message = result?.message ?? settings.statusMessage;
+    const testedAt = result?.testedAt ?? settings.lastTestedAt;
+    const isReady = status === "ready";
+    const statusClass = isReady ? "is-valid" : status === "disabled" ? "" : "is-warning";
+    return `<div class="settings-section timestamp-settings-section"><div class="settings-section-copy"><span>05</span><div><h3>Externer Zeitstempel</h3><p>Der Dienst wird einmal pro Workspace eingerichtet. Pro finalisiertem Track wird nur noch der stabile Manifest-Anchor automatisch verwendet.</p></div></div><div>
+      <label class="toggle-row"><span><strong>Externer Zeitstempel aktiviert</strong><small>Ein deaktivierter Dienst beeinflusst die technische Finalisierung nicht.</small></span><input type="checkbox" name="timestampEnabled" aria-label="Externen Zeitstempel aktivieren" ${settings.enabled ? "checked" : ""}><i aria-hidden="true"></i></label>
+      <div class="field-grid two-col timestamp-settings-grid">
+        ${this.selectField("timestampProvider", "Timestamp Provider", settings.provider, [["free_tsa", "FreeTSA"], ["open_timestamps", "OpenTimestamps"], ["sigstore_public_tsa", "Sigstore Public TSA"], ["custom_rfc3161", "Custom RFC 3161"], ["disabled", "Disabled"]])}
+        <label class="toggle-row timestamp-auto-toggle"><span><strong>Automatisch nach Finalisierung</strong><small>Phase 1 bleibt bei einem Providerfehler vollständig abgeschlossen.</small></span><input type="checkbox" name="timestampAutoAfterFinalization" aria-label="Zeitstempel automatisch nach Finalisierung anhängen" ${settings.autoAfterFinalization ? "checked" : ""}><i aria-hidden="true"></i></label>
+      </div>
+      <div class="timestamp-provider-status ${statusClass}"><div><strong>Status: ${escapeHtml(timestampProviderStatusLabel(status))}</strong><span>${escapeHtml(message || "Noch nicht getestet.")}</span>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-timestamp-provider" ${settings.enabled && settings.provider !== "disabled" ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
+      <div data-timestamp-provider-configuration>${this.renderTimestampProviderConfiguration(settings)}</div>
+      <p class="timestamp-settings-note">${icon("shield")} Zugangsdaten werden ausschließlich über die getrennte lokale sichere Konfiguration gespeichert. Sie erscheinen nie in Tracks, Evidenz, PDFs, Manifesten oder Revisionen.</p>
+    </div></div>`;
+  }
+
+  private renderTimestampProviderConfiguration(settings: TimestampSettings): string {
+    if (settings.provider !== "custom_rfc3161") return "";
+    const custom = settings.custom;
+    const auth = custom.authenticationMode;
+    const needsSecret = auth === "basic" || auth === "bearer_token" || auth === "api_key";
+    const secretLabel = auth === "basic" ? "Passwort" : auth === "api_key" ? "API-Key" : "Token";
+    return `<details class="timestamp-provider-advanced" open><summary>Erweiterte Einstellungen für Custom RFC 3161</summary>
+      <p>Nur für einen eigenen RFC-3161-Dienst. Die drei kostenlosen Presets benötigen diese Angaben nicht.</p>
+      <div class="field-grid two-col">
+        ${this.textField("timestampCustomProviderName", "Provider Name", "z. B. Unternehmens-TSA", custom.providerName)}
+        ${this.textField("timestampCustomEndpoint", "TSA Endpoint", "https://…", custom.endpoint, false, "url")}
+        ${this.selectField("timestampAuthenticationMode", "Authentication Mode", auth, [["none", "Keine Authentifizierung"], ["basic", "Basic Authentication"], ["bearer_token", "Bearer Token"], ["api_key", "API-Key"], ["client_certificate", "Client Certificate"]])}
+        ${this.textField("timestampTimeoutSeconds", "Timeout (Sekunden, max. 120)", "15", String(custom.timeoutSeconds), false, "number")}
+        ${this.textField("timestampPolicyOid", "Policy OID", "Optional", custom.policyOid)}
+        ${auth === "basic" ? this.textField("timestampUsername", "Username", "Optionaler Accountname", custom.username) : ""}
+        ${auth === "client_certificate" ? `${this.textField("timestampClientCertificatePath", "Client Certificate", "Lokaler Zertifikatspfad", custom.clientCertificatePath)}${this.textField("timestampCaCertificatePath", "CA Certificate", "Optionaler lokaler CA-Pfad", custom.caCertificatePath)}` : ""}
+        ${needsSecret ? `<label class="field"><span class="field-label">${secretLabel}</span><input type="password" name="timestampSecret" autocomplete="new-password" placeholder="Nur lokal sicher speichern"></label><label class="timestamp-clear-secret"><input type="checkbox" name="timestampClearSecret"><span>Gespeicherte Zugangsdaten entfernen</span></label>` : ""}
+      </div>
+    </details>`;
+  }
+
+  private readTimestampSettings(form: HTMLFormElement): TimestampSettings {
+    const data = new FormData(form);
+    const previous = this.state.timestampSettings;
+    const read = (name: string, fallback: string): string => {
+      const value = data.get(name);
+      return typeof value === "string" ? value : fallback;
+    };
+    const providerCandidate = read("timestampProvider", previous.provider);
+    const provider: TimestampProviderKind = ["disabled", "free_tsa", "open_timestamps", "sigstore_public_tsa", "custom_rfc3161"].includes(providerCandidate)
+      ? providerCandidate as TimestampProviderKind
+      : previous.provider;
+    const authenticationCandidate = read("timestampAuthenticationMode", previous.custom.authenticationMode);
+    const authenticationMode: TimestampAuthenticationMode = ["none", "basic", "bearer_token", "api_key", "client_certificate"].includes(authenticationCandidate)
+      ? authenticationCandidate as TimestampAuthenticationMode
+      : previous.custom.authenticationMode;
+    const timeoutCandidate = Number(read("timestampTimeoutSeconds", String(previous.custom.timeoutSeconds)));
+    const timeoutSeconds = Number.isFinite(timeoutCandidate) && timeoutCandidate > 0
+      ? Math.min(Math.trunc(timeoutCandidate), 120)
+      : previous.custom.timeoutSeconds;
+    return {
+      ...previous,
+      enabled: data.get("timestampEnabled") === "on",
+      provider,
+      autoAfterFinalization: data.get("timestampAutoAfterFinalization") === "on",
+      custom: {
+        ...previous.custom,
+        providerName: read("timestampCustomProviderName", previous.custom.providerName).trim(),
+        endpoint: read("timestampCustomEndpoint", previous.custom.endpoint).trim(),
+        authenticationMode,
+        username: read("timestampUsername", previous.custom.username).trim(),
+        clientCertificatePath: read("timestampClientCertificatePath", previous.custom.clientCertificatePath).trim(),
+        caCertificatePath: read("timestampCaCertificatePath", previous.custom.caCertificatePath).trim(),
+        policyOid: read("timestampPolicyOid", previous.custom.policyOid).trim(),
+        timeoutSeconds
+      }
+    };
+  }
+
+  private readTimestampSecret(form: HTMLFormElement): string | null | undefined {
+    const data = new FormData(form);
+    if (data.get("timestampClearSecret") === "on") return null;
+    const value = data.get("timestampSecret");
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+
+  private async updateTimestampSettingsFromForm(
+    form: HTMLFormElement,
+    testProvider = false
+  ): Promise<{ settings: TimestampSettings; test: TimestampProviderTestResult | null }> {
+    const settings = this.readTimestampSettings(form);
+    const secret = this.readTimestampSecret(form);
+    await this.api.updateTimestampSettings(settings);
+    if (secret !== undefined) await this.api.updateTimestampSecret(secret);
+    const test = testProvider ? await this.api.testTimestampProvider() : null;
+    const refreshed = await this.api.getTimestampSettings();
+    return { settings: refreshed, test };
+  }
+
+  private syncTimestampProviderConfiguration(form: HTMLFormElement): void {
+    const target = form.querySelector<HTMLElement>("[data-timestamp-provider-configuration]");
+    if (!target) return;
+    target.innerHTML = this.renderTimestampProviderConfiguration(this.readTimestampSettings(form));
   }
 
   private inlineEvidenceActions(track: TrackDetail, actions: Array<[EvidenceRole, string]>): string {
@@ -2339,7 +2562,6 @@ export class SunoDocumentationApp {
         evidenceId: item.id,
         metadata: { ...emptyEvidenceMetadata(), ...structuredClone(item.metadata) }
       };
-      this.state.showExternalTimestampDialog = false;
       this.render();
       return;
     }
@@ -2412,7 +2634,7 @@ export class SunoDocumentationApp {
         this.state.showTrackLibrary = true;
         this.render();
         break;
-      case "close-modal": this.state.showNewTrack = false; this.state.folderImport = null; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.state.termsMetadataDialog = null; this.state.showExternalTimestampDialog = false; this.render(); break;
+      case "close-modal": this.state.showNewTrack = false; this.state.folderImport = null; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.state.termsMetadataDialog = null; this.render(); break;
       case "show-certificate-popup":
         if (this.requireTrack().certificate.valid && this.requireTrack().certificate.certificateId) {
           this.state.showCertificatePopup = true;
@@ -2439,16 +2661,47 @@ export class SunoDocumentationApp {
       case "import-global-evidence": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.evidencePreview = null; this.state.showSubscriptionEvidence = true; this.render(); break;
       case "import-global-terms":
         this.state.termsMetadataDialog = { evidenceId: null, metadata: emptyEvidenceMetadata() };
-        this.state.showExternalTimestampDialog = false;
         this.render();
         break;
-      case "open-external-timestamp":
-        if (this.requireTrack().status === "FINALIZED") {
-          this.state.showExternalTimestampDialog = true;
-          this.state.termsMetadataDialog = null;
+      case "open-timestamp-settings":
+        if (await this.flushDraft()) {
+          this.state.view = "settings";
+          this.state.activeStep = null;
           this.render();
         }
         break;
+      case "test-timestamp-provider": {
+        const form = button.closest<HTMLFormElement>("#profile-form");
+        if (!form) break;
+        const outcome = await this.withBusy(
+          "Timestamp-Provider wird geprüft …",
+          () => this.updateTimestampSettingsFromForm(form, true)
+        );
+        if (outcome) {
+          this.state.timestampSettings = outcome.settings;
+          this.state.timestampProviderTest = outcome.test;
+          const successful = outcome.test?.status === "ready";
+          this.showToast(successful ? "success" : "info", "Verbindungstest", outcome.test?.message ?? outcome.settings.statusMessage);
+        }
+        break;
+      }
+      case "attach-external-timestamp": {
+        const track = this.requireTrack();
+        const updated = await this.withBusy(
+          "Externer Zeitstempel wird an den finalisierten Manifest-Anchor angehängt …",
+          () => this.api.attachExternalTimestamp(track.id)
+        );
+        if (!updated) break;
+        this.applyTrack(updated);
+        const summary = externalTimestampSummaryFor(updated);
+        const successful = summary.status === "verified" || summary.status === "attached";
+        this.showToast(
+          successful ? "success" : "info",
+          successful ? "Externer Zeitstempel angehängt" : externalTimestampStatusLabel(summary.status),
+          summary.message
+        );
+        break;
+      }
       case "add-deviation": await this.addDeviation(); break;
       case "generate-documents": await this.generateDocumentsSafely(); break;
       case "generate-disclosure": await this.runAction("KI-Hinweis wird lokal erzeugt …", () => this.api.generateArtworkDisclosure(this.requireTrack().id, this.state.trackDraft?.disclosureText)); break;
@@ -2622,44 +2875,6 @@ export class SunoDocumentationApp {
       this.render();
       return;
     }
-    if (form.id === "external-timestamp-form") {
-      const track = this.requireTrack();
-      if (track.status !== "FINALIZED") return;
-      const data = new FormData(form);
-      const timestampType = String(data.get("timestampType") ?? "") as ExternalTimestampInput["timestampType"];
-      const referencedArtifact = String(data.get("referencedArtifact") ?? "") as TimestampReferencedArtifact;
-      const referencedSha256 = String(data.get("referencedSha256") ?? "").trim();
-      const otherReferencedArtifact = String(data.get("otherReferencedArtifact") ?? "").trim();
-      if (!/^[a-f\d]{64}$/i.test(referencedSha256)) {
-        this.showToast("error", "Referenced SHA-256 ungültig", "Gib den vollständigen 64-stelligen SHA-256 aus dem externen Nachweis ein.");
-        this.render();
-        return;
-      }
-      if (referencedArtifact === "other" && !otherReferencedArtifact) {
-        this.showToast("error", "Referenziertes Artefakt fehlt", "Beschreibe das andere referenzierte Artefakt.");
-        this.render();
-        return;
-      }
-      const input: ExternalTimestampInput = {
-        provider: String(data.get("provider") ?? "").trim(),
-        timestampType,
-        timestampValue: String(data.get("timestampValue") ?? "").trim(),
-        referencedArtifact,
-        otherReferencedArtifact,
-        referencedSha256,
-        externalReferenceId: String(data.get("externalReferenceId") ?? "").trim(),
-        providerVerificationUrl: String(data.get("providerVerificationUrl") ?? "").trim(),
-        note: String(data.get("note") ?? "").trim()
-      };
-      const updated = await this.withBusy("Externen Zeitstempelnachweis auswählen und revisionsgebunden anhängen …", () => this.api.attachExternalTimestamp(track.id, input));
-      if (!updated) return;
-      this.applyTrack(updated);
-      this.state.showExternalTimestampDialog = false;
-      const record = updated.externalTimestamps.at(-1);
-      this.showToast("success", "Externer Zeitstempel registriert", `Referenced hash match: ${externalTimestampMatchLabel(record?.referencedHashMatch ?? null)}. Der ursprüngliche Finalisierungsanker wurde nicht verändert.`);
-      this.render();
-      return;
-    }
     if (form.id === "profile-form") {
       const data = new FormData(form);
       const profile: GlobalProfile = {
@@ -2670,9 +2885,14 @@ export class SunoDocumentationApp {
         disclosureText: String(data.get("disclosureText") ?? "AI-assisted"),
         certificateLanguage: data.get("certificateLanguage") === "de" ? "de" : "en"
       };
-      const saved = await this.withBusy("Stammdaten werden gespeichert …", () => this.api.updateProfile(profile));
+      const saved = await this.withBusy("Einstellungen werden gespeichert …", async () => ({
+        profile: await this.api.updateProfile(profile),
+        timestamp: await this.updateTimestampSettingsFromForm(form)
+      }));
       if (saved) {
-        this.state.profile = saved;
+        this.state.profile = saved.profile;
+        this.state.timestampSettings = saved.timestamp.settings;
+        this.state.timestampProviderTest = null;
         await this.refreshTracks();
         this.showToast("success", "Einstellungen gespeichert", "Offene Tracks wurden aktualisiert; finalisierte Track-Snapshots bleiben unverändert.");
       }
@@ -2695,6 +2915,11 @@ export class SunoDocumentationApp {
     if (input.matches("[data-certificate-bilingual]") && input instanceof HTMLInputElement) {
       this.state.certificateBilingual = input.checked;
       this.render();
+      return;
+    }
+    const timestampForm = input.closest<HTMLFormElement>("#profile-form");
+    if (timestampForm && (input.name === "timestampProvider" || input.name === "timestampAuthenticationMode")) {
+      this.syncTimestampProviderConfiguration(timestampForm);
       return;
     }
     const libraryForm = input.closest<HTMLFormElement>("#new-track-form, #track-library-form");
