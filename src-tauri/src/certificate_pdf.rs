@@ -595,9 +595,13 @@ pub fn generate_pdf(snapshot: &CertificatePdfSnapshot<'_>) -> Result<Vec<u8>> {
     let pages = layout.into_pages(snapshot.certificate_id);
     let document_title = localized_certificate_label(snapshot.render_options, DOCUMENT_TITLE);
     let mut document = PdfDocument::new(&document_title);
+    let now = printpdf::date::OffsetDateTime::now();
     document.metadata.info.author = snapshot.profile.artist_name.clone();
+    document.metadata.info.creation_date = now;
     document.metadata.info.creator = GENERATED_BY.to_owned();
+    document.metadata.info.modification_date = now;
     document.metadata.info.producer = GENERATED_BY.to_owned();
+    document.metadata.info.metadata_date = now;
     document.metadata.info.subject = localized_certificate_paragraph(
         snapshot.render_options,
         "Finalized technical documentation, evidence, and integrity snapshot",
@@ -1423,24 +1427,40 @@ fn render_human_contribution(layout: &mut PdfLayout, snapshot: &CertificatePdfSn
 
 fn render_suno_field(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'_>) {
     let fields = snapshot.track.fields.normalized_conditionals();
-    let field_heading = if fields.vocal_lyrics_present == Some(true) {
-        "F. Suno Lyrics / Structure Field – Vocal Lyrics"
-    } else {
-        "F. Suno Lyrics / Structure Field – Suno Structure / Generation Instructions"
-    };
-    layout.section_title(field_heading);
+    let classification = content_classification(&fields);
+    layout.section_title("F. Suno Generation Text Field");
     for (label, value) in [
         (
-            "Instrumental track [User-confirmed fact]",
+            "Suno Instrumental Mode Selected [User-confirmed fact]",
             yes_no(fields.instrumental_track),
         ),
         (
-            "Vocal lyrics present [User-confirmed fact]",
-            yes_no(fields.vocal_lyrics_present),
+            "Generation Text Field Available [User-confirmed fact]",
+            yes_no(fields.suno_lyrics_field_content),
         ),
         (
-            "Structure instructions present [User-confirmed fact]",
+            "Generation Text Field Used [User-confirmed fact]",
+            generation_text_field_used(&fields),
+        ),
+        (
+            "Content Classification [User-confirmed fact]",
+            classification.as_str(),
+        ),
+        (
+            "Vocal Lyrics Present [User-confirmed fact]",
+            generation_field_vocal_lyrics_present(&fields),
+        ),
+        (
+            "Structure Instructions Present [User-confirmed fact]",
             structure_instructions_present(&fields),
+        ),
+        (
+            "Vocal Intent [User-confirmed fact]",
+            suno_vocal_intent(&fields),
+        ),
+        (
+            "Final Audio Contains Vocals [User-confirmed fact]",
+            final_audio_contains_vocals(&fields),
         ),
     ] {
         let status_line = format!("{}: {value}", layout.label(label));
@@ -1453,35 +1473,8 @@ fn render_suno_field(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'
             1.3,
         );
     }
-    let field_rows = vec![
-        TableRow::plain(
-            "Suno lyrics/structure field content [User-confirmed fact]",
-            yes_no(fields.suno_lyrics_field_content),
-        ),
-        TableRow::plain(
-            "Content types [User-confirmed fact]",
-            suno_content_types(&fields),
-        ),
-        TableRow::plain(
-            "Content source [User-confirmed fact]",
-            suno_content_source(&fields),
-        ),
-        TableRow::plain(
-            "Other content type [User-confirmed fact]",
-            if fields.suno_lyrics_field_content == Some(true)
-                && fields
-                    .suno_lyrics_content_types
-                    .contains(&SunoLyricsContentType::Other)
-            {
-                documented(&fields.suno_lyrics_other_content_type)
-            } else {
-                "N/A"
-            },
-        ),
-    ];
-    layout.table_rows(&field_rows, 63.0);
     layout.write_localized(
-        "Exact Suno field text",
+        "Exact Generation Text Field Content",
         LEFT_MM,
         RIGHT_MM - LEFT_MM,
         7.2,
@@ -2429,6 +2422,40 @@ fn suno_content_types(fields: &TrackFields) -> String {
     }
 }
 
+fn generation_text_field_used(fields: &TrackFields) -> &'static str {
+    match fields.suno_lyrics_field_content {
+        Some(true) if fields.suno_lyrics_field_text.trim().is_empty() => "NOT DOCUMENTED",
+        Some(true) => "YES",
+        Some(false) => "NO",
+        None => "NOT DOCUMENTED",
+    }
+}
+
+fn content_classification(fields: &TrackFields) -> String {
+    suno_content_types(fields)
+}
+
+fn generation_field_vocal_lyrics_present(fields: &TrackFields) -> &'static str {
+    match fields.suno_lyrics_field_content {
+        Some(false) => "N/A",
+        None => "NOT DOCUMENTED",
+        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED",
+        Some(true) => yes_no_bool(
+            fields
+                .suno_lyrics_content_types
+                .contains(&SunoLyricsContentType::VocalLyrics),
+        ),
+    }
+}
+
+fn suno_vocal_intent(fields: &TrackFields) -> &'static str {
+    generation_field_vocal_lyrics_present(fields)
+}
+
+fn final_audio_contains_vocals(fields: &TrackFields) -> &'static str {
+    yes_no(fields.vocal_lyrics_present)
+}
+
 fn structure_instructions_present(fields: &TrackFields) -> &'static str {
     match fields.suno_lyrics_field_content {
         Some(false) => "N/A",
@@ -2439,19 +2466,6 @@ fn structure_instructions_present(fields: &TrackFields) -> &'static str {
                 .suno_lyrics_content_types
                 .contains(&SunoLyricsContentType::StructureInstructions),
         ),
-    }
-}
-
-fn suno_content_source(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A",
-        None => "NOT DOCUMENTED",
-        Some(true) => match fields.suno_lyrics_content_source {
-            Some(SunoLyricsContentSource::Human) => "human",
-            Some(SunoLyricsContentSource::Ai) => "AI",
-            Some(SunoLyricsContentSource::Mixed) => "mixed",
-            None => "NOT DOCUMENTED",
-        },
     }
 }
 
@@ -3481,25 +3495,44 @@ mod tests {
             .find("E. Human contribution")
             .expect("human-contribution section");
         let suno_field_section = normalized
-            .find("F. Suno Lyrics / Structure Field – Suno Structure / Generation Instructions")
+            .find("F. Suno Generation Text Field")
             .expect("independent Suno-field section");
-        let content_source = normalized
-            .find("Content source [User-confirmed fact] mixed")
-            .expect("mixed Suno-field source");
+        let used_field_line = normalized
+            .find("Generation Text Field Used [User-confirmed fact]: YES")
+            .expect("used text field");
         let ai_section = normalized
             .find("G.1 AI Transparency Assessment – Audio")
             .expect("AI-transparency section");
         assert!(human_section < suno_field_section);
-        assert!(suno_field_section < content_source);
-        assert!(content_source < ai_section);
+        assert!(suno_field_section < used_field_line);
+        assert!(used_field_line < ai_section);
         assert!(!normalized[human_section..suno_field_section].contains("Content source"));
         assert!(!normalized.contains("E.1 Suno Structure / Generation Instructions"));
-        assert!(text.contains("Instrumental track [User-confirmed fact]: YES"));
-        assert!(text.contains("Vocal lyrics present [User-confirmed fact]: NO"));
-        assert!(text.contains("Structure instructions present [User-confirmed fact]: YES"));
+        assert!(text.contains("Suno Instrumental Mode Selected [User-confirmed fact]: YES"));
+        assert!(text.contains("Vocal Lyrics Present [User-confirmed fact]: NO"));
+        assert!(text.contains("Final Audio Contains Vocals [User-confirmed fact]: NO"));
+        assert!(text.contains("Structure Instructions Present [User-confirmed fact]: YES"));
+        assert!(text.contains("Vocal Intent [User-confirmed fact]: NO"));
         assert!(text.contains("[Intro]"));
         assert!(text.contains("does not confirm authorship"));
         assert!(!text.contains("Commercial rights confirmed"));
+    }
+
+    #[test]
+    fn structure_only_generation_text_does_not_become_vocal_lyrics_in_pdf() {
+        let mut fixture = Fixture::new(1);
+        fixture.track.fields.instrumental_track = Some(false);
+        fixture.track.fields.vocal_lyrics_present = Some(true);
+        fixture.track.fields.suno_lyrics_field_content = Some(true);
+        fixture.track.fields.suno_lyrics_content_types =
+            vec![SunoLyricsContentType::StructureInstructions];
+        fixture.track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Human);
+        fixture.track.fields.suno_lyrics_field_text = "[Intro]\n[Drop]".into();
+
+        let (_, text) = parse_text(&fixture.generate());
+        assert!(text.contains("Vocal Lyrics Present [User-confirmed fact]: NO"));
+        assert!(text.contains("Structure Instructions Present [User-confirmed fact]: YES"));
+        assert!(text.contains("Final Audio Contains Vocals [User-confirmed fact]: YES"));
     }
 
     #[test]
@@ -3521,18 +3554,18 @@ mod tests {
             .find("E. Human contribution")
             .expect("human-contribution section");
         let suno_field_section = normalized
-            .find("F. Suno Lyrics / Structure Field – Suno Structure / Generation Instructions")
+            .find("F. Suno Generation Text Field")
             .expect("independent Suno-field section");
-        let content_source = normalized
-            .find("Content source [User-confirmed fact] AI")
+        let used_field_line = normalized
+            .find("Generation Text Field Used [User-confirmed fact]: YES")
             .expect("AI Suno-field source");
         let ai_section = normalized
             .find("G.1 AI Transparency Assessment – Audio")
             .expect("AI-transparency section");
 
         assert!(human_section < suno_field_section);
-        assert!(suno_field_section < content_source);
-        assert!(content_source < ai_section);
+        assert!(suno_field_section < used_field_line);
+        assert!(used_field_line < ai_section);
         let human_content = &normalized[human_section..suno_field_section];
         assert!(human_content.contains("Manual mastering edit"));
         assert!(!human_content.contains("[AI structure instruction]"));
@@ -3876,9 +3909,10 @@ mod tests {
         fixture.track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Human);
         fixture.track.fields.suno_lyrics_field_text = "Sing this exact line".into();
         let (_, text) = parse_text(&fixture.generate());
-        assert!(text.contains("F. Suno Lyrics / Structure Field – Vocal Lyrics"));
-        assert!(text.contains("Instrumental track [User-confirmed fact]: NO"));
-        assert!(text.contains("Vocal lyrics present [User-confirmed fact]: YES"));
+        assert!(text.contains("F. Suno Generation Text Field"));
+        assert!(text.contains("Suno Instrumental Mode Selected [User-confirmed fact]: NO"));
+        assert!(text.contains("Vocal Lyrics Present [User-confirmed fact]: YES"));
+        assert!(text.contains("Final Audio Contains Vocals [User-confirmed fact]: YES"));
         assert!(text.contains("Sing this exact line"));
     }
 

@@ -10273,9 +10273,9 @@ mod tests {
         assert!(!markdown.contains("2026-08-02T06:38:06Z"));
         assert!(!markdown.contains(P0_SUNO_ID));
         assert!(markdown.contains("Suno plan at generation [User-confirmed fact]: Pro"));
-        assert!(markdown.contains("Instrumental track [User-confirmed fact]: YES"));
-        assert!(markdown.contains("Vocal lyrics present [User-confirmed fact]: NO"));
-        assert!(markdown.contains("Suno Structure / Generation Instructions"));
+        assert!(markdown.contains("Suno Instrumental Mode Selected [User-confirmed fact]: YES"));
+        assert!(markdown.contains("Vocal Lyrics Present [User-confirmed fact]: NO"));
+        assert!(markdown.contains("Suno Generation Text Field"));
         assert!(markdown.contains("Suno Terms of Service"));
         assert!(markdown.contains("Suno, Inc."));
         assert!(markdown.contains("AI Transparency Assessment"));

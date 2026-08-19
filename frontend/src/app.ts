@@ -2075,11 +2075,11 @@ export class SunoDocumentationApp {
       }
       case "human_work": {
         const hasLegacyLyrics = Boolean(draft.legacyLyricsSource || draft.legacyLyricsText.trim());
-        body = `<section class="question-group lyrics-structure-section"><div><p class="overline">Lyrics / Structure</p><h4>Vocal Lyrics und Suno-Feldinhalt getrennt dokumentieren</h4><p>Bracketed instructions wie [Intro], [Drop] oder [Outro] sind Strukturangaben und machen einen Instrumentaltrack nicht automatisch zu einem Vocal-Track.</p></div>
-          ${this.boolQuestion("instrumentalTrack", "Instrumental track?", "Bezieht sich ausschließlich auf den finalen Track.", draft.instrumentalTrack)}
-          ${this.boolQuestion("vocalLyricsPresent", "Vocal lyrics present?", "Ja nur bei tatsächlich hörbaren bzw. vorhandenen Vocal Lyrics.", draft.vocalLyricsPresent)}
-          ${this.boolQuestion("sunoLyricsFieldContent", "Content in Suno Lyrics / Structure field?", "Dokumentiert unabhängig von Vocal Lyrics, ob das Feld verwendet wurde.", draft.sunoLyricsFieldContent)}
-          ${conditional.has("sunoLyricsContentTypes") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("sunoLyricsContentTypes", "Content types", draft.sunoLyricsContentTypes, sunoLyricsContentTypeChoices, true)}${conditional.has("sunoLyricsOtherContentType") ? this.textField("sunoLyricsOtherContentType", "Sonstiger Content-Typ", "Faktisch beschreiben", draft.sunoLyricsOtherContentType, true) : ""}${singleChoiceFieldMarkup("sunoLyricsContentSource", "Content source", draft.sunoLyricsContentSource ?? "", [["human", "Human"], ["ai", "AI"], ["mixed", "Mixed"]], true)}${this.textArea("sunoLyricsFieldText", "Exact Suno field content", "Exakte verwendete Fassung einschließlich eckiger Klammern dokumentieren.", draft.sunoLyricsFieldText, true)}</div>` : ""}
+        body = `<section class="question-group lyrics-structure-section"><div><p class="overline">Suno Generation Text Field</p><h4>Suno-Textfeld, Vocal Intent und finales Audio getrennt dokumentieren</h4><p>Strukturanweisungen wie [Intro], [Drop] oder [Outro] werden nicht als Vocal Lyrics oder Gesang gewertet. Die Klassifikation des Textfeldes und das tatsächliche Audioergebnis bleiben getrennte Angaben.</p></div>
+          ${this.boolQuestion("instrumentalTrack", "Suno-Instrumentalmodus ausgewählt?", "UI-Einstellung in Suno; daraus wird das Audioergebnis nicht automatisch abgeleitet.", draft.instrumentalTrack)}
+          ${this.boolQuestion("sunoLyricsFieldContent", "Generierungstextfeld verfügbar?", "Gibt an, ob das Suno-Textfeld für diesen Track Inhalt enthält.", draft.sunoLyricsFieldContent)}
+          ${conditional.has("sunoLyricsContentTypes") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("sunoLyricsContentTypes", "Inhaltsklassifizierung", draft.sunoLyricsContentTypes, sunoLyricsContentTypeChoices, true)}${this.renderGenerationTextFieldFacts(draft)}${conditional.has("sunoLyricsOtherContentType") ? this.textField("sunoLyricsOtherContentType", "Sonstiger Content-Typ", "Faktisch beschreiben", draft.sunoLyricsOtherContentType, true) : ""}${singleChoiceFieldMarkup("sunoLyricsContentSource", "Content source", draft.sunoLyricsContentSource ?? "", [["human", "Human"], ["ai", "AI"], ["mixed", "Mixed"]], true)}${this.textArea("sunoLyricsFieldText", "Exakter Inhalt des Suno-Textfelds", "Exakte verwendete Fassung einschließlich eckiger Klammern dokumentieren.", draft.sunoLyricsFieldText, true)}</div>` : ""}
+          ${this.boolQuestion("vocalLyricsPresent", "Finaler Audioinhalt enthält Gesang?", "Tatsächliches Ergebnis des finalen Audios; nicht aus dem Textfeld automatisch ableiten.", draft.vocalLyricsPresent)}
           ${hasLegacyLyrics ? `<div class="legacy-data-notice">${icon("info")}<div class="legacy-data-notice-copy"><strong>Historische Lyrics-Angaben – nicht automatisch klassifiziert</strong><p>Quelle: ${escapeHtml(draft.legacyLyricsSource || "Not documented")}</p>${draft.legacyLyricsText ? `<pre>${escapeHtml(draft.legacyLyricsText)}</pre>` : ""}<small>Diese unverändert erhaltenen Altwerte bestimmen weder Vocal Lyrics noch Content-Typen. Prüfe die neuen Felder ausdrücklich.</small></div><button type="button" class="icon-button danger legacy-data-remove" data-action="remove-legacy-lyrics" aria-label="Historische Lyrics-Angaben entfernen" title="Historische Lyrics-Angaben entfernen" ${isTrackContentLocked(track.status) ? "disabled" : ""}>${icon("trash")}</button></div>` : ""}
         </section>
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
@@ -2149,6 +2149,29 @@ export class SunoDocumentationApp {
     }
     const locked = isTrackContentLocked(track.status);
     return `<form id="track-step-form" class="workflow-form ${locked ? "is-read-only" : ""}" data-step="${stepId}" ${locked ? `aria-label="Historischer Snapshot – schreibgeschützt"` : ""}><fieldset class="workflow-form-fields" ${locked ? "disabled" : ""}>${this.renderStepConsistencyIssues(track, stepId)}${body}</fieldset>${locked ? "" : `<div class="form-save"><span>${icon("shield")} Änderungen bleiben lokal im Workspace.</span><button class="button button--primary" type="submit">${icon("check")} Schritt speichern</button></div>`}</form>`;
+  }
+
+  private renderGenerationTextFieldFacts(fields: TrackFields): string {
+    const content = fields.sunoLyricsFieldContent;
+    const hasType = (type: TrackFields["sunoLyricsContentTypes"][number]): boolean => fields.sunoLyricsContentTypes.includes(type);
+    const fieldValue = content === false
+      ? "N/A"
+      : content === null
+        ? "NOT DOCUMENTED"
+        : fields.sunoLyricsFieldText.trim()
+          ? "YES"
+          : "NOT DOCUMENTED";
+    const classifiedValue = content === false
+      ? "N/A"
+      : content === null || !fields.sunoLyricsContentTypes.length
+        ? "NOT DOCUMENTED"
+        : hasType("vocal_lyrics") ? "YES" : "NO";
+    const structureValue = content === false
+      ? "N/A"
+      : content === null || !fields.sunoLyricsContentTypes.length
+        ? "NOT DOCUMENTED"
+        : hasType("structure_instructions") ? "YES" : "NO";
+    return `<div class="field-grid two-col generation-text-field-facts"><div class="read-only-field"><span>Generierungstextfeld verwendet</span><strong>${fieldValue}</strong></div><div class="read-only-field"><span>Vocal Lyrics vorhanden</span><strong>${classifiedValue}</strong></div><div class="read-only-field"><span>Strukturanweisungen vorhanden</span><strong>${structureValue}</strong></div><div class="read-only-field"><span>Vokale Intention</span><strong>${classifiedValue}</strong></div></div>`;
   }
 
   private renderPreReleaseAudioScreening(track: TrackDetail): string {
