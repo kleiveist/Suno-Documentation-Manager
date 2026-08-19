@@ -48,6 +48,7 @@ import {
 import { evidenceRoleFileTypes, WORKFLOW_STEPS } from "./domain/workflow";
 import { emptyAudioScreeningSettings, emptyAudioScreeningSummary, emptyEvidenceMetadata, emptyProfile, emptyTimestampSettings, emptyTrackAutomation, emptyTrackFields, type EvidenceItem, type TrackDetail } from "./domain/types";
 import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
+import { translateUiText } from "./ui/i18n";
 
 describe("theme", () => {
   it("uses a valid saved choice before the operating-system preference", () => {
@@ -82,6 +83,14 @@ describe("navigation", () => {
     expect(markup).not.toContain('data-action=');
     expect(settingsCategoryNavigationMarkup("external")).toContain('data-settings-category="external" aria-controls="settings-external" aria-selected="true"');
     for (const { label } of SETTINGS_CATEGORY_DEFINITIONS) expect(markup).toContain(label);
+  });
+
+  it("uses the certificate language as the app language for shared UI copy", () => {
+    expect(translateUiText("Einstellungen", "en")).toBe("Settings");
+    expect(translateUiText("Einstellungen", "de")).toBe("Einstellungen");
+    expect(settingsCategoryNavigationMarkup("external", "en")).toContain("Global details");
+    expect(settingsCategoryNavigationMarkup("external", "en")).toContain("External services");
+    expect(settingsCategoryNavigationMarkup("external", "en")).toContain("Settings sections");
   });
 
   it("stores multiple guided choices deterministically", () => {

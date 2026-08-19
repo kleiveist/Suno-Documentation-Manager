@@ -74,6 +74,11 @@ import {
   toggledTheme,
   type ColorTheme
 } from "./ui/theme";
+import {
+  translateRenderedUi,
+  translateUiText,
+  type AppLanguage
+} from "./ui/i18n";
 
 type MainView = "dashboard" | "tracks" | "current" | "workspace" | "settings";
 type SettingsCategory = "global" | "external" | "files";
@@ -774,8 +779,8 @@ export const SETTINGS_CATEGORY_DEFINITIONS = [
   { id: "files", label: "Globale Datei-Führung", description: "Workspaceweite Evidence-Dateien" }
 ] as const;
 
-export function settingsCategoryNavigationMarkup(activeCategory: SettingsCategory = "global"): string {
-  return `<nav class="settings-category-nav" aria-label="Einstellungsbereiche">${SETTINGS_CATEGORY_DEFINITIONS.map((category, index) => `<button type="button" class="settings-category-nav__item ${activeCategory === category.id ? "is-active" : ""}" data-settings-category="${category.id}" aria-controls="settings-${category.id}" aria-selected="${activeCategory === category.id}"><span class="settings-category-nav__index">${index + 1}</span><span><strong>${category.label}</strong><small>${category.description}</small></span></button>`).join("")}</nav>`;
+export function settingsCategoryNavigationMarkup(activeCategory: SettingsCategory = "global", language: AppLanguage = "de"): string {
+  return `<nav class="settings-category-nav" aria-label="${translateUiText("Einstellungsbereiche", language)}">${SETTINGS_CATEGORY_DEFINITIONS.map((category, index) => `<button type="button" class="settings-category-nav__item ${activeCategory === category.id ? "is-active" : ""}" data-settings-category="${category.id}" aria-controls="settings-${category.id}" aria-selected="${activeCategory === category.id}"><span class="settings-category-nav__index">${index + 1}</span><span><strong>${translateUiText(category.label, language)}</strong><small>${translateUiText(category.description, language)}</small></span></button>`).join("")}</nav>`;
 }
 
 export function missingProfileFields(profile: GlobalProfile): string[] {
@@ -1090,6 +1095,10 @@ export class SunoDocumentationApp {
     private readonly api: DesktopApi
   ) {}
 
+  private get language(): AppLanguage {
+    return this.state.profile.certificateLanguage === "de" ? "de" : "en";
+  }
+
   start(): void {
     this.initializeTheme();
     this.root.addEventListener("click", (event) => void this.handleClick(event));
@@ -1125,8 +1134,8 @@ export class SunoDocumentationApp {
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
       ?.setAttribute("content", this.state.theme === "dark" ? "#111310" : "#f4f2ed");
     const dark = this.state.theme === "dark";
-    const label = dark ? "Hellen Modus aktivieren" : "Dunklen Modus aktivieren";
-    const title = dark ? "Heller Modus" : "Dunkler Modus";
+    const label = translateUiText(dark ? "Hellen Modus aktivieren" : "Dunklen Modus aktivieren", this.language);
+    const title = translateUiText(dark ? "Heller Modus" : "Dunkler Modus", this.language);
     this.root.querySelectorAll<HTMLElement>('[data-action="toggle-theme"]').forEach((control) => {
       control.setAttribute("aria-label", label);
       control.setAttribute("aria-pressed", String(dark));
@@ -1243,10 +1252,12 @@ export class SunoDocumentationApp {
     const configuration = OPERATION_PROGRESS_CONFIGURATION[operation.kind];
     const percent = operationProgressPercent(operation.kind, progress);
     const detail = progress.totalBytes > 0
-      ? `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
+      ? this.language === "en"
+        ? `${formatBytes(progress.processedBytes)} of ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} files`
+        : `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
       : progress.totalFiles > 0
-        ? `${progress.processedFiles} von ${progress.totalFiles} Dateien`
-        : "Dateisatz wird vorbereitet";
+        ? this.language === "en" ? `${progress.processedFiles} of ${progress.totalFiles} files` : `${progress.processedFiles} von ${progress.totalFiles} Dateien`
+        : this.language === "en" ? "Preparing file set" : "Dateisatz wird vorbereitet";
     const minutes = Math.floor(operation.elapsedSeconds / 60);
     const seconds = String(operation.elapsedSeconds % 60).padStart(2, "0");
     const activeStep = configuration.thresholds.reduce<number>(
@@ -1263,7 +1274,7 @@ export class SunoDocumentationApp {
     const percentLabel = current.querySelector<HTMLElement>('[data-operation-value="percent"]');
     if (percentLabel) percentLabel.textContent = `${percent}%`;
     const stageLabel = current.querySelector<HTMLElement>('[data-operation-value="stage"]');
-    if (stageLabel) stageLabel.textContent = operationStageLabel(progress.stage, operation.kind);
+    if (stageLabel) stageLabel.textContent = translateUiText(operationStageLabel(progress.stage, operation.kind), this.language);
     const detailLabel = current.querySelector<HTMLElement>('[data-operation-value="detail"]');
     if (detailLabel) detailLabel.textContent = detail;
 
@@ -1293,23 +1304,25 @@ export class SunoDocumentationApp {
     });
 
     const tipLabel = current.querySelector<HTMLElement>('[data-operation-value="tip"]');
-    if (tipLabel) tipLabel.textContent = tip;
+    if (tipLabel) tipLabel.textContent = translateUiText(tip, this.language);
   }
 
   private renderBusyLayer(): string {
     if (!this.state.busy) return "";
     const operation = this.state.operationProgress;
     if (!operation) {
-      return `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(this.state.busyLabel)}</span></div>`;
+      return `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(translateUiText(this.state.busyLabel, this.language))}</span></div>`;
     }
     const progress = operation.progress;
     const percent = operationProgressPercent(operation.kind, progress);
     const configuration = OPERATION_PROGRESS_CONFIGURATION[operation.kind];
     const detail = progress.totalBytes > 0
-      ? `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
+      ? this.language === "en"
+        ? `${formatBytes(progress.processedBytes)} of ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} files`
+        : `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
       : progress.totalFiles > 0
-        ? `${progress.processedFiles} von ${progress.totalFiles} Dateien`
-        : "Dateisatz wird vorbereitet";
+        ? this.language === "en" ? `${progress.processedFiles} of ${progress.totalFiles} files` : `${progress.processedFiles} von ${progress.totalFiles} Dateien`
+        : this.language === "en" ? "Preparing file set" : "Dateisatz wird vorbereitet";
     const minutes = Math.floor(operation.elapsedSeconds / 60);
     const seconds = String(operation.elapsedSeconds % 60).padStart(2, "0");
     const activeStep = configuration.thresholds.reduce<number>((result, threshold, index) => percent >= threshold ? index : result, 0);
@@ -1481,6 +1494,7 @@ export class SunoDocumentationApp {
   private render(): void {
     if (!this.state.workspace) {
       this.root.innerHTML = this.renderWelcome();
+      translateRenderedUi(this.root, this.language);
       return;
     }
     const view = this.renderCurrentView();
@@ -1508,6 +1522,7 @@ export class SunoDocumentationApp {
         ${this.renderToast()}
         ${this.renderBusyLayer()}
       </div>`;
+    translateRenderedUi(this.root, this.language);
   }
 
   private renderWelcome(): string {
@@ -1576,7 +1591,7 @@ export class SunoDocumentationApp {
   private renderToast(): string {
     const toast = this.state.toast;
     if (!toast) return "";
-    return `<div class="toast toast--${toast.kind}" role="alert">${icon(toast.kind === "success" ? "check" : toast.kind === "error" ? "alert" : "info")}<div><strong>${escapeHtml(toast.title)}</strong><span>${escapeHtml(toast.message)}</span></div><button data-action="dismiss-toast" aria-label="Hinweis schließen">${icon("close")}</button></div>`;
+    return `<div class="toast toast--${toast.kind}" role="alert">${icon(toast.kind === "success" ? "check" : toast.kind === "error" ? "alert" : "info")}<div><strong>${escapeHtml(translateUiText(toast.title, this.language))}</strong><span>${escapeHtml(translateUiText(toast.message, this.language))}</span></div><button data-action="dismiss-toast" aria-label="Hinweis schließen">${icon("close")}</button></div>`;
   }
 
   private renderNewTrackDialog(): string {
@@ -1773,9 +1788,14 @@ export class SunoDocumentationApp {
     const finalized = this.state.tracks.filter((track) => track.status === "FINALIZED" && track.certificateValid !== false).length;
     const recent = [...this.state.tracks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 4);
     const next = recent.find((track) => track.status !== "FINALIZED" || track.certificateValid === false) ?? recent[0];
+    const nextDescription = next
+      ? this.language === "en"
+        ? `There are still ${next.missingCount} required items open for <strong>${escapeHtml(next.title)}</strong>.`
+        : `Bei <strong>${escapeHtml(next.title)}</strong> sind noch ${next.missingCount} Pflichtpunkte offen.`
+      : this.language === "en" ? "Create your first track to start the workflow." : "Lege deinen ersten Track an, um den Workflow zu starten.";
     return `<div class="page-content dashboard-page">
       <section class="dashboard-welcome">
-        <div><p class="overline">Lokaler Workspace</p><h2>Guten Tag, ${escapeHtml(this.state.profile.artistName || "Artist")}.</h2><p>${next ? `Bei <strong>${escapeHtml(next.title)}</strong> sind noch ${next.missingCount} Pflichtpunkte offen.` : "Lege deinen ersten Track an, um den Workflow zu starten."}</p></div>
+        <div><p class="overline">Lokaler Workspace</p><h2>Guten Tag, ${escapeHtml(this.state.profile.artistName || "Artist")}.</h2><p>${nextDescription}</p></div>
         <div class="workspace-seal">${icon("shield")}<span>Workspace geschützt</span></div>
       </section>
       <section class="metric-grid" aria-label="Track-Status">
@@ -1858,7 +1878,7 @@ export class SunoDocumentationApp {
   private renderTrackRow(track: TrackSummary, detailed = false): string {
     return `<button class="track-row ${detailed ? "track-row--detailed" : ""}" data-track-open="${escapeHtml(track.id)}">
       ${this.renderTrackCover(track)}
-      <span class="track-identity"><strong>${escapeHtml(track.title)}</strong><small>${escapeHtml(track.relativePath)}${track.legacy ? " · Legacy-Import" : ""}</small></span>
+      <span class="track-identity"><strong>${escapeHtml(track.title)}</strong><small>${escapeHtml(track.relativePath)}${track.legacy ? this.language === "en" ? " · Legacy import" : " · Legacy-Import" : ""}</small></span>
       <span class="status-chip status-chip--${track.status.toLowerCase()}">${statusLabel(track.status)}</span>
       <span class="row-progress"><progress max="100" value="${track.progress}" aria-label="${track.progress} Prozent"></progress><b>${track.progress}%</b></span>
       ${detailed ? `<time>${formatDate(track.updatedAt)}</time>` : `<span class="missing-hint">${track.missingCount ? `${track.missingCount} offen` : "Vollständig"}</span>`}
@@ -2450,8 +2470,8 @@ export class SunoDocumentationApp {
     const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
     const terms = this.state.globalEvidence.filter((item) => item.role === "suno_terms_rights");
     return `<div class="page-content settings-page">
-      <div class="page-lead"><div><p class="overline">Workspace-Konfiguration</p><h2>Einstellungen</h2><p>Dokumentationsdaten werden als Track-Snapshot übernommen. Die Zertifikatssprache gilt für künftige Finalisierungen und verändert bestehende Snapshots nicht.</p></div></div>
-      ${settingsCategoryNavigationMarkup(this.state.settingsCategory)}
+      <div class="page-lead"><div><p class="overline">Workspace-Konfiguration</p><h2>Einstellungen</h2><p>Dokumentationsdaten werden als Track-Snapshot übernommen. Die Zertifikatssprache gilt für künftige Finalisierungen und steuert zusätzlich die Sprache der App. Bestehende Snapshots werden nicht verändert.</p></div></div>
+      ${settingsCategoryNavigationMarkup(this.state.settingsCategory, this.language)}
       <form id="profile-form" class="panel settings-form"${this.state.settingsCategory === "files" ? " hidden" : ""}>
         <section id="settings-global" data-settings-category-panel="global" class="settings-category settings-category--global"${this.state.settingsCategory !== "global" ? " hidden" : ""}>
           <header class="settings-category-header"><span class="settings-category-index">1</span><div><p class="overline">${SETTINGS_CATEGORY_DEFINITIONS[0].description}</p><h3>${SETTINGS_CATEGORY_DEFINITIONS[0].label}</h3><p>Allgemeine Workspace- und Produktionsvorgaben für neue oder bearbeitbare Tracks.</p></div></header>
@@ -2459,7 +2479,7 @@ export class SunoDocumentationApp {
             <div class="settings-section"><div class="settings-section-copy"><span>01</span><div><h3>Artist & Suno</h3><p>Nur produktionsrelevante Profildaten – keine privaten Kontaktdaten.</p></div></div><div class="field-grid two-col">${this.textField("artistName", "Künstlername", "Künstlername", profile.artistName, true)}${this.textField("sunoProfileName", "Suno-Profilname", "Profilname", profile.sunoProfileName, true)}${this.textField("sunoHandle", "Suno-Benutzername", "@handle", profile.sunoHandle, true)}${this.suggestedTextField("sunoPlan", "Suno-Tarif", "z. B. Premier oder eigener Wert", profile.sunoPlan, sunoPlanSuggestions, true)}${this.dateField("subscriptionStartDate", "Abo-Startdatum", profile.subscriptionStartDate, true)}</div></div>
             <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.suggestedTextField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. ChatGPT / OpenAI oder eigener Wert", profile.defaultAiImageService, aiSystemSuggestions)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
             <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
-            <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
+            <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung und die App-Oberfläche. Nach dem Speichern wechseln Navigation, Workflow und Dialoge auf diese Sprache. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
           </div>
         </section>
         <section id="settings-external" data-settings-category-panel="external" class="settings-category settings-category--external"${this.state.settingsCategory !== "external" ? " hidden" : ""}>
@@ -2651,6 +2671,7 @@ export class SunoDocumentationApp {
     const target = form.querySelector<HTMLElement>("[data-timestamp-provider-configuration]");
     if (!target) return;
     target.innerHTML = this.renderTimestampProviderConfiguration(this.readTimestampSettings(form));
+    translateRenderedUi(target, this.language);
   }
 
   private inlineEvidenceActions(track: TrackDetail, actions: Array<[EvidenceRole, string]>): string {

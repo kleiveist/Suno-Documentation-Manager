@@ -1655,6 +1655,17 @@ fn render_artwork_checks(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapsh
             "Human artwork process [User-confirmed fact]",
             if fields.artwork_origin == "human" {
                 documented_list(&fields.human_artwork_process_operations)
+            } else if fields.artwork_origin == "ai_assisted" {
+                if fields
+                    .human_artwork_modifications
+                    .iter()
+                    .any(|value| !value.trim().is_empty())
+                    || !fields.custom_artwork_change.trim().is_empty()
+                {
+                    "YES".into()
+                } else {
+                    "NOT DOCUMENTED".into()
+                }
             } else if fields.artwork_origin.trim().is_empty() {
                 "NOT DOCUMENTED".into()
             } else {
