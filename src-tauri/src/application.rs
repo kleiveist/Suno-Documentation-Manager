@@ -141,10 +141,9 @@ impl WorkspaceApp {
             }
             let root = self.track_root(&track)?;
             let live = contained_path(&root, Path::new(certificate::CERTIFICATE_DIR), false)?;
-            let live_pdf = contained_path(&root, Path::new(certificate::PDF_FILE), false)?;
 
             if track.status == TrackStatus::Finalized
-                && finalized_artifacts_need_revision_restore(&root, &live, &live_pdf)?
+                && finalized_artifacts_need_revision_restore(&root, &live)?
             {
                 let staging = contained_path(&root, Path::new(".archive/revision-staging"), false)?;
                 if staging.is_dir() {
@@ -165,7 +164,7 @@ impl WorkspaceApp {
                         if let Some(candidate) =
                             matching_revision_certificate(&root, &entry_relative, &track)?
                         {
-                            if restore_revision_artifacts(&live, &live_pdf, &candidate)? {
+                            if restore_revision_artifacts(&live, &candidate)? {
                                 let _ = fs::remove_dir_all(&entry_path);
                                 recovered = true;
                                 break;
@@ -176,7 +175,7 @@ impl WorkspaceApp {
             }
 
             if track.status == TrackStatus::Finalized
-                && finalized_artifacts_need_revision_restore(&root, &live, &live_pdf)?
+                && finalized_artifacts_need_revision_restore(&root, &live)?
             {
                 let revisions = contained_path(&root, Path::new(".archive/revisions"), false)?;
                 if revisions.is_dir() {
@@ -201,7 +200,7 @@ impl WorkspaceApp {
                         else {
                             continue;
                         };
-                        if restore_revision_artifacts(&live, &live_pdf, &candidate)? {
+                        if restore_revision_artifacts(&live, &candidate)? {
                             let _ = fs::remove_dir_all(&entry_path);
                             recovered = true;
                             break;
@@ -246,7 +245,9 @@ impl WorkspaceApp {
                     PathBuf::from(".archive/certificate-staging").join(recovery_id);
                 let staging = contained_path(&root, &staging_relative, false)?;
                 let live_needs_recovery = !directory_is_empty_or_missing(&live)?;
-                let live_pdf_needs_recovery = live_pdf.exists();
+                let live_pdf_paths = [certificate::PDF_FILE, certificate::PDF_FILE_DE];
+                let live_pdf_needs_recovery =
+                    live_pdf_paths.iter().any(|name| root.join(name).exists());
                 let staging_needs_recovery = staging.exists();
                 if live_needs_recovery || live_pdf_needs_recovery || staging_needs_recovery {
                     let recovery_relative = PathBuf::from(".archive/recovery").join(recovery_id);
@@ -257,7 +258,7 @@ impl WorkspaceApp {
                         "recovered_at": now(),
                         "reason": "certificate publication was interrupted before the database committed FINALIZED",
                         "live_certificate_recovered": live_needs_recovery,
-                        "live_pdf_recovered": live_pdf_needs_recovery,
+                        "live_pdfs_recovered": live_pdf_needs_recovery,
                         "staging_recovered": staging_needs_recovery,
                     }))?;
                     let recovery_metadata = recovery.join("recovery.json");
@@ -269,8 +270,13 @@ impl WorkspaceApp {
                             .map_err(|error| AppError::io(&live, error))?;
                     }
                     if live_pdf_needs_recovery {
-                        fs::rename(&live_pdf, recovery.join(certificate::PDF_FILE))
-                            .map_err(|error| AppError::io(&live_pdf, error))?;
+                        for name in live_pdf_paths {
+                            let live_pdf = root.join(name);
+                            if live_pdf.exists() {
+                                fs::rename(&live_pdf, recovery.join(name))
+                                    .map_err(|error| AppError::io(&live_pdf, error))?;
+                            }
+                        }
                     }
                     if staging_needs_recovery {
                         fs::rename(&staging, recovery.join("certificate-staging"))
@@ -2516,7 +2522,7 @@ impl WorkspaceApp {
     fn finalize_track_impl_with_options(
         &self,
         id: &str,
-        options: FinalizeOptions,
+        _options: FinalizeOptions,
         #[cfg(test)] failure: Option<FinalizationFailure>,
         on_progress: &mut impl FnMut(OperationProgress),
     ) -> Result<ActionResult> {
@@ -2594,7 +2600,10 @@ impl WorkspaceApp {
         // hashes; the selected value is frozen below with the final snapshot.
         let certificate_render_options = CertificateRenderOptions {
             language: self.profile()?.certificate_language,
-            bilingual: options.bilingual,
+            // Finalization always publishes one PDF per supported language.
+            // The former transient bilingual switch is retained only for
+            // backwards-compatible command payloads and is no longer a choice.
+            bilingual: true,
         };
         let evidence = self.verified_evidence(&track)?;
         let deviations = self.persistence.deviations(id)?;
@@ -2614,17 +2623,20 @@ impl WorkspaceApp {
         let track_root = self.track_root(&track)?;
         let live_certificate =
             contained_path(&track_root, Path::new(certificate::CERTIFICATE_DIR), false)?;
-        let live_pdf = contained_path(&track_root, Path::new(certificate::PDF_FILE), false)?;
+        let live_pdfs = [
+            contained_path(&track_root, Path::new(certificate::PDF_FILE), false)?,
+            contained_path(&track_root, Path::new(certificate::PDF_FILE_DE), false)?,
+        ];
         if !directory_is_empty_or_missing(&live_certificate)? {
             return Err(AppError::Collision(
                 "The certificate directory already contains files. Preserve or archive them before finalizing."
                     .into(),
             ));
         }
-        if live_pdf.exists() {
+        if let Some(existing_pdf) = live_pdfs.iter().find(|path| path.exists()) {
             return Err(AppError::Collision(format!(
                 "The technical documentation PDF already exists: {}",
-                certificate::PDF_FILE
+                existing_pdf.display()
             )));
         }
         let certificate_staging = contained_path(
@@ -2700,7 +2712,7 @@ impl WorkspaceApp {
         );
         if let Err(error) = publication {
             if directory_is_empty_or_missing(&live_certificate).unwrap_or(false)
-                && !live_pdf.exists()
+                && !live_pdfs.iter().any(|path| path.exists())
                 && !certificate_staging.exists()
             {
                 let _ = fs::remove_file(&finalization_marker);
@@ -2811,8 +2823,9 @@ impl WorkspaceApp {
         });
         Ok(ActionResult {
             message: format!(
-                "Documentation finalized and certificate set verified. Technical documentation certificate created: {}",
-                certificate::PDF_FILE
+                "Documentation finalized and certificate set verified. German and English technical documentation PDFs created: {}, {}",
+                certificate::PDF_FILE_DE,
+                certificate::PDF_FILE_EN
             ),
             track: Some(detail),
         })
@@ -3225,8 +3238,20 @@ impl WorkspaceApp {
         let live_certificate =
             contained_path(&root, Path::new(certificate::CERTIFICATE_DIR), false)?;
         let certificate_existed = live_certificate.exists();
-        let live_pdf = contained_path(&root, Path::new(certificate::PDF_FILE), false)?;
-        let pdf_existed = regular_file_if_present(&live_pdf, "The technical documentation PDF")?;
+        let live_pdfs = [
+            (
+                certificate::PDF_FILE,
+                contained_path(&root, Path::new(certificate::PDF_FILE), false)?,
+            ),
+            (
+                certificate::PDF_FILE_DE,
+                contained_path(&root, Path::new(certificate::PDF_FILE_DE), false)?,
+            ),
+        ];
+        let pdf_existed = [
+            regular_file_if_present(&live_pdfs[0].1, "The technical documentation PDF")?,
+            regular_file_if_present(&live_pdfs[1].1, "The technical documentation PDF")?,
+        ];
         // Screening artifacts are part of the integrity-protected phase-one
         // snapshot. Move them with the certificate rather than leaving an old
         // fingerprint or provider response in the live revision workspace.
@@ -3267,7 +3292,6 @@ impl WorkspaceApp {
             return Err(cleanup_revision_staging(&stage, error));
         }
         let staged_certificate = stage.join("certificate");
-        let staged_pdf = stage.join(certificate::PDF_FILE);
         let staged_audio_screening = stage.join("03_DOCUMENTATION/AUDIO_SCREENING");
         let certificate_staging = if certificate_existed {
             fs::rename(&live_certificate, &staged_certificate)
@@ -3279,21 +3303,24 @@ impl WorkspaceApp {
         if let Err(error) = certificate_staging {
             return Err(cleanup_revision_staging(&stage, error));
         }
-        let mut pdf_moved = false;
-        if pdf_existed {
-            if let Err(error) = fs::rename(&live_pdf, &staged_pdf) {
-                return Err(rollback_revision_state(
-                    &live_certificate,
-                    &staged_certificate,
-                    &live_pdf,
-                    &staged_pdf,
-                    &stage,
-                    certificate_existed,
-                    pdf_moved,
-                    AppError::io(&live_pdf, error),
-                ));
+        let mut pdf_moved = Vec::new();
+        for ((name, live_pdf), existed) in live_pdfs.iter().zip(pdf_existed) {
+            if existed {
+                let staged_pdf = stage.join(name);
+                if let Err(error) = fs::rename(live_pdf, &staged_pdf) {
+                    return Err(rollback_revision_state(
+                        &live_certificate,
+                        &staged_certificate,
+                        &root,
+                        &stage,
+                        &stage,
+                        certificate_existed,
+                        &pdf_moved,
+                        AppError::io(live_pdf, error),
+                    ));
+                }
+                pdf_moved.push(*name);
             }
-            pdf_moved = true;
         }
         let mut audio_screening_moved = false;
         if audio_screening_existed {
@@ -3304,11 +3331,11 @@ impl WorkspaceApp {
                 return Err(rollback_revision_state(
                     &live_certificate,
                     &staged_certificate,
-                    &live_pdf,
-                    &staged_pdf,
+                    &root,
+                    &stage,
                     &stage,
                     certificate_existed,
-                    pdf_moved,
+                    &pdf_moved,
                     AppError::io(&live_audio_screening, error),
                 ));
             }
@@ -3331,11 +3358,11 @@ impl WorkspaceApp {
             return Err(rollback_revision_state(
                 &live_certificate,
                 &staged_certificate,
-                &live_pdf,
-                &staged_pdf,
+                &root,
+                &stage,
                 &stage,
                 certificate_existed,
-                pdf_moved,
+                &pdf_moved,
                 error,
             ));
         }
@@ -3354,11 +3381,11 @@ impl WorkspaceApp {
             return Err(rollback_revision_state(
                 &live_certificate,
                 &staged_certificate,
-                &live_pdf,
-                &staged_pdf,
+                &root,
+                &stage,
                 &stage,
                 certificate_existed,
-                pdf_moved,
+                &pdf_moved,
                 AppError::io(&archive, error),
             ));
         }
@@ -3387,11 +3414,11 @@ impl WorkspaceApp {
             return Err(rollback_revision_state(
                 &live_certificate,
                 &archive.join("certificate"),
-                &live_pdf,
-                &archive.join(certificate::PDF_FILE),
+                &root,
+                &archive,
                 &archive,
                 certificate_existed,
-                pdf_moved,
+                &pdf_moved,
                 error,
             ));
         }
@@ -4559,6 +4586,7 @@ fn inspect_legacy(root: &Path) -> Result<LegacyInspection> {
             }
         } else if portable != integrity::HASH_FILE
             && portable != certificate::PDF_FILE
+            && portable != certificate::PDF_FILE_DE
             && !portable.starts_with(".archive/")
             && !portable.starts_with(".summary/")
             && !portable.starts_with("06_CERTIFICATE/")
@@ -4892,41 +4920,51 @@ fn matching_revision_certificate(
 fn finalized_artifacts_need_revision_restore(
     track_root: &Path,
     live_certificate: &Path,
-    live_pdf: &Path,
 ) -> Result<bool> {
     if directory_is_empty_or_missing(live_certificate)? {
         return Ok(true);
     }
     // A malformed live set is ordinary certificate invalidation, not proof of
-    // an interrupted revision. Only a readable current-format set establishes
-    // that the root PDF belongs to this finalized snapshot and needs recovery.
-    Ok(!live_pdf.is_file() && matches!(certificate::expects_pdf(track_root), Ok(true)))
+    // an interrupted revision. Only a readable certificate hash set establishes
+    // which root PDFs belong to this finalized snapshot and need recovery.
+    if !matches!(certificate::expects_pdf(track_root), Ok(true)) {
+        return Ok(false);
+    }
+    Ok(certificate::required_pdf_files(track_root)?
+        .iter()
+        .any(|name| !track_root.join(name).is_file()))
 }
 
 fn restore_revision_artifacts(
     live_certificate: &Path,
-    live_pdf: &Path,
     archived_certificate: &Path,
 ) -> Result<bool> {
     let revision_directory = archived_certificate
         .parent()
         .ok_or_else(|| AppError::Data("Revision certificate has no archive directory.".into()))?;
-    let archived_pdf = revision_directory.join(certificate::PDF_FILE);
+    let live_root = live_certificate
+        .parent()
+        .ok_or_else(|| AppError::Data("Live certificate has no track root.".into()))?;
     let restore_certificate = directory_is_empty_or_missing(live_certificate)?;
-    let archived_pdf_exists =
-        regular_file_if_present(&archived_pdf, "The archived technical documentation PDF")?;
-    let live_pdf_exists =
-        regular_file_if_present(live_pdf, "The live technical documentation PDF")?;
-    let restore_pdf = archived_pdf_exists && !live_pdf_exists;
-    if archived_pdf_exists
-        && live_pdf_exists
-        && sha256_file(&archived_pdf)? != sha256_file(live_pdf)?
-    {
-        return Err(AppError::Validation(
-            "The live and archived technical documentation PDFs do not match.".into(),
-        ));
+    let mut pdf_restores = Vec::new();
+    for name in [certificate::PDF_FILE, certificate::PDF_FILE_DE] {
+        let archived_pdf = revision_directory.join(name);
+        let live_pdf = live_root.join(name);
+        let archived_pdf_exists =
+            regular_file_if_present(&archived_pdf, "The archived technical documentation PDF")?;
+        let live_pdf_exists =
+            regular_file_if_present(&live_pdf, "The live technical documentation PDF")?;
+        if archived_pdf_exists && live_pdf_exists {
+            if sha256_file(&archived_pdf)? != sha256_file(&live_pdf)? {
+                return Err(AppError::Validation(format!(
+                    "The live and archived technical documentation PDFs do not match: {name}."
+                )));
+            }
+        } else if archived_pdf_exists {
+            pdf_restores.push((archived_pdf, live_pdf));
+        }
     }
-    if !restore_certificate && !restore_pdf {
+    if !restore_certificate && pdf_restores.is_empty() {
         return Ok(false);
     }
 
@@ -4934,22 +4972,22 @@ fn restore_revision_artifacts(
         fs::remove_dir(live_certificate).map_err(|error| AppError::io(live_certificate, error))?;
     }
     let mut certificate_moved = false;
-    let mut pdf_moved = false;
+    let mut pdf_moved = Vec::new();
     let restore_result = (|| -> Result<()> {
         if restore_certificate {
             fs::rename(archived_certificate, live_certificate)
                 .map_err(|error| AppError::io(live_certificate, error))?;
             certificate_moved = true;
         }
-        if restore_pdf {
-            copy_new(&archived_pdf, live_pdf)?;
-            pdf_moved = true;
+        for (archived_pdf, live_pdf) in &pdf_restores {
+            copy_new(archived_pdf, live_pdf)?;
+            pdf_moved.push(live_pdf.clone());
         }
         Ok(())
     })();
     if let Err(cause) = restore_result {
         let mut rollback_errors = Vec::new();
-        if pdf_moved {
+        for live_pdf in pdf_moved.iter().rev() {
             if let Err(error) = fs::remove_file(live_pdf) {
                 rollback_errors.push(format!("PDF rollback failed: {error}"));
             }
@@ -5019,8 +5057,14 @@ fn rollback_certificate_set(track_root: &Path, cause: AppError) -> CertificateRo
             };
         }
     };
-    let pdf = match contained_path(track_root, Path::new(certificate::PDF_FILE), false) {
-        Ok(path) => path,
+    let pdfs = match [
+        contained_path(track_root, Path::new(certificate::PDF_FILE), false),
+        contained_path(track_root, Path::new(certificate::PDF_FILE_DE), false),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>>>()
+    {
+        Ok(paths) => paths,
         Err(rollback_error) => {
             return CertificateRollback {
                 error: AppError::Data(format!(
@@ -5030,14 +5074,16 @@ fn rollback_certificate_set(track_root: &Path, cause: AppError) -> CertificateRo
             };
         }
     };
-    if pdf.exists() {
-        if let Err(rollback_error) = fs::remove_file(&pdf) {
-            return CertificateRollback {
-                error: AppError::Data(format!(
-                    "Finalization failed ({cause}); PDF cleanup failed: {rollback_error}"
-                )),
-                complete: false,
-            };
+    for pdf in pdfs {
+        if pdf.exists() {
+            if let Err(rollback_error) = fs::remove_file(&pdf) {
+                return CertificateRollback {
+                    error: AppError::Data(format!(
+                        "Finalization failed ({cause}); PDF cleanup failed: {rollback_error}"
+                    )),
+                    complete: false,
+                };
+            }
         }
     }
     if certificate_dir.exists() {
@@ -5067,26 +5113,27 @@ fn rollback_certificate_set(track_root: &Path, cause: AppError) -> CertificateRo
 fn rollback_revision_state(
     live_certificate: &Path,
     archived_certificate: &Path,
-    live_pdf: &Path,
-    archived_pdf: &Path,
+    live_root: &Path,
+    archived_root: &Path,
     revision_directory: &Path,
     certificate_existed: bool,
-    pdf_moved: bool,
+    pdf_moved: &[&str],
     cause: AppError,
 ) -> AppError {
     let mut rollback_errors = Vec::new();
-    let mut pdf_restored = !pdf_moved;
-    if pdf_moved {
+    let mut pdf_restored = true;
+    for name in pdf_moved {
+        let live_pdf = live_root.join(name);
+        let archived_pdf = archived_root.join(name);
         if live_pdf.exists() {
             rollback_errors.push(format!(
                 "PDF rollback would overwrite {}",
                 live_pdf.display()
             ));
-        } else {
-            match copy_new(archived_pdf, live_pdf) {
-                Ok(()) => pdf_restored = true,
-                Err(error) => rollback_errors.push(format!("PDF rollback failed: {error}")),
-            }
+            pdf_restored = false;
+        } else if let Err(error) = copy_new(&archived_pdf, &live_pdf) {
+            rollback_errors.push(format!("PDF rollback failed: {error}"));
+            pdf_restored = false;
         }
     }
 
@@ -5130,8 +5177,9 @@ fn rollback_revision_state(
     }
 
     if pdf_restored && certificate_restored {
-        if pdf_moved && archived_pdf.exists() {
-            if let Err(error) = fs::remove_file(archived_pdf) {
+        for name in pdf_moved {
+            let archived_pdf = archived_root.join(name);
+            if let Err(error) = fs::remove_file(&archived_pdf) {
                 rollback_errors.push(format!("archived PDF cleanup failed: {error}"));
             }
         }
@@ -7616,8 +7664,8 @@ mod tests {
         );
 
         let finalized = app
-            .finalize_track_with_options(&ready.id, FinalizeOptions { bilingual: true })
-            .expect("finalization with bilingual option")
+            .finalize_track_with_options(&ready.id, FinalizeOptions { bilingual: false })
+            .expect("finalization with fixed dual-language PDF output")
             .track
             .expect("finalized detail");
         assert_eq!(
@@ -10686,11 +10734,18 @@ mod tests {
             certificate.fields["Evidence manifest SHA-256"],
             manifest_sha
         );
-        assert_eq!(certificate_hashes.len(), 4);
+        assert_eq!(certificate_hashes.len(), 5);
         assert_eq!(
             certificate_hashes.get(certificate::PDF_FILE),
             Some(
                 &sha256_file(&track_root.join(certificate::PDF_FILE)).expect("technical PDF hash")
+            )
+        );
+        assert_eq!(
+            certificate_hashes.get(certificate::PDF_FILE_DE),
+            Some(
+                &sha256_file(&track_root.join(certificate::PDF_FILE_DE))
+                    .expect("German technical PDF hash")
             )
         );
         assert!(compact_pdf_text.contains(release.sha256.as_deref().unwrap()));

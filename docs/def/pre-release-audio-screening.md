@@ -53,7 +53,7 @@ No Chromaprint fingerprint is uploaded to ACRCloud. The provider receives only t
 
 ## Snapshot and integrity behavior
 
-For a new finalization, manifest schema 6 contains a sanitized `audioScreening` section. It captures local/external status, engine/provider identifiers, source linkage, timings, artifact paths and hashes, and concise matches, but excludes the raw fingerprint, raw provider response, and all secrets. The Markdown certificate and root PDF format 5.1 render the same concise K.2 screening summary and the explicit technical/no-legal-claims boundary.
+For a new finalization, manifest schema 6 contains a sanitized `audioScreening` section. It captures local/external status, engine/provider identifiers, source linkage, timings, artifact paths and hashes, and concise matches, but excludes the raw fingerprint, raw provider response, and all secrets. The Markdown certificate and both root PDFs (format 5.2) render the same concise K.2 screening summary and the explicit technical/no-legal-claims boundary.
 
 Existing finalized certificates, manifests, PDFs, hash lists, and archived revisions are not regenerated or backfilled. A newer renderer only applies to new documentation/finalization snapshots. Historical verification hashes the existing published bytes.
 

@@ -71,7 +71,7 @@ Selecting a workspace does not authorize access outside that root. If the applic
 
 Open `Einstellungen`. The page is divided into three local sections: `Globale Angaben` for the reusable profile and production defaults (settings 01–04), `Externe Dienste` for the optional timestamp and audio-screening integrations (settings 05–06), and `Globale Datei-Führung` for workspace-wide subscription and archived Terms evidence. The category buttons at the top show only the selected section; they do not save settings or start provider checks.
 
-Setting 04, `Zertifikatssprache`, is also the app language. Select `Deutsch` or `Englisch` and save the settings; navigation, workflow labels, dialogs, and other UI copy switch to the selected language. This affects future finalizations only; existing certificate and track snapshots remain unchanged. The Step 10 bilingual-certificate switch remains an independent choice for adding the second certificate language.
+Setting 04, `Zertifikatssprache`, is also the app language. Select `Deutsch` or `Englisch` and save the settings; navigation, workflow labels, dialogs, and other UI copy switch to the selected language. This affects future finalizations only; existing certificate and track snapshots remain unchanged. Step 10 creates both certificate PDFs automatically: one in German and one in English.
 
 Under `Globale Angaben`, enter the minimal defaults:
 

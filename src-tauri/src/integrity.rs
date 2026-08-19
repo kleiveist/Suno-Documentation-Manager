@@ -282,7 +282,10 @@ fn progress(
 }
 
 fn excluded(relative: &Path) -> bool {
-    if relative == Path::new(HASH_FILE) || relative == Path::new(crate::certificate::PDF_FILE) {
+    if relative == Path::new(HASH_FILE)
+        || relative == Path::new(crate::certificate::PDF_FILE)
+        || relative == Path::new(crate::certificate::PDF_FILE_DE)
+    {
         return true;
     }
     matches!(

@@ -772,6 +772,11 @@ export function createDemoApi(): DesktopApi {
     async createWorkspace() {
       return this.openWorkspace();
     },
+    async restoreWorkspace(_path: string) {
+      const opened = await this.openWorkspace();
+      if (!opened) throw new Error("Demo-Workspace konnte nicht geöffnet werden.");
+      return opened;
+    },
     async scanWorkspace(): Promise<ScanResult> {
       await wait();
       if (!workspace) throw new Error("Öffne zuerst einen Workspace.");
@@ -1337,7 +1342,7 @@ export function createDemoApi(): DesktopApi {
       const track = get(trackId);
       return finalizationGate(track, track.profileSnapshot);
     },
-    async finalizeTrack(trackId, options?: FinalizeOptions, onProgress?) {
+    async finalizeTrack(trackId, _options?: FinalizeOptions, onProgress?) {
       const track = mutableTrack(trackId);
       const gate = finalizationGate(track, track.profileSnapshot);
       if (!gate.valid) throw new Error(`Finalisierung blockiert: ${[...gate.missingItems, ...gate.blockingItems].join(", ")}`);
@@ -1362,13 +1367,13 @@ export function createDemoApi(): DesktopApi {
         finalizedAt: now(),
         workflowVersion: WORKFLOW_VERSION,
         certificateLanguage: profile.certificateLanguage,
-        bilingual: options?.bilingual ?? false
+        bilingual: true
       };
       track.finalizationAnchors = [
         { artifact: "evidence_manifest", label: "Evidence manifest (recommended timestamp anchor)", relativePath: "06_CERTIFICATE/EVIDENCE_MANIFEST.json", sha256: "a".repeat(64) },
         { artifact: "sha256sums", label: "Track SHA-256 manifest", relativePath: "03_DOCUMENTATION/SHA256SUMS.txt", sha256: "b".repeat(64) },
         { artifact: "documentation_certificate_markdown", label: "Documentation certificate (Markdown)", relativePath: "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md", sha256: "c".repeat(64) },
-        { artifact: "certificate_pdf", label: "Documentation certificate (PDF)", relativePath: "SunoDM_DOCUMENTATION_CERTIFICATE.pdf", sha256: "d".repeat(64) },
+        { artifact: "certificate_pdf", label: "Documentation certificate (English PDF)", relativePath: "SunoDM_DOCUMENTATION_CERTIFICATE.pdf", sha256: "d".repeat(64) },
         { artifact: "final_evidence_package", label: "Final evidence package certificate hash set", relativePath: "06_CERTIFICATE/CERTIFICATE_SHA256.txt", sha256: "e".repeat(64) }
       ];
       refresh(track);

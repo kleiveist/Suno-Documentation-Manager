@@ -454,7 +454,7 @@ export interface CertificateState {
   invalidationReason?: string;
 }
 
-/** Transient choices used only for the current finalization transaction. */
+/** Deprecated compatibility payload; native finalization always creates both PDF languages. */
 export interface FinalizeOptions {
   bilingual: boolean;
 }

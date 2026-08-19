@@ -11,6 +11,7 @@ use crate::model::{
 };
 use crate::workflow::WorkflowDefinition;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::path::PathBuf;
 use tauri::{ipc::Channel, State};
 
 #[derive(Default)]
@@ -55,6 +56,18 @@ pub fn open_workspace(state: State<'_, AppState>) -> Result<Option<WorkspaceSumm
     let summary = app.summary()?;
     *state.lock()? = Some(app);
     Ok(Some(summary))
+}
+
+#[tauri::command]
+pub fn open_workspace_by_path(state: State<'_, AppState>, path: String) -> Result<WorkspaceSummary> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(AppError::InvalidWorkspace("No workspace path was provided.".to_string()));
+    }
+    let app = WorkspaceApp::open(&PathBuf::from(path), false)?;
+    let summary = app.summary()?;
+    *state.lock()? = Some(app);
+    Ok(summary)
 }
 
 #[tauri::command]

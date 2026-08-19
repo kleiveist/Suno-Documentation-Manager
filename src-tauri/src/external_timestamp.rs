@@ -2080,7 +2080,7 @@ pub fn finalization_anchors(track_root: &Path) -> Result<Vec<FinalizationAnchor>
         ),
         (
             TimestampReferencedArtifact::CertificatePdf,
-            "Documentation certificate (PDF)",
+            "Documentation certificate (English PDF)",
             certificate::PDF_FILE,
         ),
         (

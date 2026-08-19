@@ -24,6 +24,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_workflow,
             commands::open_workspace,
+            commands::open_workspace_by_path,
             commands::create_workspace,
             commands::scan_workspace,
             commands::get_profile,

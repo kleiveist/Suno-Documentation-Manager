@@ -121,6 +121,7 @@ A negative answer ends the branch. A positive content-check answer can require a
 ```text
 <track-folder>/
 ├── SunoDM_DOCUMENTATION_CERTIFICATE.pdf
+├── SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf
 ├── .archive/
 │   ├── removals/
 │   ├── recovery/
@@ -293,7 +294,7 @@ Generation publishes live phase, current-file, and completed-file counters to th
 - `.archive/`;
 - `.summary/`;
 - `03_DOCUMENTATION/SHA256SUMS.txt` itself;
-- the exact root path `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, which is anchored by the certificate hash set instead;
+- the exact root paths `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` and `SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf`, which are anchored by the certificate hash set instead;
 - `06_CERTIFICATE/`; and
 - workspace management data under the workspace root `.suno-doc/` (which is outside every track root).
 
@@ -309,12 +310,12 @@ Calculation and verification publish the actual processed byte and file counts f
 
 After the finalization gate passes, the product writes:
 
-- root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf`, certificate format `5.1`, with A–L sections for identity; the separated instrumental, vocal, and Suno-field facts; every source branch; selected human contribution; separate Audio and Artwork AI assessments; license/Terms/technical-coverage facts; the full evidence register; integrity anchors; K.2 audio-screening summary; and locally recorded earlier revision-archive references;
-- `DOCUMENTATION_CERTIFICATE.md`, certificate format `5.1`, with the same factual scope, evidence register, origin labels, status meanings, K.2 screening summary, and explicit non-legal boundary;
+- root-level `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` (English) and `SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf` (German), certificate format `5.2`, with A–L sections for identity; the separated instrumental, vocal, and Suno-field facts; every source branch; selected human contribution; separate Audio and Artwork AI assessments; license/Terms/technical-coverage facts; the full evidence register; integrity anchors; K.2 audio-screening summary; and locally recorded earlier revision-archive references;
+- `DOCUMENTATION_CERTIFICATE.md`, certificate format `5.2`, with the same factual scope, evidence register, origin labels, status meanings, K.2 screening summary, and explicit non-legal boundary;
 - `EVIDENCE_MANIFEST.json` schema `6`, including the complete `documented_facts` and `profile_snapshot`, fact-origin and answer-state definitions, separated lyrics and AI assessment values, Suno detection summary, generic byte-identical pairs, automatic role relationships, consistency results, a sanitized `audioScreening` section, statement scope, and full evidence metadata/lineage; and
-- `CERTIFICATE_SHA256.txt` covering the main hash list, evidence manifest, certificate document, and root-level PDF, but never itself.
+- `CERTIFICATE_SHA256.txt` covering the main hash list, evidence manifest, certificate document, and both root-level PDFs, but never itself.
 
-All four outputs are staged and verified as one finalization transaction. The PDF hash is external to the PDF to avoid a circular self-hash. Its trailer identifiers are derived deterministically from the certificate ID, so identical normalized certificate snapshots serialize to identical bytes. Publication, rollback, crash recovery, and revision archival carry the root PDF together with the certificate directory, and an occupied root-PDF destination is never silently replaced.
+All five outputs are staged and verified as one finalization transaction. The PDF hashes are external to the PDFs to avoid circular self-hashes. Their trailer identifiers are derived deterministically from the certificate ID, so identical normalized certificate snapshots serialize to identical bytes. Publication, rollback, crash recovery, and revision archival carry both root PDFs together with the certificate directory, and occupied root-PDF destinations are never silently replaced.
 The certificate/manifest screening summary excludes the full fingerprint, raw ACRCloud response, request signature, access key, and access secret. It is a technical comparison record only and does not state a rights or legal conclusion.
 
 The PDF renderer paginates long sections and wraps long URLs, UUIDs, paths, labels, and SHA-256 values without truncating their factual content. SHA-256 labels remain intact, full digests remain readable, and every page carries the Certificate ID plus `Seite X / Y`. The same normalized certificate snapshot produces the same factual content and deterministic bytes; transient UI state and random presentation data do not enter the renderer.
@@ -409,6 +410,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-19 | Finalization now creates separate German and English certificate PDFs and advances the certificate format to 5.2. | Project team |
 | 2026-08-18 | Added portable local/optional-external audio-screening state and artifacts; advanced template to 1.9, manifest to 6, and certificate/PDF to 5.1. | Project team |
 | 2026-08-17 | Defined sidecar format v1, database-before-live publication recovery, immutable addendum-byte pinning, current/archived load verification, and the Terms availability invariant. | Project team |
 | 2026-08-17 | Defined the workflow-1.7 split for instrumental/vocal/Suno-field content, complete Final Suno Generation and Terms facts, separate Audio/Artwork AI assessments, exact answer/status semantics, and post-finalization timestamp addenda; advanced template to 1.8, manifest to 5, and certificate/PDF to 5.0. | Project team |

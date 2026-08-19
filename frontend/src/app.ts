@@ -35,7 +35,6 @@ import {
   type ExternalTimestampRecord,
   type ExternalTimestampStatus,
   type ExternalTimestampType,
-  type FinalizeOptions,
   type FolderImportProposal,
   type GlobalEvidenceItem,
   type EvidenceRole,
@@ -79,6 +78,8 @@ import {
   translateUiText,
   type AppLanguage
 } from "./ui/i18n";
+
+const WORKSPACE_PATH_STORAGE_KEY = "suno-doc-manager.last-workspace-path";
 
 type MainView = "dashboard" | "tracks" | "current" | "workspace" | "settings";
 type SettingsCategory = "global" | "external" | "files";
@@ -128,7 +129,6 @@ interface AppState {
   showSubscriptionEvidence: boolean;
   evidencePreview: EvidencePreview | null;
   showCertificatePopup: boolean;
-  certificateBilingual: boolean;
   termsMetadataDialog: { evidenceId: string | null; metadata: EvidenceMetadata } | null;
   theme: ColorTheme;
   toast: ToastState | null;
@@ -139,7 +139,7 @@ export type WorkspaceScopedUiState = Pick<
   "track" | "trackDraft" | "activeStep" | "trackTab" | "scanResult" | "albums" |
   "showNewTrack" | "showTrackLibrary" | "showSubscriptionEvidence" | "evidencePreview" | "query" | "trackFilter"
   | "showCertificatePopup" | "folderImport"
-  | "certificateBilingual" | "termsMetadataDialog" | "timestampSettings" | "timestampProviderTest"
+  | "termsMetadataDialog" | "timestampSettings" | "timestampProviderTest"
   | "audioScreeningSettings" | "audioScreeningProviderTest"
 > & { draftDirty: boolean };
 
@@ -158,7 +158,6 @@ export function resetWorkspaceScopedUiState(state: WorkspaceScopedUiState): Work
     showSubscriptionEvidence: false,
     evidencePreview: null,
     showCertificatePopup: false,
-    certificateBilingual: false,
     termsMetadataDialog: null,
     timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
     timestampProviderTest: null,
@@ -747,7 +746,7 @@ export function timestampArtifactLabel(value: TimestampReferencedArtifact): stri
     evidence_manifest: "EVIDENCE_MANIFEST.json",
     sha256sums: "SHA256SUMS.txt",
     documentation_certificate_markdown: "DOCUMENTATION_CERTIFICATE.md",
-    certificate_pdf: "Certificate PDF",
+    certificate_pdf: "Certificate PDF (English)",
     final_evidence_package: "Final Evidence Package",
     other: "Other"
   } as const)[value];
@@ -1076,7 +1075,6 @@ export class SunoDocumentationApp {
     showSubscriptionEvidence: false,
     evidencePreview: null,
     showCertificatePopup: false,
-    certificateBilingual: false,
     termsMetadataDialog: null,
     theme: "light",
     toast: null
@@ -1106,6 +1104,56 @@ export class SunoDocumentationApp {
     this.root.addEventListener("change", (event) => this.handleChange(event));
     this.root.addEventListener("input", (event) => this.handleInput(event));
     this.render();
+    void this.restoreSavedWorkspace();
+  }
+
+  private async restoreSavedWorkspace(): Promise<void> {
+    const path = this.loadWorkspacePathFromStorage();
+    if (!path) return;
+    try {
+      const workspace = await this.api.restoreWorkspace(path);
+      await this.enterWorkspace(workspace);
+    } catch (error) {
+      const message = toUserMessage(error);
+      const pathUnavailable = /not found|does not exist|existiert nicht|nicht gefunden|keine Datei|no such file/i.test(message);
+      if (pathUnavailable) {
+        this.clearWorkspacePathFromStorage();
+      }
+      this.showToast(
+        pathUnavailable ? "info" : "error",
+        pathUnavailable ? "Gespeicherter Workspace nicht verfügbar" : "Workspace konnte nicht geladen werden",
+        pathUnavailable
+          ? "Der zuletzt verwendete Workspace wurde nicht mehr gefunden. Bitte wähle einen anderen Workspace."
+          : `Gespeicherter Workspace konnte nicht geladen werden: ${message}`
+      );
+    }
+  }
+
+  private loadWorkspacePathFromStorage(): string | null {
+    try {
+      const path = window.localStorage.getItem(WORKSPACE_PATH_STORAGE_KEY);
+      return path?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveWorkspacePathToStorage(path: string): void {
+    const trimmed = path.trim();
+    if (!trimmed) return;
+    try {
+      window.localStorage.setItem(WORKSPACE_PATH_STORAGE_KEY, trimmed);
+    } catch {
+      // Keep the current session usable even if storage is blocked.
+    }
+  }
+
+  private clearWorkspacePathFromStorage(): void {
+    try {
+      window.localStorage.removeItem(WORKSPACE_PATH_STORAGE_KEY);
+    } catch {
+      // Keep the current session usable even if storage is blocked.
+    }
   }
 
   private initializeTheme(): void {
@@ -1376,7 +1424,6 @@ export class SunoDocumentationApp {
       showSubscriptionEvidence: this.state.showSubscriptionEvidence,
       evidencePreview: this.state.evidencePreview,
       showCertificatePopup: this.state.showCertificatePopup,
-      certificateBilingual: this.state.certificateBilingual,
       termsMetadataDialog: this.state.termsMetadataDialog,
       timestampSettings: this.state.timestampSettings,
       timestampProviderTest: this.state.timestampProviderTest,
@@ -1398,6 +1445,7 @@ export class SunoDocumentationApp {
       this.state.workspace = null;
       return;
     }
+    this.saveWorkspacePathToStorage(workspace.path);
     this.state.profile = loaded.profile;
     this.state.timestampSettings = loaded.timestampSettings;
     this.state.audioScreeningSettings = loaded.audioScreeningSettings;
@@ -2425,7 +2473,6 @@ export class SunoDocumentationApp {
     const superseded = track.status === "SUPERSEDED";
     const locked = isTrackContentLocked(track.status);
     const ready = localGate.valid && !workflowBlocker;
-    const configuredCertificateLanguage = this.state.profile.certificateLanguage === "de" ? "Deutsch" : "Englisch";
     const finalizedCertificateLanguage = track.certificate.certificateLanguage === "de" ? "Deutsch" : "Englisch";
     const finalizedCertificateLanguages = track.certificate.bilingual ? "Deutsch und Englisch" : finalizedCertificateLanguage;
     const heading = superseded
@@ -2449,7 +2496,7 @@ export class SunoDocumentationApp {
       <div class="finalize-mark ${ready && !locked ? "is-ready" : ""}">${icon(ready && !locked ? "certificate" : "lock")}</div>
       <p class="overline">Track Documentation Completion Certificate</p><h3>${heading}</h3><p>${summary}</p>
       ${blockers.length ? `<ul class="gate-list">${blockers.map((item) => `<li>${icon("alert")}<span>${escapeHtml(item)}</span></li>`).join("")}</ul>` : `<ul class="gate-list gate-list--success"><li>${icon("check")}<span>Pflichtschritte erfüllt</span></li><li>${icon("check")}<span>Evidence vollständig</span></li><li>${icon("check")}<span>Dokumente aktuell</span></li><li>${icon("check")}<span>SHA-256 vollständig verifiziert</span></li></ul>`}
-      ${locked ? track.certificate.valid ? `<div class="technical-note">${icon("info")}<p><strong>Zertifikatsausgabe:</strong> ${finalizedCertificateLanguages}${track.certificate.bilingual ? " (zweisprachig)" : ""}.</p></div>` : "" : `<label class="toggle-row"><span><strong>Zweisprachiges Zertifikat</strong><small>Primärsprache: ${configuredCertificateLanguage}. Bei Aktivierung enthält das Zertifikat zusätzlich die jeweils andere Sprache.</small></span><input type="checkbox" data-certificate-bilingual aria-label="Zweisprachiges Zertifikat erzeugen" ${this.state.certificateBilingual ? "checked" : ""}><i aria-hidden="true"></i></label>`}
+      ${locked ? track.certificate.valid ? `<div class="technical-note">${icon("info")}<p><strong>Zertifikatsausgabe:</strong> ${finalizedCertificateLanguages}${track.certificate.bilingual ? " (zwei PDF-Dateien)" : ""}.</p></div>` : "" : `<div class="technical-note">${icon("info")}<p><strong>Standardausgabe:</strong> Bei der Finalisierung werden automatisch ein deutsches und ein englisches PDF erzeugt.</p></div>`}
       ${locked
         ? track.certificate.valid && track.certificate.certificateId
           ? `<button class="button button--finalize" data-action="show-certificate-popup">${icon("certificate")} Zertifikat anzeigen</button>`
@@ -2502,7 +2549,7 @@ export class SunoDocumentationApp {
             <div class="settings-section"><div class="settings-section-copy"><span>01</span><div><h3>Artist & Suno</h3><p>Nur produktionsrelevante Profildaten – keine privaten Kontaktdaten.</p></div></div><div class="field-grid two-col">${this.textField("artistName", "Künstlername", "Künstlername", profile.artistName, true)}${this.textField("sunoProfileName", "Suno-Profilname", "Profilname", profile.sunoProfileName, true)}${this.textField("sunoHandle", "Suno-Benutzername", "@handle", profile.sunoHandle, true)}${this.suggestedTextField("sunoPlan", "Suno-Tarif", "z. B. Premier oder eigener Wert", profile.sunoPlan, sunoPlanSuggestions, true)}${this.dateField("subscriptionStartDate", "Abo-Startdatum", profile.subscriptionStartDate, true)}</div></div>
             <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.suggestedTextField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. ChatGPT / OpenAI oder eigener Wert", profile.defaultAiImageService, aiSystemSuggestions)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
             <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
-            <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung und die App-Oberfläche. Nach dem Speichern wechseln Navigation, Workflow und Dialoge auf diese Sprache. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
+            <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung und die App-Oberfläche. Nach dem Speichern wechseln Navigation, Workflow und Dialoge auf diese Sprache. Bei der Finalisierung werden automatisch beide PDF-Sprachen erzeugt.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Die deutsche PDF und die App werden primär auf Deutsch dargestellt"], ["en", "Englisch", "The English PDF and the app are primarily displayed in English"]])}</div></div>
           </div>
         </section>
         <section id="settings-external" data-settings-category-panel="external" class="settings-category settings-category--external"${this.state.settingsCategory !== "external" ? " hidden" : ""}>
@@ -3387,11 +3434,6 @@ export class SunoDocumentationApp {
 
   private handleChange(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-    if (input.matches("[data-certificate-bilingual]") && input instanceof HTMLInputElement) {
-      this.state.certificateBilingual = input.checked;
-      this.render();
-      return;
-    }
     const timestampForm = input.closest<HTMLFormElement>("#profile-form");
     if (timestampForm && (input.name === "timestampProvider" || input.name === "timestampAuthenticationMode")) {
       this.syncTimestampProviderConfiguration(timestampForm);
@@ -3680,15 +3722,13 @@ export class SunoDocumentationApp {
     const validation = await this.withBusy("Finalisierungs-Gate wird nativ geprüft …", () => this.api.validateTrack(track.id));
     if (!validation) return;
     if (!validation.valid) { this.showToast("error", "Finalisierung blockiert", [...validation.missingItems, ...validation.blockingItems].join(" · ")); return; }
-    const options: FinalizeOptions = { bilingual: this.state.certificateBilingual };
     const result = await this.withOperationProgress(
       "finalization",
       "Unveränderlicher Snapshot und Zertifikat werden erzeugt …",
-      (onProgress) => this.api.finalizeTrack(track.id, options, onProgress)
+      (onProgress) => this.api.finalizeTrack(track.id, undefined, onProgress)
     );
     if (result) {
       if (result.track) this.applyTrack(result.track); else await this.refreshTracks();
-      this.state.certificateBilingual = false;
       this.state.trackTab = "certificate"; this.state.activeStep = null;
       this.state.showCertificatePopup = Boolean(
         this.state.track?.certificate.valid && this.state.track.certificate.certificateId

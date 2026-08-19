@@ -197,11 +197,9 @@ pub struct WorkspaceSummary {
     pub last_scanned_at: Option<String>,
 }
 
-/// The primary language used when a new technical certificate is finalized.
-///
-/// The application UI remains German for now; this setting controls the
-/// certificate artifacts only. Keeping the compact ISO-like values on the
-/// wire makes the persisted profile and the TypeScript DTO unambiguous.
+/// The language selected for the application UI and the primary Markdown
+/// certificate presentation. Finalization always emits both supported PDF
+/// languages; the setting does not suppress either PDF.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CertificateLanguage {
@@ -1608,19 +1606,21 @@ impl Default for DocumentState {
 /// Ephemeral choices supplied when the finalization transaction starts.
 ///
 /// The primary language intentionally lives in the workspace profile. The
-/// server resolves and freezes that value together with this per-action
-/// bilingual flag once finalization succeeds.
+/// former per-action bilingual flag remains on the wire for compatibility
+/// with older clients but is ignored by finalization.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FinalizeOptions {
+    /// Deprecated compatibility input. New finalizations always create both
+    /// language PDFs regardless of this value.
     pub bilingual: bool,
 }
 
 /// Resolved presentation choices for one immutable certificate set.
 ///
-/// `FinalizeOptions` carries only the transient UI switch. The application
-/// combines it with the current workspace setting before certificate
-/// generation, so this value is also ready to be recorded in the manifest.
+/// The application combines the current workspace setting with the fixed
+/// dual-language PDF policy before certificate generation, so this value is
+/// also ready to be recorded in the manifest.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CertificateRenderOptions {
@@ -1643,8 +1643,9 @@ pub struct CertificateState {
     /// The actual language used to render this immutable certificate set.
     #[serde(default)]
     pub certificate_language: CertificateLanguage,
-    /// Whether the immutable certificate set contains both supported
-    /// languages in addition to its configured primary language.
+    /// Whether the immutable certificate set contains both supported PDF
+    /// languages. New finalizations always persist `true`; `false` is kept
+    /// readable for older single-language snapshots.
     #[serde(default)]
     pub bilingual: bool,
     pub invalidated_at: Option<String>,

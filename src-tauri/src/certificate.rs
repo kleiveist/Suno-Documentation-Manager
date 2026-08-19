@@ -21,12 +21,16 @@ pub const CERTIFICATE_DIR: &str = "06_CERTIFICATE";
 pub const CERTIFICATE_FILE: &str = "06_CERTIFICATE/DOCUMENTATION_CERTIFICATE.md";
 pub const MANIFEST_FILE: &str = "06_CERTIFICATE/EVIDENCE_MANIFEST.json";
 pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
+/// Stable English PDF filename. Older certificate sets use this filename for
+/// their single language-selected PDF; new sets keep it as the English PDF.
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "5.1";
+pub const PDF_FILE_EN: &str = PDF_FILE;
+pub const PDF_FILE_DE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "5.2";
 
-/// Return a certificate label in the configured output language. Bilingual
-/// certificates deliberately retain both labels in the same immutable file,
-/// so no parallel PDF name or hash set is needed.
+/// Return a certificate label in the configured output language. The
+/// compatibility bilingual mode is used only for the Markdown presentation;
+/// PDF generation passes one language per file.
 pub(crate) fn localized_certificate_label(
     options: CertificateRenderOptions,
     english: &str,
@@ -36,7 +40,7 @@ pub(crate) fn localized_certificate_label(
 }
 
 /// Return a prose paragraph in the configured output language. Newlines keep
-/// the two language versions visually separate in a bilingual certificate.
+/// compatibility bilingual Markdown versions visually separate.
 pub(crate) fn localized_certificate_paragraph(
     options: CertificateRenderOptions,
     english: &str,
@@ -1169,6 +1173,8 @@ fn generate_impl(
             "id": certificate_id,
             "format_version": CERTIFICATE_FORMAT_VERSION,
             "rendering": render_options,
+            "pdf_languages": ["en", "de"],
+            "pdf_files": [PDF_FILE, PDF_FILE_DE],
             "status": "DOCUMENTATION COMPLETE",
             "status_meaning": "configured documentation requirements completed",
             "workflow_pass_meaning": "Configured documentation requirements for this step were satisfied.",
@@ -1360,7 +1366,7 @@ fn generate_impl(
             "Injected technical PDF generation failure.".into(),
         ));
     }
-    let pdf = certificate_pdf::generate_pdf(&CertificatePdfSnapshot {
+    let pdf_en = certificate_pdf::generate_pdf(&CertificatePdfSnapshot {
         track,
         automation: &automation,
         profile,
@@ -1374,25 +1380,51 @@ fn generate_impl(
         sha256sums_sha256: &hash_manifest_sha,
         evidence_manifest_sha256: &manifest_sha,
         markdown_certificate_sha256: &certificate_sha,
-        render_options,
+        render_options: CertificateRenderOptions {
+            language: CertificateLanguage::En,
+            bilingual: false,
+        },
     })?;
-    let pdf_sha = sha256_bytes(&pdf);
+    let pdf_de = certificate_pdf::generate_pdf(&CertificatePdfSnapshot {
+        track,
+        automation: &automation,
+        profile,
+        steps,
+        evidence: &evidence_values,
+        deviations,
+        revision_references: &archived_revisions,
+        certificate_id,
+        finalized_at,
+        certificate_version: CERTIFICATE_FORMAT_VERSION,
+        sha256sums_sha256: &hash_manifest_sha,
+        evidence_manifest_sha256: &manifest_sha,
+        markdown_certificate_sha256: &certificate_sha,
+        render_options: CertificateRenderOptions {
+            language: CertificateLanguage::De,
+            bilingual: false,
+        },
+    })?;
+    let pdf_en_sha = sha256_bytes(&pdf_en);
+    let pdf_de_sha = sha256_bytes(&pdf_de);
     let certificate_hashes = format!(
-        "{}  {}\n{}  {}\n{}  {}\n{}  {}\n",
+        "{}  {}\n{}  {}\n{}  {}\n{}  {}\n{}  {}\n",
         hash_manifest_sha,
         HASH_FILE,
         manifest_sha,
         MANIFEST_FILE,
         certificate_sha,
         CERTIFICATE_FILE,
-        pdf_sha,
+        pdf_en_sha,
         PDF_FILE,
+        pdf_de_sha,
+        PDF_FILE_DE,
     );
     publish_certificate_set_impl(
         track_root,
         &manifest_bytes,
         certificate.as_bytes(),
-        &pdf,
+        &pdf_en,
+        &pdf_de,
         certificate_hashes.as_bytes(),
         transaction_id,
         #[cfg(test)]
@@ -1445,13 +1477,13 @@ pub fn verify(track_root: &Path) -> Result<()> {
     let sums = contained_path(track_root, Path::new(CERTIFICATE_HASH_FILE), true)?;
     let content = fs::read_to_string(&sums).map_err(|e| AppError::io(&sums, e))?;
     let hashes = parse_certificate_hashes(&content)?;
-    let mut verified_pdf = None;
+    let mut verified_pdfs = BTreeMap::new();
     for (relative, expected) in &hashes {
         let path = contained_path(track_root, Path::new(relative), true)?;
-        let actual = if relative == PDF_FILE {
+        let actual = if is_certificate_pdf_path(relative) {
             let bytes = fs::read(&path).map_err(|error| AppError::io(&path, error))?;
             let digest = sha256_bytes(&bytes);
-            verified_pdf = Some(bytes);
+            verified_pdfs.insert(relative.as_str(), bytes);
             digest
         } else {
             sha256_file(&path)?
@@ -1462,13 +1494,14 @@ pub fn verify(track_root: &Path) -> Result<()> {
             )));
         }
     }
-    if certificate_format_requires_pdf(
-        &contained_path(track_root, Path::new(MANIFEST_FILE), true)?,
-        &hashes,
-    )? {
-        certificate_pdf::validate_pdf_bytes(verified_pdf.as_deref().ok_or_else(|| {
-            AppError::Validation("Certificate PDF hash entry was not verified.".into())
-        })?)?;
+    let manifest = contained_path(track_root, Path::new(MANIFEST_FILE), true)?;
+    for pdf_path in required_certificate_pdf_paths(&manifest, &hashes)? {
+        let bytes = verified_pdfs.get(pdf_path).ok_or_else(|| {
+            AppError::Validation(format!(
+                "Certificate PDF hash entry was not verified: {pdf_path}"
+            ))
+        })?;
+        certificate_pdf::validate_pdf_bytes(bytes)?;
     }
     Ok(())
 }
@@ -1485,6 +1518,14 @@ pub(crate) fn expects_pdf(track_root: &Path) -> Result<bool> {
     let hashes = parse_certificate_hashes(&content)?;
     let manifest = contained_path(track_root, Path::new(MANIFEST_FILE), true)?;
     certificate_format_requires_pdf(&manifest, &hashes)
+}
+
+pub(crate) fn required_pdf_files(track_root: &Path) -> Result<Vec<&'static str>> {
+    let sums = contained_path(track_root, Path::new(CERTIFICATE_HASH_FILE), true)?;
+    let content = fs::read_to_string(&sums).map_err(|error| AppError::io(&sums, error))?;
+    let hashes = parse_certificate_hashes(&content)?;
+    let manifest = contained_path(track_root, Path::new(MANIFEST_FILE), true)?;
+    Ok(required_certificate_pdf_paths(&manifest, &hashes)?.to_vec())
 }
 
 #[cfg(test)]
@@ -1552,7 +1593,8 @@ fn publish_certificate_set_impl(
     track_root: &Path,
     manifest: &[u8],
     certificate: &[u8],
-    pdf: &[u8],
+    pdf_en: &[u8],
+    pdf_de: &[u8],
     certificate_hashes: &[u8],
     transaction_id: &str,
     #[cfg(test)] failure: Option<CertificatePublicationFailure>,
@@ -1574,10 +1616,13 @@ fn publish_certificate_set_impl(
     let stage = ensure_contained_directory(track_root, &stage_relative)?;
     let staged_certificate_dir = stage.join("certificate");
     let destination = contained_path(track_root, Path::new(CERTIFICATE_DIR), false)?;
-    let pdf_destination = contained_path(track_root, Path::new(PDF_FILE), false)?;
+    let pdf_destinations = [
+        contained_path(track_root, Path::new(PDF_FILE), false)?,
+        contained_path(track_root, Path::new(PDF_FILE_DE), false)?,
+    ];
     let mut destination_started_empty = false;
     let mut certificate_published = false;
-    let mut pdf_published = false;
+    let mut pdf_published = Vec::new();
     let publish_result = (|| -> Result<()> {
         fs::create_dir(&staged_certificate_dir)
             .map_err(|error| AppError::io(&staged_certificate_dir, error))?;
@@ -1599,7 +1644,8 @@ fn publish_certificate_set_impl(
         atomic_write_new(&staged_certificate, certificate)?;
         #[cfg(test)]
         inject_certificate_publication_failure(failure, CertificatePublicationFailure::PdfWrite)?;
-        atomic_write_new(&staged_pdf, pdf)?;
+        atomic_write_new(&staged_pdf, pdf_en)?;
+        atomic_write_new(&stage.join(PDF_FILE_DE), pdf_de)?;
         #[cfg(test)]
         inject_certificate_publication_failure(
             failure,
@@ -1608,8 +1654,10 @@ fn publish_certificate_set_impl(
         atomic_write_new(&staged_hashes, certificate_hashes)?;
         verify_staged_set(track_root, &stage)?;
 
-        if pdf_destination.exists() {
-            return Err(AppError::Collision(pdf_destination.display().to_string()));
+        for pdf_destination in &pdf_destinations {
+            if pdf_destination.exists() {
+                return Err(AppError::Collision(pdf_destination.display().to_string()));
+            }
         }
         #[cfg(test)]
         inject_certificate_publication_failure(
@@ -1635,8 +1683,13 @@ fn publish_certificate_set_impl(
         certificate_published = true;
         #[cfg(test)]
         inject_certificate_publication_failure(failure, CertificatePublicationFailure::PdfPublish)?;
-        copy_new(&staged_pdf, &pdf_destination)?;
-        pdf_published = true;
+        for (pdf_destination, staged_pdf) in pdf_destinations
+            .iter()
+            .zip([stage.join(PDF_FILE), stage.join(PDF_FILE_DE)])
+        {
+            copy_new(&staged_pdf, pdf_destination)?;
+            pdf_published.push(pdf_destination.clone());
+        }
         #[cfg(test)]
         let post_publish_verification = inject_certificate_publication_failure(
             failure,
@@ -1652,8 +1705,8 @@ fn publish_certificate_set_impl(
 
     if let Err(cause) = publish_result {
         let mut rollback_errors = Vec::new();
-        if pdf_published && pdf_destination.exists() {
-            if let Err(error) = fs::remove_file(&pdf_destination) {
+        for pdf_destination in pdf_published.iter().rev() {
+            if let Err(error) = fs::remove_file(pdf_destination) {
                 rollback_errors.push(format!("PDF cleanup failed: {error}"));
             }
         }
@@ -1692,19 +1745,20 @@ fn verify_staged_set(track_root: &Path, stage: &Path) -> Result<()> {
     let content =
         fs::read_to_string(&hashes_path).map_err(|error| AppError::io(&hashes_path, error))?;
     let hashes = parse_certificate_hashes(&content)?;
-    let mut verified_pdf = None;
+    let mut verified_pdfs = BTreeMap::new();
     for (relative, expected) in &hashes {
         let path = match relative.as_str() {
             HASH_FILE => contained_path(track_root, Path::new(HASH_FILE), true)?,
             MANIFEST_FILE => certificate_stage.join("EVIDENCE_MANIFEST.json"),
             CERTIFICATE_FILE => certificate_stage.join("DOCUMENTATION_CERTIFICATE.md"),
             PDF_FILE => stage.join(PDF_FILE),
+            PDF_FILE_DE => stage.join(PDF_FILE_DE),
             _ => return Err(AppError::Data("Unexpected certificate hash entry.".into())),
         };
-        let actual = if relative == PDF_FILE {
+        let actual = if is_certificate_pdf_path(relative) {
             let bytes = fs::read(&path).map_err(|error| AppError::io(&path, error))?;
             let digest = sha256_bytes(&bytes);
-            verified_pdf = Some(bytes);
+            verified_pdfs.insert(relative.as_str(), bytes);
             digest
         } else {
             sha256_file(&path)?
@@ -1715,21 +1769,41 @@ fn verify_staged_set(track_root: &Path, stage: &Path) -> Result<()> {
             )));
         }
     }
-    if !certificate_format_requires_pdf(&certificate_stage.join("EVIDENCE_MANIFEST.json"), &hashes)?
-    {
+    let manifest_path = certificate_stage.join("EVIDENCE_MANIFEST.json");
+    let required_pdfs = required_certificate_pdf_paths(&manifest_path, &hashes)?;
+    if required_pdfs.is_empty() {
         return Err(AppError::Validation(
             "A newly generated certificate must use the PDF certificate format.".into(),
         ));
     }
-    certificate_pdf::validate_pdf_bytes(verified_pdf.as_deref().ok_or_else(|| {
-        AppError::Validation("Staged certificate PDF hash entry was not verified.".into())
-    })?)?;
+    for pdf_path in required_pdfs {
+        let bytes = verified_pdfs.get(pdf_path).ok_or_else(|| {
+            AppError::Validation(format!(
+                "Staged certificate PDF hash entry was not verified: {pdf_path}"
+            ))
+        })?;
+        certificate_pdf::validate_pdf_bytes(bytes)?;
+    }
     Ok(())
 }
 
 fn parse_certificate_hashes(content: &str) -> Result<BTreeMap<String, String>> {
     let legacy_paths = [HASH_FILE, MANIFEST_FILE, CERTIFICATE_FILE];
-    let expected_paths = [HASH_FILE, MANIFEST_FILE, CERTIFICATE_FILE, PDF_FILE];
+    let single_pdf_paths = [HASH_FILE, MANIFEST_FILE, CERTIFICATE_FILE, PDF_FILE];
+    let dual_pdf_paths = [
+        HASH_FILE,
+        MANIFEST_FILE,
+        CERTIFICATE_FILE,
+        PDF_FILE,
+        PDF_FILE_DE,
+    ];
+    let expected_paths = [
+        HASH_FILE,
+        MANIFEST_FILE,
+        CERTIFICATE_FILE,
+        PDF_FILE,
+        PDF_FILE_DE,
+    ];
     let mut result = BTreeMap::new();
     for (line_number, line) in content.lines().enumerate() {
         if line.is_empty() {
@@ -1762,9 +1836,13 @@ fn parse_certificate_hashes(content: &str) -> Result<BTreeMap<String, String>> {
     }
     let is_legacy_set = result.len() == legacy_paths.len()
         && legacy_paths.iter().all(|path| result.contains_key(*path));
-    let is_current_set = result.len() == expected_paths.len()
-        && expected_paths.iter().all(|path| result.contains_key(*path));
-    if !is_legacy_set && !is_current_set {
+    let is_single_pdf_set = result.len() == single_pdf_paths.len()
+        && single_pdf_paths
+            .iter()
+            .all(|path| result.contains_key(*path));
+    let is_dual_pdf_set = result.len() == dual_pdf_paths.len()
+        && dual_pdf_paths.iter().all(|path| result.contains_key(*path));
+    if !is_legacy_set && !is_single_pdf_set && !is_dual_pdf_set {
         return Err(AppError::Validation(
             "Certificate hash set is incomplete.".into(),
         ));
@@ -2312,6 +2390,13 @@ fn certificate_format_requires_pdf(
     manifest_path: &Path,
     hashes: &BTreeMap<String, String>,
 ) -> Result<bool> {
+    Ok(!required_certificate_pdf_paths(manifest_path, hashes)?.is_empty())
+}
+
+fn required_certificate_pdf_paths(
+    manifest_path: &Path,
+    hashes: &BTreeMap<String, String>,
+) -> Result<&'static [&'static str]> {
     let bytes = fs::read(manifest_path).map_err(|error| AppError::io(manifest_path, error))?;
     let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
     let format_version = manifest
@@ -2319,26 +2404,42 @@ fn certificate_format_requires_pdf(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(CERTIFICATE_FORMAT_VERSION | "5.0" | "4.1" | "4.0" | "3.0" | "2.0") => {
+        Some(CERTIFICATE_FORMAT_VERSION) => {
+            if !hashes.contains_key(PDF_FILE) || !hashes.contains_key(PDF_FILE_DE) {
+                return Err(AppError::Validation(
+                    "Certificate format 5.2 requires German and English PDF hash entries.".into(),
+                ));
+            }
+            Ok(&[PDF_FILE, PDF_FILE_DE])
+        }
+        Some("5.1" | "5.0" | "4.1" | "4.0" | "3.0" | "2.0") => {
             if !hashes.contains_key(PDF_FILE) {
                 return Err(AppError::Validation(
                     "This certificate format requires the root-level technical PDF hash.".into(),
                 ));
             }
-            Ok(true)
+            Ok(&[PDF_FILE])
         }
         Some(version) => Err(AppError::Validation(format!(
             "Unsupported certificate format version: {version}"
         ))),
         None => {
-            if hashes.contains_key(PDF_FILE) {
+            if is_certificate_pdf_path_in_hashes(hashes) {
                 return Err(AppError::Validation(
                     "A legacy certificate cannot contain an unversioned PDF hash entry.".into(),
                 ));
             }
-            Ok(false)
+            Ok(&[])
         }
     }
+}
+
+fn is_certificate_pdf_path(relative: &str) -> bool {
+    matches!(relative, PDF_FILE | PDF_FILE_DE)
+}
+
+fn is_certificate_pdf_path_in_hashes(hashes: &BTreeMap<String, String>) -> bool {
+    hashes.keys().any(|path| is_certificate_pdf_path(path))
 }
 
 fn parse_hashes(path: &Path) -> Result<BTreeMap<String, String>> {
@@ -2395,7 +2496,10 @@ fn validate_digest(digest: &str, line_number: usize) -> Result<()> {
 }
 
 fn hash_manifest_path_allowed(relative: &Path) -> bool {
-    if relative == Path::new(HASH_FILE) || relative == Path::new(PDF_FILE) {
+    if relative == Path::new(HASH_FILE)
+        || relative == Path::new(PDF_FILE)
+        || relative == Path::new(PDF_FILE_DE)
+    {
         return false;
     }
     !matches!(
@@ -2828,16 +2932,9 @@ mod tests {
     fn current_and_previous_pdf_certificate_formats_remain_recognizable() {
         let workspace = tempfile::tempdir().expect("temporary directory");
         let manifest_path = workspace.path().join("manifest.json");
-        let hashes = BTreeMap::from([(PDF_FILE.into(), DIGEST.into())]);
 
-        for version in [
-            "2.0",
-            "3.0",
-            "4.0",
-            "4.1",
-            "5.0",
-            CERTIFICATE_FORMAT_VERSION,
-        ] {
+        for version in ["2.0", "3.0", "4.0", "4.1", "5.0", "5.1"] {
+            let hashes = BTreeMap::from([(PDF_FILE.into(), DIGEST.into())]);
             fs::write(
                 &manifest_path,
                 format!("{{\"certificate\":{{\"format_version\":\"{version}\"}}}}\n"),
@@ -2846,9 +2943,22 @@ mod tests {
             assert!(certificate_format_requires_pdf(&manifest_path, &hashes)
                 .expect("supported certificate format"));
         }
+        fs::write(
+            &manifest_path,
+            format!(
+                "{{\"certificate\":{{\"format_version\":\"{CERTIFICATE_FORMAT_VERSION}\"}}}}\n"
+            ),
+        )
+        .expect("current certificate manifest fixture");
+        let hashes = BTreeMap::from([
+            (PDF_FILE.into(), DIGEST.into()),
+            (PDF_FILE_DE.into(), DIGEST.into()),
+        ]);
+        assert!(certificate_format_requires_pdf(&manifest_path, &hashes)
+            .expect("current supported certificate format"));
     }
 
-    fn publication_fixture(track_root: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    fn publication_fixture(track_root: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
         let main_hashes = b"fixture main hash manifest\n";
         let main_hash_path = track_root.join(HASH_FILE);
         fs::create_dir_all(
@@ -2872,7 +2982,7 @@ mod tests {
             )])
             .save(&printpdf::PdfSaveOptions::default(), &mut Vec::new());
         let certificate_hashes = format!(
-            "{}  {}\n{}  {}\n{}  {}\n{}  {}\n",
+            "{}  {}\n{}  {}\n{}  {}\n{}  {}\n{}  {}\n",
             sha256_bytes(main_hashes),
             HASH_FILE,
             sha256_bytes(&manifest),
@@ -2881,15 +2991,18 @@ mod tests {
             CERTIFICATE_FILE,
             sha256_bytes(&pdf),
             PDF_FILE,
+            sha256_bytes(&pdf),
+            PDF_FILE_DE,
         )
         .into_bytes();
-        (manifest, certificate, pdf, certificate_hashes)
+        (manifest, certificate, pdf.clone(), pdf, certificate_hashes)
     }
 
     fn assert_injected_publication_failure(failure: CertificatePublicationFailure) {
         let workspace = tempfile::tempdir().expect("temporary directory");
         let track_root = workspace.path();
-        let (manifest, certificate, pdf, certificate_hashes) = publication_fixture(track_root);
+        let (manifest, certificate, pdf_en, pdf_de, certificate_hashes) =
+            publication_fixture(track_root);
         let live = track_root.join(CERTIFICATE_DIR);
         fs::create_dir(&live).expect("create empty live certificate directory");
         let correlated_stage = track_root
@@ -2901,7 +3014,8 @@ mod tests {
             track_root,
             &manifest,
             &certificate,
-            &pdf,
+            &pdf_en,
+            &pdf_de,
             &certificate_hashes,
             &failure.stage_id(),
             Some(failure),
@@ -2935,6 +3049,11 @@ mod tests {
         assert!(
             !track_root.join(PDF_FILE).exists(),
             "live PDF remains after {} failure",
+            failure.label()
+        );
+        assert!(
+            !track_root.join(PDF_FILE_DE).exists(),
+            "German live PDF remains after {} failure",
             failure.label()
         );
         assert!(
@@ -3008,16 +3127,28 @@ mod tests {
             3
         );
 
-        let valid = format!(
+        let single_pdf = format!(
             "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {PDF_FILE}\n"
         );
         assert_eq!(
-            parse_certificate_hashes(&valid).expect("valid set").len(),
+            parse_certificate_hashes(&single_pdf)
+                .expect("valid single-PDF set")
+                .len(),
             4
         );
 
+        let valid = format!(
+            "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {PDF_FILE}\n{DIGEST}  {PDF_FILE_DE}\n"
+        );
+        assert_eq!(
+            parse_certificate_hashes(&valid)
+                .expect("valid dual-PDF set")
+                .len(),
+            5
+        );
+
         let duplicate = format!(
-            "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {PDF_FILE}\n{DIGEST}  {PDF_FILE}\n"
+            "{DIGEST}  {HASH_FILE}\n{DIGEST}  {MANIFEST_FILE}\n{DIGEST}  {CERTIFICATE_FILE}\n{DIGEST}  {PDF_FILE}\n{DIGEST}  {PDF_FILE_DE}\n{DIGEST}  {PDF_FILE_DE}\n"
         );
         assert!(parse_certificate_hashes(&duplicate).is_err());
 

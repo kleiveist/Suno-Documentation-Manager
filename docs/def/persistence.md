@@ -262,6 +262,7 @@ The application does not silently mutate a finalized snapshot. When an included 
 .archive/revisions/<revision-id>/
 ├── revision.json
 ├── SunoDM_DOCUMENTATION_CERTIFICATE.pdf
+├── SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf
 ├── 03_DOCUMENTATION/
 │   └── SHA256SUMS.txt
 └── certificate/

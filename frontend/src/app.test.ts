@@ -204,7 +204,7 @@ describe("navigation", () => {
     expect(externalTimestampTypeLabel("qualified_electronic_timestamp_user_declared"))
       .toBe("Qualified electronic timestamp – user declared");
     expect(timestampArtifactLabel("evidence_manifest")).toBe("EVIDENCE_MANIFEST.json");
-    expect(timestampArtifactLabel("certificate_pdf")).toBe("Certificate PDF");
+    expect(timestampArtifactLabel("certificate_pdf")).toBe("Certificate PDF (English)");
   });
 
   it("keeps global provider readiness separate from optional per-track timestamp evidence", () => {
@@ -446,7 +446,6 @@ describe("navigation", () => {
         sizeBytes: 42
       },
       showCertificatePopup: true,
-      certificateBilingual: true,
       termsMetadataDialog: { evidenceId: null, metadata: emptyEvidenceMetadata() },
       timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom }, enabled: true, provider: "free_tsa", status: "ready" },
       timestampProviderTest: {
@@ -497,7 +496,6 @@ describe("navigation", () => {
       showSubscriptionEvidence: false,
       evidencePreview: null,
       showCertificatePopup: false,
-      certificateBilingual: false,
       termsMetadataDialog: null,
       timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom } },
       timestampProviderTest: null,

@@ -7,14 +7,14 @@ async function settle<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
-async function finalizeGravity(api: ReturnType<typeof createDemoApi>, bilingual = false) {
+async function finalizeGravity(api: ReturnType<typeof createDemoApi>) {
   await settle(api.updateTrack("gravity", {
     sunoExportFilenameDifferenceConfirmed: true
   }));
   await settle(api.generateDocuments("gravity", false));
   await settle(api.calculateHashes("gravity"));
   await settle(api.verifyHashes("gravity"));
-  return settle(api.finalizeTrack("gravity", { bilingual }));
+  return settle(api.finalizeTrack("gravity"));
 }
 
 async function configureFreeTsa(api: ReturnType<typeof createDemoApi>, autoAfterFinalization = false) {
@@ -57,14 +57,14 @@ describe("demo track library", () => {
     expect(after.integrity).toEqual(before.integrity);
   });
 
-  it("records the selected primary language and bilingual switch at finalization", async () => {
+  it("creates both certificate languages at finalization", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
     const profile = await settle(api.getProfile());
     await settle(api.updateProfile({ ...profile, certificateLanguage: "de" }));
 
-    const finalized = await finalizeGravity(api, true);
+    const finalized = await finalizeGravity(api);
 
     expect(finalized.track?.certificate).toEqual(expect.objectContaining({
       certificateLanguage: "de",
@@ -450,7 +450,7 @@ describe("demo external timestamp attachment", () => {
       },
       {
         artifact: "certificate_pdf",
-        label: "Documentation certificate (PDF)",
+        label: "Documentation certificate (English PDF)",
         relativePath: "SunoDM_DOCUMENTATION_CERTIFICATE.pdf",
         sha256: "d".repeat(64)
       },

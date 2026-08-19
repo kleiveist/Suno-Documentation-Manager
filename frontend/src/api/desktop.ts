@@ -39,6 +39,7 @@ export interface DesktopApi {
   getWorkflow(): Promise<WorkflowDefinitionDto>;
   openWorkspace(): Promise<WorkspaceSummary | null>;
   createWorkspace(): Promise<WorkspaceSummary | null>;
+  restoreWorkspace(path: string): Promise<WorkspaceSummary>;
   scanWorkspace(): Promise<ScanResult>;
   getProfile(): Promise<GlobalProfile>;
   updateProfile(profile: GlobalProfile): Promise<GlobalProfile>;
@@ -142,6 +143,10 @@ class TauriDesktopApi implements DesktopApi {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
     }
+  }
+
+  restoreWorkspace(path: string): Promise<WorkspaceSummary> {
+    return command<WorkspaceSummary>("open_workspace_by_path", { path });
   }
 
   scanWorkspace(): Promise<ScanResult> {
