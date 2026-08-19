@@ -2060,7 +2060,7 @@ export class SunoDocumentationApp {
           ${this.boolQuestion("vocalLyricsPresent", "Vocal lyrics present?", "Ja nur bei tatsächlich hörbaren bzw. vorhandenen Vocal Lyrics.", draft.vocalLyricsPresent)}
           ${this.boolQuestion("sunoLyricsFieldContent", "Content in Suno Lyrics / Structure field?", "Dokumentiert unabhängig von Vocal Lyrics, ob das Feld verwendet wurde.", draft.sunoLyricsFieldContent)}
           ${conditional.has("sunoLyricsContentTypes") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("sunoLyricsContentTypes", "Content types", draft.sunoLyricsContentTypes, sunoLyricsContentTypeChoices, true)}${conditional.has("sunoLyricsOtherContentType") ? this.textField("sunoLyricsOtherContentType", "Sonstiger Content-Typ", "Faktisch beschreiben", draft.sunoLyricsOtherContentType, true) : ""}${singleChoiceFieldMarkup("sunoLyricsContentSource", "Content source", draft.sunoLyricsContentSource ?? "", [["human", "Human"], ["ai", "AI"], ["mixed", "Mixed"]], true)}${this.textArea("sunoLyricsFieldText", "Exact Suno field content", "Exakte verwendete Fassung einschließlich eckiger Klammern dokumentieren.", draft.sunoLyricsFieldText, true)}</div>` : ""}
-          ${hasLegacyLyrics ? `<div class="legacy-data-notice">${icon("info")}<div><strong>Historische Lyrics-Angaben – nicht automatisch klassifiziert</strong><p>Quelle: ${escapeHtml(draft.legacyLyricsSource || "Not documented")}</p>${draft.legacyLyricsText ? `<pre>${escapeHtml(draft.legacyLyricsText)}</pre>` : ""}<small>Diese unverändert erhaltenen Altwerte bestimmen weder Vocal Lyrics noch Content-Typen. Prüfe die neuen Felder ausdrücklich.</small></div></div>` : ""}
+          ${hasLegacyLyrics ? `<div class="legacy-data-notice">${icon("info")}<div class="legacy-data-notice-copy"><strong>Historische Lyrics-Angaben – nicht automatisch klassifiziert</strong><p>Quelle: ${escapeHtml(draft.legacyLyricsSource || "Not documented")}</p>${draft.legacyLyricsText ? `<pre>${escapeHtml(draft.legacyLyricsText)}</pre>` : ""}<small>Diese unverändert erhaltenen Altwerte bestimmen weder Vocal Lyrics noch Content-Typen. Prüfe die neuen Felder ausdrücklich.</small></div><button type="button" class="icon-button danger legacy-data-remove" data-action="remove-legacy-lyrics" aria-label="Historische Lyrics-Angaben entfernen" title="Historische Lyrics-Angaben entfernen" ${isTrackContentLocked(track.status) ? "disabled" : ""}>${icon("trash")}</button></div>` : ""}
         </section>
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
           ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat. Freitext wird nicht zur Vocal-Lyrics-Klassifikation verwendet.", draft.humanEditingPerformed)}
@@ -3023,6 +3023,19 @@ export class SunoDocumentationApp {
         this.render();
         break;
       case "close-modal": this.state.showNewTrack = false; this.state.folderImport = null; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.state.termsMetadataDialog = null; this.render(); break;
+      case "remove-legacy-lyrics": {
+        if (this.rejectLockedContentMutation()) break;
+        if (!window.confirm("Historische Lyrics-Angaben aus diesem bearbeitbaren Track entfernen? Die neuen Lyrics-/Structure-Felder bleiben unverändert.")) break;
+        const updated = await this.withBusy(
+          "Historische Lyrics-Angaben werden entfernt …",
+          () => this.api.updateTrack(this.requireTrack().id, { legacyLyricsSource: "", legacyLyricsText: "" })
+        );
+        if (updated) {
+          this.applyTrack(updated);
+          this.showToast("success", "Historische Lyrics-Angaben entfernt", "Der Legacy-Hinweis wurde gelöscht; aktuelle Lyrics-/Structure-Angaben blieben unverändert.");
+        }
+        break;
+      }
       case "show-certificate-popup":
         if (this.requireTrack().certificate.valid && this.requireTrack().certificate.certificateId) {
           this.state.showCertificatePopup = true;

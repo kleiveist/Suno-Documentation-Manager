@@ -435,6 +435,8 @@ code { padding: .15rem .35rem; border-radius: 4px; background: #ece9e1; font-fam
   .modal { padding: 21px 17px; }.billing-cycle-field > div, .track-library-choices { grid-template-columns: 1fr; }.toast { right: 12px; bottom: 12px; width: calc(100vw - 24px); }.busy-layer--operation { padding: 10px; }.operation-progress { max-height: calc(100vh - 20px); padding: 19px 16px; border-radius: 18px; }.operation-progress h2 { font-size: 22px; }.operation-stage { min-height: 145px; }.operation-orbit { width: 105px; height: 105px; }.operation-orbit > i:nth-child(1) { left: 49px; }.operation-orbit > b { right: -35px; }.operation-status { grid-template-columns: 1fr; }.operation-steps { grid-template-columns: repeat(2, 1fr); row-gap: 13px; }.operation-steps::before { display: none; }
 }
 
+.legacy-data-notice { position: relative; }.legacy-data-notice-copy { min-width: 0; flex: 1; }.legacy-data-remove { flex: 0 0 auto; align-self: flex-start; }
+
 @media (prefers-reduced-motion: reduce) {
   .operation-stage::after, .operation-orbit::before, .operation-orbit::after, .operation-orbit > i, .operation-stream i, .operation-meter i::after, .operation-steps li.is-active > span, .certificate-popup-celebration::before, .certificate-popup-celebration::after, .certificate-popup-celebration > span, .certificate-popup-celebration > i, .track-cover__image { animation: none; }
 }
