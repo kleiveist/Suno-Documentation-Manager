@@ -76,6 +76,7 @@ import {
 } from "./ui/theme";
 
 type MainView = "dashboard" | "tracks" | "current" | "workspace" | "settings";
+type SettingsCategory = "global" | "external" | "files";
 type TrackTab = "overview" | "suno" | "artwork" | "release" | "evidence" | "certificate";
 type ToastKind = "success" | "error" | "info";
 export type LongOperationKind = "documents" | "hashes" | "verification" | "finalization" | "audio_screening";
@@ -105,6 +106,7 @@ interface AppState {
   workflow: WorkflowDefinitionDto | null;
   globalEvidence: GlobalEvidenceItem[];
   view: MainView;
+  settingsCategory: SettingsCategory;
   trackTab: TrackTab;
   activeStep: StepId | null;
   trackDraft: TrackFields | null;
@@ -766,6 +768,16 @@ export const MAIN_NAVIGATION: ReadonlyArray<{ id: MainView; label: string; iconN
   { id: "settings", label: "Einstellungen", iconName: "settings" }
 ];
 
+export const SETTINGS_CATEGORY_DEFINITIONS = [
+  { id: "global", label: "Globale Angaben", description: "Workspace- und Produktionsvorgaben" },
+  { id: "external", label: "Externe Dienste", description: "Optionale externe Integrationen" },
+  { id: "files", label: "Globale Datei-Führung", description: "Workspaceweite Evidence-Dateien" }
+] as const;
+
+export function settingsCategoryNavigationMarkup(activeCategory: SettingsCategory = "global"): string {
+  return `<nav class="settings-category-nav" aria-label="Einstellungsbereiche">${SETTINGS_CATEGORY_DEFINITIONS.map((category, index) => `<button type="button" class="settings-category-nav__item ${activeCategory === category.id ? "is-active" : ""}" data-settings-category="${category.id}" aria-controls="settings-${category.id}" aria-selected="${activeCategory === category.id}"><span class="settings-category-nav__index">${index + 1}</span><span><strong>${category.label}</strong><small>${category.description}</small></span></button>`).join("")}</nav>`;
+}
+
 export function missingProfileFields(profile: GlobalProfile): string[] {
   const fields: Array<[keyof GlobalProfile, string]> = [
     ["artistName", "Künstlername"], ["sunoProfileName", "Suno-Profilname"],
@@ -1042,6 +1054,7 @@ export class SunoDocumentationApp {
     workflow: null,
     globalEvidence: [],
     view: "dashboard",
+    settingsCategory: "global",
     trackTab: "overview",
     activeStep: null,
     trackDraft: null,
@@ -1131,6 +1144,20 @@ export class SunoDocumentationApp {
       // Keep the active session usable even if persistence is blocked.
     }
     this.applyTheme();
+  }
+
+  private selectSettingsCategory(category: SettingsCategory): void {
+    this.state.settingsCategory = category;
+    this.root.querySelectorAll<HTMLElement>("[data-settings-category-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.settingsCategoryPanel !== category;
+    });
+    this.root.querySelectorAll<HTMLButtonElement>("[data-settings-category]").forEach((control) => {
+      const selected = control.dataset.settingsCategory === category;
+      control.classList.toggle("is-active", selected);
+      control.setAttribute("aria-selected", String(selected));
+    });
+    const settingsForm = this.root.querySelector<HTMLFormElement>("#profile-form");
+    if (settingsForm) settingsForm.hidden = category === "files";
   }
 
   private async withBusy<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
@@ -2423,21 +2450,37 @@ export class SunoDocumentationApp {
     const subscriptions = this.state.globalEvidence.filter((item) => item.role === "subscription_payment");
     const terms = this.state.globalEvidence.filter((item) => item.role === "suno_terms_rights");
     return `<div class="page-content settings-page">
-      <div class="page-lead"><div><p class="overline">Workspace-Stammdaten</p><h2>Globale Angaben</h2><p>Dokumentationsdaten werden als Track-Snapshot übernommen. Die Zertifikatssprache gilt für künftige Finalisierungen und verändert bestehende Snapshots nicht.</p></div></div>
-      <form id="profile-form" class="panel settings-form">
-        <div class="settings-section"><div class="settings-section-copy"><span>01</span><div><h3>Artist & Suno</h3><p>Nur produktionsrelevante Profildaten – keine privaten Kontaktdaten.</p></div></div><div class="field-grid two-col">${this.textField("artistName", "Künstlername", "Künstlername", profile.artistName, true)}${this.textField("sunoProfileName", "Suno-Profilname", "Profilname", profile.sunoProfileName, true)}${this.textField("sunoHandle", "Suno-Benutzername", "@handle", profile.sunoHandle, true)}${this.suggestedTextField("sunoPlan", "Suno-Tarif", "z. B. Premier oder eigener Wert", profile.sunoPlan, sunoPlanSuggestions, true)}${this.dateField("subscriptionStartDate", "Abo-Startdatum", profile.subscriptionStartDate, true)}</div></div>
-        <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.suggestedTextField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. ChatGPT / OpenAI oder eigener Wert", profile.defaultAiImageService, aiSystemSuggestions)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
-        <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
-        <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
-        ${this.renderTimestampSettingsSection(timestampSettings)}
-        ${this.renderAudioScreeningSettingsSection(audioScreeningSettings)}
+      <div class="page-lead"><div><p class="overline">Workspace-Konfiguration</p><h2>Einstellungen</h2><p>Dokumentationsdaten werden als Track-Snapshot übernommen. Die Zertifikatssprache gilt für künftige Finalisierungen und verändert bestehende Snapshots nicht.</p></div></div>
+      ${settingsCategoryNavigationMarkup(this.state.settingsCategory)}
+      <form id="profile-form" class="panel settings-form"${this.state.settingsCategory === "files" ? " hidden" : ""}>
+        <section id="settings-global" data-settings-category-panel="global" class="settings-category settings-category--global"${this.state.settingsCategory !== "global" ? " hidden" : ""}>
+          <header class="settings-category-header"><span class="settings-category-index">1</span><div><p class="overline">${SETTINGS_CATEGORY_DEFINITIONS[0].description}</p><h3>${SETTINGS_CATEGORY_DEFINITIONS[0].label}</h3><p>Allgemeine Workspace- und Produktionsvorgaben für neue oder bearbeitbare Tracks.</p></div></header>
+          <div class="settings-category-body">
+            <div class="settings-section"><div class="settings-section-copy"><span>01</span><div><h3>Artist & Suno</h3><p>Nur produktionsrelevante Profildaten – keine privaten Kontaktdaten.</p></div></div><div class="field-grid two-col">${this.textField("artistName", "Künstlername", "Künstlername", profile.artistName, true)}${this.textField("sunoProfileName", "Suno-Profilname", "Profilname", profile.sunoProfileName, true)}${this.textField("sunoHandle", "Suno-Benutzername", "@handle", profile.sunoHandle, true)}${this.suggestedTextField("sunoPlan", "Suno-Tarif", "z. B. Premier oder eigener Wert", profile.sunoPlan, sunoPlanSuggestions, true)}${this.dateField("subscriptionStartDate", "Abo-Startdatum", profile.subscriptionStartDate, true)}</div></div>
+            <div class="settings-section"><div class="settings-section-copy"><span>02</span><div><h3>Standards</h3><p>Vorbelegte Werte können pro Track angepasst werden.</p></div></div><div class="field-grid two-col">${this.suggestedTextField("defaultAiImageService", "Standard-KI-Bilddienst", "z. B. ChatGPT / OpenAI oder eigener Wert", profile.defaultAiImageService, aiSystemSuggestions)}${this.boolQuestion("defaultCommercialUse", "Kommerzielle Nutzung standardmäßig vorgesehen?", "", profile.defaultCommercialUse)}</div></div>
+            <div class="settings-section"><div class="settings-section-copy"><span>03</span><div><h3>Artwork-Transparenz</h3><p>Projektinterne Richtlinie; keine pauschale gesetzliche Kennzeichnungspflicht.</p></div></div><div>${this.radioCards("artworkTransparencyPolicy", profile.artworkTransparencyPolicy, [["always", "Immer sichtbaren KI-Hinweis hinzufügen", "Empfohlener Projektstandard"], ["per_artwork", "Pro Artwork entscheiden", "Entscheidung wird je Track dokumentiert"], ["none", "Kein automatischer sichtbarer Hinweis", "Nur Prozessdokumentation"]])}${this.textField("disclosureText", "Standard-Hinweistext", "AI-assisted", profile.disclosureText, true)}</div></div>
+            <div class="settings-section"><div class="settings-section-copy"><span>04</span><div><h3>Zertifikatssprache</h3><p>Gilt für die nächste Finalisierung. Der Schalter in Schritt 10 ergänzt bei Bedarf die zweite Sprache.</p></div></div><div>${this.radioCards("certificateLanguage", profile.certificateLanguage, [["de", "Deutsch", "Das technische Zertifikat wird primär auf Deutsch erstellt"], ["en", "Englisch", "The technical certificate is primarily generated in English"]])}</div></div>
+          </div>
+        </section>
+        <section id="settings-external" data-settings-category-panel="external" class="settings-category settings-category--external"${this.state.settingsCategory !== "external" ? " hidden" : ""}>
+          <header class="settings-category-header"><span class="settings-category-index">2</span><div><p class="overline">${SETTINGS_CATEGORY_DEFINITIONS[1].description}</p><h3>${SETTINGS_CATEGORY_DEFINITIONS[1].label}</h3><p>Zeitstempel und optionale Audio-Katalogprüfung bleiben technisch und sicher getrennt von den Track-Snapshots.</p></div></header>
+          <div class="settings-category-body">
+            ${this.renderTimestampSettingsSection(timestampSettings)}
+            ${this.renderAudioScreeningSettingsSection(audioScreeningSettings)}
+          </div>
+        </section>
         <div class="form-save settings-save"><span>${icon("shield")} Stammdaten verbleiben in der lokalen Workspace-Datenbank.</span><button class="button button--primary" type="submit">${icon("check")} Einstellungen speichern</button></div>
       </form>
-      <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
-        ${subscriptions.length ? `<div class="global-evidence-list">${subscriptions.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globalen Nachweis entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
-      </section>
-      <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Globale Datei für alle Projekte</p><h3>Archivierte Suno-Nutzungsbedingungen</h3><p>Dokumenttitel, Provider und Abrufdatum sind Kernmetadaten. Die lokale PDF und ihre Metadaten werden in jedes neue sowie jedes noch bearbeitbare Projekt kopiert. Finalisierte Snapshots bleiben unverändert.</p><p>Source URL, Effective Date, anwendbarer Produktionszeitraum und sachliche Notiz sind optional. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div><button class="button button--secondary" data-action="import-global-terms">${icon("upload")} Terms-Evidence registrieren</button></div>
-        ${terms.length ? `<div class="global-evidence-list terms-evidence-list">${terms.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Provider nicht dokumentiert")} · Abruf ${formatDate(item.metadata?.retrievalDate)}</small><small>${escapeHtml(item.metadata?.sourceUrl || "Source URL: Not documented")} · ${escapeHtml(item.fileName)}</small></div><span class="verification ${termsMetadataComplete(item.metadata) ? "is-valid" : ""}">${termsMetadataComplete(item.metadata) ? icon("check") + " Vollständig" : "Metadaten fehlen"}</span><button class="button button--small button--secondary" data-edit-global-terms="${item.id}">Metadaten bearbeiten</button><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globale Nutzungsbedingungen entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch keine globale PDF mit Suno-Nutzungsbedingungen registriert.</p>`}
+      <section id="settings-files" data-settings-category-panel="files" class="settings-category settings-category--files"${this.state.settingsCategory !== "files" ? " hidden" : ""}>
+        <header class="settings-category-header"><span class="settings-category-index">3</span><div><p class="overline">${SETTINGS_CATEGORY_DEFINITIONS[2].description}</p><h3>${SETTINGS_CATEGORY_DEFINITIONS[2].label}</h3><p>Workspaceweit verwaltete Evidence-Dateien mit eigener Import-, Bearbeitungs- und Entfernen-Logik.</p></div></header>
+        <div class="settings-category-body settings-files-body">
+          <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
+            ${subscriptions.length ? `<div class="global-evidence-list">${subscriptions.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globalen Nachweis entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
+          </section>
+          <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Globale Datei für alle Projekte</p><h3>Archivierte Suno-Nutzungsbedingungen</h3><p>Dokumenttitel, Provider und Abrufdatum sind Kernmetadaten. Die lokale PDF und ihre Metadaten werden in jedes neue sowie jedes noch bearbeitbare Projekt kopiert. Finalisierte Snapshots bleiben unverändert.</p><p>Source URL, Effective Date, anwendbarer Produktionszeitraum und sachliche Notiz sind optional. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div><button class="button button--secondary" data-action="import-global-terms">${icon("upload")} Terms-Evidence registrieren</button></div>
+            ${terms.length ? `<div class="global-evidence-list terms-evidence-list">${terms.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Provider nicht dokumentiert")} · Abruf ${formatDate(item.metadata?.retrievalDate)}</small><small>${escapeHtml(item.metadata?.sourceUrl || "Source URL: Not documented")} · ${escapeHtml(item.fileName)}</small></div><span class="verification ${termsMetadataComplete(item.metadata) ? "is-valid" : ""}">${termsMetadataComplete(item.metadata) ? icon("check") + " Vollständig" : "Metadaten fehlen"}</span><button class="button button--small button--secondary" data-edit-global-terms="${item.id}">Metadaten bearbeiten</button><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globale Nutzungsbedingungen entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch keine globale PDF mit Suno-Nutzungsbedingungen registriert.</p>`}
+          </section>
+        </div>
       </section>
     </div>`;
   }
@@ -2787,6 +2830,13 @@ export class SunoDocumentationApp {
       return;
     }
 
+    const settingsCategory = button.dataset.settingsCategory;
+    if (settingsCategory === "global" || settingsCategory === "external" || settingsCategory === "files") {
+      event.preventDefault();
+      this.selectSettingsCategory(settingsCategory);
+      return;
+    }
+
     const albumTitle = button.dataset.renameAlbum;
     if (albumTitle) {
       event.preventDefault();
@@ -2941,6 +2991,7 @@ export class SunoDocumentationApp {
         const missing = missingProfileFields(this.state.profile);
         if (missing.length) {
           this.state.view = "settings";
+          this.state.settingsCategory = "global";
           this.showToast("info", "Zuerst Stammdaten vervollständigen", `Für einen unveränderlichen Track-Snapshot fehlen: ${missing.join(", ")}.`);
           this.render();
         } else {
@@ -3003,6 +3054,7 @@ export class SunoDocumentationApp {
       case "open-timestamp-settings":
         if (await this.flushDraft()) {
           this.state.view = "settings";
+          this.state.settingsCategory = "external";
           this.state.activeStep = null;
           this.render();
         }
@@ -3010,6 +3062,7 @@ export class SunoDocumentationApp {
       case "open-audio-screening-settings":
         if (await this.flushDraft()) {
           this.state.view = "settings";
+          this.state.settingsCategory = "external";
           this.state.activeStep = null;
           this.render();
         }
@@ -3101,6 +3154,7 @@ export class SunoDocumentationApp {
       if (profileMissing.length) {
         this.state.showNewTrack = false;
         this.state.view = "settings";
+        this.state.settingsCategory = "global";
         this.showToast("error", "Track nicht angelegt", `Vervollständige zuerst: ${profileMissing.join(", ")}.`);
         this.render();
         return;

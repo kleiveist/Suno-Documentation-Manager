@@ -25,6 +25,8 @@ import {
   operationStageLabel,
   parseMultiChoiceValue,
   resetWorkspaceScopedUiState,
+  SETTINGS_CATEGORY_DEFINITIONS,
+  settingsCategoryNavigationMarkup,
   shouldDiscardLockedDraft,
   shouldIgnoreModalBackdropClick,
   singleChoiceFieldMarkup,
@@ -66,6 +68,22 @@ describe("theme", () => {
 });
 
 describe("navigation", () => {
+  it("keeps the three settings categories and their local navigation labels stable", () => {
+    expect(SETTINGS_CATEGORY_DEFINITIONS.map(({ id, label }) => [id, label])).toEqual([
+      ["global", "Globale Angaben"],
+      ["external", "Externe Dienste"],
+      ["files", "Globale Datei-Führung"]
+    ]);
+
+    const markup = settingsCategoryNavigationMarkup();
+    expect(markup).toContain('data-settings-category="global"');
+    expect(markup).toContain('data-settings-category="external"');
+    expect(markup).toContain('data-settings-category="files"');
+    expect(markup).not.toContain('data-action=');
+    expect(settingsCategoryNavigationMarkup("external")).toContain('data-settings-category="external" aria-controls="settings-external" aria-selected="true"');
+    for (const { label } of SETTINGS_CATEGORY_DEFINITIONS) expect(markup).toContain(label);
+  });
+
   it("stores multiple guided choices deterministically", () => {
     expect(serializeMultiChoiceValue(["Mixing", "Mastering", "Mixing"])).toBe("Mixing | Mastering");
     expect(parseMultiChoiceValue("Mixing | Mastering")).toEqual(["Mixing", "Mastering"]);
