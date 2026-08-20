@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  automaticConsistencyPresentation,
   calculateMissingRequirements,
   calculateProgress,
   contentCheckAllNegative,
@@ -686,6 +687,133 @@ describe("progress", () => {
 });
 
 describe("statuses and finalization", () => {
+  it("keeps informational findings presentation-only and leaves the gate valid", () => {
+    const track = completeTrack();
+
+    const presentation = automaticConsistencyPresentation(track);
+
+    expect(presentation.outcome).toBe("PASS");
+    expect(presentation.findings).toContainEqual(expect.objectContaining({
+      code: "suno_metadata_not_detected",
+      level: "INFO",
+      stepId: "suno"
+    }));
+    expect(presentation.infoCount).toBeGreaterThan(0);
+    expect(presentation.warningCount).toBe(0);
+    expect(presentation.blockingCount).toBe(0);
+    expect(finalizationGate(track, profile).valid).toBe(true);
+  });
+
+  it("reports non-blocking notes as PASS WITH WARNINGS without changing completion semantics", () => {
+    const track = completeTrack();
+    track.blockingDeviations = [{
+      id: "note-1",
+      title: "Note",
+      description: "Optionale technische Nachprüfung empfohlen.",
+      blocking: false,
+      resolved: false,
+      createdAt: "2026-08-01T10:00:00Z"
+    }];
+
+    const presentation = automaticConsistencyPresentation(track);
+
+    expect(presentation.outcome).toBe("PASS WITH WARNINGS");
+    expect(presentation.findings).toContainEqual(expect.objectContaining({
+      code: "deviation:note-1",
+      level: "WARNING",
+      stepId: "finalize"
+    }));
+    expect(finalizationGate(track, profile).valid).toBe(true);
+  });
+
+  it("keeps native blocking consistency issues visibly BLOCKED and gate-authoritative", () => {
+    const track = completeTrack();
+    track.automation.consistencyIssues = [{
+      code: "suno_stored_metadata_mismatch",
+      message: "Gespeicherte und eingebettete Metadaten widersprechen sich.",
+      stepId: "suno",
+      blocking: true
+    }];
+
+    const presentation = automaticConsistencyPresentation(track);
+
+    expect(presentation.outcome).toBe("BLOCKED");
+    expect(presentation.findings[0]).toEqual(expect.objectContaining({
+      code: "consistency:suno_stored_metadata_mismatch",
+      level: "BLOCKING"
+    }));
+    expect(finalizationGate(track, profile).valid).toBe(false);
+  });
+
+  it("classifies finalized timestamp states without turning them into workflow blockers", () => {
+    const track = completeTrack();
+    track.status = "FINALIZED";
+    track.certificate = { valid: true, certificateId: "certificate-1" };
+    track.externalTimestampSummary = {
+      status: "attached",
+      message: "OpenTimestamps proof attached; verification is still pending.",
+      provider: "OpenTimestamps"
+    };
+
+    expect(automaticConsistencyPresentation(track)).toEqual(expect.objectContaining({
+      outcome: "PASS WITH WARNINGS",
+      warningCount: 1,
+      blockingCount: 0
+    }));
+    expect(automaticConsistencyPresentation(track).findings).toContainEqual(expect.objectContaining({
+      code: "external_timestamp_attached_unverified",
+      level: "WARNING"
+    }));
+    expect(finalizationGate(track, profile).valid).toBe(true);
+
+    for (const status of [
+      "verification_failed",
+      "provider_unavailable",
+      "authentication_failed",
+      "anchor_mismatch",
+      "configuration_incomplete",
+      "authentication_required",
+      "connection_failed",
+      "unsupported_response",
+      "verification_configuration_incomplete"
+    ] as const) {
+      track.externalTimestampSummary.status = status;
+      const failed = automaticConsistencyPresentation(track);
+      expect(failed.outcome, status).toBe("PASS WITH WARNINGS");
+      expect(failed.findings, status).toContainEqual(expect.objectContaining({
+        code: `external_timestamp_${status}`,
+        level: "WARNING"
+      }));
+    }
+
+    track.externalTimestampSummary = {
+      status: "not_recorded",
+      message: "No external timestamp evidence recorded.",
+      provider: ""
+    };
+    const notRecorded = automaticConsistencyPresentation(track);
+    expect(notRecorded.outcome).toBe("PASS");
+    expect(notRecorded.findings).toContainEqual(expect.objectContaining({
+      code: "external_timestamp_not_recorded",
+      level: "INFO"
+    }));
+  });
+
+  it("reports a human-edited/final artwork SHA-256 match as INFO", () => {
+    const track = completeTrack();
+    track.evidence.push(evidence("human_edited_artwork"), evidence("final_artwork"));
+
+    const presentation = automaticConsistencyPresentation(track);
+
+    expect(presentation.outcome).toBe("PASS");
+    expect(presentation.findings).toContainEqual(expect.objectContaining({
+      code: "human_edited_final_artwork_sha256_match",
+      level: "INFO",
+      stepId: "artwork"
+    }));
+    expect(finalizationGate(track, profile).valid).toBe(true);
+  });
+
   it("reports the human-edited/final artwork hash comparison by role", () => {
     const humanEdited = evidence("human_edited_artwork");
     const finalArtwork = evidence("final_artwork");

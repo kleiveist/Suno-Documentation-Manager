@@ -151,7 +151,7 @@ Legacy lyrics source/text values, the former field-content Boolean, and the form
 
 ## Evidence-derived Suno automation
 
-When a verified `suno_final_export` WAV contains bounded structured metadata with the `made with suno studio` marker and a valid `created` value, the native layer records the exact embedded timestamp and its evidence ID and SHA-256 origin. A valid embedded `id` is retained independently but is never required for date derivation or finalization. The application derives the calendar date from `created`; it does not treat the import time, file modification time, filename, or any other filesystem value as a generation fact.
+When a verified `suno_final_export` WAV contains bounded structured metadata, the native layer accepts exactly two case-insensitive, full-segment markers: `made with suno studio` and `made with suno`. The complete record must contain exactly one accepted marker, one `created` value that is valid RFC 3339, and one `id` value that is a valid UUID. Duplicate keys, duplicate or mixed markers, distinct provider records, incidental phrases, malformed values, and unsafe text never become track facts. An accepted record preserves the exact embedded text, timestamp, normalized UUID, evidence ID, and SHA-256 origin. This is a structural observation over local evidence, not authentication of Suno or another provider. The application derives the calendar date from `created`; it does not treat the import time, file modification time, filename, or any other filesystem value as a generation fact.
 
 For an editable track, a valid derived date is authoritative for the final-generation date, production-end date, and optional download/export date. These values are assigned from `created` and remain read-only while that metadata date exists. Step 07 asks whether the WAV was edited again on the desktop PC: `No` derives and locks the last-editing date from `created`; `Yes` requires a user-confirmed last-editing date and the performed work. Without valid metadata, manual fallback remains available.
 
@@ -176,7 +176,7 @@ For each declared requirement:
 
 An explicitly selected `NOT DOCUMENTED` answer can complete the recording of an unknown factual indicator, but it never becomes `NO`. Where the workflow defines the information itself as mandatory—most importantly commercial generative-AI disclosure status—the evaluator emits a visible blocker instead of reporting an unqualified `PASS`.
 
-The UI answers `What is missing?` with concrete items such as Suno project URL, final WAV, AI artwork original, subscription evidence, or an evidence-derived metadata conflict. Consistency issues use the established step result and missing-item mechanisms; they do not form a parallel validation subsystem.
+The UI answers `What is missing?` with concrete items such as Suno project URL, final WAV, AI artwork original, subscription evidence, or an evidence-derived metadata conflict. Authoritative consistency issues use the established step result and missing-item mechanisms; they do not form a parallel validation subsystem. Separately, the UI derives a presentation-only automatic-consistency summary: `INFO` observations retain `PASS`, unresolved non-blocking findings yield `PASS WITH WARNINGS`, and an authoritative blocker yields `BLOCKED`. This summary cannot change a step result, finalization gate, lifecycle state, or certificate validity.
 
 ## Progress
 

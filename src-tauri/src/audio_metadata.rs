@@ -14,6 +14,7 @@ const MAX_TEXT_CHUNK_BYTES: u64 = 64 * 1024;
 const MAX_EMBEDDED_METADATA_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EMBEDDED_METADATA_ENTRIES: usize = 256;
 const MAX_RIFF_CHUNKS: usize = 4_096;
+const SUNO_METADATA_MARKERS: [&str; 2] = ["made with suno studio", "made with suno"];
 
 const INFO_TEXT_CHUNKS: [[u8; 4]; 25] = [
     *b"IARL", *b"IART", *b"ICMS", *b"ICMT", *b"ICOP", *b"ICRD", *b"ICRP", *b"IDIM", *b"IDPI",
@@ -336,7 +337,7 @@ fn populate_suno_metadata(metadata: &mut WavMetadata) {
         .embedded_metadata
         .iter()
         .map(|entry| entry.value.as_str())
-        .filter(|value| has_suno_studio_marker(value));
+        .filter(|value| has_suno_metadata_marker(value));
     let Some(raw) = matches.next() else {
         return;
     };
@@ -369,7 +370,7 @@ pub(crate) fn parse_suno_metadata(raw: &str) -> Option<ParsedSunoMetadata> {
     let mut id = None;
     for part in raw.split([';', '\n', '\r']) {
         let part = part.trim();
-        if part.eq_ignore_ascii_case("made with suno studio") {
+        if is_suno_metadata_marker_segment(part) {
             marker_count += 1;
             continue;
         }
@@ -420,10 +421,16 @@ fn duration_ms(format: FormatChunk, data_bytes: u64) -> Option<u64> {
     u64::try_from(milliseconds).ok()
 }
 
-pub(crate) fn has_suno_studio_marker(value: &str) -> bool {
+pub(crate) fn has_suno_metadata_marker(value: &str) -> bool {
     value
         .split([';', '\n', '\r'])
-        .any(|part| part.trim().eq_ignore_ascii_case("made with suno studio"))
+        .any(|part| is_suno_metadata_marker_segment(part.trim()))
+}
+
+fn is_suno_metadata_marker_segment(value: &str) -> bool {
+    SUNO_METADATA_MARKERS
+        .iter()
+        .any(|marker| value.eq_ignore_ascii_case(marker))
 }
 
 pub(crate) fn is_persistable_metadata_text(value: &str) -> bool {
@@ -476,6 +483,8 @@ mod tests {
     use tempfile::TempDir;
 
     const SUNO_TEXT: &str = "made with suno studio; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+    const SUNO_MARKER_ALIAS_TEXT: &str =
+        "made with suno; created=2026-08-18T07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd";
 
     /// Test-only encoder deliberately shares no chunk-writing code with the
     /// parser, so parser and fixture cannot reproduce the same offset bug.
@@ -573,6 +582,21 @@ mod tests {
     }
 
     #[test]
+    fn reads_exact_suno_marker_alias_without_relaxing_structured_fields() {
+        let wav = WavFixture::pcm16_stereo_48khz()
+            .info(vec![(*b"ICMT", SUNO_MARKER_ALIAS_TEXT.as_bytes().to_vec())])
+            .bytes();
+
+        let metadata = inspect(&wav).expect("inspect WAV").expect("WAV metadata");
+
+        assert!(metadata.suno_studio_detected);
+        assert_eq!(metadata.suno_created_timestamp, "2026-08-18T07:17:52Z");
+        assert_eq!(metadata.suno_created_date, "2026-08-18");
+        assert_eq!(metadata.suno_id, "c18284d0-9b50-40ca-bece-0362fe7c82dd");
+        assert_eq!(metadata.suno_raw_metadata, SUNO_MARKER_ALIAS_TEXT);
+    }
+
+    #[test]
     fn ordinary_wav_is_successful_without_invented_suno_metadata() {
         let wav = WavFixture::pcm16_stereo_48khz()
             .info(vec![(*b"IART", b"Example artist\0".to_vec())])
@@ -589,17 +613,23 @@ mod tests {
     }
 
     #[test]
-    fn incidental_marker_words_are_not_a_provider_signature() {
-        let raw = "This mix was not made with suno studio; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828";
-        let wav = WavFixture::pcm16_stereo_48khz()
-            .info(vec![(*b"ICMT", raw.as_bytes().to_vec())])
-            .bytes();
+    fn incidental_or_extended_marker_words_are_not_provider_markers() {
+        for raw in [
+            "This mix was not made with suno studio; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828",
+            "This mix was made with suno; created=2026-08-18T07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd",
+            "made with suno extended; created=2026-08-18T07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd",
+            "not made with suno; created=2026-08-18T07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd",
+        ] {
+            let wav = WavFixture::pcm16_stereo_48khz()
+                .info(vec![(*b"ICMT", raw.as_bytes().to_vec())])
+                .bytes();
 
-        let metadata = inspect(&wav).expect("inspect WAV").expect("WAV metadata");
+            let metadata = inspect(&wav).expect("inspect WAV").expect("WAV metadata");
 
-        assert!(!metadata.suno_studio_detected);
-        assert!(metadata.suno_created_timestamp.is_empty());
-        assert!(metadata.suno_id.is_empty());
+            assert!(!metadata.suno_studio_detected, "accepted {raw:?}");
+            assert!(metadata.suno_created_timestamp.is_empty());
+            assert!(metadata.suno_id.is_empty());
+        }
     }
 
     #[test]
@@ -709,7 +739,21 @@ mod tests {
                 id: "6c8a40fd-32bf-4c7b-ab59-23579ff95828".into(),
             })
         );
+        assert_eq!(
+            parse_suno_metadata(SUNO_MARKER_ALIAS_TEXT),
+            Some(ParsedSunoMetadata {
+                created_timestamp: "2026-08-18T07:17:52Z".into(),
+                created_date: "2026-08-18".into(),
+                id: "c18284d0-9b50-40ca-bece-0362fe7c82dd".into(),
+            })
+        );
         for invalid in [
+            "made with suno; created=2026-08-18T07:17:52Z",
+            "made with suno; id=c18284d0-9b50-40ca-bece-0362fe7c82dd",
+            "made with suno; created=2026-08-18 07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd",
+            "made with suno; created=2026-08-18T07:17:52Z; id=not-a-uuid",
+            "made with suno; made with suno; created=2026-08-18T07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd",
+            "made with suno studio; made with suno; created=2026-08-18T07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd",
             "made with suno studio; created=2026-08-17T06:38:06Z",
             "made with suno studio; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828",
             "made with suno studio; created=2026-08-17 06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828",

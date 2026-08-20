@@ -1,5 +1,5 @@
 use crate::audio_metadata::{
-    has_suno_studio_marker, is_persistable_metadata_text, parse_suno_metadata,
+    has_suno_metadata_marker, is_persistable_metadata_text, parse_suno_metadata,
 };
 use crate::error::{AppError, Result};
 use crate::model::{
@@ -63,7 +63,7 @@ pub fn capture_automatic_metadata(
             metadata.suno_studio_detected = metadata
                 .embedded_metadata
                 .iter()
-                .any(|entry| has_suno_studio_marker(&entry.value));
+                .any(|entry| has_suno_metadata_marker(&entry.value));
 
             // Do not trust separately carried structured values. The exact raw
             // value must still exist in a retained embedded entry and is parsed
@@ -617,10 +617,11 @@ mod tests {
     }
 
     #[test]
-    fn automatic_wav_metadata_drops_unsafe_optional_text_and_keeps_valid_suno_facts() {
+    fn automatic_wav_metadata_accepts_exact_suno_marker_alias_and_drops_unsafe_text() {
         let directory = tempdir().expect("temporary directory");
         let source = directory.path().join("controls.wav");
-        let raw = "made with suno studio; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+        let raw =
+            "made with suno; created=2026-08-18T07:17:52Z; id=c18284d0-9b50-40ca-bece-0362fe7c82dd";
         let mut suno = raw.as_bytes().to_vec();
         suno.push(0);
         fs::write(
@@ -640,9 +641,9 @@ mod tests {
         assert_eq!(metadata.embedded_metadata[0].value, raw);
         assert!(metadata.suno_studio_detected);
         assert_eq!(metadata.suno_raw_metadata, raw);
-        assert_eq!(metadata.suno_created_timestamp, "2026-08-17T06:38:06Z");
-        assert_eq!(metadata.suno_created_date, "2026-08-17");
-        assert_eq!(metadata.suno_id, "6c8a40fd-32bf-4c7b-ab59-23579ff95828");
+        assert_eq!(metadata.suno_created_timestamp, "2026-08-18T07:17:52Z");
+        assert_eq!(metadata.suno_created_date, "2026-08-18");
+        assert_eq!(metadata.suno_id, "c18284d0-9b50-40ca-bece-0362fe7c82dd");
         assert!(metadata.embedded_metadata.iter().all(|entry| {
             is_persistable_metadata_text(&entry.key) && is_persistable_metadata_text(&entry.value)
         }));

@@ -1,4 +1,4 @@
-use crate::audio_metadata::{has_suno_studio_marker, parse_suno_metadata};
+use crate::audio_metadata::{has_suno_metadata_marker, parse_suno_metadata};
 use crate::audio_screening;
 use crate::error::{AppError, Result};
 #[cfg(test)]
@@ -901,7 +901,7 @@ pub fn consistency_issues(track: &TrackRecord, evidence: &[EvidenceItem]) -> Vec
             .embedded_metadata
             .iter()
             .map(|entry| entry.value.as_str())
-            .filter(|value| has_suno_studio_marker(value))
+            .filter(|value| has_suno_metadata_marker(value))
             .collect::<Vec<_>>();
         let distinct_embedded_suno_values =
             embedded_suno_values.iter().copied().collect::<HashSet<_>>();
@@ -1417,6 +1417,13 @@ mod tests {
         let valid = suno_export("2026-08-17");
         assert!(!mismatch(&track, valid.clone()));
 
+        let mut valid_alias = valid.clone();
+        let alias_raw =
+            "made with suno; created=2026-08-17T06:38:06Z; id=6c8a40fd-32bf-4c7b-ab59-23579ff95828";
+        valid_alias.metadata.suno_raw_metadata = alias_raw.into();
+        valid_alias.metadata.embedded_metadata[0].value = alias_raw.into();
+        assert!(!mismatch(&track, valid_alias));
+
         let mut missing_embedded_raw = valid.clone();
         missing_embedded_raw.metadata.embedded_metadata.clear();
         assert!(mismatch(&track, missing_embedded_raw));
@@ -1471,7 +1478,7 @@ mod tests {
             .embedded_metadata
             .push(crate::model::EmbeddedMetadata {
                 key: "ICMT".into(),
-                value: "made with suno studio; created=2026-08-18T06:38:06Z; id=180ee4f0-977b-4db8-8968-e93e3ac9d506".into(),
+                value: "made with suno; created=2026-08-18T06:38:06Z; id=180ee4f0-977b-4db8-8968-e93e3ac9d506".into(),
             });
 
         let issues = consistency_issues(&track, &[item]);

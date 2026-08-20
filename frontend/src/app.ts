@@ -1,6 +1,7 @@
 import type { DesktopApi } from "./api/desktop";
 import { toUserMessage } from "./api/desktop";
 import {
+  automaticConsistencyPresentation,
   calculateMissingRequirements,
   evaluateRequirements,
   evidenceRoleFileTypes,
@@ -52,6 +53,7 @@ import {
   type TrackSummary,
   type TimestampReferencedArtifact,
   type TimestampAuthenticationMode,
+  type TimestampProviderCapabilities,
   type TimestampProviderKind,
   type TimestampProviderStatus,
   type TimestampProviderTestResult,
@@ -504,6 +506,84 @@ export function externalTimestampIntegrityPresentation(
   return {
     label: record.integrityVerified ? "VERIFIED" : "FAILED",
     issues: record.integrityIssues.map((issue) => issue.trim()).filter(Boolean)
+  };
+}
+
+export function externalTimestampRecordUsesOpenTimestamps(
+  record: Pick<ExternalTimestampRecord, "provider" | "providerMetadata">
+): boolean {
+  const adapter = record.providerMetadata?.adapter.toLowerCase() ?? "";
+  const protocol = record.providerMetadata?.protocol.toLowerCase() ?? "";
+  return adapter.includes("open_timestamps")
+    || protocol.includes("opentimestamps")
+    || record.provider.toLowerCase() === "opentimestamps";
+}
+
+export function externalTimestampRecordPresentation(
+  record: Pick<ExternalTimestampRecord, "provider" | "providerMetadata" | "timestampValue">
+): {
+  openTimestamps: boolean;
+  timestampLabel: string;
+  timestampValue: string;
+  bindingLabel: string;
+  cmsTrustValue: string;
+  endpointLabel: string;
+} {
+  const openTimestamps = externalTimestampRecordUsesOpenTimestamps(record);
+  return {
+    openTimestamps,
+    timestampLabel: openTimestamps ? "Confirmed timestamp" : "Timestamp",
+    timestampValue: record.timestampValue || (openTimestamps
+      ? "PENDING — OpenTimestamps verification / upgrade required"
+      : "Not documented"),
+    bindingLabel: openTimestamps ? "Local manifest / proof binding" : "Provider digest match",
+    cmsTrustValue: openTimestamps ? "N/A — not RFC 3161" : "",
+    endpointLabel: openTimestamps ? "Calendar endpoint" : "Provider verification URL"
+  };
+}
+
+function timestampProviderUsesRfc3161(provider: TimestampProviderKind): boolean {
+  return provider === "free_tsa"
+    || provider === "sigstore_public_tsa"
+    || provider === "custom_rfc3161";
+}
+
+export function externalTimestampAttachmentIsTerminal(
+  status: ExternalTimestampStatus,
+  record: Pick<ExternalTimestampRecord, "provider" | "providerMetadata" | "provenance"> | undefined,
+  configuredProvider: TimestampProviderKind
+): boolean {
+  if (status === "verified") return true;
+  if (status !== "attached") return false;
+  if (!record || /user-confirmed|manually recorded/i.test(record.provenance)) return false;
+  // An initial OpenTimestamps proof is not RFC 3161. After the user explicitly
+  // switches to a ready RFC 3161 provider, a second certificate-bound sidecar
+  // may therefore be added without changing either existing attachment.
+  return !(externalTimestampRecordUsesOpenTimestamps(record)
+    && timestampProviderUsesRfc3161(configuredProvider));
+}
+
+export function timestampProviderProtocolPresentation(
+  provider: TimestampProviderKind,
+  capabilities?: TimestampProviderCapabilities
+): { label: string; detail: string } {
+  const openTimestamps = capabilities?.openTimestamps ?? provider === "open_timestamps";
+  const rfc3161 = capabilities?.rfc3161 ?? timestampProviderUsesRfc3161(provider);
+  if (openTimestamps) {
+    return {
+      label: "OpenTimestamps — nicht RFC 3161",
+      detail: "SHA-256-Detached-Proof; ein erster Nachweis bleibt ATTACHED, bis OpenTimestamps-Upgrade und -Verifikation die Bitcoin-Verankerung bestätigen. CMS- und TSA-Trust-Chain-Prüfungen sind nicht anwendbar."
+    };
+  }
+  if (rfc3161) {
+    return {
+      label: "RFC 3161",
+      detail: "Signierter TimeStampResp; VERIFIED erfordert CMS-, Nonce-, Policy-, EKU- und Vertrauensketteprüfung gegen den ausdrücklich gewählten TSA Trust Anchor."
+    };
+  }
+  return {
+    label: "Kein Timestamp-Protokoll aktiv",
+    detail: "Es wird kein externer Zeitstempelnachweis angefordert."
   };
 }
 
@@ -2025,7 +2105,8 @@ export class SunoDocumentationApp {
 
   private renderTrackCheckSummary(track: TrackDetail): string {
     const summary = trackCheckSummary(track);
-    const issues = track.automation.consistencyIssues;
+    const consistency = automaticConsistencyPresentation(track);
+    const findings = consistency.findings;
     const technicalFacts = [
       track.automation.sunoCreatedTimestamp
         ? `<li><strong>Suno-created</strong><span>${escapeHtml(track.automation.sunoCreatedTimestamp)}</span></li>`
@@ -2038,14 +2119,14 @@ export class SunoDocumentationApp {
       `<li><strong>Menschlich bearbeitetes/finales Artwork</strong><span>${escapeHtml(humanEditedFinalArtworkStatus(track.evidence))}</span></li>`
     ].filter(Boolean).join("");
     return `<section class="panel check-summary">
-      <div class="panel-heading"><div><p class="overline">Gesamtprüfung</p><h3>Dokumentationsstatus</h3></div><span class="check-warning-count ${summary.warningCount === 0 ? "is-clear" : ""}">${summary.warningCount} Warnungen</span></div>
+      <div class="panel-heading"><div><p class="overline">Gesamtprüfung</p><h3>Dokumentationsstatus</h3></div><span class="check-warning-count ${consistency.outcome === "PASS" ? "is-clear" : ""}">Automatische Konsistenz: ${escapeHtml(consistency.outcome)} · ${consistency.warningCount} WARNING · ${consistency.infoCount} INFO</span></div>
       <div class="check-summary-grid">
         ${this.checkSummaryItem("Dokumentation", summary.documentation, summary.documentation === "vollständig")}
         ${this.checkSummaryItem("Dateiintegrität", summary.fileIntegrity, summary.fileIntegrity === "geprüft")}
         ${this.checkSummaryItem("Suno-Metadaten", summary.sunoMetadata, summary.sunoMetadata === "erkannt", summary.sunoMetadata === "nicht erkannt")}
         ${this.checkSummaryItem("Subscription-Zeitraum", summary.subscriptionCoverage, summary.subscriptionCoverage === "passend" || summary.subscriptionCoverage === "nicht erforderlich", summary.subscriptionCoverage === "nicht geprüft")}
       </div>
-      <details class="check-details"><summary>Technische Details anzeigen</summary><ul>${technicalFacts}</ul>${issues.length ? `<div class="check-issues"><strong>Konsistenzhinweise</strong><ul>${issues.map((item) => `<li>${icon(item.blocking ? "alert" : "info")}<span>${escapeHtml(item.message)}</span></li>`).join("")}</ul></div>` : `<p class="check-details-clear">Keine Konsistenzabweichungen erkannt.</p>`}</details>
+      <details class="check-details"><summary>Technische Details anzeigen</summary><ul>${technicalFacts}</ul>${findings.length ? `<div class="check-issues"><strong>Automatische Konsistenz</strong><ul>${findings.map((finding) => `<li>${icon(finding.level === "INFO" ? "info" : "alert")}<span><strong>${escapeHtml(finding.level)}</strong> · ${escapeHtml(finding.message)}</span></li>`).join("")}</ul></div>` : `<p class="check-details-clear">Keine Konsistenzabweichungen erkannt.</p>`}</details>
     </section>`;
   }
 
@@ -2432,9 +2513,14 @@ export class SunoDocumentationApp {
       "verification_configuration_incomplete"
     ].includes(summary.status);
     const isFailure = retry;
-    const legacyFallback = !track.externalTimestampSummary
-      && Boolean(record && /user-confirmed|manually recorded/i.test(record.provenance));
-    const alreadyAttached = summary.status === "verified" || (summary.status === "attached" && !legacyFallback);
+    const attachmentTerminal = externalTimestampAttachmentIsTerminal(
+      summary.status,
+      record,
+      this.state.timestampSettings.provider
+    );
+    const addingRfc3161AfterOpenTimestamps = summary.status === "attached"
+      && Boolean(record && externalTimestampRecordUsesOpenTimestamps(record))
+      && timestampProviderUsesRfc3161(this.state.timestampSettings.provider);
     const statusClass = summary.status === "verified"
       ? "is-valid"
       : isFailure
@@ -2442,20 +2528,21 @@ export class SunoDocumentationApp {
         : "";
     const action = !canAttach
       ? ""
-      : alreadyAttached
+      : attachmentTerminal
         ? `<button class="button button--secondary" disabled>${icon("check")} ${summary.status === "verified" ? "Bereits verifiziert" : "Timestamp angehängt"}</button>`
         : providerReady
-          ? `<button class="button button--secondary" data-action="attach-external-timestamp">${icon("upload")} ${retry ? "Erneut versuchen" : "Externen Zeitstempel anhängen"}</button>`
+          ? `<button class="button button--secondary" data-action="attach-external-timestamp">${icon("upload")} ${addingRfc3161AfterOpenTimestamps ? "RFC-3161-Zeitstempel zusätzlich anhängen" : retry ? "Erneut versuchen" : "Externen Zeitstempel anhängen"}</button>`
           : `<button class="button button--secondary" data-action="open-timestamp-settings">${icon("settings")} Zu End-Einstellungen → 05 Externer Zeitstempel</button>`;
     const statusIcon = summary.status === "verified" ? "check" : summary.status === "not_recorded" || isFailure ? "alert" : "info";
     const recordMarkup = record
       ? (() => {
           const integrity = externalTimestampIntegrityPresentation(record);
+          const presentation = externalTimestampRecordPresentation(record);
           const legacy = /user-confirmed|manually recorded/i.test(record.provenance);
           return `<article class="timestamp-record ${record.integrityVerified ? "" : "is-integrity-invalid"}">
-            <header><div><strong>${escapeHtml(summary.provider || record.provider)}</strong><small>${legacy ? "Legacy manually recorded timestamp evidence" : "Provider-derived metadata"}</small></div><span class="verification ${integrity.label === "VERIFIED" ? "is-valid" : ""}">Addendum integrity: ${integrity.label}</span></header>
+            <header><div><strong>${escapeHtml(summary.provider || record.provider)}</strong><small>${legacy ? "Legacy manually recorded timestamp evidence" : "Provider-derived metadata"}</small></div><span class="verification ${integrity.label === "VERIFIED" ? "is-valid" : ""}">Addendum files and anchor integrity: ${integrity.label}</span></header>
             <dl>
-              <div><dt>Timestamp</dt><dd>${escapeHtml(record.timestampValue || "Not documented")}</dd></div>
+              <div><dt>${presentation.timestampLabel}</dt><dd>${escapeHtml(presentation.timestampValue)}</dd></div>
               <div><dt>Referenced artifact</dt><dd>${escapeHtml(timestampArtifactLabel(record.referencedArtifact))}</dd></div>
               <div><dt>Referenced SHA-256</dt><dd><code>${escapeHtml(record.referencedSha256)}</code></dd></div>
               <div><dt>Verification status</dt><dd>${escapeHtml(externalTimestampStatusLabel(summary.status))}</dd></div>
@@ -2471,10 +2558,10 @@ export class SunoDocumentationApp {
                 <div><dt>Protocol</dt><dd>${escapeHtml(record.providerMetadata.protocol || "Not documented")}</dd></div>
                 <div><dt>Adapter</dt><dd>${escapeHtml(record.providerMetadata.adapter || "Not documented")}</dd></div>
                 ${record.providerMetadata.providerResponseFileName || record.providerMetadata.providerResponseSha256 ? `<div><dt>Raw provider proof</dt><dd>${escapeHtml(record.providerMetadata.providerResponseFileName || "Not documented")}${record.providerMetadata.providerResponseSha256 ? ` · <code>${escapeHtml(record.providerMetadata.providerResponseSha256)}</code>` : ""}</dd></div>` : ""}
-                <div><dt>Provider digest match</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.providerDigestMatch)}</dd></div>
+                <div><dt>${presentation.bindingLabel}</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.providerDigestMatch)}</dd></div>
                 ${record.providerMetadata.requestNonce ? `<div><dt>Request/response nonce</dt><dd><code>${escapeHtml(record.providerMetadata.requestNonce)}</code> · ${externalTimestampMatchLabel(record.providerMetadata.nonceMatch ?? null)}</dd></div>` : ""}
                 ${record.providerMetadata.requestedPolicyOid || record.providerMetadata.policyOid ? `<div><dt>Requested/returned policy</dt><dd>${escapeHtml(record.providerMetadata.requestedPolicyOid || "none")} / ${escapeHtml(record.providerMetadata.policyOid || "Not documented")} · ${record.providerMetadata.requestedPolicyOid ? externalTimestampMatchLabel(record.providerMetadata.policyMatch ?? null) : "N/A"}</dd></div>` : ""}
-                <div><dt>CMS signature / trust chain</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.signatureVerified)} / ${externalTimestampMatchLabel(record.providerMetadata.trustChainVerified)}</dd></div>
+                <div><dt>CMS signature / trust chain</dt><dd>${presentation.openTimestamps ? presentation.cmsTrustValue : `${externalTimestampMatchLabel(record.providerMetadata.signatureVerified)} / ${externalTimestampMatchLabel(record.providerMetadata.trustChainVerified)}`}</dd></div>
                 ${record.providerMetadata.cryptographicVerifier ? `<div><dt>Cryptographic verifier</dt><dd>${escapeHtml(record.providerMetadata.cryptographicVerifier)}</dd></div>` : ""}
                 ${record.providerMetadata.trustAnchorSha256?.length ? `<div><dt>Trust-anchor SHA-256</dt><dd><code>${escapeHtml(record.providerMetadata.trustAnchorSha256.join(", "))}</code></dd></div>` : ""}
                 <div><dt>Verification result</dt><dd>${escapeHtml(externalTimestampStatusLabel(record.providerMetadata.verificationResult))}</dd></div>
@@ -2482,7 +2569,7 @@ export class SunoDocumentationApp {
                 ${record.providerMetadata.policyOid ? `<div><dt>Policy OID</dt><dd>${escapeHtml(record.providerMetadata.policyOid)}</dd></div>` : ""}
               </dl>` : ""}
               ${record.externalReferenceId ? `<p>External reference ID: ${escapeHtml(record.externalReferenceId)}</p>` : ""}
-              ${record.providerVerificationUrl ? `<p>Provider verification URL: ${escapeHtml(record.providerVerificationUrl)}</p>` : ""}
+              ${record.providerVerificationUrl ? `<p>${presentation.endpointLabel}: ${escapeHtml(record.providerVerificationUrl)}</p>` : ""}
               ${integrity.issues.length ? `<p>${escapeHtml(integrity.issues.join(" · "))}</p>` : ""}
             </details>
           </article>`;
@@ -2490,7 +2577,8 @@ export class SunoDocumentationApp {
       : "";
     return `<section class="panel external-timestamp-section">
       <div class="panel-heading"><div><p class="overline">Post-finalization attachment</p><h3>External Timestamp Evidence</h3><p>Der Timestamp-Anchor wird automatisch aus dem finalisierten Zertifikatssnapshot bestimmt. Der ursprüngliche Manifest-/Hash-Snapshot bleibt unverändert.</p></div>${action}</div>
-      <div class="timestamp-summary ${statusClass}">${icon(statusIcon)}<div><strong>External Timestamp Evidence: ${escapeHtml(externalTimestampStatusLabel(summary.status))}</strong><span>${escapeHtml(summary.message)}</span></div></div>
+      <div class="timestamp-summary">${icon("lock")}<div><strong>Basiszertifikat (Phase 1): NOT RECORDED BY DESIGN</strong><span>Der unveränderliche Zertifikatssnapshot wurde vor dem externen Provider-Aufruf abgeschlossen. Spätere Nachweise gehören ausschließlich in separate Addenda.</span></div></div>
+      <div class="timestamp-summary ${statusClass}">${icon(statusIcon)}<div><strong>Aktueller Nachtrag (Phase 2): ${escapeHtml(externalTimestampStatusLabel(summary.status))}</strong><span>${escapeHtml(summary.message)}</span></div></div>
       ${summary.status === "not_recorded" ? `<p class="timestamp-summary-copy">Der Track ist technisch vollständig finalisiert. Ein externer Zeitstempel wurde für diesen Zertifikatssnapshot noch nicht hinterlegt.</p>${providerReady ? "" : `<p class="timestamp-summary-copy">Kein externer Timestamp-Dienst eingerichtet.</p>`}` : ""}
       ${recordMarkup}
       <p class="certificate-disclaimer">This records technical external timestamp evidence. No legal qualification of the timestamp is determined by Suno Documentation Manager.</p>
@@ -2543,9 +2631,10 @@ export class SunoDocumentationApp {
   private renderCertificate(track: TrackDetail): string {
     if (!track.certificate.certificateId) return `<div class="certificate-empty">${icon("certificate")}<p class="overline">Zertifikat</p><h3>Noch kein Completion Certificate</h3><p>Das Zertifikat wird erst nach erfolgreicher nativer Finalisierungsprüfung erzeugt.</p>${canCreateTrackRevision(track.status) ? `<button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>` : isTrackContentLocked(track.status) ? "" : `<button class="button button--dark" data-step-open="finalize">Finalisierungs-Gate öffnen ${icon("arrow")}</button>`}</div>`;
     const deviations = (track.blockingDeviations ?? []).filter((item) => item.blocking && !item.resolved);
+    const consistency = automaticConsistencyPresentation(track);
     return `<div class="certificate-view ${track.certificate.valid ? "is-valid" : "is-invalid"}">
       <div class="certificate-paper"><header><div class="certificate-seal">${icon("certificate")}</div><div><p>Suno Documentation Manager</p><h3>Track Documentation<br>Completion Certificate</h3></div><span class="certificate-result">${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "CERTIFICATE INVALID"}</span></header>
-      <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div><div><dt>Meaning</dt><dd>configured documentation requirements completed</dd></div></dl>
+      <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Automatische Konsistenz</dt><dd>${escapeHtml(consistency.outcome)}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div><div><dt>Meaning</dt><dd>configured documentation requirements completed</dd></div></dl>
       <footer>PASS means: Configured documentation requirements for this step were satisfied. This certificate confirms completion of the configured documentation workflow and integrity checks. It does not constitute governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.</footer></div>
       <div class="certificate-actions">${track.certificate.valid ? `<button class="button button--secondary" data-action="show-certificate-popup">${icon("certificate")} Zertifikatsübersicht öffnen</button>` : ""}${canCreateTrackRevision(track.status) ? `<button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>` : ""}${track.certificate.valid && canCreateTrackRevision(track.status) ? `<button class="button button--danger-soft" data-action="invalidate-certificate">Zertifikat invalidieren</button>` : ""}</div>
       ${this.renderExternalTimestampSection(track)}
@@ -2612,6 +2701,10 @@ export class SunoDocumentationApp {
     const status = result?.status ?? settings.status;
     const message = result?.message ?? settings.statusMessage;
     const testedAt = result?.testedAt ?? settings.lastTestedAt;
+    const protocol = timestampProviderProtocolPresentation(
+      settings.provider,
+      result?.provider === settings.provider ? result.capabilities : undefined
+    );
     const isReady = status === "ready";
     const statusClass = isReady ? "is-valid" : status === "disabled" ? "" : "is-warning";
     return `<div class="settings-section timestamp-settings-section"><div class="settings-section-copy"><span>05</span><div><h3>Externer Zeitstempel</h3><p>Der Dienst wird einmal pro Workspace eingerichtet. Pro finalisiertem Track wird nur noch der stabile Manifest-Anchor automatisch verwendet.</p></div></div><div>
@@ -2620,6 +2713,7 @@ export class SunoDocumentationApp {
         ${this.selectField("timestampProvider", "Timestamp Provider", settings.provider, [["free_tsa", "FreeTSA"], ["open_timestamps", "OpenTimestamps"], ["sigstore_public_tsa", "Sigstore Public TSA"], ["custom_rfc3161", "Custom RFC 3161"], ["disabled", "Disabled"]])}
         <label class="toggle-row timestamp-auto-toggle"><span><strong>Automatisch nach Finalisierung</strong><small>Phase 1 bleibt bei einem Providerfehler vollständig abgeschlossen.</small></span><input type="checkbox" name="timestampAutoAfterFinalization" aria-label="Zeitstempel automatisch nach Finalisierung anhängen" ${settings.autoAfterFinalization ? "checked" : ""}><i aria-hidden="true"></i></label>
       </div>
+      <p class="timestamp-settings-note"><strong>Protokoll: ${escapeHtml(protocol.label)}</strong><br>${escapeHtml(protocol.detail)}</p>
       <div class="timestamp-provider-status ${statusClass}"><div><strong>Status: ${escapeHtml(timestampProviderStatusLabel(status))}</strong><span>${escapeHtml(message || "Noch nicht getestet.")}</span>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-timestamp-provider" ${settings.enabled && settings.provider !== "disabled" ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
       <div data-timestamp-provider-configuration>${this.renderTimestampProviderConfiguration(settings)}</div>
       <p class="timestamp-settings-note">${icon("shield")} Zugangsdaten werden ausschließlich über die getrennte lokale sichere Konfiguration gespeichert. Sie erscheinen nie in Tracks, Evidenz, PDFs, Manifesten oder Revisionen.</p>

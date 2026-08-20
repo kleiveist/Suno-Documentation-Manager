@@ -90,11 +90,13 @@ Review Section C as a chain of distinct facts: final-generation date, Suno ID/fi
 
 ## Review automatic Suno metadata
 
-When you import a Suno final-export WAV, the application checks its bounded structured metadata. A recognized `made with suno studio` value can supply a valid `created` value and a valid `id` independently; each appears in the evidence details with its evidence/hash origin when present. An invalid or missing ID does not prevent date derivation.
+When you import a Suno final-export WAV, the application checks its bounded structured metadata. It recognizes only the complete case-insensitive marker segments `made with suno studio` and `made with suno`. Derivation requires one marker, one RFC 3339 `created` value, and one UUID `id` in the same unambiguous record; missing, malformed, duplicated, mixed, incidental, or unsafe values do not become automatic facts. This check documents metadata found in the local WAV and does not authenticate Suno or the provider.
 
 The calendar part of `created` is authoritative for the final-generation date in Step 03, the production-end date in Step 01, and the optional download/export date in Step 03. As long as a valid metadata date exists, these values are filled automatically and shown read-only. Step 07 asks whether the WAV was edited again on the desktop PC. Choose `No` to derive and lock the last-editing date from the WAV; choose `Yes` to enter the actual date and confirmed editing work yourself. You can enter manual fallback dates when no valid metadata date is available. The application never substitutes an import or filesystem timestamp.
 
 Check the origin shown next to an automatic value. Replacing the Suno export updates every applicable automatic date; removing it clears the evidence-derived values and restores manual fallback inputs. An ordinary WAV without the structured marker remains usable evidence and does not create generation facts.
+
+A finalized certificate is never rewritten when marker support changes. Start an explicit revision to analyze the carried, hash-matching WAV with the current detector. The former certificate, manifest, and any external-timestamp sidecars remain archived with their original bytes; the new manifest requires its own timestamp attachment.
 
 For commercial tracks, attach each globally registered receipt whose interval overlaps production or covers final generation. A single receipt need not cover everything: adjacent intervals are combined, but the full production period must remain gap-free and final generation must fall inside at least one attached interval. The list marks partial production overlap as `TEILWEISE` instead of rejecting that receipt.
 
@@ -266,6 +268,8 @@ sha256sum -c TIMESTAMP_RECORD_SHA256.txt
 When you reopen the track, SunoDM reverifies the sidecar against its registered record: the exact managed regular-file set, canonical immutable JSON, exact published record/evidence/optional-response/Markdown/PDF bytes, all pinned hashes, referenced artifact and stored match result, versioned hash list, and archived Certificate-ID binding when applicable. It verifies published bytes; it does not re-render an older addendum or repeat a network request. An automatic RFC-3161 summary remains `VERIFIED` only when the intact record is bound specifically to an equal claimed/actual Evidence Manifest hash and still contains every positive nonce, policy, signature, chain, verifier, and pinned-root result. Missing, stale, summary-only, manual, legacy, or OTS state is not promoted. If a sidecar file was changed or removed, that timestamp record reports integrity `NO`, while the unchanged phase-one certificate remains separately valid.
 
 No external timestamp is required for ordinary finalization. For commercial tracks the application displays `External timestamp evidence: NOT RECORDED` until one is attached and may recommend this optional preservation step; it does not give legal advice.
+
+The Certificate view keeps the immutable phase-one result and the current phase-two timestamp addendum visibly separate. Its automatic-consistency summary is presentation-only: optional observations are `INFO`, an attached but unverified OpenTimestamps proof is a `WARNING`, and existing mandatory contradictions remain `BLOCKING`. The aggregate is `PASS`, `PASS WITH WARNINGS`, or `BLOCKED` respectively. These labels do not change the workflow gate, `DOCUMENTATION COMPLETE`, certificate validity, or previously published files. After an initial OpenTimestamps attachment, switching Settings to a ready RFC-3161 provider permits an additional RFC-3161 sidecar; the OTS record is preserved rather than replaced.
 
 ## Preserve the snapshot
 

@@ -9,6 +9,8 @@ import {
   canCreateTrackRevision,
   documentationAnswerLabel,
   externalAudioScreeningIsCurrent,
+  externalTimestampAttachmentIsTerminal,
+  externalTimestampRecordPresentation,
   externalTimestampSummaryFor,
   externalTimestampIntegrityPresentation,
   externalTimestampMatchLabel,
@@ -35,6 +37,7 @@ import {
   termsMetadataComplete,
   timestampArtifactLabel,
   timestampProviderIsReady,
+  timestampProviderProtocolPresentation,
   timestampProviderStatusLabel,
   VOCAL_INTENT_CHOICES,
   visibleExternalAudioScreening,
@@ -49,7 +52,7 @@ import {
   workflowUpgradePresentation
 } from "./app";
 import { evidenceRoleFileTypes, WORKFLOW_STEPS } from "./domain/workflow";
-import { emptyAudioScreeningSettings, emptyAudioScreeningSummary, emptyEvidenceMetadata, emptyProfile, emptyTimestampSettings, emptyTrackAutomation, emptyTrackFields, type EvidenceItem, type TrackDetail } from "./domain/types";
+import { emptyAudioScreeningSettings, emptyAudioScreeningSummary, emptyEvidenceMetadata, emptyProfile, emptyTimestampSettings, emptyTrackAutomation, emptyTrackFields, type EvidenceItem, type ExternalTimestampRecord, type TrackDetail } from "./domain/types";
 import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
 import { translateUiText } from "./ui/i18n";
 
@@ -293,6 +296,56 @@ describe("navigation", () => {
       provider: "free_tsa",
       status: "ready"
     })).toBe(false);
+  });
+
+  it("distinguishes OpenTimestamps from RFC 3161 in provider settings", () => {
+    expect(timestampProviderProtocolPresentation("open_timestamps")).toEqual({
+      label: "OpenTimestamps — nicht RFC 3161",
+      detail: expect.stringContaining("ATTACHED")
+    });
+    expect(timestampProviderProtocolPresentation("free_tsa")).toEqual({
+      label: "RFC 3161",
+      detail: expect.stringContaining("TSA Trust Anchor")
+    });
+  });
+
+  it("presents an initial OpenTimestamps proof without RFC-specific claims", () => {
+    const record = {
+      provider: "OpenTimestamps",
+      timestampValue: "",
+      providerMetadata: {
+        adapter: "open_timestamps",
+        protocol: "OpenTimestamps detached proof; Bitcoin anchoring pending verification/upgrade"
+      } as NonNullable<ExternalTimestampRecord["providerMetadata"]>
+    };
+
+    expect(externalTimestampRecordPresentation(record)).toEqual({
+      openTimestamps: true,
+      timestampLabel: "Confirmed timestamp",
+      timestampValue: "PENDING — OpenTimestamps verification / upgrade required",
+      bindingLabel: "Local manifest / proof binding",
+      cmsTrustValue: "N/A — not RFC 3161",
+      endpointLabel: "Calendar endpoint"
+    });
+  });
+
+  it("allows a ready RFC 3161 sidecar after OTS while keeping terminal records terminal", () => {
+    const ots = {
+      provider: "OpenTimestamps",
+      provenance: "Automatic provider response",
+      providerMetadata: {
+        adapter: "open_timestamps",
+        protocol: "OpenTimestamps detached proof"
+      } as NonNullable<ExternalTimestampRecord["providerMetadata"]>
+    };
+
+    expect(externalTimestampAttachmentIsTerminal("attached", ots, "open_timestamps")).toBe(true);
+    expect(externalTimestampAttachmentIsTerminal("attached", ots, "free_tsa")).toBe(false);
+    expect(externalTimestampAttachmentIsTerminal("verified", ots, "free_tsa")).toBe(true);
+    expect(externalTimestampAttachmentIsTerminal("attached", {
+      ...ots,
+      provenance: "Legacy manually recorded timestamp evidence"
+    }, "free_tsa")).toBe(false);
   });
 
   it("presents an unrequested ACRCloud check as skipped when global credentials are absent", () => {

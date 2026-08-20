@@ -12803,6 +12803,7 @@ mod tests {
     const P0_SUNO_ID: &str = "6c8a40fd-32bf-4c7b-ab59-23579ff95828";
     const P0_SECOND_SUNO_ID: &str = "7d9b51ae-43cf-4d8c-bc6a-3468a00a6929";
     const P0_THIRD_SUNO_ID: &str = "8ea062bf-54d0-4e9d-cd7b-4579b11b7a3a";
+    const P0_SUNO_MARKER_ALIAS_ID: &str = "c18284d0-9b50-40ca-bece-0362fe7c82dd";
 
     fn p0_suno_comment(timestamp: &str) -> String {
         p0_suno_comment_with_id(timestamp, P0_SUNO_ID)
@@ -12810,6 +12811,10 @@ mod tests {
 
     fn p0_suno_comment_with_id(timestamp: &str, id: &str) -> String {
         format!("made with suno studio; created={timestamp}; id={id}")
+    }
+
+    fn p0_suno_marker_alias_comment(timestamp: &str, id: &str) -> String {
+        format!("made with suno; created={timestamp}; id={id}")
     }
 
     /// Test-only RIFF encoder. It intentionally does not call any production
@@ -12998,11 +13003,11 @@ mod tests {
     }
 
     #[test]
-    fn p0_suno_import_persists_exact_metadata_and_derives_authoritative_dates() {
+    fn p0_suno_marker_alias_import_persists_metadata_and_derives_authoritative_dates() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         let track = p0_track(&app, "P0 Metadata Import", None, false);
-        let raw = p0_suno_comment("2026-08-17T06:38:06Z");
+        let raw = p0_suno_marker_alias_comment("2026-08-18T07:17:52Z", P0_SUNO_MARKER_ALIAS_ID);
         let source = directory.path().join("suno-metadata.wav");
         let wav = p0_pcm_wav(Some(&raw));
         fs::write(&source, &wav).expect("write Suno WAV");
@@ -13036,27 +13041,30 @@ mod tests {
         assert!(evidence.metadata.suno_studio_detected);
         assert_eq!(
             evidence.metadata.suno_created_timestamp,
-            "2026-08-17T06:38:06Z"
+            "2026-08-18T07:17:52Z"
         );
-        assert_eq!(evidence.metadata.suno_created_date, "2026-08-17");
-        assert_eq!(evidence.metadata.suno_id, P0_SUNO_ID);
+        assert_eq!(evidence.metadata.suno_created_date, "2026-08-18");
+        assert_eq!(evidence.metadata.suno_id, P0_SUNO_MARKER_ALIAS_ID);
         assert_eq!(evidence.metadata.suno_raw_metadata, raw);
-        assert_eq!(imported.fields.suno_final_generation_id, P0_SUNO_ID);
+        assert_eq!(
+            imported.fields.suno_final_generation_id,
+            P0_SUNO_MARKER_ALIAS_ID
+        );
         assert_eq!(
             imported.automation.final_generation_id_origin,
             FactOrigin::EvidenceDerivedMetadata
         );
-        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-17");
+        assert_eq!(imported.fields.suno_final_generation_date, "2026-08-18");
         assert_eq!(
             imported.automation.final_generation_origin,
             FactOrigin::EvidenceDerivedMetadata
         );
-        assert_eq!(imported.fields.production_end_date, "2026-08-17");
+        assert_eq!(imported.fields.production_end_date, "2026-08-18");
         assert_eq!(
             imported.automation.production_end_origin,
             FactOrigin::EvidenceDerivedMetadata
         );
-        assert_eq!(imported.fields.suno_download_export_date, "2026-08-17");
+        assert_eq!(imported.fields.suno_download_export_date, "2026-08-18");
         assert_eq!(
             imported.automation.download_export_origin,
             FactOrigin::EvidenceDerivedMetadata
@@ -13736,7 +13744,7 @@ mod tests {
     }
 
     #[test]
-    fn p0_finalized_pre_metadata_record_is_not_backfilled_on_load() {
+    fn p0_finalized_marker_alias_is_immutable_until_revision_reanalysis() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
@@ -13744,11 +13752,9 @@ mod tests {
         let ready = prepare_ready_track(&app, &fixture_root, "P0 Frozen Legacy Metadata");
         let existing = p0_evidence(&ready, EvidenceRole::SunoFinalExport).clone();
         let source = fixture_root.join("suno-export.wav");
-        fs::write(
-            &source,
-            p0_pcm_wav(Some(&p0_suno_comment("2026-08-02T06:38:06Z"))),
-        )
-        .expect("real Suno WAV bytes");
+        let alias_raw =
+            p0_suno_marker_alias_comment("2026-08-18T07:17:52Z", P0_SUNO_MARKER_ALIAS_ID);
+        fs::write(&source, p0_pcm_wav(Some(&alias_raw))).expect("real Suno WAV bytes");
         let replaced = app
             .replace_evidence_from(
                 &ready.id,
@@ -13786,6 +13792,13 @@ mod tests {
             .save_evidence(&ready.id, &legacy_evidence)
             .expect("seed pre-metadata evidence row");
         let mut legacy_track = app.persistence.track(&ready.id).expect("stored track");
+        // Mirror a finalized pre-detection snapshot whose manually recorded
+        // dates differ from the subsequently recognized provider record.
+        legacy_track.fields.production_end_date = "2026-08-17".into();
+        legacy_track.fields.suno_final_generation_date = "2026-08-16".into();
+        legacy_track.fields.suno_final_generation_id = P0_SUNO_MARKER_ALIAS_ID.into();
+        legacy_track.fields.suno_download_export_date = "2026-08-16".into();
+        legacy_track.fields.final_export_date = "2026-08-16".into();
         legacy_track.field_origins = Default::default();
         app.persistence
             .save_track(&legacy_track)
@@ -13898,8 +13911,59 @@ mod tests {
         assert!(analyzed.metadata.suno_studio_detected);
         assert_eq!(
             analyzed.metadata.suno_created_timestamp,
-            "2026-08-02T06:38:06Z"
+            "2026-08-18T07:17:52Z"
         );
+        assert_eq!(analyzed.metadata.suno_created_date, "2026-08-18");
+        assert_eq!(analyzed.metadata.suno_id, P0_SUNO_MARKER_ALIAS_ID);
+        assert_eq!(analyzed.metadata.suno_raw_metadata, alias_raw);
+        assert_eq!(revision.fields.production_end_date, "2026-08-18");
+        assert_eq!(revision.fields.suno_final_generation_date, "2026-08-18");
+        assert_eq!(
+            revision.fields.suno_final_generation_id,
+            P0_SUNO_MARKER_ALIAS_ID
+        );
+        assert_eq!(revision.fields.suno_download_export_date, "2026-08-18");
+        assert_eq!(revision.fields.final_export_date, "2026-08-18");
+        assert_eq!(
+            revision.automation.final_generation_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(
+            revision.automation.final_generation_id_origin,
+            FactOrigin::UserConfirmedFact
+        );
+        assert_eq!(
+            revision.automation.production_end_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(
+            revision.automation.download_export_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+        assert_eq!(
+            revision.automation.final_export_origin,
+            FactOrigin::EvidenceDerivedMetadata
+        );
+
+        let archives = fs::read_dir(track_root.join(".archive/revisions"))
+            .expect("revision archive")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("revision entries");
+        assert_eq!(archives.len(), 1);
+        for (relative, bytes) in &certificate_before {
+            let archived = if relative == certificate::PDF_FILE {
+                archives[0].path().join(certificate::PDF_FILE)
+            } else {
+                archives[0]
+                    .path()
+                    .join("certificate")
+                    .join(Path::new(relative).file_name().expect("certificate name"))
+            };
+            assert_eq!(
+                fs::read(archived).expect("archived finalized bytes"),
+                *bytes
+            );
+        }
     }
 
     #[test]

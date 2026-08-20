@@ -328,6 +328,7 @@ fn external_timestamp_rows(snapshot: &ExternalTimestampPdfSnapshot<'_>) -> Vec<T
     )];
 
     if let Some(metadata) = snapshot.provider_metadata {
+        let open_timestamps = is_open_timestamps_metadata(metadata);
         rows.push(TableRow::plain(
             "Record source [System verification]",
             "Automatic provider response",
@@ -344,12 +345,19 @@ fn external_timestamp_rows(snapshot: &ExternalTimestampPdfSnapshot<'_>) -> Vec<T
             snapshot.timestamp_type,
             false,
         );
-        push_documented_row(
-            &mut rows,
-            "Timestamp value [Provider-derived metadata]",
-            snapshot.timestamp_value,
-            true,
-        );
+        if open_timestamps && snapshot.timestamp_value.trim().is_empty() {
+            rows.push(TableRow::plain(
+                "Confirmed timestamp [System verification]",
+                "PENDING — OpenTimestamps proof verification / upgrade required",
+            ));
+        } else {
+            push_documented_row(
+                &mut rows,
+                "Timestamp value [Provider-derived metadata]",
+                snapshot.timestamp_value,
+                true,
+            );
+        }
         push_documented_row(
             &mut rows,
             "Referenced artifact [System value]",
@@ -390,7 +398,11 @@ fn external_timestamp_rows(snapshot: &ExternalTimestampPdfSnapshot<'_>) -> Vec<T
         );
         push_documented_row(
             &mut rows,
-            "Provider verification URL [Provider-derived metadata]",
+            if open_timestamps {
+                "Calendar endpoint [Provider-derived metadata]"
+            } else {
+                "Provider verification URL [Provider-derived metadata]"
+            },
             snapshot.provider_verification_url,
             true,
         );
@@ -487,6 +499,8 @@ fn push_documented_row(rows: &mut Vec<TableRow>, label: &str, value: &str, mono:
 }
 
 fn provider_metadata_rows(rows: &mut Vec<TableRow>, metadata: &TimestampProviderMetadata) {
+    let open_timestamps = is_open_timestamps_metadata(metadata);
+    let rfc3161 = metadata.protocol.contains("RFC 3161");
     let requested_policy = if metadata.requested_policy_oid.trim().is_empty() {
         "NONE (provider policy accepted)"
     } else {
@@ -515,7 +529,11 @@ fn provider_metadata_rows(rows: &mut Vec<TableRow>, metadata: &TimestampProvider
             false,
         ),
         (
-            "Provider endpoint identifier [Provider-derived metadata]",
+            if open_timestamps {
+                "Calendar endpoint identifier [Provider-derived metadata]"
+            } else {
+                "Provider endpoint identifier [Provider-derived metadata]"
+            },
             metadata.provider_endpoint_identifier.as_str(),
             false,
         ),
@@ -550,42 +568,49 @@ fn provider_metadata_rows(rows: &mut Vec<TableRow>, metadata: &TimestampProvider
             true,
         ),
         (
-            "Timestamp policy OID [Provider-derived metadata]",
-            metadata.policy_oid.as_str(),
-            false,
-        ),
-        (
-            "RFC 3161 request nonce [System value]",
-            metadata.request_nonce.as_str(),
-            true,
-        ),
-        (
-            "RFC 3161 response nonce [Provider-derived metadata]",
-            metadata.response_nonce.as_str(),
-            true,
-        ),
-        (
-            "Requested timestamp policy OID [System value]",
-            requested_policy,
-            false,
-        ),
-        (
-            "Cryptographic verifier [System verification]",
-            metadata.cryptographic_verifier.as_str(),
-            false,
-        ),
-        (
-            "Trust-anchor SHA-256 [System verification]",
-            trust_anchor_sha256.as_str(),
-            true,
-        ),
-        (
             "Verification timestamp [System verification]",
             metadata.verification_timestamp.as_str(),
             true,
         ),
     ] {
         push_documented_row(rows, label, value, mono);
+    }
+
+    if rfc3161 {
+        for (label, value, mono) in [
+            (
+                "Timestamp policy OID [Provider-derived metadata]",
+                metadata.policy_oid.as_str(),
+                false,
+            ),
+            (
+                "RFC 3161 request nonce [System value]",
+                metadata.request_nonce.as_str(),
+                true,
+            ),
+            (
+                "RFC 3161 response nonce [Provider-derived metadata]",
+                metadata.response_nonce.as_str(),
+                true,
+            ),
+            (
+                "Requested timestamp policy OID [System value]",
+                requested_policy,
+                false,
+            ),
+            (
+                "Cryptographic verifier [System verification]",
+                metadata.cryptographic_verifier.as_str(),
+                false,
+            ),
+            (
+                "Trust-anchor SHA-256 [System verification]",
+                trust_anchor_sha256.as_str(),
+                true,
+            ),
+        ] {
+            push_documented_row(rows, label, value, mono);
+        }
     }
 
     rows.push(TableRow::plain(
@@ -598,36 +623,59 @@ fn provider_metadata_rows(rows: &mut Vec<TableRow>, metadata: &TimestampProvider
         metadata.verification_message.as_str(),
         false,
     );
-    for (label, value) in [
-        (
-            "Provider response structure valid [System verification]",
-            metadata.response_structure_valid,
-        ),
-        (
-            "Provider digest match [System verification]",
-            metadata.provider_digest_match,
-        ),
-        (
-            "RFC 3161 nonce match [System verification]",
-            metadata.nonce_match,
-        ),
-        (
-            "Requested policy match [System verification]",
-            metadata.policy_match,
-        ),
-        (
-            "Timestamp signature verified [System verification]",
-            metadata.signature_verified,
-        ),
-        (
-            "Timestamp trust chain verified [System verification]",
-            metadata.trust_chain_verified,
-        ),
-    ] {
-        if let Some(value) = value {
-            rows.push(TableRow::plain(label, yes_no(Some(value))));
+    if open_timestamps {
+        rows.push(TableRow::plain(
+            "OpenTimestamps proof verification [System verification]",
+            "PENDING — upgrade/verification required",
+        ));
+        rows.push(TableRow::plain(
+            "Local manifest / proof binding [System verification]",
+            yes_no(metadata.provider_digest_match),
+        ));
+        rows.push(TableRow::plain(
+            "CMS signature / trust chain [System verification]",
+            "N/A — not RFC 3161",
+        ));
+    } else {
+        for (label, value) in [
+            (
+                "Provider response structure valid [System verification]",
+                metadata.response_structure_valid,
+            ),
+            (
+                "Provider digest match [System verification]",
+                metadata.provider_digest_match,
+            ),
+            (
+                "RFC 3161 nonce match [System verification]",
+                metadata.nonce_match,
+            ),
+            (
+                "Requested policy match [System verification]",
+                metadata.policy_match,
+            ),
+            (
+                "Timestamp signature verified [System verification]",
+                metadata.signature_verified,
+            ),
+            (
+                "Timestamp trust chain verified [System verification]",
+                metadata.trust_chain_verified,
+            ),
+        ] {
+            if let Some(value) = value {
+                rows.push(TableRow::plain(label, yes_no(Some(value))));
+            }
         }
     }
+}
+
+fn is_open_timestamps_metadata(metadata: &TimestampProviderMetadata) -> bool {
+    metadata.adapter.eq_ignore_ascii_case("open_timestamps")
+        || metadata
+            .protocol
+            .to_ascii_lowercase()
+            .contains("opentimestamps")
 }
 
 fn provider_verification_status_label(status: ExternalTimestampStatus) -> &'static str {
@@ -4897,6 +4945,70 @@ mod tests {
         assert!(!text.contains("Legacy manually recorded timestamp evidence"));
         assert!(!text.contains("Qualified electronic timestamp"));
         assert!(normalized.contains("do not establish a qualified timestamp, legal effect"));
+    }
+
+    #[test]
+    fn open_timestamps_addendum_uses_protocol_aware_pending_labels() {
+        let metadata = TimestampProviderMetadata {
+            adapter: "open_timestamps".into(),
+            protocol:
+                "OpenTimestamps detached proof; Bitcoin anchoring pending verification/upgrade"
+                    .into(),
+            request_algorithm: "SHA-256".into(),
+            response_format: "OpenTimestamps DetachedTimestampFile (.ots)".into(),
+            provider_endpoint_identifier: "https://a.pool.opentimestamps.org/digest".into(),
+            provider_response_file_name: "PROVIDER_RESPONSE.bin".into(),
+            provider_response_sha256: DIGEST_B.into(),
+            referenced_revision_id: "finalization-snapshot-ots".into(),
+            provider_digest_match: Some(true),
+            verification_result: ExternalTimestampStatus::Attached,
+            verification_message:
+                "Detached proof is locally bound; OpenTimestamps verification is pending.".into(),
+            verification_timestamp: "2026-08-20T10:58:00Z".into(),
+            ..TimestampProviderMetadata::default()
+        };
+        let snapshot = ExternalTimestampPdfSnapshot {
+            certificate_id: CERTIFICATE_ID,
+            provider: "OpenTimestamps",
+            timestamp_type: "External integrity timestamp",
+            timestamp_value: "",
+            referenced_artifact: "EVIDENCE_MANIFEST.json",
+            referenced_artifact_path: "06_CERTIFICATE/EVIDENCE_MANIFEST.json",
+            referenced_sha256: DIGEST_A,
+            actual_sha256: DIGEST_A,
+            referenced_hash_match: Some(true),
+            evidence_file_name: "TIMESTAMP_EVIDENCE.ots",
+            evidence_sha256: DIGEST_C,
+            imported_at: "2026-08-20T10:58:00Z",
+            provenance: "Provider-derived metadata; managed provider response",
+            external_reference_id: "",
+            provider_verification_url: "https://a.pool.opentimestamps.org/digest",
+            note: "OpenTimestamps proof archived; verification or upgrade remains pending.",
+            provider_metadata: Some(&metadata),
+        };
+
+        let bytes = generate_external_timestamp_addendum_pdf(&snapshot)
+            .expect("generate OpenTimestamps addendum");
+        validate_pdfa_2b_bytes(&bytes).expect("OpenTimestamps addendum PDF/A-2b structure");
+        let (_, text) = parse_text(&bytes);
+        let normalized = normalized_text(&text);
+
+        for expected in [
+            "Confirmed timestamp [System verification] PENDING — OpenTimestamps proof verification / upgrade required",
+            "Calendar endpoint [Provider-derived metadata]",
+            "Calendar endpoint identifier [Provider-derived metadata]",
+            "OpenTimestamps proof verification [System verification] PENDING — upgrade/verification required",
+            "Local manifest / proof binding [System verification] YES",
+            "CMS signature / trust chain [System verification] N/A — not RFC 3161",
+            "Provider verification result [System verification] ATTACHED",
+        ] {
+            assert!(
+                normalized.contains(expected),
+                "missing protocol-aware OpenTimestamps value: {expected}\n{normalized}"
+            );
+        }
+        assert!(!normalized.contains("Provider digest match [System verification]"));
+        assert!(!normalized.contains("Requested timestamp policy OID"));
     }
 
     #[test]

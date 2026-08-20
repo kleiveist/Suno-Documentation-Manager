@@ -229,12 +229,15 @@ pub fn settings_status(
             "External timestamp service is disabled.".into(),
         );
     }
+    if settings.provider == TimestampProviderKind::OpenTimestamps {
+        return (
+            ExternalTimestampStatus::Ready,
+            "OpenTimestamps calendar service is ready. This is not RFC 3161; an initial detached proof remains ATTACHED until OpenTimestamps verification or upgrade confirms its Bitcoin anchoring."
+                .into(),
+        );
+    }
     if settings.provider != TimestampProviderKind::CustomRfc3161 {
-        if matches!(
-            settings.provider,
-            TimestampProviderKind::FreeTsa | TimestampProviderKind::SigstorePublicTsa
-        ) && settings.custom.ca_certificate_path.trim().is_empty()
-        {
+        if settings.custom.ca_certificate_path.trim().is_empty() {
             return (
                 ExternalTimestampStatus::VerificationConfigurationIncomplete,
                 "An explicit TSA CA trust-anchor file is required before RFC 3161 responses can be marked VERIFIED."
@@ -243,7 +246,7 @@ pub fn settings_status(
         }
         return (
             ExternalTimestampStatus::Ready,
-            "Timestamp service and explicit TSA trust anchor are ready.".into(),
+            "RFC 3161 timestamp service and explicit TSA trust anchor are ready.".into(),
         );
     }
     match validate_custom_settings(&settings.custom, secret_available) {
@@ -374,19 +377,26 @@ fn test_provider_with_transport(
     }
     match request_timestamp_with_transport(settings, secret, &"00".repeat(32), None, transport) {
         Ok(response) => {
-            let (status, message) =
-                if response.status == ExternalTimestampStatus::VerificationFailed {
-                    (
+            let (status, message) = if response.status
+                == ExternalTimestampStatus::VerificationFailed
+            {
+                (
                     ExternalTimestampStatus::UnsupportedResponse,
                     "Provider responded, but its test response could not be technically verified."
                         .into(),
                 )
-                } else {
-                    (
+            } else if settings.provider == TimestampProviderKind::OpenTimestamps {
+                (
                         ExternalTimestampStatus::Ready,
-                        "Timestamp service ready.".into(),
+                        "OpenTimestamps calendar service reachable. This is not RFC 3161; an initial proof remains ATTACHED pending OpenTimestamps verification or upgrade."
+                            .into(),
                     )
-                };
+            } else {
+                (
+                    ExternalTimestampStatus::Ready,
+                    "RFC 3161 timestamp service ready.".into(),
+                )
+            };
             TimestampProviderTestResult {
                 provider: settings.provider,
                 status,
@@ -616,7 +626,7 @@ impl TimestampProviderAdapter for OpenTimestampsAdapter {
                 .into(),
             metadata: TimestampProviderMetadata {
                 adapter: "open_timestamps".into(),
-                protocol: "OpenTimestamps / Bitcoin-backed timestamp proof".into(),
+                protocol: "OpenTimestamps detached proof; Bitcoin anchoring pending verification/upgrade".into(),
                 request_algorithm: "SHA-256".into(),
                 response_format: "OpenTimestamps DetachedTimestampFile (.ots); raw calendar Timestamp response archived separately".into(),
                 provider_endpoint_identifier: OPEN_TIMESTAMPS_POOL_ENDPOINT.into(),
@@ -2600,15 +2610,29 @@ fn render_markdown(record: &ExternalTimestampRecord) -> String {
     } else {
         "Legacy user-recorded fact"
     };
+    let open_timestamps = record
+        .provider_metadata
+        .as_ref()
+        .is_some_and(is_open_timestamps_metadata);
+    let timestamp_value = if open_timestamps && record.timestamp_value.trim().is_empty() {
+        "PENDING — OpenTimestamps proof verification / upgrade required".into()
+    } else {
+        documented_md(&record.timestamp_value)
+    };
+    let provider_url_label = if open_timestamps {
+        "Calendar endpoint"
+    } else {
+        "Provider verification URL"
+    };
     let provider_metadata_md = provider_metadata_markdown(record);
     format!(
-        "# SunoDM External Timestamp Evidence Addendum\n\n> Post-finalization technical evidence record — no legal qualification asserted.\n\n## Certificate association\n\n- Certificate ID: `{}`\n- Timestamp record ID: `{}`\n- Imported at [System value]: {}\n\n## External Timestamp Evidence\n\n- Provider / issuer [{provider_origin}]: {}\n- Timestamp type [{provider_origin}]: {}\n- Timestamp value [{provider_origin}]: {}\n- Referenced artifact [System value]: {}\n- Referenced artifact path [System value]: `{}`\n- Referenced SHA-256 [System verification]: `{}`\n- Actual artifact SHA-256 [System verification]: `{}`\n- Referenced hash match [System verification]: **{}**\n- Timestamp evidence filename [Evidence-derived metadata]: {}\n- Timestamp evidence SHA-256 [System verification]: `{}`\n- External reference ID [{provider_origin}]: {}\n- Provider verification URL [{provider_origin}]: {}\n- Note [{provider_origin}]: {}\n- Provenance [System value]: {}\n{provider_metadata_md}\n{}\n",
+        "# SunoDM External Timestamp Evidence Addendum\n\n> Post-finalization technical evidence record — no legal qualification asserted.\n\n## Certificate association\n\n- Certificate ID: `{}`\n- Timestamp record ID: `{}`\n- Imported at [System value]: {}\n\n## External Timestamp Evidence\n\n- Provider / issuer [{provider_origin}]: {}\n- Timestamp type [{provider_origin}]: {}\n- Timestamp value [{provider_origin}]: {}\n- Referenced artifact [System value]: {}\n- Referenced artifact path [System value]: `{}`\n- Referenced SHA-256 [System verification]: `{}`\n- Actual artifact SHA-256 [System verification]: `{}`\n- Referenced hash match [System verification]: **{}**\n- Timestamp evidence filename [Evidence-derived metadata]: {}\n- Timestamp evidence SHA-256 [System verification]: `{}`\n- External reference ID [{provider_origin}]: {}\n- {provider_url_label} [{provider_origin}]: {}\n- Note [{provider_origin}]: {}\n- Provenance [System value]: {}\n{provider_metadata_md}\n{}\n",
         md(&record.certificate_id),
         md(&record.id),
         md(&record.imported_at),
         documented_md(&record.provider),
         timestamp_type_label(record.timestamp_type),
-        documented_md(&record.timestamp_value),
+        timestamp_value,
         referenced_artifact_label(record.referenced_artifact),
         md(&record.referenced_artifact_path),
         record.referenced_sha256,
@@ -2632,7 +2656,9 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
     let Some(metadata) = &record.provider_metadata else {
         return "\n- Record source [System value]: Legacy manually recorded timestamp evidence\n- Provider response verification [System verification]: NOT RECORDED (legacy manually recorded timestamp evidence)\n".into();
     };
-    let rfc_verification_context = if metadata.protocol.contains("RFC 3161") {
+    let is_rfc3161 = metadata.protocol.contains("RFC 3161");
+    let open_timestamps = is_open_timestamps_metadata(metadata);
+    let protocol_verification_context = if is_rfc3161 {
         let requested_policy = if metadata.requested_policy_oid.trim().is_empty() {
             "NONE (provider policy accepted)"
         } else {
@@ -2644,7 +2670,7 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
             optional_bool_label(metadata.policy_match)
         };
         format!(
-            "- Request nonce [System value]: `{}`\n- Response nonce [Provider-derived metadata]: `{}`\n- Nonce match [System verification]: {}\n- Requested policy OID [System value]: {}\n- Returned policy OID [Provider-derived metadata]: {}\n- Policy match [System verification]: {}\n- Cryptographic verifier [System value]: {}\n- Trust-anchor SHA-256 [System verification]: {}\n",
+            "- Request nonce [System value]: `{}`\n- Response nonce [Provider-derived metadata]: `{}`\n- Nonce match [System verification]: {}\n- Requested policy OID [System value]: {}\n- Returned policy OID [Provider-derived metadata]: {}\n- Policy match [System verification]: {}\n- Cryptographic verifier [System value]: {}\n- Trust-anchor SHA-256 [System verification]: {}\n- Provider response structure valid [System verification]: {}\n- Provider digest match [System verification]: {}\n- CMS signature verified [System verification]: {}\n- Trust chain verified [System verification]: {}\n",
             documented_md(&metadata.request_nonce),
             documented_md(&metadata.response_nonce),
             optional_bool_label(metadata.nonce_match),
@@ -2653,12 +2679,32 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
             policy_match,
             documented_md(&metadata.cryptographic_verifier),
             documented_md(&metadata.trust_anchor_sha256.join(", ")),
+            optional_bool_label(metadata.response_structure_valid),
+            optional_bool_label(metadata.provider_digest_match),
+            optional_bool_label(metadata.signature_verified),
+            optional_bool_label(metadata.trust_chain_verified),
+        )
+    } else if open_timestamps {
+        format!(
+            "- OpenTimestamps proof verification [System verification]: PENDING — upgrade/verification required\n- Local manifest / proof binding [System verification]: {}\n- CMS signature / trust chain [System verification]: N/A — not RFC 3161\n",
+            optional_bool_label(metadata.provider_digest_match),
         )
     } else {
-        String::new()
+        format!(
+            "- Provider response structure valid [System verification]: {}\n- Provider digest match [System verification]: {}\n- CMS signature verified [System verification]: {}\n- Trust chain verified [System verification]: {}\n",
+            optional_bool_label(metadata.response_structure_valid),
+            optional_bool_label(metadata.provider_digest_match),
+            optional_bool_label(metadata.signature_verified),
+            optional_bool_label(metadata.trust_chain_verified),
+        )
+    };
+    let endpoint_label = if open_timestamps {
+        "Calendar endpoint identifier"
+    } else {
+        "Provider endpoint identifier"
     };
     format!(
-        "\n### Provider response metadata\n\n- Record source [System value]: Automatically attached provider response\n- Referenced finalization snapshot ID [System value]: `{}`\n- Provider adapter [Provider-derived metadata]: {}\n- Protocol [Provider-derived metadata]: {}\n- Request algorithm [System value]: {}\n{rfc_verification_context}- Response format [Provider-derived metadata]: {}\n- Provider endpoint identifier [Provider-derived metadata]: {}\n- Archived raw provider response [System value]: {}\n- Archived raw provider response SHA-256 [System verification]: `{}`\n- Provider response structure valid [System verification]: {}\n- Provider digest match [System verification]: {}\n- CMS signature verified [System verification]: {}\n- Trust chain verified [System verification]: {}\n- Provider verification result [System verification]: {}\n- Provider verification message [System verification]: {}\n- Provider verification timestamp [System verification]: {}\n- Timestamp issuer [Provider-derived metadata]: {}\n- Timestamp certificate subject [Provider-derived metadata]: {}\n- Timestamp certificate serial number [Provider-derived metadata]: {}\n",
+        "\n### Provider response metadata\n\n- Record source [System value]: Automatically attached provider response\n- Referenced finalization snapshot ID [System value]: `{}`\n- Provider adapter [Provider-derived metadata]: {}\n- Protocol [Provider-derived metadata]: {}\n- Request algorithm [System value]: {}\n{protocol_verification_context}- Response format [Provider-derived metadata]: {}\n- {endpoint_label} [Provider-derived metadata]: {}\n- Archived raw provider response [System value]: {}\n- Archived raw provider response SHA-256 [System verification]: `{}`\n- Provider verification result [System verification]: {}\n- Provider verification message [System verification]: {}\n- Provider verification timestamp [System verification]: {}\n- Timestamp issuer [Provider-derived metadata]: {}\n- Timestamp certificate subject [Provider-derived metadata]: {}\n- Timestamp certificate serial number [Provider-derived metadata]: {}\n",
         documented_md(&metadata.referenced_revision_id),
         documented_md(&metadata.adapter),
         documented_md(&metadata.protocol),
@@ -2667,10 +2713,6 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
         documented_md(&metadata.provider_endpoint_identifier),
         documented_md(&metadata.provider_response_file_name),
         documented_md(&metadata.provider_response_sha256),
-        optional_bool_label(metadata.response_structure_valid),
-        optional_bool_label(metadata.provider_digest_match),
-        optional_bool_label(metadata.signature_verified),
-        optional_bool_label(metadata.trust_chain_verified),
         timestamp_status_label(metadata.verification_result),
         documented_md(&metadata.verification_message),
         documented_md(&metadata.verification_timestamp),
@@ -2678,6 +2720,14 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
         documented_md(&metadata.certificate_subject),
         documented_md(&metadata.certificate_serial_number),
     )
+}
+
+fn is_open_timestamps_metadata(metadata: &TimestampProviderMetadata) -> bool {
+    metadata.adapter.eq_ignore_ascii_case("open_timestamps")
+        || metadata
+            .protocol
+            .to_ascii_lowercase()
+            .contains("opentimestamps")
 }
 
 fn optional_bool_label(value: Option<bool>) -> &'static str {
@@ -3061,6 +3111,24 @@ mod tests {
     }
 
     #[test]
+    fn open_timestamps_readiness_never_claims_rfc3161_or_a_tsa_trust_anchor() {
+        let settings = TimestampSettings {
+            enabled: true,
+            provider: TimestampProviderKind::OpenTimestamps,
+            ..Default::default()
+        };
+
+        let (status, message) = settings_status(&settings, false);
+
+        assert_eq!(status, ExternalTimestampStatus::Ready);
+        assert!(message.contains("not RFC 3161"));
+        assert!(message.contains("ATTACHED"));
+        assert!(message.contains("Bitcoin anchoring"));
+        assert!(!message.contains("trust anchor"));
+        assert!(!message.contains("TSA"));
+    }
+
+    #[test]
     fn open_timestamps_uses_native_ots_proof_and_remains_attached() {
         let digest = "ab".repeat(32);
         // The real calendar response is a serialized Timestamp, not an `.ots`
@@ -3112,6 +3180,10 @@ mod tests {
         assert_eq!(response.status, ExternalTimestampStatus::Attached);
         assert!(response.metadata.protocol.contains("OpenTimestamps"));
         assert!(!response.metadata.protocol.contains("RFC 3161"));
+        assert!(response
+            .metadata
+            .protocol
+            .contains("Bitcoin anchoring pending"));
         assert_eq!(response.metadata.provider_digest_match, Some(true));
     }
 
@@ -3183,6 +3255,17 @@ mod tests {
         let hash_list =
             fs::read_to_string(stage_directory.join(HASH_LIST_FILE)).expect("hash list");
         assert!(hash_list.contains("PROVIDER_RESPONSE.bin"));
+        let markdown =
+            fs::read_to_string(stage_directory.join(MARKDOWN_FILE)).expect("Markdown addendum");
+        assert!(markdown.contains(
+            "Timestamp value [Provider-derived metadata]: PENDING — OpenTimestamps proof verification / upgrade required"
+        ));
+        assert!(markdown.contains("Local manifest / proof binding [System verification]: YES"));
+        assert!(markdown
+            .contains("CMS signature / trust chain [System verification]: N/A — not RFC 3161"));
+        assert!(markdown.contains("Calendar endpoint [Provider-derived metadata]"));
+        assert!(markdown.contains("Calendar endpoint identifier [Provider-derived metadata]"));
+        assert!(!markdown.contains("Provider digest match [System verification]"));
         verify_record_in_directory(track_root, &stage_directory, &staged.record, None)
             .expect("sidecar verifies including raw response");
         discard_staged(track_root, &staged).expect("discard test stage");

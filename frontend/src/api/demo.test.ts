@@ -29,6 +29,16 @@ async function configureFreeTsa(api: ReturnType<typeof createDemoApi>, autoAfter
   }));
 }
 
+async function configureOpenTimestamps(api: ReturnType<typeof createDemoApi>, autoAfterFinalization = false) {
+  const settings = await settle(api.getTimestampSettings());
+  return settle(api.updateTimestampSettings({
+    ...settings,
+    enabled: true,
+    provider: "open_timestamps",
+    autoAfterFinalization
+  }));
+}
+
 async function configureDemoAcrCloud(api: ReturnType<typeof createDemoApi>) {
   const settings = await settle(api.getAudioScreeningSettings());
   await settle(api.updateAudioScreeningSettings({
@@ -495,6 +505,28 @@ describe("demo evidence controls", () => {
 });
 
 describe("demo external timestamp attachment", () => {
+  it("describes OpenTimestamps as distinct from RFC 3161 and pending verification", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+
+    const settings = await configureOpenTimestamps(api);
+    expect(settings).toEqual(expect.objectContaining({
+      status: "ready",
+      statusMessage: expect.stringContaining("not RFC 3161")
+    }));
+    const tested = await settle(api.testTimestampProvider());
+    expect(tested).toEqual(expect.objectContaining({
+      status: "ready",
+      message: expect.stringContaining("not RFC 3161"),
+      capabilities: expect.objectContaining({
+        rfc3161: false,
+        openTimestamps: true,
+        returnsSignedTimestamp: false
+      })
+    }));
+  });
+
   it("uses the configured provider and the evidence-manifest anchor automatically after finalization", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -605,6 +637,46 @@ describe("demo external timestamp attachment", () => {
     const retry = await settle(api.attachExternalTimestamp("gravity"));
     expect(retry.externalTimestamps).toHaveLength(1);
     expect(retry.externalTimestampSummary).toEqual(expect.objectContaining({ status: "attached" }));
+  });
+
+  it("keeps OTS terminal for the same provider but permits a later RFC 3161 sidecar", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const finalized = await finalizeGravity(api);
+    await configureOpenTimestamps(api);
+
+    const otsAttached = await settle(api.attachExternalTimestamp(finalized.track!.id));
+    expect(otsAttached.externalTimestamps).toHaveLength(1);
+    expect(otsAttached.externalTimestampSummary).toEqual(expect.objectContaining({
+      status: "attached",
+      provider: "OpenTimestamps"
+    }));
+    expect(otsAttached.externalTimestamps[0]).toEqual(expect.objectContaining({
+      timestampValue: "",
+      providerVerificationUrl: "https://a.pool.opentimestamps.org/digest",
+      providerMetadata: expect.objectContaining({
+        protocol: expect.stringContaining("Bitcoin anchoring pending"),
+        signatureVerified: null,
+        trustChainVerified: null
+      })
+    }));
+
+    const sameProviderRetry = await settle(api.attachExternalTimestamp(finalized.track!.id));
+    expect(sameProviderRetry.externalTimestamps).toHaveLength(1);
+
+    await configureFreeTsa(api);
+    const rfcAttached = await settle(api.attachExternalTimestamp(finalized.track!.id));
+    expect(rfcAttached.externalTimestamps).toHaveLength(2);
+    expect(rfcAttached.externalTimestamps.map((record) => record.provider)).toEqual([
+      "OpenTimestamps",
+      "FreeTSA"
+    ]);
+    expect(rfcAttached.externalTimestampSummary).toEqual(expect.objectContaining({
+      status: "attached",
+      provider: "FreeTSA",
+      recordId: rfcAttached.externalTimestamps[1].id
+    }));
   });
 });
 

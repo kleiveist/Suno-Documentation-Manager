@@ -1,6 +1,10 @@
 import type {
+  AutomaticConsistencyFinding,
+  AutomaticConsistencyFindingLevel,
+  AutomaticConsistencyPresentation,
   EvidenceItem,
   EvidenceRole,
+  ExternalTimestampStatus,
   GlobalProfile,
   StepId,
   StepStatus,
@@ -199,6 +203,115 @@ export const humanEditedFinalArtworkStatus = (evidence: EvidenceItem[]): "BYTE-I
     ? "BYTE-IDENTICAL / SHA-256 MATCH"
     : "NO SHA-256 MATCH";
 };
+
+const TIMESTAMP_WARNING_STATUSES: ReadonlySet<ExternalTimestampStatus> = new Set([
+  "verification_failed",
+  "provider_unavailable",
+  "authentication_failed",
+  "anchor_mismatch",
+  "configuration_incomplete",
+  "authentication_required",
+  "connection_failed",
+  "unsupported_response",
+  "verification_configuration_incomplete"
+]);
+
+const automaticFindingOrder: Record<AutomaticConsistencyFindingLevel, number> = {
+  BLOCKING: 0,
+  WARNING: 1,
+  INFO: 2
+};
+
+/**
+ * Derives user-facing INFO/WARNING/BLOCKING findings without introducing a
+ * second workflow gate. StepStatus, requirement evaluation and finalization
+ * continue to use only their existing authoritative inputs.
+ */
+export function automaticConsistencyPresentation(track: TrackDetail): AutomaticConsistencyPresentation {
+  const findings: AutomaticConsistencyFinding[] = track.automation.consistencyIssues.map((issue) => ({
+    code: `consistency:${issue.code}`,
+    level: issue.blocking ? "BLOCKING" : "WARNING",
+    message: issue.message,
+    stepId: issue.stepId
+  }));
+
+  for (const deviation of track.blockingDeviations ?? []) {
+    if (deviation.resolved) continue;
+    findings.push({
+      code: `deviation:${deviation.id}`,
+      level: deviation.blocking ? "BLOCKING" : "WARNING",
+      message: deviation.description,
+      stepId: "finalize"
+    });
+  }
+
+  const finalizedSnapshot = track.status === "FINALIZED" || track.status === "SUPERSEDED";
+  if (finalizedSnapshot) {
+    const latestTimestamp = track.externalTimestamps.at(-1);
+    const timestampStatus = track.externalTimestampSummary?.status
+      ?? latestTimestamp?.providerMetadata?.verificationResult
+      ?? (latestTimestamp ? "attached" : "not_recorded");
+    const timestampMessage = track.externalTimestampSummary?.message.trim();
+
+    if (timestampStatus === "attached") {
+      findings.push({
+        code: "external_timestamp_attached_unverified",
+        level: "WARNING",
+        message: timestampMessage || "Ein externer Zeitstempelnachweis ist angehängt, seine Verifikation steht jedoch noch aus.",
+        stepId: "finalize"
+      });
+    } else if (TIMESTAMP_WARNING_STATUSES.has(timestampStatus)) {
+      findings.push({
+        code: `external_timestamp_${timestampStatus}`,
+        level: "WARNING",
+        message: timestampMessage || `Der externe Zeitstempelnachweis meldet den Status ${timestampStatus.toUpperCase().replaceAll("_", " ")}.`,
+        stepId: "finalize"
+      });
+    } else if (timestampStatus === "not_recorded") {
+      findings.push({
+        code: "external_timestamp_not_recorded",
+        level: "INFO",
+        message: timestampMessage || "Für den finalisierten Snapshot ist kein externer Zeitstempelnachweis erfasst.",
+        stepId: "finalize"
+      });
+    }
+  }
+
+  if (!track.automation.sunoMetadataDetected) {
+    findings.push({
+      code: "suno_metadata_not_detected",
+      level: "INFO",
+      message: "Im Suno-Final-Export wurden keine Suno-Studio-Metadaten erkannt.",
+      stepId: "suno"
+    });
+  }
+
+  if (humanEditedFinalArtworkStatus(track.evidence) === "BYTE-IDENTICAL / SHA-256 MATCH") {
+    findings.push({
+      code: "human_edited_final_artwork_sha256_match",
+      level: "INFO",
+      message: "Menschlich bearbeitetes und finales Artwork sind byte-identisch (SHA-256-Match).",
+      stepId: "artwork"
+    });
+  }
+
+  findings.sort((left, right) =>
+    automaticFindingOrder[left.level] - automaticFindingOrder[right.level]
+    || left.code.localeCompare(right.code)
+  );
+  const infoCount = findings.filter((finding) => finding.level === "INFO").length;
+  const warningCount = findings.filter((finding) => finding.level === "WARNING").length;
+  const blockingCount = findings.filter((finding) => finding.level === "BLOCKING").length;
+
+  return {
+    outcome: blockingCount > 0 ? "BLOCKED" : warningCount > 0 ? "PASS WITH WARNINGS" : "PASS",
+    findings,
+    infoCount,
+    warningCount,
+    blockingCount
+  };
+}
+
 const isAiArtwork = (fields: TrackFields): boolean =>
   fields.artworkOrigin === "ai_generated" || fields.artworkOrigin === "ai_assisted";
 const hasCoveringSubscriptionEvidence = (evidence: EvidenceItem[], fields: TrackFields): boolean =>

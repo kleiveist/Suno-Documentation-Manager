@@ -29,6 +29,7 @@ import {
   type FolderImportExecutionInput,
   type FolderImportProposal,
   type EvidenceRole,
+  type ExternalTimestampRecord,
   type ExternalTimestampSummary,
   type FactOrigin,
   type FinalizeOptions,
@@ -331,6 +332,19 @@ function timestampProviderLabel(provider: TimestampProviderKind): string {
   }
 }
 
+function timestampProviderUsesRfc3161(provider: TimestampProviderKind): boolean {
+  return provider === "free_tsa"
+    || provider === "sigstore_public_tsa"
+    || provider === "custom_rfc3161";
+}
+
+function timestampRecordUsesOpenTimestamps(record: ExternalTimestampRecord | undefined): boolean {
+  if (!record) return false;
+  return record.providerMetadata?.adapter.toLowerCase().includes("open_timestamps") === true
+    || record.providerMetadata?.protocol.toLowerCase().includes("opentimestamps") === true
+    || record.provider.toLowerCase() === "opentimestamps";
+}
+
 function notRecordedExternalTimestampSummary(): ExternalTimestampSummary {
   return {
     status: "not_recorded",
@@ -360,14 +374,20 @@ function configuredTimestampProviderStatus(
   if (!settings.enabled || settings.provider === "disabled") {
     return { status: "disabled", statusMessage: "External timestamp service is disabled." };
   }
+  if (settings.provider === "open_timestamps") {
+    return {
+      status: "ready",
+      statusMessage: "OpenTimestamps calendar service is ready. This is not RFC 3161; an initial proof remains ATTACHED pending OpenTimestamps verification or upgrade."
+    };
+  }
   if (settings.provider !== "custom_rfc3161") {
-    if (settings.provider !== "open_timestamps" && !settings.custom.caCertificatePath.trim()) {
+    if (!settings.custom.caCertificatePath.trim()) {
       return {
         status: "verification_configuration_incomplete",
         statusMessage: "Select an explicit TSA CA trust-anchor file before RFC 3161 responses can be marked VERIFIED."
       };
     }
-    return { status: "ready", statusMessage: `${timestampProviderLabel(settings.provider)} and its explicit trust anchor are ready.` };
+    return { status: "ready", statusMessage: `${timestampProviderLabel(settings.provider)} RFC 3161 service and its explicit TSA trust anchor are ready.` };
   }
   if (!settings.custom.providerName.trim() || !settings.custom.endpoint.trim()) {
     return {
@@ -693,7 +713,15 @@ export function createDemoApi(): DesktopApi {
     if (track.status !== "FINALIZED" || !track.certificate.valid || !track.certificate.certificateId) {
       throw new Error("Ein externer Zeitstempel kann erst nach der technischen Finalisierung angehängt werden.");
     }
-    if (["attached", "verified"].includes(track.externalTimestampSummary?.status ?? "not_recorded")) return track;
+    const summaryStatus = track.externalTimestampSummary?.status ?? "not_recorded";
+    const currentRecord = track.externalTimestampSummary?.recordId
+      ? track.externalTimestamps.find((record) => record.id === track.externalTimestampSummary?.recordId)
+        ?? track.externalTimestamps.at(-1)
+      : track.externalTimestamps.at(-1);
+    if (summaryStatus === "verified"
+      || (summaryStatus === "attached"
+        && !(timestampRecordUsesOpenTimestamps(currentRecord)
+          && timestampProviderUsesRfc3161(timestampSettings.provider)))) return track;
     if (timestampSettings.status !== "ready") {
       track.externalTimestampSummary = {
         status: timestampSettings.status === "authentication_required" ? "authentication_failed" : "provider_unavailable",
@@ -713,7 +741,10 @@ export function createDemoApi(): DesktopApi {
     }
 
     const timestampedAt = now();
-    const verificationMessage = "Structural and digest checks completed; provider signature and trust verification are not asserted.";
+    const openTimestamps = timestampSettings.provider === "open_timestamps";
+    const verificationMessage = openTimestamps
+      ? "Detached proof is locally bound to the requested SHA-256; explicit OpenTimestamps verification or upgrade is pending."
+      : "Structural and digest checks completed; provider signature and trust verification are not asserted.";
     track.externalTimestampSummary = {
       status: "requesting",
       message: "External timestamp request is being prepared.",
@@ -721,8 +752,8 @@ export function createDemoApi(): DesktopApi {
     };
     const id = crypto.randomUUID();
     const provider = timestampProviderLabel(timestampSettings.provider);
-    const evidenceFileName = timestampSettings.provider === "open_timestamps"
-      ? "EVIDENCE_MANIFEST.json.ots"
+    const evidenceFileName = openTimestamps
+      ? "TIMESTAMP_EVIDENCE.ots"
       : timestampSettings.provider === "custom_rfc3161" || timestampSettings.provider === "free_tsa"
         ? "TIMESTAMP_RESPONSE.tsr"
         : "TIMESTAMP_RESPONSE.json";
@@ -731,22 +762,26 @@ export function createDemoApi(): DesktopApi {
       certificateId: track.certificate.certificateId,
       provider,
       timestampType: "external_integrity_timestamp",
-      timestampValue: timestampedAt,
+      timestampValue: openTimestamps ? "" : timestampedAt,
       referencedArtifact: "evidence_manifest",
       referencedArtifactPath: anchor.relativePath,
       referencedSha256: anchor.sha256,
       actualSha256: anchor.sha256,
       referencedHashMatch: true,
       externalReferenceId: `demo-${id.slice(0, 8)}`,
-      providerVerificationUrl: "",
-      note: "",
+      providerVerificationUrl: openTimestamps ? "https://a.pool.opentimestamps.org/digest" : "",
+      note: openTimestamps
+        ? "OpenTimestamps detached proof archived; Bitcoin anchoring remains pending verification or upgrade."
+        : "",
       evidenceFileName,
       evidenceSha256: "f".repeat(64),
       importedAt: timestampedAt,
       provenance: "Automatic provider response; structural and digest checks",
       providerMetadata: {
-        adapter: `demo-${timestampSettings.provider}`,
-        protocol: timestampSettings.provider === "open_timestamps" ? "OpenTimestamps" : "RFC 3161",
+        adapter: openTimestamps ? "open_timestamps" : `demo-${timestampSettings.provider}`,
+        protocol: openTimestamps
+          ? "OpenTimestamps detached proof; Bitcoin anchoring pending verification/upgrade"
+          : "RFC 3161",
         requestAlgorithm: "SHA-256",
         responseFormat: timestampSettings.provider === "open_timestamps" ? ".ots proof" : "RFC 3161 TimeStampResp",
         providerEndpointIdentifier: timestampSettings.provider === "custom_rfc3161"
@@ -759,7 +794,7 @@ export function createDemoApi(): DesktopApi {
         certificateSubject: "",
         certificateSerialNumber: "",
         policyOid: timestampSettings.provider === "custom_rfc3161" ? timestampSettings.custom.policyOid : "",
-        responseStructureValid: true,
+        responseStructureValid: openTimestamps ? null : true,
         providerDigestMatch: true,
         signatureVerified: null,
         trustChainVerified: null,
@@ -778,7 +813,9 @@ export function createDemoApi(): DesktopApi {
       // A stored RFC-3161 response with a matching digest is ATTACHED until a
       // provider-specific signature/trust verification is actually available.
       status: "attached",
-      message: "External timestamp response attached; structural and digest checks completed.",
+      message: openTimestamps
+        ? "OpenTimestamps detached proof attached; later verification or upgrade is required."
+        : "External timestamp response attached; structural and digest checks completed.",
       provider,
       recordId: id,
       updatedAt: timestampedAt
@@ -905,7 +942,9 @@ export function createDemoApi(): DesktopApi {
         provider: timestampSettings.provider,
         status: timestampSettings.status,
         message: timestampSettings.status === "ready"
-          ? "Provider reachable. Timestamp service ready."
+          ? timestampSettings.provider === "open_timestamps"
+            ? "OpenTimestamps calendar reachable. This is not RFC 3161; proof verification or upgrade remains pending."
+            : "Provider reachable. RFC 3161 timestamp service ready."
           : timestampSettings.statusMessage,
         testedAt,
         capabilities: timestampProviderCapabilities(timestampSettings.provider)

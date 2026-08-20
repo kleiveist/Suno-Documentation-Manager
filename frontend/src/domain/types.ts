@@ -391,6 +391,30 @@ export interface ConsistencyIssue {
   blocking: boolean;
 }
 
+/**
+ * A display-only classification of automatic findings. These values do not
+ * extend StepStatus and must never be used as workflow or finalization gates.
+ */
+export type AutomaticConsistencyFindingLevel = "INFO" | "WARNING" | "BLOCKING";
+
+/** A display-only aggregate derived from the authoritative track state. */
+export type AutomaticConsistencyOutcome = "PASS" | "PASS WITH WARNINGS" | "BLOCKED";
+
+export interface AutomaticConsistencyFinding {
+  code: string;
+  level: AutomaticConsistencyFindingLevel;
+  message: string;
+  stepId: StepId;
+}
+
+export interface AutomaticConsistencyPresentation {
+  outcome: AutomaticConsistencyOutcome;
+  findings: AutomaticConsistencyFinding[];
+  infoCount: number;
+  warningCount: number;
+  blockingCount: number;
+}
+
 export interface TrackAutomation {
   finalGenerationIdOrigin: FactOrigin;
   finalGenerationOrigin: FactOrigin;
