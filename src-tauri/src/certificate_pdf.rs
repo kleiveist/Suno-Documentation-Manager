@@ -1,15 +1,23 @@
 use crate::certificate::{localized_certificate_label, localized_certificate_paragraph};
 use crate::error::{AppError, Result};
+#[cfg(test)]
+use crate::model::SunoLyricsContentSource;
 use crate::model::{
-    AudioScreeningStatus, BlockingDeviation, CertificateRenderOptions, DocumentationAnswer,
-    EvidenceItem, EvidenceRole, ExternalTimestampStatus, FactOrigin, Profile, StepState,
-    StepStatus, SunoLyricsContentSource, SunoLyricsContentType, TimestampProviderMetadata,
-    TrackAutomation, TrackFields, TrackRecord,
+    AudioScreeningStatus, BlockingDeviation, CertificateLanguage, CertificateRenderOptions,
+    DocumentationAnswer, EvidenceItem, EvidenceRole, ExternalTimestampStatus, FactOrigin, Profile,
+    StepState, StepStatus, SunoContentClassification, TimestampProviderMetadata, TrackAutomation,
+    TrackFields, TrackRecord, VocalIntent,
 };
 use crate::workflow;
+use chrono::{DateTime, SecondsFormat, Utc};
+use lopdf::{
+    content::Content as LoContent, Dictionary as LoDictionary, Document as LoDocument,
+    Object as LoObject, Stream as LoStream, StringFormat as LoStringFormat,
+};
 use printpdf::{
-    BuiltinFont, Color, Line, LinePoint, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
-    PdfParseErrorSeverity, PdfParseOptions, PdfSaveOptions, Point, Pt, Rgb, TextItem,
+    BuiltinFont, Cmyk, Color, FontId, Line, LinePoint, Mm, Op, ParsedFont, PdfConformance,
+    PdfDocument, PdfFont, PdfFontHandle, PdfPage, PdfParseErrorSeverity, PdfParseOptions,
+    PdfSaveOptions, Point, Pt, TextItem,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -28,6 +36,58 @@ const CONTINUATION_TOP_MM: f32 = 276.0;
 const CONTENT_BOTTOM_MM: f32 = 21.0;
 const FOOTER_RULE_Y_MM: f32 = 16.0;
 const FOOTER_TEXT_Y_MM: f32 = 10.5;
+
+const PDFA_PART: &str = "2";
+const PDFA_CONFORMANCE: &str = "B";
+const ARCHIVE_SANS_REGULAR_ID: &str = "SANSRG";
+const ARCHIVE_SANS_BOLD_ID: &str = "SANSBD";
+const ARCHIVE_MONO_REGULAR_ID: &str = "MONORG";
+const ARCHIVE_MONO_BOLD_ID: &str = "MONOBD";
+const ARCHIVE_SANS_REGULAR_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSans.ttf");
+const ARCHIVE_SANS_BOLD_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf");
+const ARCHIVE_MONO_REGULAR_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
+const ARCHIVE_MONO_BOLD_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono-Bold.ttf");
+
+pub const CERTIFICATE_PDF_ARCHIVE_FORMAT: &str = "PDF/A-2b";
+pub const CERTIFICATE_PDF_FONT_EMBEDDING: &str = "full";
+pub const CERTIFICATE_PDF_EMBEDDED_FONTS: [&str; 4] = [
+    "DejaVuSans",
+    "DejaVuSans-Bold",
+    "DejaVuSansMono",
+    "DejaVuSansMono-Bold",
+];
+pub const CERTIFICATE_PDF_FONT_SHA256: [&str; 4] = [
+    "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+    "e6476c1b80502924294eed40894c5b18e06c181444ca953e5334262df9c27724",
+    "b4a6c3e4faab8773f4ff761d56451646409f29abedd68f05d38c2df667d3c582",
+    "bce60f1b4421acd9ea51ba6623d7024ecbe6817a953e3654df62a5e6bdf8f769",
+];
+pub const CERTIFICATE_PDF_FONT_VERSION: &str = "DejaVu 2.37";
+pub const CERTIFICATE_PDF_FONT_LICENSE: &str = "DejaVu Fonts License";
+pub const CERTIFICATE_PDF_OUTPUT_INTENT: &str = "Coated FOGRA39 (ISO 12647-2:2004)";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertificatePdfArchiveMetadata {
+    pub archive_format: &'static str,
+    pub font_embedding: &'static str,
+    pub embedded_fonts: &'static [&'static str],
+    pub embedded_font_sha256: &'static [&'static str],
+    pub font_version: &'static str,
+    pub font_license: &'static str,
+    pub output_intent: &'static str,
+}
+
+pub const fn certificate_pdf_archive_metadata() -> CertificatePdfArchiveMetadata {
+    CertificatePdfArchiveMetadata {
+        archive_format: CERTIFICATE_PDF_ARCHIVE_FORMAT,
+        font_embedding: CERTIFICATE_PDF_FONT_EMBEDDING,
+        embedded_fonts: &CERTIFICATE_PDF_EMBEDDED_FONTS,
+        embedded_font_sha256: &CERTIFICATE_PDF_FONT_SHA256,
+        font_version: CERTIFICATE_PDF_FONT_VERSION,
+        font_license: CERTIFICATE_PDF_FONT_LICENSE,
+        output_intent: CERTIFICATE_PDF_OUTPUT_INTENT,
+    }
+}
 
 /// The immutable, finalized data used to render a documentation certificate PDF.
 ///
@@ -114,7 +174,9 @@ pub fn generate_external_timestamp_addendum_pdf(
 
     layout.section_title("External Timestamp Evidence");
     let rows = external_timestamp_rows(snapshot);
-    layout.table_rows(&rows, 67.0);
+    // Keep the complete provenance/verification labels searchable with the
+    // bundled DejaVu metrics; long provider values may wrap in the value column.
+    layout.table_rows(&rows, 112.0);
     layout.write_wrapped(
         EXTERNAL_TIMESTAMP_DISCLAIMER,
         LEFT_MM,
@@ -151,21 +213,7 @@ pub fn generate_external_timestamp_addendum_pdf(
         "SHA-256".to_owned(),
     ];
     document.with_pages(pages);
-
-    let mut warnings = Vec::new();
-    let mut bytes = document.save(&PdfSaveOptions::default(), &mut warnings);
-    if let Some(warning) = warnings
-        .iter()
-        .find(|warning| warning.severity == PdfParseErrorSeverity::Error)
-    {
-        return Err(AppError::Data(format!(
-            "External timestamp addendum PDF serialization failed: {}",
-            warning.msg
-        )));
-    }
-    make_pdf_trailer_id_deterministic(&mut bytes, &deterministic_id)?;
-    validate_pdf_bytes(&bytes)?;
-    Ok(bytes)
+    serialize_pdfa_2b(document, &deterministic_id, snapshot.imported_at, "en-US")
 }
 
 fn validate_external_timestamp_snapshot(snapshot: &ExternalTimestampPdfSnapshot<'_>) -> Result<()> {
@@ -439,6 +487,12 @@ fn push_documented_row(rows: &mut Vec<TableRow>, label: &str, value: &str, mono:
 }
 
 fn provider_metadata_rows(rows: &mut Vec<TableRow>, metadata: &TimestampProviderMetadata) {
+    let requested_policy = if metadata.requested_policy_oid.trim().is_empty() {
+        "NONE (provider policy accepted)"
+    } else {
+        metadata.requested_policy_oid.as_str()
+    };
+    let trust_anchor_sha256 = metadata.trust_anchor_sha256.join(", ");
     for (label, value, mono) in [
         (
             "Timestamp adapter [Provider-derived metadata]",
@@ -501,6 +555,31 @@ fn provider_metadata_rows(rows: &mut Vec<TableRow>, metadata: &TimestampProvider
             false,
         ),
         (
+            "RFC 3161 request nonce [System value]",
+            metadata.request_nonce.as_str(),
+            true,
+        ),
+        (
+            "RFC 3161 response nonce [Provider-derived metadata]",
+            metadata.response_nonce.as_str(),
+            true,
+        ),
+        (
+            "Requested timestamp policy OID [System value]",
+            requested_policy,
+            false,
+        ),
+        (
+            "Cryptographic verifier [System verification]",
+            metadata.cryptographic_verifier.as_str(),
+            false,
+        ),
+        (
+            "Trust-anchor SHA-256 [System verification]",
+            trust_anchor_sha256.as_str(),
+            true,
+        ),
+        (
             "Verification timestamp [System verification]",
             metadata.verification_timestamp.as_str(),
             true,
@@ -527,6 +606,14 @@ fn provider_metadata_rows(rows: &mut Vec<TableRow>, metadata: &TimestampProvider
         (
             "Provider digest match [System verification]",
             metadata.provider_digest_match,
+        ),
+        (
+            "RFC 3161 nonce match [System verification]",
+            metadata.nonce_match,
+        ),
+        (
+            "Requested policy match [System verification]",
+            metadata.policy_match,
         ),
         (
             "Timestamp signature verified [System verification]",
@@ -595,13 +682,9 @@ pub fn generate_pdf(snapshot: &CertificatePdfSnapshot<'_>) -> Result<Vec<u8>> {
     let pages = layout.into_pages(snapshot.certificate_id);
     let document_title = localized_certificate_label(snapshot.render_options, DOCUMENT_TITLE);
     let mut document = PdfDocument::new(&document_title);
-    let now = printpdf::date::OffsetDateTime::now();
     document.metadata.info.author = snapshot.profile.artist_name.clone();
-    document.metadata.info.creation_date = now;
     document.metadata.info.creator = GENERATED_BY.to_owned();
-    document.metadata.info.modification_date = now;
     document.metadata.info.producer = GENERATED_BY.to_owned();
-    document.metadata.info.metadata_date = now;
     document.metadata.info.subject = localized_certificate_paragraph(
         snapshot.render_options,
         "Finalized technical documentation, evidence, and integrity snapshot",
@@ -615,8 +698,48 @@ pub fn generate_pdf(snapshot: &CertificatePdfSnapshot<'_>) -> Result<Vec<u8>> {
     ];
     document.with_pages(pages);
 
+    let language = match snapshot.render_options.language {
+        CertificateLanguage::De => "de-DE",
+        CertificateLanguage::En => "en-US",
+    };
+    serialize_pdfa_2b(
+        document,
+        snapshot.certificate_id,
+        snapshot.finalized_at,
+        language,
+    )
+}
+
+fn serialize_pdfa_2b(
+    mut document: PdfDocument,
+    deterministic_seed: &str,
+    created_at: &str,
+    language: &str,
+) -> Result<Vec<u8>> {
+    // DE/EN certificates are distinct archival renditions of one snapshot and
+    // therefore need distinct, deterministic XMP/trailer identifiers.
+    let rendition_seed = format!("{deterministic_seed}:{language}");
+    let (pdf_date, xmp_date) = deterministic_pdf_dates(created_at)?;
+    document.metadata.info.creation_date = pdf_date;
+    document.metadata.info.modification_date = pdf_date;
+    document.metadata.info.metadata_date = pdf_date;
+    document.metadata.info.conformance = PdfConformance::A2B_2011_PDF_1_7;
+    install_archive_fonts(&mut document)?;
+
+    let xmp = render_pdfa_xmp(
+        &document.metadata.info,
+        &rendition_seed,
+        &xmp_date,
+        language,
+    );
+    // The four project-owned archive assets are embedded in full. This keeps the
+    // renderer independent of host fonts and preserves all glyphs needed for DE/EN.
+    let save_options = PdfSaveOptions {
+        subset_fonts: false,
+        ..PdfSaveOptions::default()
+    };
     let mut warnings = Vec::new();
-    let mut bytes = document.save(&PdfSaveOptions::default(), &mut warnings);
+    let mut archive = document.to_lopdf_document(&save_options, &mut warnings);
     if let Some(warning) = warnings
         .iter()
         .find(|warning| warning.severity == PdfParseErrorSeverity::Error)
@@ -626,41 +749,251 @@ pub fn generate_pdf(snapshot: &CertificatePdfSnapshot<'_>) -> Result<Vec<u8>> {
             warning.msg
         )));
     }
-    make_pdf_trailer_id_deterministic(&mut bytes, snapshot.certificate_id)?;
-    validate_pdf_bytes(&bytes)?;
+    postprocess_pdfa_2b(&mut archive, &rendition_seed, language, xmp)?;
+
+    let mut bytes = Vec::new();
+    archive
+        .save_to(&mut bytes)
+        .map_err(|error| AppError::Data(format!("PDF/A-2b serialization failed: {error}")))?;
+    validate_pdfa_2b_bytes(&bytes)?;
     Ok(bytes)
 }
 
-fn make_pdf_trailer_id_deterministic(bytes: &mut [u8], certificate_id: &str) -> Result<()> {
-    const PREFIX: &[u8] = b"/ID[(";
-    const SEPARATOR: &[u8] = b")(";
-    const SUFFIX: &[u8] = b")]";
-    const ID_LEN: usize = 32;
+fn deterministic_pdf_dates(created_at: &str) -> Result<(printpdf::date::OffsetDateTime, String)> {
+    let parsed = DateTime::parse_from_rfc3339(created_at)
+        .map_err(|_| AppError::Data("Certificate PDF timestamp is not valid RFC 3339.".into()))?;
+    let utc = parsed.with_timezone(&Utc);
+    let pdf_date =
+        printpdf::date::OffsetDateTime::from_unix_timestamp(utc.timestamp()).map_err(|error| {
+            AppError::Data(format!("Certificate PDF timestamp is invalid: {error}"))
+        })?;
+    Ok((pdf_date, utc.to_rfc3339_opts(SecondsFormat::Secs, true)))
+}
 
-    let prefix = bytes
-        .windows(PREFIX.len())
-        .rposition(|window| window == PREFIX)
-        .ok_or_else(|| AppError::Data("Certificate PDF trailer has no document ID.".into()))?;
-    let first = prefix + PREFIX.len();
-    let separator = first + ID_LEN;
-    let second = separator + SEPARATOR.len();
-    let suffix = second + ID_LEN;
-    if bytes.get(separator..second) != Some(SEPARATOR)
-        || bytes.get(suffix..suffix + SUFFIX.len()) != Some(SUFFIX)
+fn render_pdfa_xmp(
+    info: &printpdf::PdfDocumentInfo,
+    deterministic_seed: &str,
+    date: &str,
+    language: &str,
+) -> String {
+    let document_id = deterministic_uuid(deterministic_seed, "document");
+    let instance_id = deterministic_uuid(deterministic_seed, "instance");
+    let title = xml_escape(&info.document_title);
+    let author = xml_escape(&info.author);
+    let creator = xml_escape(&info.creator);
+    let producer = xml_escape(&info.producer);
+    let subject = xml_escape(&info.subject);
+    let identifier = xml_escape(&info.identifier);
+    let keywords = xml_escape(&info.keywords.join(","));
+    let date = xml_escape(date);
+    let language = xml_escape(language);
+
+    format!(
+        r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="{producer}">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:dc="http://purl.org/dc/elements/1.1/"
+      xmlns:pdf="http://ns.adobe.com/pdf/1.3/"
+      xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+      xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+      xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/">
+      <pdfaid:part>{PDFA_PART}</pdfaid:part>
+      <pdfaid:conformance>{PDFA_CONFORMANCE}</pdfaid:conformance>
+      <dc:format>application/pdf</dc:format>
+      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">{title}</rdf:li></rdf:Alt></dc:title>
+      <dc:creator><rdf:Seq><rdf:li>{author}</rdf:li></rdf:Seq></dc:creator>
+      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">{subject}</rdf:li></rdf:Alt></dc:description>
+      <dc:identifier>{identifier}</dc:identifier>
+      <dc:language><rdf:Bag><rdf:li>{language}</rdf:li></rdf:Bag></dc:language>
+      <xmp:CreateDate>{date}</xmp:CreateDate>
+      <xmp:ModifyDate>{date}</xmp:ModifyDate>
+      <xmp:MetadataDate>{date}</xmp:MetadataDate>
+      <xmp:CreatorTool>{creator}</xmp:CreatorTool>
+      <pdf:Producer>{producer}</pdf:Producer>
+      <pdf:Keywords>{keywords}</pdf:Keywords>
+      <xmpMM:DocumentID>uuid:{document_id}</xmpMM:DocumentID>
+      <xmpMM:InstanceID>uuid:{instance_id}</xmpMM:InstanceID>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '&' => "&amp;".to_owned(),
+            '<' => "&lt;".to_owned(),
+            '>' => "&gt;".to_owned(),
+            '"' => "&quot;".to_owned(),
+            '\'' => "&apos;".to_owned(),
+            character => character.to_string(),
+        })
+        .collect()
+}
+
+fn deterministic_uuid(seed: &str, purpose: &str) -> String {
+    let digest = crate::security::sha256_bytes(format!("{purpose}:{seed}").as_bytes());
+    format!(
+        "{}-{}-{}-{}-{}",
+        &digest[0..8],
+        &digest[8..12],
+        &digest[12..16],
+        &digest[16..20],
+        &digest[20..32]
+    )
+}
+
+fn postprocess_pdfa_2b(
+    document: &mut LoDocument,
+    deterministic_seed: &str,
+    language: &str,
+    xmp: String,
+) -> Result<()> {
+    document.version = "1.7".into();
+    document.binary_mark = vec![0xe2, 0xe3, 0xcf, 0xd3];
+
+    let root_id = document
+        .trailer
+        .get(b"Root")
+        .and_then(LoObject::as_reference)
+        .map_err(|_| AppError::Data("PDF/A catalog reference is missing.".into()))?;
+    let metadata = LoStream::new(
+        LoDictionary::from_iter([
+            ("Type", LoObject::Name(b"Metadata".to_vec())),
+            ("Subtype", LoObject::Name(b"XML".to_vec())),
+        ]),
+        xmp.into_bytes(),
+    );
+    let metadata_id = document.add_object(LoObject::Stream(metadata));
+
     {
-        return Err(AppError::Data(
-            "Certificate PDF trailer has an unexpected document ID format.".into(),
-        ));
+        let catalog = document
+            .get_dictionary_mut(root_id)
+            .map_err(|_| AppError::Data("PDF/A catalog is invalid.".into()))?;
+        catalog.set("Metadata", LoObject::Reference(metadata_id));
+        catalog.set(
+            "Lang",
+            LoObject::String(language.as_bytes().to_vec(), LoStringFormat::Literal),
+        );
+        let intents = catalog
+            .get_mut(b"OutputIntents")
+            .and_then(LoObject::as_array_mut)
+            .map_err(|_| AppError::Data("PDF/A output intent is missing.".into()))?;
+        let intent = intents
+            .first_mut()
+            .ok_or_else(|| AppError::Data("PDF/A output intent is empty.".into()))?
+            .as_dict_mut()
+            .map_err(|_| AppError::Data("PDF/A output intent is invalid.".into()))?;
+        intent.set("S", LoObject::Name(b"GTS_PDFA1".to_vec()));
+        if let Some(profile) = intent.remove(b"DestinationOutputProfile") {
+            intent.set("DestOutputProfile", profile);
+        }
+        intent.remove(b"License");
+    }
+    name_archive_fonts(document)?;
+
+    if let Ok(info_id) = document
+        .trailer
+        .get(b"Info")
+        .and_then(LoObject::as_reference)
+    {
+        if let Ok(info) = document.get_dictionary_mut(info_id) {
+            info.remove(b"GTS_PDFXVersion");
+        }
     }
 
-    let digest = crate::security::sha256_bytes(certificate_id.as_bytes());
-    bytes[first..separator].copy_from_slice(&digest.as_bytes()[..ID_LEN]);
-    bytes[second..suffix].copy_from_slice(&digest.as_bytes()[ID_LEN..]);
+    let digest = crate::security::sha256_bytes(deterministic_seed.as_bytes());
+    document.trailer.set(
+        "ID",
+        LoObject::Array(vec![
+            LoObject::String(digest.as_bytes()[..32].to_vec(), LoStringFormat::Literal),
+            LoObject::String(digest.as_bytes()[32..].to_vec(), LoStringFormat::Literal),
+        ]),
+    );
     Ok(())
 }
 
-/// Parse staged PDF bytes and reject malformed or empty documents before publication.
+fn name_archive_fonts(document: &mut LoDocument) -> Result<()> {
+    let type_zero_ids = document
+        .objects
+        .iter()
+        .filter_map(|(id, object)| {
+            let dictionary = object.as_dict().ok()?;
+            (dictionary.get(b"Subtype").and_then(LoObject::as_name).ok() == Some(b"Type0"))
+                .then_some(*id)
+        })
+        .collect::<Vec<_>>();
+
+    for font_id in type_zero_ids {
+        let (descriptor_id, archive_name) = {
+            let font = document
+                .get_dictionary_mut(font_id)
+                .map_err(|_| AppError::Data("PDF/A Type0 font dictionary is invalid.".into()))?;
+            let base_font = font
+                .get(b"BaseFont")
+                .and_then(LoObject::as_name)
+                .map_err(|_| AppError::Data("PDF/A font has no BaseFont name.".into()))?;
+            let archive_name = archive_font_name(base_font).ok_or_else(|| {
+                AppError::Data(format!(
+                    "Unexpected bundled PDF/A font {}.",
+                    String::from_utf8_lossy(base_font)
+                ))
+            })?;
+            let archive_name = archive_name.as_bytes().to_vec();
+            font.set("BaseFont", LoObject::Name(archive_name.clone()));
+
+            let descendants = font
+                .get_mut(b"DescendantFonts")
+                .and_then(LoObject::as_array_mut)
+                .map_err(|_| AppError::Data("PDF/A descendant font list is invalid.".into()))?;
+            let descendant = descendants
+                .first_mut()
+                .ok_or_else(|| AppError::Data("PDF/A descendant font list is empty.".into()))?
+                .as_dict_mut()
+                .map_err(|_| AppError::Data("PDF/A descendant font is invalid.".into()))?;
+            descendant.set("BaseFont", LoObject::Name(archive_name.clone()));
+            let descriptor_id = descendant
+                .get(b"FontDescriptor")
+                .and_then(LoObject::as_reference)
+                .map_err(|_| {
+                    AppError::Data("PDF/A font descriptor reference is invalid.".into())
+                })?;
+            (descriptor_id, archive_name)
+        };
+
+        let descriptor = document
+            .get_dictionary_mut(descriptor_id)
+            .map_err(|_| AppError::Data("PDF/A font descriptor is invalid.".into()))?;
+        descriptor.set("FontName", LoObject::Name(archive_name));
+    }
+    Ok(())
+}
+
+fn archive_font_name(base_font: &[u8]) -> Option<&'static str> {
+    match base_font {
+        b"SANSRG" | b"DejaVuSans" => Some("DejaVuSans"),
+        b"SANSBD" | b"DejaVuSans-Bold" => Some("DejaVuSans-Bold"),
+        b"MONORG" | b"DejaVuSansMono" => Some("DejaVuSansMono"),
+        b"MONOBD" | b"DejaVuSansMono-Bold" => Some("DejaVuSansMono-Bold"),
+        _ => None,
+    }
+}
+
+/// Parse staged PDF bytes and reject malformed documents. Current PDF/A documents receive the
+/// stricter archive-profile checks while historical non-PDF/A certificates remain readable.
 pub fn validate_pdf_bytes(bytes: &[u8]) -> Result<()> {
+    validate_parseable_pdf(bytes)?;
+    if pdf_claims_pdfa(bytes)? {
+        validate_pdfa_2b_bytes(bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_parseable_pdf(bytes: &[u8]) -> Result<()> {
     if !bytes.starts_with(b"%PDF-") {
         return Err(AppError::Validation(
             "Generated certificate PDF has no valid PDF header.".into(),
@@ -689,6 +1022,395 @@ pub fn validate_pdf_bytes(bytes: &[u8]) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn pdf_claims_pdfa(bytes: &[u8]) -> Result<bool> {
+    let document = LoDocument::load_mem(bytes)
+        .map_err(|error| AppError::Validation(format!("PDF structure is invalid: {error}")))?;
+    let metadata = pdf_metadata_bytes(&document)?;
+    Ok(metadata.as_deref().is_some_and(|value| {
+        value
+            .windows(b"pdfaid:part".len())
+            .any(|part| part == b"pdfaid:part")
+    }))
+}
+
+pub fn validate_pdfa_2b_bytes(bytes: &[u8]) -> Result<()> {
+    let archive_metadata = certificate_pdf_archive_metadata();
+    if archive_metadata.archive_format != "PDF/A-2b" || archive_metadata.font_embedding != "full" {
+        return Err(AppError::Validation(
+            "Certificate PDF archive metadata configuration is invalid.".into(),
+        ));
+    }
+    let document = LoDocument::load_mem(bytes)
+        .map_err(|error| AppError::Validation(format!("PDF/A structure is invalid: {error}")))?;
+    if document.version != "1.7" {
+        return Err(AppError::Validation(
+            "Certificate PDF/A document must use PDF 1.7.".into(),
+        ));
+    }
+    if document.trailer.has(b"Encrypt") || document.encryption_state.is_some() {
+        return Err(AppError::Validation(
+            "Certificate PDF/A document must not be encrypted.".into(),
+        ));
+    }
+    if document.get_pages().is_empty() {
+        return Err(AppError::Validation(
+            "Certificate PDF/A document contains no pages.".into(),
+        ));
+    }
+
+    validate_pdfa_xmp(&document)?;
+    validate_pdfa_output_intent(&document, archive_metadata.output_intent)?;
+    validate_pdfa_page_colors(&document)?;
+    validate_embedded_fonts(&document, archive_metadata.embedded_fonts)?;
+    validate_deterministic_trailer_id(&document)?;
+    Ok(())
+}
+
+fn pdf_metadata_bytes(document: &LoDocument) -> Result<Option<Vec<u8>>> {
+    let root_id = document
+        .trailer
+        .get(b"Root")
+        .and_then(LoObject::as_reference)
+        .map_err(|_| AppError::Validation("PDF catalog reference is missing.".into()))?;
+    let catalog = document
+        .get_dictionary(root_id)
+        .map_err(|_| AppError::Validation("PDF catalog is invalid.".into()))?;
+    let Ok(metadata_id) = catalog.get(b"Metadata").and_then(LoObject::as_reference) else {
+        return Ok(None);
+    };
+    let metadata = document
+        .get_object(metadata_id)
+        .and_then(LoObject::as_stream)
+        .map_err(|_| AppError::Validation("PDF metadata stream is invalid.".into()))?;
+    if metadata.dict.get(b"Type").and_then(LoObject::as_name).ok() != Some(b"Metadata")
+        || metadata
+            .dict
+            .get(b"Subtype")
+            .and_then(LoObject::as_name)
+            .ok()
+            != Some(b"XML")
+    {
+        return Err(AppError::Validation(
+            "PDF metadata stream is not declared as XML metadata.".into(),
+        ));
+    }
+    metadata
+        .decompressed_content()
+        .map(Some)
+        .map_err(|_| AppError::Validation("PDF metadata stream cannot be decoded.".into()))
+}
+
+fn validate_pdfa_xmp(document: &LoDocument) -> Result<()> {
+    let metadata = pdf_metadata_bytes(document)?.ok_or_else(|| {
+        AppError::Validation("Certificate PDF/A document has no XMP metadata.".into())
+    })?;
+    let xmp = std::str::from_utf8(&metadata)
+        .map_err(|_| AppError::Validation("Certificate PDF/A XMP is not UTF-8.".into()))?;
+    for required in [
+        "<pdfaid:part>2</pdfaid:part>",
+        "<pdfaid:conformance>B</pdfaid:conformance>",
+        "<dc:format>application/pdf</dc:format>",
+        "<xmp:CreateDate>",
+        "<xmpMM:DocumentID>uuid:",
+        "<xmpMM:InstanceID>uuid:",
+    ] {
+        if !xmp.contains(required) {
+            return Err(AppError::Validation(format!(
+                "Certificate PDF/A XMP is missing {required}."
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_pdfa_output_intent(document: &LoDocument, expected_name: &str) -> Result<()> {
+    let root_id = document
+        .trailer
+        .get(b"Root")
+        .and_then(LoObject::as_reference)
+        .map_err(|_| AppError::Validation("PDF/A catalog reference is missing.".into()))?;
+    let catalog = document
+        .get_dictionary(root_id)
+        .map_err(|_| AppError::Validation("PDF/A catalog is invalid.".into()))?;
+    let intents = catalog
+        .get(b"OutputIntents")
+        .and_then(LoObject::as_array)
+        .map_err(|_| AppError::Validation("PDF/A output intent is missing.".into()))?;
+    for item in intents {
+        let resolved = resolve_object(document, item)?;
+        let Ok(intent) = resolved.as_dict() else {
+            continue;
+        };
+        if intent.get(b"S").and_then(LoObject::as_name).ok() != Some(b"GTS_PDFA1") {
+            continue;
+        }
+        if intent.get(b"Info").and_then(LoObject::as_str).ok() != Some(expected_name.as_bytes()) {
+            return Err(AppError::Validation(
+                "PDF/A output intent identifier is unexpected.".into(),
+            ));
+        }
+        let profile = intent
+            .get(b"DestOutputProfile")
+            .map_err(|_| AppError::Validation("PDF/A ICC profile reference is missing.".into()))?;
+        let profile = resolve_object(document, profile)?;
+        let profile = profile
+            .as_stream()
+            .map_err(|_| AppError::Validation("PDF/A ICC profile is invalid.".into()))?;
+        let bytes = profile
+            .decompressed_content()
+            .map_err(|_| AppError::Validation("PDF/A ICC profile cannot be decoded.".into()))?;
+        if profile.dict.get(b"N").and_then(LoObject::as_i64).ok() != Some(4)
+            || bytes.len() < 128
+            || bytes.get(8).is_none_or(|major_version| *major_version >= 5)
+            || bytes.get(12..16) != Some(b"prtr")
+            || bytes.get(16..20) != Some(b"CMYK")
+            || bytes.get(36..40) != Some(b"acsp")
+        {
+            return Err(AppError::Validation(
+                "PDF/A output intent does not contain a valid CMYK ICC profile.".into(),
+            ));
+        }
+        return Ok(());
+    }
+    Err(AppError::Validation(
+        "Certificate PDF/A document has no GTS_PDFA1 output intent.".into(),
+    ))
+}
+
+fn validate_pdfa_page_colors(document: &LoDocument) -> Result<()> {
+    for page_id in document.get_pages().values() {
+        let content = document.get_page_content(*page_id);
+        let content = LoContent::decode(&content)
+            .map_err(|_| AppError::Validation("PDF/A page operators are invalid.".into()))?;
+        if content
+            .operations
+            .iter()
+            .any(|operation| matches!(operation.operator.as_str(), "rg" | "RG"))
+        {
+            return Err(AppError::Validation(
+                "PDF/A page uses DeviceRGB with a CMYK output intent.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_embedded_fonts(document: &LoDocument, expected_fonts: &[&str]) -> Result<()> {
+    let mut embedded_fonts = HashSet::new();
+    for page_id in document.get_pages().values() {
+        let page = document
+            .get_dictionary(*page_id)
+            .map_err(|_| AppError::Validation("PDF/A page dictionary is invalid.".into()))?;
+        let resources = page
+            .get(b"Resources")
+            .map_err(|_| AppError::Validation("PDF/A page resources are missing.".into()))?;
+        let resources = resolve_object(document, resources)?;
+        let resources = resources
+            .as_dict()
+            .map_err(|_| AppError::Validation("PDF/A page resources are invalid.".into()))?;
+        let fonts = resources
+            .get(b"Font")
+            .map_err(|_| AppError::Validation("PDF/A page font resources are missing.".into()))?;
+        let fonts = resolve_object(document, fonts)?;
+        let fonts = fonts.as_dict().map_err(|_| {
+            AppError::Validation("PDF/A font resource dictionary is invalid.".into())
+        })?;
+        for (resource_name, font) in fonts.iter() {
+            let font_name = validate_embedded_font(document, resource_name, font)?;
+            embedded_fonts.insert(font_name);
+        }
+    }
+    if embedded_fonts.is_empty() {
+        return Err(AppError::Validation(
+            "Certificate PDF/A document contains no font resources.".into(),
+        ));
+    }
+    let expected = expected_fonts
+        .iter()
+        .copied()
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    if !embedded_fonts.is_subset(&expected) {
+        return Err(AppError::Validation(
+            "Certificate PDF/A embedded font set contains an unexpected font.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_embedded_font(
+    document: &LoDocument,
+    resource_name: &[u8],
+    font: &LoObject,
+) -> Result<String> {
+    let font = resolve_object(document, font)?;
+    let font = font
+        .as_dict()
+        .map_err(|_| AppError::Validation("PDF/A font dictionary is invalid.".into()))?;
+    if font.get(b"Subtype").and_then(LoObject::as_name).ok() != Some(b"Type0") {
+        return Err(AppError::Validation(format!(
+            "PDF/A font {} is not an embedded composite font.",
+            String::from_utf8_lossy(resource_name)
+        )));
+    }
+    let base_font = font
+        .get(b"BaseFont")
+        .and_then(LoObject::as_name)
+        .map_err(|_| AppError::Validation("PDF/A font has no BaseFont name.".into()))?;
+    if base_font.contains(&b'+') {
+        return Err(AppError::Validation(
+            "PDF/A font metadata claims full embedding but uses a subset name.".into(),
+        ));
+    }
+    let base_font_name = String::from_utf8(base_font.to_vec())
+        .map_err(|_| AppError::Validation("PDF/A embedded font name is not ASCII.".into()))?;
+    let to_unicode = font
+        .get(b"ToUnicode")
+        .map_err(|_| AppError::Validation("PDF/A embedded font has no ToUnicode map.".into()))?;
+    let to_unicode = resolve_object(document, to_unicode)?;
+    let to_unicode = to_unicode
+        .as_stream()
+        .map_err(|_| AppError::Validation("PDF/A ToUnicode map is invalid.".into()))?
+        .decompressed_content()
+        .map_err(|_| AppError::Validation("PDF/A ToUnicode map cannot be decoded.".into()))?;
+    if to_unicode.is_empty() {
+        return Err(AppError::Validation("PDF/A ToUnicode map is empty.".into()));
+    }
+
+    let descendants = font
+        .get(b"DescendantFonts")
+        .and_then(LoObject::as_array)
+        .map_err(|_| AppError::Validation("PDF/A descendant font is missing.".into()))?;
+    let descendant = descendants
+        .first()
+        .ok_or_else(|| AppError::Validation("PDF/A descendant font list is empty.".into()))?;
+    let descendant = resolve_object(document, descendant)?;
+    let descendant = descendant
+        .as_dict()
+        .map_err(|_| AppError::Validation("PDF/A descendant font is invalid.".into()))?;
+    if descendant.get(b"BaseFont").and_then(LoObject::as_name).ok() != Some(base_font) {
+        return Err(AppError::Validation(
+            "PDF/A descendant font name does not match its Type0 font.".into(),
+        ));
+    }
+    let descriptor = descendant
+        .get(b"FontDescriptor")
+        .map_err(|_| AppError::Validation("PDF/A font descriptor is missing.".into()))?;
+    let descriptor = resolve_object(document, descriptor)?;
+    let descriptor = descriptor
+        .as_dict()
+        .map_err(|_| AppError::Validation("PDF/A font descriptor is invalid.".into()))?;
+    if descriptor.get(b"FontName").and_then(LoObject::as_name).ok() != Some(base_font) {
+        return Err(AppError::Validation(
+            "PDF/A font descriptor name does not match its Type0 font.".into(),
+        ));
+    }
+    let font_file = descriptor
+        .get(b"FontFile2")
+        .or_else(|_| descriptor.get(b"FontFile3"))
+        .map_err(|_| AppError::Validation("PDF/A font program is not embedded.".into()))?;
+    let font_file = resolve_object(document, font_file)?;
+    let font_file = font_file
+        .as_stream()
+        .map_err(|_| AppError::Validation("PDF/A embedded font program is invalid.".into()))?
+        .decompressed_content()
+        .map_err(|_| {
+            AppError::Validation("PDF/A embedded font program cannot be decoded.".into())
+        })?;
+    if font_file.len() < 4 {
+        return Err(AppError::Validation(
+            "PDF/A embedded font program is empty.".into(),
+        ));
+    }
+    validate_font_embedding_permissions(&font_file)?;
+    Ok(base_font_name)
+}
+
+fn validate_font_embedding_permissions(font_file: &[u8]) -> Result<()> {
+    let table_count = font_file
+        .get(4..6)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u16::from_be_bytes)
+        .ok_or_else(|| AppError::Validation("PDF/A embedded font header is invalid.".into()))?;
+    let mut os2_range = None;
+    for index in 0..usize::from(table_count) {
+        let record = 12 + index * 16;
+        let Some(tag) = font_file.get(record..record + 4) else {
+            break;
+        };
+        if tag != b"OS/2" {
+            continue;
+        }
+        let offset = font_file
+            .get(record + 8..record + 12)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_be_bytes)
+            .map(|value| value as usize)
+            .ok_or_else(|| {
+                AppError::Validation("PDF/A embedded font OS/2 offset is invalid.".into())
+            })?;
+        let length = font_file
+            .get(record + 12..record + 16)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_be_bytes)
+            .map(|value| value as usize)
+            .ok_or_else(|| {
+                AppError::Validation("PDF/A embedded font OS/2 length is invalid.".into())
+            })?;
+        os2_range = offset.checked_add(length).map(|end| (offset, end));
+        break;
+    }
+    let Some((offset, end)) = os2_range else {
+        return Err(AppError::Validation(
+            "PDF/A embedded TrueType font has no OS/2 permissions table.".into(),
+        ));
+    };
+    let os2 = font_file
+        .get(offset..end)
+        .ok_or_else(|| AppError::Validation("PDF/A embedded font OS/2 table is invalid.".into()))?;
+    let fs_type = os2
+        .get(8..10)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u16::from_be_bytes)
+        .ok_or_else(|| {
+            AppError::Validation("PDF/A embedded font permissions are invalid.".into())
+        })?;
+    if fs_type & 0x0002 != 0 || fs_type & 0x0100 != 0 {
+        return Err(AppError::Validation(
+            "PDF/A font license flags forbid embedding or subsetting.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_deterministic_trailer_id(document: &LoDocument) -> Result<()> {
+    let ids = document
+        .trailer
+        .get(b"ID")
+        .and_then(LoObject::as_array)
+        .map_err(|_| AppError::Validation("PDF/A trailer ID is missing.".into()))?;
+    if ids.len() != 2
+        || ids
+            .iter()
+            .any(|id| id.as_str().map_or(true, |value| value.len() != 32))
+    {
+        return Err(AppError::Validation(
+            "PDF/A trailer ID has an unexpected format.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_object(document: &LoDocument, object: &LoObject) -> Result<LoObject> {
+    match object {
+        LoObject::Reference(id) => document
+            .get_object(*id)
+            .cloned()
+            .map_err(|_| AppError::Validation("PDF indirect object is missing.".into())),
+        object => Ok(object.clone()),
+    }
 }
 
 fn validate_snapshot(snapshot: &CertificatePdfSnapshot<'_>) -> Result<workflow::WorkflowConfig> {
@@ -1054,7 +1776,7 @@ fn validate_rendered_text(
 fn validate_win_ansi(label: &str, value: &str) -> Result<()> {
     if let Some(character) = value.chars().find(|character| !is_win_ansi(*character)) {
         return Err(AppError::Data(format!(
-            "Certificate PDF {label} contains a character unsupported by the built-in PDF fonts: U+{:04X}.",
+            "Certificate PDF {label} contains a character unsupported by the bundled archive fonts: U+{:04X}.",
             character as u32
         )));
     }
@@ -1371,7 +2093,8 @@ fn render_sources_and_generation(layout: &mut PdfLayout, snapshot: &CertificateP
         );
     }
 
-    layout.table_rows(&rows, 86.0);
+    // Provenance-bearing labels must remain contiguous in extracted text.
+    layout.table_rows(&rows, 106.0);
 }
 
 fn render_human_contribution(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'_>) {
@@ -1435,23 +2158,19 @@ fn render_suno_field(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'
             yes_no(fields.instrumental_track),
         ),
         (
-            "Generation Text Field Available [User-confirmed fact]",
-            yes_no(fields.suno_lyrics_field_content),
-        ),
-        (
             "Generation Text Field Used [User-confirmed fact]",
             generation_text_field_used(&fields),
         ),
         (
             "Content Classification [User-confirmed fact]",
-            classification.as_str(),
+            classification,
         ),
         (
-            "Vocal Lyrics Present [User-confirmed fact]",
+            "Vocal Lyrics Present [Classification-derived presentation]",
             generation_field_vocal_lyrics_present(&fields),
         ),
         (
-            "Structure Instructions Present [User-confirmed fact]",
+            "Structure Instructions Present [Classification-derived presentation]",
             structure_instructions_present(&fields),
         ),
         (
@@ -1482,9 +2201,9 @@ fn render_suno_field(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'
         1.3,
     );
     layout.write_wrapped(
-        match fields.suno_lyrics_field_content {
-            Some(true) => documented(&fields.suno_lyrics_field_text),
-            Some(false) => "N/A",
+        match fields.suno_content_classification {
+            Some(SunoContentClassification::Empty) => "N/A",
+            Some(_) => documented(&fields.suno_lyrics_field_text),
             None => "NOT DOCUMENTED",
         },
         LEFT_MM,
@@ -1629,6 +2348,18 @@ fn render_artwork_checks(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapsh
         fields.artwork_origin.as_str(),
         "ai_generated" | "ai_assisted"
     );
+    let artwork_evidence = snapshot
+        .evidence
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.role,
+                EvidenceRole::HumanEditedArtwork | EvidenceRole::FinalArtwork
+            )
+        })
+        .map(|item| (*item).clone())
+        .collect::<Vec<_>>();
+    let artwork_comparison = workflow::human_edited_final_artwork_status(&artwork_evidence);
     let rows = vec![
         TableRow::plain(
             "Artwork origin [User-confirmed fact]",
@@ -1722,15 +2453,47 @@ fn render_artwork_checks(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapsh
             },
         ),
         TableRow::plain(
-            "Artwork disclosure text [User-confirmed fact]",
-            if ai_artwork && fields.disclosure_applied == Some(true) {
-                documented(&fields.disclosure_text)
+            "Artwork disclosure deliberately not applied [User-confirmed fact]",
+            if ai_artwork {
+                match fields.disclosure_applied {
+                    Some(false) => "YES",
+                    Some(true) => "NO",
+                    None => "NOT DOCUMENTED",
+                }
+            } else if fields.artwork_origin.trim().is_empty() {
+                "NOT DOCUMENTED"
             } else {
                 "N/A"
             },
         ),
+        TableRow::plain(
+            "Artwork disclosure text [User-confirmed fact]",
+            if ai_artwork {
+                match fields.disclosure_applied {
+                    Some(true) => documented(&fields.disclosure_text),
+                    Some(false) => "N/A",
+                    None => "NOT DOCUMENTED",
+                }
+            } else {
+                "N/A"
+            },
+        ),
+        TableRow::plain(
+            "Human-edited/final artwork comparison [System verification]",
+            artwork_comparison,
+        ),
     ];
-    layout.table_rows(&rows, 62.0);
+    // The explicit disclosure and comparison labels are part of the evidence
+    // contract, so preserve them as contiguous searchable tokens.
+    layout.table_rows(&rows, 112.0);
+    layout.write_localized(
+        crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE,
+        LEFT_MM,
+        RIGHT_MM - LEFT_MM,
+        7.2,
+        BuiltinFont::Helvetica,
+        1.3,
+    );
 }
 
 fn render_license_and_rights(layout: &mut PdfLayout, snapshot: &CertificatePdfSnapshot<'_>) {
@@ -2401,55 +3164,44 @@ fn documented_list(values: &[String]) -> String {
     }
 }
 
-fn suno_content_types(fields: &TrackFields) -> String {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A".into(),
-        None => "NOT DOCUMENTED".into(),
-        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED".into(),
-        Some(true) => fields
-            .suno_lyrics_content_types
-            .iter()
-            .map(|value| match value {
-                SunoLyricsContentType::VocalLyrics => "Vocal lyrics",
-                SunoLyricsContentType::StructureInstructions => "Structure instructions",
-                SunoLyricsContentType::SoundInstructions => "Sound instructions",
-                SunoLyricsContentType::ArrangementInstructions => "Arrangement instructions",
-                SunoLyricsContentType::Mixed => "Mixed",
-                SunoLyricsContentType::Other => "Other",
-            })
-            .collect::<Vec<_>>()
-            .join(" | "),
-    }
-}
-
 fn generation_text_field_used(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(true) if fields.suno_lyrics_field_text.trim().is_empty() => "NOT DOCUMENTED",
-        Some(true) => "YES",
-        Some(false) => "NO",
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::Empty) => "NO",
+        Some(_) => "YES",
         None => "NOT DOCUMENTED",
     }
 }
 
-fn content_classification(fields: &TrackFields) -> String {
-    suno_content_types(fields)
+fn content_classification(fields: &TrackFields) -> &'static str {
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::StructureOnly) => "STRUCTURE_ONLY",
+        Some(SunoContentClassification::VocalLyricsOnly) => "VOCAL_LYRICS_ONLY",
+        Some(SunoContentClassification::Mixed) => "MIXED",
+        Some(SunoContentClassification::Empty) => "EMPTY",
+        Some(SunoContentClassification::Other) => "OTHER",
+        None => "NOT DOCUMENTED",
+    }
 }
 
 fn generation_field_vocal_lyrics_present(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A",
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::VocalLyricsOnly | SunoContentClassification::Mixed) => {
+            "YES"
+        }
+        Some(SunoContentClassification::StructureOnly) => "NO",
+        Some(SunoContentClassification::Empty) => "N/A",
+        Some(SunoContentClassification::Other) => "NOT DOCUMENTED",
         None => "NOT DOCUMENTED",
-        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED",
-        Some(true) => yes_no_bool(
-            fields
-                .suno_lyrics_content_types
-                .contains(&SunoLyricsContentType::VocalLyrics),
-        ),
     }
 }
 
 fn suno_vocal_intent(fields: &TrackFields) -> &'static str {
-    generation_field_vocal_lyrics_present(fields)
+    match fields.vocal_intent {
+        Some(VocalIntent::Vocal) => "VOCAL",
+        Some(VocalIntent::Instrumental) => "INSTRUMENTAL",
+        Some(VocalIntent::Unspecified) => "UNSPECIFIED",
+        None => "NOT DOCUMENTED",
+    }
 }
 
 fn final_audio_contains_vocals(fields: &TrackFields) -> &'static str {
@@ -2457,15 +3209,12 @@ fn final_audio_contains_vocals(fields: &TrackFields) -> &'static str {
 }
 
 fn structure_instructions_present(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A",
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::StructureOnly | SunoContentClassification::Mixed) => "YES",
+        Some(SunoContentClassification::VocalLyricsOnly) => "NO",
+        Some(SunoContentClassification::Empty) => "N/A",
+        Some(SunoContentClassification::Other) => "NOT DOCUMENTED",
         None => "NOT DOCUMENTED",
-        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED",
-        Some(true) => yes_no_bool(
-            fields
-                .suno_lyrics_content_types
-                .contains(&SunoLyricsContentType::StructureInstructions),
-        ),
     }
 }
 
@@ -2904,7 +3653,7 @@ impl PdfLayout {
                 pos: Point::new(Mm(x_mm), Mm(y_mm)),
             },
             Op::SetFont {
-                font: PdfFontHandle::Builtin(font),
+                font: PdfFontHandle::External(archive_font_id(font)),
                 size: Pt(size_pt),
             },
             Op::ShowText {
@@ -2918,10 +3667,11 @@ impl PdfLayout {
         self.current_ops().extend([
             Op::SaveGraphicsState,
             Op::SetOutlineColor {
-                col: Color::Rgb(Rgb {
-                    r: 0.48,
-                    g: 0.48,
-                    b: 0.48,
+                col: Color::Cmyk(Cmyk {
+                    c: 0.0,
+                    m: 0.0,
+                    y: 0.0,
+                    k: 0.52,
                     icc_profile: None,
                 }),
             },
@@ -2991,7 +3741,7 @@ fn append_text(
             pos: Point::new(Mm(x_mm), Mm(y_mm)),
         },
         Op::SetFont {
-            font: PdfFontHandle::Builtin(font),
+            font: PdfFontHandle::External(archive_font_id(font)),
             size: Pt(size_pt),
         },
         Op::ShowText {
@@ -3005,10 +3755,11 @@ fn append_rule(ops: &mut Vec<Op>, from_x_mm: f32, to_x_mm: f32, y_mm: f32, thick
     ops.extend([
         Op::SaveGraphicsState,
         Op::SetOutlineColor {
-            col: Color::Rgb(Rgb {
-                r: 0.48,
-                g: 0.48,
-                b: 0.48,
+            col: Color::Cmyk(Cmyk {
+                c: 0.0,
+                m: 0.0,
+                y: 0.0,
+                k: 0.52,
                 icc_profile: None,
             }),
         },
@@ -3111,40 +3862,99 @@ fn measure_text_width_mm(text: &str, size_pt: f32, font: BuiltinFont) -> f32 {
     width_in_em * size_pt * 0.352_778
 }
 
+fn archive_font_id(font: BuiltinFont) -> FontId {
+    FontId(
+        match font {
+            BuiltinFont::Helvetica | BuiltinFont::HelveticaOblique => ARCHIVE_SANS_REGULAR_ID,
+            BuiltinFont::HelveticaBold | BuiltinFont::HelveticaBoldOblique => ARCHIVE_SANS_BOLD_ID,
+            BuiltinFont::Courier | BuiltinFont::CourierOblique => ARCHIVE_MONO_REGULAR_ID,
+            BuiltinFont::CourierBold | BuiltinFont::CourierBoldOblique => ARCHIVE_MONO_BOLD_ID,
+            _ => ARCHIVE_SANS_REGULAR_ID,
+        }
+        .to_owned(),
+    )
+}
+
+fn install_archive_fonts(document: &mut PdfDocument) -> Result<()> {
+    for (id, bytes, expected_sha256) in [
+        (
+            ARCHIVE_SANS_REGULAR_ID,
+            ARCHIVE_SANS_REGULAR_BYTES,
+            CERTIFICATE_PDF_FONT_SHA256[0],
+        ),
+        (
+            ARCHIVE_SANS_BOLD_ID,
+            ARCHIVE_SANS_BOLD_BYTES,
+            CERTIFICATE_PDF_FONT_SHA256[1],
+        ),
+        (
+            ARCHIVE_MONO_REGULAR_ID,
+            ARCHIVE_MONO_REGULAR_BYTES,
+            CERTIFICATE_PDF_FONT_SHA256[2],
+        ),
+        (
+            ARCHIVE_MONO_BOLD_ID,
+            ARCHIVE_MONO_BOLD_BYTES,
+            CERTIFICATE_PDF_FONT_SHA256[3],
+        ),
+    ] {
+        if crate::security::sha256_bytes(bytes) != expected_sha256 {
+            return Err(AppError::Data(format!(
+                "Bundled archive font {id} does not match its recorded SHA-256."
+            )));
+        }
+        let parsed = parse_archive_font(bytes, id)?;
+        if !parsed.has_source_bytes() {
+            return Err(AppError::Data(format!(
+                "Bundled archive font {id} has no embeddable source bytes."
+            )));
+        }
+        document
+            .resources
+            .fonts
+            .map
+            .insert(FontId(id.to_owned()), PdfFont::new(parsed));
+    }
+    Ok(())
+}
+
+fn parse_archive_font(bytes: &[u8], id: &str) -> Result<ParsedFont> {
+    let mut warnings = Vec::new();
+    ParsedFont::from_bytes(bytes, 0, &mut warnings).ok_or_else(|| {
+        AppError::Data(format!(
+            "Bundled archive font {id} could not be parsed for PDF/A embedding."
+        ))
+    })
+}
+
 fn builtin_font_metrics(font: BuiltinFont) -> &'static ParsedFont {
-    static HELVETICA: OnceLock<ParsedFont> = OnceLock::new();
-    static HELVETICA_BOLD: OnceLock<ParsedFont> = OnceLock::new();
-    static COURIER: OnceLock<ParsedFont> = OnceLock::new();
-    static COURIER_BOLD: OnceLock<ParsedFont> = OnceLock::new();
+    static SANS: OnceLock<ParsedFont> = OnceLock::new();
+    static SANS_BOLD: OnceLock<ParsedFont> = OnceLock::new();
+    static MONO: OnceLock<ParsedFont> = OnceLock::new();
+    static MONO_BOLD: OnceLock<ParsedFont> = OnceLock::new();
 
     match font {
-        BuiltinFont::Helvetica | BuiltinFont::HelveticaOblique => HELVETICA.get_or_init(|| {
-            BuiltinFont::Helvetica
-                .get_parsed_font()
-                .expect("built-in Helvetica metrics")
+        BuiltinFont::Helvetica | BuiltinFont::HelveticaOblique => SANS.get_or_init(|| {
+            parse_archive_font(ARCHIVE_SANS_REGULAR_BYTES, ARCHIVE_SANS_REGULAR_ID)
+                .expect("bundled DejaVu Sans metrics")
         }),
-        BuiltinFont::HelveticaBold | BuiltinFont::HelveticaBoldOblique => HELVETICA_BOLD
-            .get_or_init(|| {
-                BuiltinFont::HelveticaBold
-                    .get_parsed_font()
-                    .expect("built-in Helvetica Bold metrics")
-            }),
-        BuiltinFont::Courier | BuiltinFont::CourierOblique => COURIER.get_or_init(|| {
-            BuiltinFont::Courier
-                .get_parsed_font()
-                .expect("built-in Courier metrics")
-        }),
-        BuiltinFont::CourierBold | BuiltinFont::CourierBoldOblique => {
-            COURIER_BOLD.get_or_init(|| {
-                BuiltinFont::CourierBold
-                    .get_parsed_font()
-                    .expect("built-in Courier Bold metrics")
+        BuiltinFont::HelveticaBold | BuiltinFont::HelveticaBoldOblique => {
+            SANS_BOLD.get_or_init(|| {
+                parse_archive_font(ARCHIVE_SANS_BOLD_BYTES, ARCHIVE_SANS_BOLD_ID)
+                    .expect("bundled DejaVu Sans Bold metrics")
             })
         }
-        _ => HELVETICA.get_or_init(|| {
-            BuiltinFont::Helvetica
-                .get_parsed_font()
-                .expect("built-in Helvetica metrics")
+        BuiltinFont::Courier | BuiltinFont::CourierOblique => MONO.get_or_init(|| {
+            parse_archive_font(ARCHIVE_MONO_REGULAR_BYTES, ARCHIVE_MONO_REGULAR_ID)
+                .expect("bundled DejaVu Sans Mono metrics")
+        }),
+        BuiltinFont::CourierBold | BuiltinFont::CourierBoldOblique => MONO_BOLD.get_or_init(|| {
+            parse_archive_font(ARCHIVE_MONO_BOLD_BYTES, ARCHIVE_MONO_BOLD_ID)
+                .expect("bundled DejaVu Sans Mono Bold metrics")
+        }),
+        _ => SANS.get_or_init(|| {
+            parse_archive_font(ARCHIVE_SANS_REGULAR_BYTES, ARCHIVE_SANS_REGULAR_ID)
+                .expect("bundled DejaVu Sans metrics")
         }),
     }
 }
@@ -3203,8 +4013,8 @@ mod tests {
                 suno_plan_at_generation: "Pro".into(),
                 instrumental_track: Some(false),
                 vocal_lyrics_present: Some(true),
-                suno_lyrics_field_content: Some(true),
-                suno_lyrics_content_types: vec![SunoLyricsContentType::VocalLyrics],
+                vocal_intent: Some(VocalIntent::Vocal),
+                suno_content_classification: Some(SunoContentClassification::VocalLyricsOnly),
                 suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
                 suno_lyrics_field_text: "A documented vocal line".into(),
                 external_audio_uploaded: Some(false),
@@ -3356,12 +4166,167 @@ mod tests {
 
         let (document, text) = parse_text(&bytes);
         assert!(!document.pages.is_empty());
-        assert!(text.contains("Größe & Präzision"));
+        assert!(text.contains("Größe & Präzision"), "extracted text: {text}");
         assert!(text.contains("Künstlerin Änne Öster"));
         assert!(text.contains(CERTIFICATE_ID));
         assert!(text.contains(DIGEST_A));
         assert!(text.contains(&format!("{value:064x}", value = 1)));
         assert!(text.contains("Kein AI-Artwork dokumentiert"));
+    }
+
+    #[test]
+    fn generated_certificate_has_deterministic_pdfa_2b_archive_structure() {
+        let bytes = Fixture::new(2).generate();
+        validate_pdfa_2b_bytes(&bytes).expect("strict PDF/A-2b structure");
+
+        let archive = LoDocument::load_mem(&bytes).expect("parse archive PDF");
+        assert_eq!(archive.version, "1.7");
+        let xmp = pdf_metadata_bytes(&archive)
+            .expect("read XMP")
+            .expect("embedded XMP");
+        let xmp = std::str::from_utf8(&xmp).expect("UTF-8 XMP");
+        assert!(xmp.contains("<pdfaid:part>2</pdfaid:part>"));
+        assert!(xmp.contains("<pdfaid:conformance>B</pdfaid:conformance>"));
+        assert!(xmp.contains("<xmp:CreateDate>2026-01-04T12:34:56Z</xmp:CreateDate>"));
+        assert!(xmp.contains("<dc:language><rdf:Bag><rdf:li>en-US</rdf:li>"));
+
+        let metadata = certificate_pdf_archive_metadata();
+        assert_eq!(metadata.archive_format, "PDF/A-2b");
+        assert_eq!(metadata.font_embedding, "full");
+        assert_eq!(metadata.embedded_fonts.len(), 4);
+        assert_eq!(metadata.embedded_font_sha256.len(), 4);
+        assert_eq!(metadata.font_version, "DejaVu 2.37");
+        assert_eq!(metadata.font_license, "DejaVu Fonts License");
+        assert_eq!(metadata.output_intent, CERTIFICATE_PDF_OUTPUT_INTENT);
+        assert_eq!(bytes, Fixture::new(2).generate());
+    }
+
+    #[test]
+    fn german_and_english_renditions_have_distinct_deterministic_identifiers() {
+        fn xmp_uuid<'a>(xmp: &'a str, element: &str) -> &'a str {
+            let prefix = format!("<{element}>uuid:");
+            let suffix = format!("</{element}>");
+            let start = xmp.find(&prefix).expect("XMP UUID element") + prefix.len();
+            let end = start
+                + xmp[start..]
+                    .find(&suffix)
+                    .expect("XMP UUID closing element");
+            &xmp[start..end]
+        }
+
+        fn archive_identifiers(bytes: &[u8]) -> (String, String, Vec<Vec<u8>>) {
+            let archive = LoDocument::load_mem(bytes).expect("parse archive PDF");
+            let xmp = pdf_metadata_bytes(&archive)
+                .expect("read XMP")
+                .expect("embedded XMP");
+            let xmp = std::str::from_utf8(&xmp).expect("UTF-8 XMP");
+            let document_id = xmp_uuid(xmp, "xmpMM:DocumentID").to_owned();
+            let instance_id = xmp_uuid(xmp, "xmpMM:InstanceID").to_owned();
+            let trailer_ids = archive
+                .trailer
+                .get(b"ID")
+                .and_then(LoObject::as_array)
+                .expect("trailer ID array")
+                .iter()
+                .map(|value| value.as_str().expect("trailer ID string").to_vec())
+                .collect();
+            (document_id, instance_id, trailer_ids)
+        }
+
+        fn expected_trailer_ids(rendition_seed: &str) -> Vec<Vec<u8>> {
+            let digest = crate::security::sha256_bytes(rendition_seed.as_bytes());
+            vec![
+                digest.as_bytes()[..32].to_vec(),
+                digest.as_bytes()[32..].to_vec(),
+            ]
+        }
+
+        let mut english = Fixture::new(1);
+        english.render_options = CertificateRenderOptions {
+            language: CertificateLanguage::En,
+            bilingual: false,
+        };
+        let mut german = Fixture::new(1);
+        german.render_options = CertificateRenderOptions {
+            language: CertificateLanguage::De,
+            bilingual: false,
+        };
+
+        let english_ids = archive_identifiers(&english.generate());
+        let german_ids = archive_identifiers(&german.generate());
+        assert_eq!(
+            english_ids.0,
+            deterministic_uuid(&format!("{CERTIFICATE_ID}:en-US"), "document")
+        );
+        assert_eq!(
+            english_ids.1,
+            deterministic_uuid(&format!("{CERTIFICATE_ID}:en-US"), "instance")
+        );
+        assert_eq!(
+            german_ids.0,
+            deterministic_uuid(&format!("{CERTIFICATE_ID}:de-DE"), "document")
+        );
+        assert_eq!(
+            german_ids.1,
+            deterministic_uuid(&format!("{CERTIFICATE_ID}:de-DE"), "instance")
+        );
+        assert_eq!(
+            english_ids.2,
+            expected_trailer_ids(&format!("{CERTIFICATE_ID}:en-US"))
+        );
+        assert_eq!(
+            german_ids.2,
+            expected_trailer_ids(&format!("{CERTIFICATE_ID}:de-DE"))
+        );
+        assert_ne!(english_ids.0, german_ids.0);
+        assert_ne!(english_ids.1, german_ids.1);
+        assert_ne!(english_ids.2, german_ids.2);
+    }
+
+    #[test]
+    fn strict_archive_validation_rejects_removed_pdfa_xmp() {
+        let bytes = Fixture::new(1).generate();
+        let mut archive = LoDocument::load_mem(&bytes).expect("parse archive PDF");
+        let root_id = archive
+            .trailer
+            .get(b"Root")
+            .and_then(LoObject::as_reference)
+            .expect("catalog reference");
+        archive
+            .get_dictionary_mut(root_id)
+            .expect("catalog")
+            .remove(b"Metadata");
+        let mut tampered = Vec::new();
+        archive
+            .save_to(&mut tampered)
+            .expect("serialize tampered PDF");
+
+        let error = validate_pdfa_2b_bytes(&tampered).expect_err("missing XMP is rejected");
+        assert!(error.to_string().contains("no XMP metadata"));
+    }
+
+    #[test]
+    fn historical_non_pdfa_pdf_remains_accepted_by_public_validator() {
+        let mut historical = PdfDocument::new("Historical certificate");
+        historical.with_pages(vec![PdfPage::new(
+            Mm(210.0),
+            Mm(297.0),
+            vec![
+                Op::StartTextSection,
+                Op::SetFont {
+                    font: PdfFontHandle::Builtin(BuiltinFont::Helvetica),
+                    size: Pt(10.0),
+                },
+                Op::ShowText {
+                    items: vec![TextItem::Text("Historical certificate".into())],
+                },
+                Op::EndTextSection,
+            ],
+        )]);
+        let mut warnings = Vec::new();
+        let bytes = historical.save(&PdfSaveOptions::default(), &mut warnings);
+        assert!(!pdf_claims_pdfa(&bytes).expect("inspect historical PDF"));
+        validate_pdf_bytes(&bytes).expect("historical parseable PDF remains supported");
     }
 
     #[test]
@@ -3389,9 +4354,18 @@ mod tests {
         assert!(
             bilingual_normalized.contains("C. Finale Suno-Erzeugung / C. Final Suno Generation")
         );
-        assert!(bilingual_normalized.contains(
-            "ID der finalen Erzeugung [Vom Nutzer bestätigte Angabe] / Final generation ID [User-confirmed fact]"
-        ));
+        // In the bilingual table the value can be interleaved between wrapped
+        // label lines by text extraction; both localized labels must survive.
+        assert!(bilingual_normalized
+            .contains("ID der finalen Erzeugung [Vom Nutzer bestätigte Angabe]"));
+        let id_label_start = bilingual_normalized
+            .find("ID der finalen Erzeugung")
+            .expect("German final-generation ID label");
+        let id_label_end = (id_label_start + 280).min(bilingual_normalized.len());
+        let id_label_region = &bilingual_normalized[id_label_start..id_label_end];
+        assert!(id_label_region.contains("Final generation"));
+        assert!(id_label_region.contains("User-confirmed fact"));
+        assert!(id_label_region.contains("generation-fixture"));
     }
 
     #[test]
@@ -3479,12 +4453,9 @@ mod tests {
         let mut fixture = Fixture::new(1);
         fixture.track.fields.instrumental_track = Some(true);
         fixture.track.fields.vocal_lyrics_present = Some(false);
-        fixture.track.fields.suno_lyrics_field_content = Some(true);
-        fixture.track.fields.suno_lyrics_content_types = vec![
-            SunoLyricsContentType::StructureInstructions,
-            SunoLyricsContentType::SoundInstructions,
-            SunoLyricsContentType::ArrangementInstructions,
-        ];
+        fixture.track.fields.vocal_intent = Some(VocalIntent::Instrumental);
+        fixture.track.fields.suno_content_classification =
+            Some(SunoContentClassification::StructureOnly);
         fixture.track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Mixed);
         fixture.track.fields.suno_lyrics_field_text = "[Intro]\n[Drop]\n[Outro]".into();
         fixture.track.fields.human_editing_performed = Some(false);
@@ -3509,10 +4480,11 @@ mod tests {
         assert!(!normalized[human_section..suno_field_section].contains("Content source"));
         assert!(!normalized.contains("E.1 Suno Structure / Generation Instructions"));
         assert!(text.contains("Suno Instrumental Mode Selected [User-confirmed fact]: YES"));
-        assert!(text.contains("Vocal Lyrics Present [User-confirmed fact]: NO"));
+        assert!(text.contains("Vocal Lyrics Present [Classification-derived presentation]: NO"));
         assert!(text.contains("Final Audio Contains Vocals [User-confirmed fact]: NO"));
-        assert!(text.contains("Structure Instructions Present [User-confirmed fact]: YES"));
-        assert!(text.contains("Vocal Intent [User-confirmed fact]: NO"));
+        assert!(text
+            .contains("Structure Instructions Present [Classification-derived presentation]: YES"));
+        assert!(text.contains("Vocal Intent [User-confirmed fact]: INSTRUMENTAL"));
         assert!(text.contains("[Intro]"));
         assert!(text.contains("does not confirm authorship"));
         assert!(!text.contains("Commercial rights confirmed"));
@@ -3523,15 +4495,16 @@ mod tests {
         let mut fixture = Fixture::new(1);
         fixture.track.fields.instrumental_track = Some(false);
         fixture.track.fields.vocal_lyrics_present = Some(true);
-        fixture.track.fields.suno_lyrics_field_content = Some(true);
-        fixture.track.fields.suno_lyrics_content_types =
-            vec![SunoLyricsContentType::StructureInstructions];
+        fixture.track.fields.vocal_intent = Some(VocalIntent::Vocal);
+        fixture.track.fields.suno_content_classification =
+            Some(SunoContentClassification::StructureOnly);
         fixture.track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Human);
         fixture.track.fields.suno_lyrics_field_text = "[Intro]\n[Drop]".into();
 
         let (_, text) = parse_text(&fixture.generate());
-        assert!(text.contains("Vocal Lyrics Present [User-confirmed fact]: NO"));
-        assert!(text.contains("Structure Instructions Present [User-confirmed fact]: YES"));
+        assert!(text.contains("Vocal Lyrics Present [Classification-derived presentation]: NO"));
+        assert!(text
+            .contains("Structure Instructions Present [Classification-derived presentation]: YES"));
         assert!(text.contains("Final Audio Contains Vocals [User-confirmed fact]: YES"));
     }
 
@@ -3540,9 +4513,9 @@ mod tests {
         let mut fixture = Fixture::new(1);
         fixture.track.fields.instrumental_track = Some(true);
         fixture.track.fields.vocal_lyrics_present = Some(false);
-        fixture.track.fields.suno_lyrics_field_content = Some(true);
-        fixture.track.fields.suno_lyrics_content_types =
-            vec![SunoLyricsContentType::StructureInstructions];
+        fixture.track.fields.vocal_intent = Some(VocalIntent::Instrumental);
+        fixture.track.fields.suno_content_classification =
+            Some(SunoContentClassification::StructureOnly);
         fixture.track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Ai);
         fixture.track.fields.suno_lyrics_field_text = "[AI structure instruction]".into();
         fixture.track.fields.human_editing_performed = Some(true);
@@ -3736,9 +4709,14 @@ mod tests {
         let second = generate_external_timestamp_addendum_pdf(&snapshot)
             .expect("regenerate timestamp addendum");
         assert_eq!(first, second);
+        validate_pdfa_2b_bytes(&first).expect("timestamp addendum PDF/A-2b structure");
         let (document, text) = parse_text(&first);
         assert!(!document.pages.is_empty());
         let normalized = normalized_text(&text);
+        let compact = text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
         for expected in [
             "Example Timestamp Issuer",
             "Qualified electronic timestamp – user declared",
@@ -3748,10 +4726,14 @@ mod tests {
             DIGEST_C,
             EXTERNAL_TIMESTAMP_DISCLAIMER,
             CERTIFICATE_ID,
-            "Seite 1 /",
+            "Page 1 /",
         ] {
+            let expected_compact = expected
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
             assert!(
-                normalized.contains(expected),
+                compact.contains(&expected_compact),
                 "missing addendum value: {expected}"
             );
         }
@@ -3778,7 +4760,7 @@ mod tests {
             "Provider verification result [System verification] ATTACHED – legacy manually recorded; no provider verification recorded"
         ));
         assert!(text.contains(&format!(
-            "Seite {} / {}",
+            "Page {} / {}",
             document.pages.len(),
             document.pages.len()
         )));
@@ -3792,7 +4774,7 @@ mod tests {
                     index + 1
                 );
             }
-            assert!(page_text.contains(&format!("Seite {} / {}", index + 1, document.pages.len())));
+            assert!(page_text.contains(&format!("Page {} / {}", index + 1, document.pages.len())));
         }
 
         let matching_snapshot = ExternalTimestampPdfSnapshot {
@@ -3815,8 +4797,7 @@ mod tests {
             protocol: "RFC 3161 Timestamp Protocol".into(),
             request_algorithm: "SHA-256".into(),
             response_format: "RFC 3161 TimeStampResp (.tsr)".into(),
-            provider_endpoint_identifier: "https://timestamp.sigstore.dev/api/v1/timestamp"
-                .into(),
+            provider_endpoint_identifier: "https://timestamp.sigstore.dev/api/v1/timestamp".into(),
             provider_response_file_name: "PROVIDER_RESPONSE.bin".into(),
             provider_response_sha256: DIGEST_B.into(),
             referenced_revision_id: "finalization-snapshot-2026-0001".into(),
@@ -3824,15 +4805,24 @@ mod tests {
             certificate_subject: "CN=Example TSA".into(),
             certificate_serial_number: "01:23:45:67".into(),
             policy_oid: "1.2.3.4.5".into(),
+            request_nonce: "0123456789abcdef".into(),
+            response_nonce: "0123456789abcdef".into(),
+            nonce_match: Some(true),
+            requested_policy_oid: "1.2.3.4.5".into(),
+            policy_match: Some(true),
+            cryptographic_verifier: crate::external_timestamp::RFC3161_CRYPTOGRAPHIC_VERIFIER
+                .into(),
+            trust_anchor_sha256: vec![DIGEST_A.into()],
             response_structure_valid: Some(true),
             provider_digest_match: Some(true),
-            signature_verified: None,
-            trust_chain_verified: None,
-            verification_result: ExternalTimestampStatus::Attached,
+            signature_verified: Some(true),
+            trust_chain_verified: Some(true),
+            verification_result: ExternalTimestampStatus::Verified,
             verification_message:
-                "Response structure and requested SHA-256 message imprint were checked; signature and trust-chain verification are not recorded."
+                "RFC 3161 response, request binding, CMS signature, and trust chain were verified."
                     .into(),
             verification_timestamp: "2026-01-04T12:05:00Z".into(),
+            ..TimestampProviderMetadata::default()
         };
         let snapshot = ExternalTimestampPdfSnapshot {
             certificate_id: CERTIFICATE_ID,
@@ -3858,6 +4848,10 @@ mod tests {
             .expect("generate automatic timestamp addendum");
         let (_, text) = parse_text(&bytes);
         let normalized = normalized_text(&text);
+        let compact = text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
         for expected in [
             "Original Certificate ID [System value]",
             CERTIFICATE_ID,
@@ -3874,22 +4868,34 @@ mod tests {
             DIGEST_B,
             "Timestamp evidence SHA-256 [System verification]",
             DIGEST_C,
-            "Provider verification result [System verification] ATTACHED",
+            "Provider verification result [System verification] VERIFIED",
             "Verification timestamp [System verification]",
             "2026-01-04T12:05:00Z",
             "Provider response structure valid [System verification] YES",
             "Provider digest match [System verification] YES",
+            "RFC 3161 request nonce [System value]",
+            "0123456789abcdef",
+            "RFC 3161 nonce match [System verification] YES",
+            "Requested timestamp policy OID [System value]",
+            "Requested policy match [System verification] YES",
+            "Cryptographic verifier [System verification]",
+            crate::external_timestamp::RFC3161_CRYPTOGRAPHIC_VERIFIER,
+            "Trust-anchor SHA-256 [System verification]",
+            "Timestamp signature verified [System verification] YES",
+            "Timestamp trust chain verified [System verification] YES",
         ] {
+            let expected_compact = expected
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
             assert!(
-                normalized.contains(expected),
+                compact.contains(&expected_compact),
                 "missing automatic provider value: {expected}"
             );
         }
         assert!(!text.contains("[User-confirmed fact]"));
         assert!(!text.contains("Legacy manually recorded timestamp evidence"));
         assert!(!text.contains("Qualified electronic timestamp"));
-        assert!(!text.contains("Timestamp signature verified [System verification]"));
-        assert!(!text.contains("Timestamp trust chain verified [System verification]"));
         assert!(normalized.contains("do not establish a qualified timestamp, legal effect"));
     }
 
@@ -3904,16 +4910,34 @@ mod tests {
         let mut fixture = Fixture::new(1);
         fixture.track.fields.instrumental_track = Some(false);
         fixture.track.fields.vocal_lyrics_present = Some(true);
-        fixture.track.fields.suno_lyrics_field_content = Some(true);
-        fixture.track.fields.suno_lyrics_content_types = vec![SunoLyricsContentType::VocalLyrics];
+        fixture.track.fields.vocal_intent = Some(VocalIntent::Vocal);
+        fixture.track.fields.suno_content_classification =
+            Some(SunoContentClassification::VocalLyricsOnly);
         fixture.track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Human);
         fixture.track.fields.suno_lyrics_field_text = "Sing this exact line".into();
         let (_, text) = parse_text(&fixture.generate());
         assert!(text.contains("F. Suno Generation Text Field"));
         assert!(text.contains("Suno Instrumental Mode Selected [User-confirmed fact]: NO"));
-        assert!(text.contains("Vocal Lyrics Present [User-confirmed fact]: YES"));
+        assert!(text.contains("Vocal Lyrics Present [Classification-derived presentation]: YES"));
         assert!(text.contains("Final Audio Contains Vocals [User-confirmed fact]: YES"));
         assert!(text.contains("Sing this exact line"));
+    }
+
+    #[test]
+    fn mixed_content_and_unspecified_vocal_intent_remain_independent_from_audio() {
+        let mut fixture = Fixture::new(1);
+        fixture.track.fields.vocal_lyrics_present = Some(false);
+        fixture.track.fields.vocal_intent = Some(VocalIntent::Unspecified);
+        fixture.track.fields.suno_content_classification = Some(SunoContentClassification::Mixed);
+        fixture.track.fields.suno_lyrics_field_text = "[Intro]\nSing this line".into();
+
+        let (_, text) = parse_text(&fixture.generate());
+        assert!(text.contains("Content Classification [User-confirmed fact]: MIXED"));
+        assert!(text.contains("Vocal Lyrics Present [Classification-derived presentation]: YES"));
+        assert!(text
+            .contains("Structure Instructions Present [Classification-derived presentation]: YES"));
+        assert!(text.contains("Vocal Intent [User-confirmed fact]: UNSPECIFIED"));
+        assert!(text.contains("Final Audio Contains Vocals [User-confirmed fact]: NO"));
     }
 
     #[test]
@@ -3921,8 +4945,8 @@ mod tests {
         let mut fixture = Fixture::new(1);
         fixture.track.fields.instrumental_track = None;
         fixture.track.fields.vocal_lyrics_present = None;
-        fixture.track.fields.suno_lyrics_field_content = None;
-        fixture.track.fields.suno_lyrics_content_types.clear();
+        fixture.track.fields.vocal_intent = None;
+        fixture.track.fields.suno_content_classification = None;
         fixture.track.fields.suno_lyrics_content_source = None;
         fixture.track.fields.suno_lyrics_field_text.clear();
         fixture.track.fields.lyrics_source = "legacy-mixed".into();
@@ -4037,6 +5061,40 @@ mod tests {
         assert!(normalized.contains("03_DOCUMENTATION/code-audio.wav"));
         assert!(normalized.contains("Manual timing edit"));
         assert!(normalized.contains("Manual typography"));
+    }
+
+    #[test]
+    fn artwork_pdf_records_explicit_no_hash_match_and_import_timestamp_limit() {
+        let mut fixture = Fixture::new(1);
+        fixture.track.fields.artwork_origin = "ai_assisted".into();
+        fixture.track.fields.ai_image_service = "Documented image service".into();
+        fixture.track.fields.disclosure_applied = Some(false);
+        let mut human = evidence_item(90);
+        human.role = EvidenceRole::HumanEditedArtwork;
+        human.sha256 = Some(DIGEST_A.into());
+        let mut final_artwork = evidence_item(91);
+        final_artwork.role = EvidenceRole::FinalArtwork;
+        final_artwork.sha256 = Some(DIGEST_A.into());
+        fixture.evidence.extend([human, final_artwork]);
+        fixture
+            .evidence
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+        let (_, english) = parse_text(&fixture.generate());
+        let english_normalized = normalized_text(&english);
+        assert!(english_normalized.contains("Artwork disclosure applied [User-confirmed fact] NO"));
+        assert!(english_normalized
+            .contains("Artwork disclosure deliberately not applied [User-confirmed fact] YES"));
+        assert!(english_normalized.contains("BYTE-IDENTICAL / SHA-256 MATCH"));
+        assert!(english_normalized.contains(crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE));
+
+        fixture.render_options = CertificateRenderOptions {
+            language: CertificateLanguage::De,
+            bilingual: false,
+        };
+        let (_, german) = parse_text(&fixture.generate());
+        assert!(german.contains("Artwork-Hinweis bewusst nicht angewendet"));
+        assert!(german.contains("Import-Zeitstempel dokumentieren nur den Import in SunoDM"));
     }
 
     #[test]
@@ -4161,9 +5219,9 @@ mod tests {
         let (document, text) = parse_text(&bytes);
         assert!(document.pages.len() > 1);
         assert!(text.contains("02_SUNO/evidence-0079.dat"));
-        assert!(text.contains(&format!("Seite {} / {}", 1, document.pages.len())));
+        assert!(text.contains(&format!("Page {} / {}", 1, document.pages.len())));
         assert!(text.contains(&format!(
-            "Seite {} / {}",
+            "Page {} / {}",
             document.pages.len(),
             document.pages.len()
         )));
@@ -4178,7 +5236,7 @@ mod tests {
                     index + 1
                 );
             }
-            assert!(page_text.contains(&format!("Seite {} / {}", index + 1, document.pages.len())));
+            assert!(page_text.contains(&format!("Page {} / {}", index + 1, document.pages.len())));
         }
 
         // Timestamp evidence is intentionally a separate phase-two addendum.
@@ -4252,7 +5310,8 @@ mod tests {
                 "truncated long timestamp value: {expected}"
             );
         }
-        assert!(timestamp_text.contains("Long factual timestamp note retained without truncation."));
+        assert!(normalized_text(&timestamp_text)
+            .contains("Long factual timestamp note retained without truncation."));
         for (index, page) in timestamp_document.extract_text().into_iter().enumerate() {
             let page_text = page.join("\n");
             assert!(page_text.contains(CERTIFICATE_ID));
@@ -4264,7 +5323,7 @@ mod tests {
                 );
             }
             assert!(page_text.contains(&format!(
-                "Seite {} / {}",
+                "Page {} / {}",
                 index + 1,
                 timestamp_document.pages.len()
             )));
@@ -4293,16 +5352,13 @@ mod tests {
         let mut fixture = Fixture::new(12);
         fixture.track.fields.instrumental_track = Some(true);
         fixture.track.fields.vocal_lyrics_present = Some(false);
-        fixture.track.fields.suno_lyrics_field_content = Some(true);
-        fixture.track.fields.suno_lyrics_content_types = vec![
-            SunoLyricsContentType::StructureInstructions,
-            SunoLyricsContentType::SoundInstructions,
-            SunoLyricsContentType::ArrangementInstructions,
-        ];
+        fixture.track.fields.vocal_intent = Some(VocalIntent::Instrumental);
+        fixture.track.fields.suno_content_classification =
+            Some(SunoContentClassification::StructureOnly);
         fixture.track.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Mixed);
         fixture.track.fields.suno_lyrics_field_text =
             "[Intro]\n[sidechained synth pad]\n[white noise riser]\n[Drop]\n".repeat(45);
-        fixture.track.fields.suno_project_version_id =
+        fixture.track.fields.suno_final_generation_id =
             "123e4567-e89b-12d3-a456-426614174000".into();
         let long_url = format!(
             "https://terms.example.invalid/archive/{}/document?revision={}",
@@ -4354,7 +5410,7 @@ mod tests {
         assert!(text.contains("Previous revision count [System verification]: 12"));
         assert!(text.contains("[sidechained synth pad]"));
         assert!(text.contains(&format!(
-            "Seite {} / {}",
+            "Page {} / {}",
             document.pages.len(),
             document.pages.len()
         )));
@@ -4368,7 +5424,7 @@ mod tests {
                     index + 1
                 );
             }
-            assert!(page_text.contains(&format!("Seite {} / {}", index + 1, document.pages.len())));
+            assert!(page_text.contains(&format!("Page {} / {}", index + 1, document.pages.len())));
         }
     }
 

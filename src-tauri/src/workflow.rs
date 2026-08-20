@@ -5,7 +5,7 @@ use crate::error::{AppError, Result};
 use crate::model::DocumentationAnswer;
 use crate::model::{
     BlockingDeviation, ByteIdenticalPair, ConsistencyIssue, EvidenceDerivedField, EvidenceItem,
-    EvidenceRole, FactOrigin, Profile, StepState, StepStatus, SunoLyricsContentType,
+    EvidenceRole, FactOrigin, Profile, StepState, StepStatus, SunoContentClassification,
     TrackAutomation, TrackRecord,
 };
 use chrono::{Days, NaiveDate, Utc};
@@ -111,8 +111,8 @@ fn validate_config(config: &WorkflowConfig) -> Result<()> {
         "code_based_generation",
         "code_audio_post_processed",
         "third_party_samples",
-        "suno_lyrics_field_content",
-        "suno_lyrics_other_content_type",
+        "suno_content_non_empty",
+        "suno_content_other",
         "human_editing",
         "post_export_editing",
         "artwork_present",
@@ -471,11 +471,11 @@ fn condition_applies(condition: &str, track: &TrackRecord) -> bool {
             f.code_based_generation == Some(true) && f.code_audio_post_processed == Some(true)
         }
         "third_party_samples" => f.third_party_samples_uploaded == Some(true),
-        "suno_lyrics_field_content" => f.suno_lyrics_field_content == Some(true),
-        "suno_lyrics_other_content_type" => {
-            f.suno_lyrics_field_content == Some(true)
-                && f.suno_lyrics_content_types
-                    .contains(&SunoLyricsContentType::Other)
+        "suno_content_non_empty" => f
+            .suno_content_classification
+            .is_some_and(|value| value != SunoContentClassification::Empty),
+        "suno_content_other" => {
+            f.suno_content_classification == Some(SunoContentClassification::Other)
         }
         "human_editing" => f.human_editing_performed == Some(true),
         "post_export_editing" => f.post_export_editing_performed == Some(true),
@@ -554,21 +554,10 @@ fn requirement_met(
             let disclosed_artwork_present = evidence
                 .iter()
                 .any(|item| verified_local_disclosure(item, track, evidence));
-            match profile.artwork_transparency_policy.as_str() {
-                "always" => {
-                    track.fields.disclosure_applied == Some(true)
-                        && present(&track.fields.disclosure_text)
-                        && disclosed_artwork_present
-                }
-                "per_artwork" => match track.fields.disclosure_applied {
-                    Some(true) => {
-                        present(&track.fields.disclosure_text) && disclosed_artwork_present
-                    }
-                    Some(false) => true,
-                    None => false,
-                },
-                "none" => true,
-                _ => false,
+            match track.fields.disclosure_applied {
+                Some(true) => present(&track.fields.disclosure_text) && disclosed_artwork_present,
+                Some(false) => true,
+                None => false,
             }
         }
         "field" if requirement.key == "release.filename_consistency" => filename_requirement_met(
@@ -630,14 +619,11 @@ fn verified_local_disclosure(
             })
 }
 
-fn disclosure_required(track: &TrackRecord, profile: &Profile) -> bool {
+fn disclosure_required(track: &TrackRecord, _profile: &Profile) -> bool {
     matches!(
         track.fields.artwork_origin.as_str(),
         "ai_generated" | "ai_assisted"
-    ) && !content_check_all_negative(track)
-        && (profile.artwork_transparency_policy == "always"
-            || (profile.artwork_transparency_policy == "per_artwork"
-                && track.fields.disclosure_applied == Some(true)))
+    ) && track.fields.disclosure_applied == Some(true)
 }
 
 fn content_check_all_negative(track: &TrackRecord) -> bool {
@@ -874,6 +860,36 @@ pub fn byte_identical_pairs(evidence: &[EvidenceItem]) -> Vec<ByteIdenticalPair>
         }
     }
     pairs
+}
+
+/// Compare verified human-edited artwork with the single verified final
+/// artwork. A mismatch is an informational technical fact only; it must never
+/// become a workflow blocker or consistency issue.
+pub fn human_edited_final_artwork_sha256_match(evidence: &[EvidenceItem]) -> Option<bool> {
+    let human_edited = evidence
+        .iter()
+        .filter(|item| verified_role(item, EvidenceRole::HumanEditedArtwork))
+        .collect::<Vec<_>>();
+    let final_artwork = evidence
+        .iter()
+        .filter(|item| verified_role(item, EvidenceRole::FinalArtwork))
+        .collect::<Vec<_>>();
+    match final_artwork.as_slice() {
+        [final_artwork] if !human_edited.is_empty() => Some(
+            human_edited
+                .iter()
+                .any(|item| item.sha256 == final_artwork.sha256),
+        ),
+        _ => None,
+    }
+}
+
+pub fn human_edited_final_artwork_status(evidence: &[EvidenceItem]) -> &'static str {
+    match human_edited_final_artwork_sha256_match(evidence) {
+        Some(true) => "BYTE-IDENTICAL / SHA-256 MATCH",
+        Some(false) => "NO SHA-256 MATCH",
+        None => "NOT VERIFIED",
+    }
 }
 
 pub fn consistency_issues(track: &TrackRecord, evidence: &[EvidenceItem]) -> Vec<ConsistencyIssue> {
@@ -1183,15 +1199,8 @@ fn field_requirement_met(
         "suno.final_export_date" => present(&f.final_export_date),
         "human_work.instrumental_answer" => f.instrumental_track.is_some(),
         "human_work.vocal_lyrics_present" => f.vocal_lyrics_present.is_some(),
-        "human_work.instrumental_consistency" => {
-            !(f.instrumental_track == Some(true) && f.vocal_lyrics_present == Some(true))
-                && !(f.suno_lyrics_field_content == Some(true)
-                    && f.vocal_lyrics_present == Some(false)
-                    && f.suno_lyrics_content_types
-                        .contains(&crate::model::SunoLyricsContentType::VocalLyrics))
-        }
-        "human_work.suno_lyrics_field_content" => f.suno_lyrics_field_content.is_some(),
-        "human_work.suno_lyrics_content_types" => !f.suno_lyrics_content_types.is_empty(),
+        "human_work.vocal_intent" => f.vocal_intent.is_some(),
+        "human_work.suno_content_classification" => f.suno_content_classification.is_some(),
         "human_work.suno_lyrics_content_source" => f.suno_lyrics_content_source.is_some(),
         "human_work.suno_lyrics_field_text" => present(&f.suno_lyrics_field_text),
         "human_work.suno_lyrics_other_content_type" => present(&f.suno_lyrics_other_content_type),
@@ -1354,6 +1363,35 @@ mod tests {
 
         release.verified = false;
         assert!(byte_identical_pairs(&[suno, release]).is_empty());
+    }
+
+    #[test]
+    fn human_edited_final_artwork_match_is_role_specific_and_informational() {
+        let human_edited = verified_evidence(EvidenceRole::HumanEditedArtwork);
+        let mut final_artwork = verified_evidence(EvidenceRole::FinalArtwork);
+        assert_eq!(
+            human_edited_final_artwork_sha256_match(&[human_edited.clone(), final_artwork.clone()]),
+            Some(true)
+        );
+        assert_eq!(
+            human_edited_final_artwork_status(&[human_edited.clone(), final_artwork.clone()]),
+            "BYTE-IDENTICAL / SHA-256 MATCH"
+        );
+
+        final_artwork.sha256 = Some("b".repeat(64));
+        assert_eq!(
+            human_edited_final_artwork_sha256_match(&[human_edited.clone(), final_artwork.clone()]),
+            Some(false)
+        );
+        assert_eq!(
+            human_edited_final_artwork_status(&[human_edited.clone(), final_artwork.clone()]),
+            "NO SHA-256 MATCH"
+        );
+        let mut track = disclosure_track("ai_assisted", Some(false));
+        track.fields.human_artwork_modifications = vec!["Color correction".into()];
+        assert!(!consistency_issues(&track, &[human_edited, final_artwork])
+            .iter()
+            .any(|issue| issue.message.contains("SHA-256 MATCH")));
     }
 
     #[test]
@@ -1521,30 +1559,23 @@ mod tests {
     }
 
     #[test]
-    fn instrumental_structure_content_is_valid_but_instrumental_vocals_conflict() {
+    fn vocal_intent_classification_and_final_audio_are_independent() {
         let mut track = disclosure_track("none", None);
         track.fields.instrumental_track = Some(true);
-        track.fields.vocal_lyrics_present = Some(false);
-        track.fields.suno_lyrics_field_content = Some(true);
-        track.fields.suno_lyrics_content_types =
-            vec![crate::model::SunoLyricsContentType::StructureInstructions];
+        track.fields.vocal_lyrics_present = Some(true);
+        track.fields.vocal_intent = Some(crate::model::VocalIntent::Instrumental);
+        track.fields.suno_content_classification = Some(SunoContentClassification::Mixed);
         track.fields.suno_lyrics_content_source =
             Some(crate::model::SunoLyricsContentSource::Human);
-        track.fields.suno_lyrics_field_text = "[Intro]\n[Instrumental]".into();
-        track.fields.suno_style_prompt = "instrumental ambient".into();
+        track.fields.suno_lyrics_field_text = "Vocal line\n[Instrumental break]".into();
+        track.fields.suno_style_prompt = "vocal ambient".into();
         track.fields.human_editing_performed = Some(false);
 
-        assert!(field_requirement_met(
-            "human_work.instrumental_consistency",
-            &track,
-            &Profile::default(),
-            &[]
-        ));
         for key in [
             "human_work.instrumental_answer",
             "human_work.vocal_lyrics_present",
-            "human_work.suno_lyrics_field_content",
-            "human_work.suno_lyrics_content_types",
+            "human_work.vocal_intent",
+            "human_work.suno_content_classification",
             "human_work.suno_lyrics_content_source",
             "human_work.suno_lyrics_field_text",
         ] {
@@ -1554,7 +1585,7 @@ mod tests {
             );
         }
         let valid = evaluate(&track, &Profile::default(), &[], &[], &[])
-            .expect("evaluate instrumental structure case");
+            .expect("evaluate instrumental intent with vocal output");
         assert_eq!(
             valid
                 .steps
@@ -1564,59 +1595,34 @@ mod tests {
             Some(&StepStatus::Pass)
         );
 
-        track.fields.suno_lyrics_content_types =
-            vec![crate::model::SunoLyricsContentType::VocalLyrics];
-        assert!(!field_requirement_met(
-            "human_work.instrumental_consistency",
-            &track,
-            &Profile::default(),
-            &[]
-        ));
-
-        track.fields.suno_lyrics_content_types =
-            vec![crate::model::SunoLyricsContentType::StructureInstructions];
-        track.fields.vocal_lyrics_present = Some(true);
-        assert!(!field_requirement_met(
-            "human_work.instrumental_consistency",
-            &track,
-            &Profile::default(),
-            &[]
-        ));
-        let conflict = evaluate(&track, &Profile::default(), &[], &[], &[])
-            .expect("evaluate instrumental vocal conflict");
+        track.fields.vocal_intent = Some(crate::model::VocalIntent::Vocal);
+        track.fields.vocal_lyrics_present = Some(false);
+        let opposite = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate vocal intent without vocal output");
         assert_eq!(
-            conflict
+            opposite
                 .steps
                 .iter()
                 .find(|step| step.id == "human_work")
                 .map(|step| &step.status),
-            Some(&StepStatus::Blocked)
+            Some(&StepStatus::Pass)
         );
     }
 
     #[test]
-    fn vocal_track_and_other_suno_field_content_require_only_the_new_explicit_facts() {
+    fn other_requires_a_label_while_empty_makes_content_details_not_applicable() {
         let mut track = disclosure_track("none", None);
         track.fields.instrumental_track = Some(false);
         track.fields.vocal_lyrics_present = Some(true);
-        track.fields.suno_lyrics_field_content = Some(true);
-        track.fields.suno_lyrics_content_types = vec![
-            crate::model::SunoLyricsContentType::VocalLyrics,
-            crate::model::SunoLyricsContentType::Other,
-        ];
+        track.fields.vocal_intent = Some(crate::model::VocalIntent::Unspecified);
+        track.fields.suno_content_classification = Some(SunoContentClassification::Other);
         track.fields.suno_lyrics_content_source =
             Some(crate::model::SunoLyricsContentSource::Mixed);
-        track.fields.suno_lyrics_field_text = "A documented vocal line".into();
+        track.fields.suno_lyrics_field_text = "A documented direction".into();
         track.fields.suno_style_prompt = "vocal pop".into();
         track.fields.human_editing_performed = Some(false);
 
-        assert!(field_requirement_met(
-            "human_work.instrumental_consistency",
-            &track,
-            &Profile::default(),
-            &[]
-        ));
-        assert!(condition_applies("suno_lyrics_other_content_type", &track));
+        assert!(condition_applies("suno_content_other", &track));
         assert!(!field_requirement_met(
             "human_work.suno_lyrics_other_content_type",
             &track,
@@ -1634,6 +1640,23 @@ mod tests {
             .expect("evaluate vocal lyrics case");
         assert_eq!(
             evaluation
+                .steps
+                .iter()
+                .find(|step| step.id == "human_work")
+                .map(|step| &step.status),
+            Some(&StepStatus::Pass)
+        );
+
+        track.fields.suno_content_classification = Some(SunoContentClassification::Empty);
+        track.fields.suno_lyrics_content_source = None;
+        track.fields.suno_lyrics_field_text.clear();
+        track.fields.suno_lyrics_other_content_type.clear();
+        assert!(!condition_applies("suno_content_non_empty", &track));
+        assert!(!condition_applies("suno_content_other", &track));
+        let empty = evaluate(&track, &Profile::default(), &[], &[], &[])
+            .expect("evaluate empty generation text field");
+        assert_eq!(
+            empty
                 .steps
                 .iter()
                 .find(|step| step.id == "human_work")
@@ -1661,7 +1684,13 @@ mod tests {
             &[]
         ));
         assert!(!field_requirement_met(
-            "human_work.suno_lyrics_field_content",
+            "human_work.vocal_intent",
+            &track,
+            &Profile::default(),
+            &[]
+        ));
+        assert!(!field_requirement_met(
+            "human_work.suno_content_classification",
             &track,
             &Profile::default(),
             &[]
@@ -1923,14 +1952,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_version_1_8_configuration_is_accepted() {
+    fn valid_version_1_9_configuration_is_accepted() {
         let config = embedded_config();
 
-        validate_config(&config).expect("valid workflow 1.8");
+        validate_config(&config).expect("valid workflow 1.9");
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.id, "suno-track");
-        assert_eq!(config.version, "1.8");
+        assert_eq!(config.version, "1.9");
         assert_eq!(config.steps.len(), 10);
         assert_eq!(config.steps.first().map(|step| step.order), Some(1));
         assert_eq!(config.steps.last().map(|step| step.order), Some(10));
@@ -2067,7 +2096,7 @@ mod tests {
     }
 
     #[test]
-    fn disclosure_requirement_matrix_matches_origin_policy_and_track_decision() {
+    fn disclosed_final_artwork_requirement_depends_only_on_ai_origin_and_yes_decision() {
         for origin in ["ai_generated", "ai_assisted", "human", "none"] {
             for policy in ["always", "per_artwork", "none"] {
                 for applied in [None, Some(false), Some(true)] {
@@ -2076,9 +2105,8 @@ mod tests {
                         artwork_transparency_policy: policy.into(),
                         ..Default::default()
                     };
-                    let expected = matches!(origin, "ai_generated" | "ai_assisted")
-                        && (policy == "always"
-                            || (policy == "per_artwork" && applied == Some(true)));
+                    let expected =
+                        matches!(origin, "ai_generated" | "ai_assisted") && applied == Some(true);
                     assert_eq!(
                         disclosure_required(&track, &profile),
                         expected,
@@ -2091,7 +2119,7 @@ mod tests {
 
     #[test]
     fn three_negative_artwork_checks_do_not_disable_the_audio_ai_step() {
-        let mut track = disclosure_track("ai_assisted", Some(true));
+        let mut track = disclosure_track("ai_assisted", None);
         track.fields.depicts_real_person = Some(false);
         track.fields.depicts_real_event = Some(false);
         track.fields.contains_trademark = Some(false);
@@ -2112,10 +2140,18 @@ mod tests {
         ];
         let evaluation = evaluate(&track, &profile, &evidence, &[], &[])
             .expect("evaluate negative content checks");
+        assert!(evaluation
+            .missing
+            .iter()
+            .any(|item| item.contains("YES-/NO-Entscheidung")));
+
+        track.fields.disclosure_applied = Some(false);
+        let evaluation = evaluate(&track, &profile, &evidence, &[], &[])
+            .expect("evaluate explicit non-application");
         assert!(!evaluation
             .missing
             .iter()
-            .any(|item| item.contains("AI-Kennzeichnung") || item.contains("finale Artwork")));
+            .any(|item| item.contains("YES-/NO-Entscheidung")));
         assert_eq!(
             evaluation
                 .steps

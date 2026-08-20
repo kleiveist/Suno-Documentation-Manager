@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createDemoApi } from "./demo";
+import { createDemoApi, migrateLegacySunoSemantics } from "./demo";
+import { emptyTrackFields } from "../domain/types";
 
 async function settle<T>(promise: Promise<T>): Promise<T> {
   await vi.runAllTimersAsync();
@@ -21,7 +22,7 @@ async function configureFreeTsa(api: ReturnType<typeof createDemoApi>, autoAfter
   const settings = await settle(api.getTimestampSettings());
   return settle(api.updateTimestampSettings({
     ...settings,
-    custom: { ...settings.custom },
+    custom: { ...settings.custom, caCertificatePath: "/demo/tsa-root.pem" },
     enabled: true,
     provider: "free_tsa",
     autoAfterFinalization
@@ -42,6 +43,60 @@ async function configureDemoAcrCloud(api: ReturnType<typeof createDemoApi>) {
 afterEach(() => vi.useRealTimers());
 
 describe("demo track library", () => {
+  it("persists only canonical scalar Suno semantics and keeps intent independent", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+
+    const mixed = await settle(api.updateTrack("gravity", {
+      sunoContentClassification: "MIXED",
+      vocalIntent: "INSTRUMENTAL",
+      vocalLyricsPresent: true
+    }));
+    expect(mixed.fields.sunoContentClassification).toBe("MIXED");
+    expect(mixed.fields.vocalIntent).toBe("INSTRUMENTAL");
+    expect(mixed.fields.vocalLyricsPresent).toBe(true);
+    expect(mixed.fields.sunoLyricsFieldContent).toBeNull();
+    expect(mixed.fields.sunoLyricsContentTypes).toEqual([]);
+
+    const empty = await settle(api.updateTrack("gravity", {
+      sunoContentClassification: "EMPTY",
+      vocalIntent: "UNSPECIFIED",
+      sunoLyricsContentSource: "mixed",
+      sunoLyricsFieldText: "stale text",
+      sunoLyricsOtherContentType: "stale label"
+    }));
+    expect(empty.fields.sunoLyricsContentSource).toBeNull();
+    expect(empty.fields.sunoLyricsFieldText).toBe("");
+    expect(empty.fields.sunoLyricsOtherContentType).toBe("");
+    expect(empty.fields.vocalIntent).toBe("UNSPECIFIED");
+  });
+
+  it("migrates only unambiguous legacy classifications and never Vocal Intent", () => {
+    const mixed: ReturnType<typeof emptyTrackFields> = {
+      ...emptyTrackFields(),
+      sunoLyricsFieldContent: true,
+      sunoLyricsContentTypes: ["vocal_lyrics", "structure_instructions"],
+      sunoLyricsContentSource: "human",
+      sunoLyricsFieldText: "Lyrics\n[Drop]"
+    };
+    migrateLegacySunoSemantics(mixed);
+    expect(mixed.sunoContentClassification).toBe("MIXED");
+    expect(mixed.vocalIntent).toBeNull();
+    expect(mixed.sunoLyricsFieldContent).toBeNull();
+    expect(mixed.sunoLyricsContentTypes).toEqual([]);
+
+    const ambiguous: ReturnType<typeof emptyTrackFields> = {
+      ...emptyTrackFields(),
+      sunoLyricsFieldContent: true,
+      sunoLyricsContentTypes: ["mixed"]
+    };
+    migrateLegacySunoSemantics(ambiguous);
+    expect(ambiguous.sunoContentClassification).toBeNull();
+    expect(ambiguous.vocalIntent).toBeNull();
+    expect(ambiguous.sunoLyricsContentTypes).toEqual(["mixed"]);
+  });
+
   it("keeps editable track documents and hashes current when only certificate language changes", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -356,7 +411,24 @@ describe("demo evidence controls", () => {
     const preview = await settle(api.previewEvidence("gravity", replacement.id));
 
     expect(updated!.evidence.filter((item) => item.id === original.id)).toHaveLength(1);
+    expect(replacement.fileName).toBe("GRAVITY_AI_ORIGINAL.png");
     expect(preview.dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it("uses canonical uppercase artwork names for new human-edited imports", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const created = await settle(api.createTrack({
+      title: "My Track",
+      productionStartDate: "2026-08-17",
+      commercialUseIntended: false,
+      library: { section: "single" }
+    }));
+
+    const updated = await settle(api.importEvidence(created.id, "human_edited_artwork"));
+    expect(updated!.evidence.find((item) => item.role === "human_edited_artwork")?.fileName)
+      .toBe("MY_TRACK_HUMAN_EDITED.png");
   });
 
   it("registers Suno terms globally and copies them into existing and new projects", async () => {

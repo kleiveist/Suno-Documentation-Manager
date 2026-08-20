@@ -160,11 +160,19 @@ describe("runtime selection", () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
 
-    await api.updateTrack("track-1", { generativeAiUsed: null });
+    await api.updateTrack("track-1", {
+      generativeAiUsed: null,
+      sunoContentClassification: null,
+      vocalIntent: null
+    });
 
     expect(invokeMock).toHaveBeenCalledWith("update_track", {
       trackId: "track-1",
-      input: { generativeAiUsed: null }
+      input: {
+        generativeAiUsed: null,
+        sunoContentClassification: null,
+        vocalIntent: null
+      }
     });
   });
 

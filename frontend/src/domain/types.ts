@@ -44,6 +44,14 @@ export type EvidenceRole =
 export type ArtworkOrigin = "none" | "human" | "ai_generated" | "ai_assisted";
 export type LyricsSource = "instrumental" | "human" | "suno" | "mixed";
 export type DocumentationAnswer = "yes" | "no" | "not_documented";
+export type SunoContentClassification =
+  | "STRUCTURE_ONLY"
+  | "VOCAL_LYRICS_ONLY"
+  | "MIXED"
+  | "EMPTY"
+  | "OTHER";
+export type VocalIntent = "VOCAL" | "INSTRUMENTAL" | "UNSPECIFIED";
+/** @deprecated Read compatibility for historical multi-value track records only. */
 export type SunoLyricsContentType =
   | "vocal_lyrics"
   | "structure_instructions"
@@ -500,7 +508,14 @@ export interface TimestampProviderMetadata {
   issuer: string;
   certificateSubject: string;
   certificateSerialNumber: string;
+  requestNonce?: string;
+  responseNonce?: string;
+  nonceMatch?: boolean | null;
+  requestedPolicyOid?: string;
   policyOid: string;
+  policyMatch?: boolean | null;
+  cryptographicVerifier?: string;
+  trustAnchorSha256?: string[];
   responseStructureValid: boolean | null;
   providerDigestMatch: boolean | null;
   signatureVerified: boolean | null;
@@ -544,8 +559,12 @@ export interface TrackFields {
   legacyLyricsSource: LyricsSource | "";
   legacyLyricsText: string;
   vocalLyricsPresent: boolean | null;
-  sunoLyricsFieldContent: boolean | null;
-  sunoLyricsContentTypes: SunoLyricsContentType[];
+  vocalIntent: VocalIntent | null;
+  /** @deprecated Historical controller retained only while reading old records. */
+  sunoLyricsFieldContent?: boolean | null;
+  sunoContentClassification: SunoContentClassification | null;
+  /** @deprecated Read compatibility for historical multi-value track records only. */
+  sunoLyricsContentTypes?: SunoLyricsContentType[];
   sunoLyricsContentSource: SunoLyricsContentSource | null;
   sunoLyricsFieldText: string;
   sunoLyricsOtherContentType: string;
@@ -599,6 +618,11 @@ export interface TrackFields {
   audioDisclosureReason: string;
   releaseNotes: string;
 }
+
+export type TrackFieldPatch = Partial<Omit<
+  TrackFields,
+  "sunoLyricsFieldContent" | "sunoLyricsContentTypes"
+>>;
 
 export interface TrackSummary {
   id: string;
@@ -824,7 +848,9 @@ export function emptyTrackFields(profile: GlobalProfile = emptyProfile): TrackFi
     legacyLyricsSource: "",
     legacyLyricsText: "",
     vocalLyricsPresent: null,
+    vocalIntent: null,
     sunoLyricsFieldContent: null,
+    sunoContentClassification: null,
     sunoLyricsContentTypes: [],
     sunoLyricsContentSource: null,
     sunoLyricsFieldText: "",

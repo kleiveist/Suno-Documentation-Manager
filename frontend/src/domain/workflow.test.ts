@@ -7,6 +7,7 @@ import {
   deriveStepStatus,
   evaluateRequirements,
   finalizationGate,
+  humanEditedFinalArtworkStatus,
   subscriptionEvidenceRelevance,
   subscriptionGenerationCoverageStatus,
   subscriptionProductionCoverageStatus,
@@ -72,8 +73,8 @@ function completeTrack(): TrackDetail {
     finalExportDate: "2026-07-03",
     instrumentalTrack: true,
     vocalLyricsPresent: false,
-    sunoLyricsFieldContent: true,
-    sunoLyricsContentTypes: ["structure_instructions"],
+    vocalIntent: "INSTRUMENTAL",
+    sunoContentClassification: "STRUCTURE_ONLY",
     sunoLyricsContentSource: "human",
     sunoLyricsFieldText: "[Intro]\n[Drop]\n[Outro]",
     sunoStylePrompt: "cinematic synthwave, driving bass",
@@ -97,13 +98,13 @@ function completeTrack(): TrackDetail {
     progress: 100,
     missingCount: 0,
     workflowId: "suno-track",
-    workflowVersion: "1.8",
+    workflowVersion: "1.9",
     profileSnapshot: structuredClone(profile),
     automation: emptyTrackAutomation(),
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.8", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.10", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     externalTimestamps: [],
@@ -275,18 +276,57 @@ describe("missing requirements", () => {
     expect(finalizationGate(track, profile).valid).toBe(true);
   });
 
-  it("TEST 02 blocks explicit vocal inconsistencies without parsing free text", () => {
+  it("keeps Vocal Intent, classification, instrumental mode, and final audio independent", () => {
     const track = completeTrack();
     track.fields.instrumentalTrack = true;
     track.fields.vocalLyricsPresent = true;
+    track.fields.vocalIntent = "INSTRUMENTAL";
+    track.fields.sunoContentClassification = "MIXED";
     track.fields.humanEditingPerformed = true;
     track.fields.humanEditingDetails = "Arrangement, Lyrics";
     track.fields.legacyLyricsText = "[Intro]\nlegacy value";
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("instrumental-vocal-consistency");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("instrumental-vocal-consistency");
+    expect(finalizationGate(track, profile).valid).toBe(true);
+
+    track.fields.vocalIntent = "VOCAL";
     track.fields.vocalLyricsPresent = false;
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("instrumental-vocal-consistency");
-    track.fields.sunoLyricsContentTypes = ["vocal_lyrics"];
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("instrumental-vocal-consistency");
+    expect(finalizationGate(track, profile).valid).toBe(true);
+  });
+
+  it("uses EMPTY as the only N/A content branch and requires an OTHER label", () => {
+    const track = completeTrack();
+    track.fields.sunoContentClassification = "EMPTY";
+    track.fields.vocalIntent = "UNSPECIFIED";
+    track.fields.sunoLyricsContentSource = null;
+    track.fields.sunoLyricsFieldText = "";
+    track.fields.sunoLyricsOtherContentType = "";
+    let ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).not.toContain("suno-lyrics-content-source");
+    expect(ids).not.toContain("suno-lyrics-field-text");
+    expect(ids).not.toContain("suno-lyrics-other-content-type");
+
+    track.fields.sunoContentClassification = "OTHER";
+    track.fields.sunoLyricsContentSource = "human";
+    track.fields.sunoLyricsFieldText = "[Spoken direction]";
+    ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).toContain("suno-lyrics-other-content-type");
+    track.fields.sunoLyricsOtherContentType = "Spoken performance direction";
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("suno-lyrics-other-content-type");
+  });
+
+  it("requires explicit scalar semantics and accepts MIXED as one classification", () => {
+    const track = completeTrack();
+    track.fields.sunoContentClassification = null;
+    track.fields.vocalIntent = null;
+    let ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).toEqual(expect.arrayContaining(["suno-content-classification", "vocal-intent"]));
+
+    track.fields.sunoContentClassification = "MIXED";
+    track.fields.vocalIntent = "UNSPECIFIED";
+    ids = calculateMissingRequirements(track, profile).map((item) => item.id);
+    expect(ids).not.toContain("suno-content-classification");
+    expect(ids).not.toContain("vocal-intent");
   });
 
   it("does not let a historical plan-at-creation value satisfy the current generation-plan gate", () => {
@@ -301,7 +341,8 @@ describe("missing requirements", () => {
     const track = completeTrack();
     track.fields.instrumentalTrack = false;
     track.fields.vocalLyricsPresent = true;
-    track.fields.sunoLyricsContentTypes = ["vocal_lyrics"];
+    track.fields.vocalIntent = "VOCAL";
+    track.fields.sunoContentClassification = "VOCAL_LYRICS_ONLY";
     track.fields.sunoLyricsFieldText = "Original vocal lyrics";
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("instrumental-vocal-consistency");
   });
@@ -422,7 +463,7 @@ describe("missing requirements", () => {
     expect(subscriptionGenerationCoverageStatus([covered], track.fields)).toBe("YES");
     covered.coverageEnd = "2026-08-13";
     expect(subscriptionGenerationCoverageStatus([covered], track.fields)).toBe("NO");
-    expect(WORKFLOW_VERSION).toBe("1.8");
+    expect(WORKFLOW_VERSION).toBe("1.9");
   });
 
   it("requires a verified generated disclosure artifact for AI artwork", () => {
@@ -439,7 +480,7 @@ describe("missing requirements", () => {
     const independentFinal = evidence("final_artwork");
     independentFinal.sha256 = "b".repeat(64);
     track.evidence.push(evidence("ai_artwork_original"), independentFinal);
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("ai-disclosure");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("ai-disclosure-decision");
     const original = track.evidence.find((item) => item.role === "ai_artwork_original")!;
     const disclosed = {
       ...evidence("ai_artwork_edited"),
@@ -449,7 +490,7 @@ describe("missing requirements", () => {
       generatedDisclosureText: "AI-assisted"
     };
     track.evidence.push(disclosed);
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("ai-disclosure");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("ai-disclosure-decision");
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("artwork-final");
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("release-final-artwork");
     const final = track.evidence.find((item) => item.role === "final_artwork")!;
@@ -561,7 +602,7 @@ describe("missing requirements", () => {
     );
   });
 
-  it("keeps audio AI transparency independent when artwork disclosure is not applicable", () => {
+  it("requires an explicit artwork disclosure decision even after three negative content checks", () => {
     const track = completeTrack();
     track.fields.artworkOrigin = "ai_generated";
     track.fields.aiImageService = "Local Image Tool";
@@ -571,12 +612,31 @@ describe("missing requirements", () => {
     track.evidence.push(evidence("ai_artwork_original"), evidence("final_artwork"));
 
     expect(contentCheckAllNegative(track.fields)).toBe(true);
-    expect(visibleConditionalFields(track.fields, profile)).not.toContain("disclosure");
+    expect(visibleConditionalFields(track.fields, profile)).toContain("disclosure");
     track.fields.generativeAiUsed = null;
-    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toContain("generative-ai-answer");
+    expect(calculateMissingRequirements(track, profile).map((item) => item.id)).toEqual(
+      expect.arrayContaining(["generative-ai-answer", "ai-disclosure-decision"])
+    );
     track.fields.generativeAiUsed = false;
+    track.fields.disclosureApplied = false;
     expect(calculateMissingRequirements(track, profile).filter((item) => item.stepId === "ai_transparency")).toEqual([]);
     expect(calculateMissingRequirements(track, profile).map((item) => item.id)).not.toContain("artwork-final");
+  });
+
+  it("requires the YES/NO artwork decision under the none policy and accepts deliberate NO", () => {
+    const track = completeTrack();
+    const noPolicy = { ...profile, artworkTransparencyPolicy: "none" as const };
+    track.fields.artworkOrigin = "ai_generated";
+    track.fields.depictsRealPerson = false;
+    track.fields.depictsRealEvent = false;
+    track.fields.containsTrademark = false;
+    track.evidence.push(evidence("ai_artwork_original"), evidence("final_artwork"));
+
+    expect(calculateMissingRequirements(track, noPolicy).map((item) => item.id))
+      .toContain("ai-disclosure-decision");
+    track.fields.disclosureApplied = false;
+    expect(calculateMissingRequirements(track, noPolicy).map((item) => item.id))
+      .not.toContain("ai-disclosure-decision");
   });
 
   it("TEST 16 distinguishes NO, NOT DOCUMENTED and deterministically non-applicable answers", () => {
@@ -626,6 +686,19 @@ describe("progress", () => {
 });
 
 describe("statuses and finalization", () => {
+  it("reports the human-edited/final artwork hash comparison by role", () => {
+    const humanEdited = evidence("human_edited_artwork");
+    const finalArtwork = evidence("final_artwork");
+    expect(humanEditedFinalArtworkStatus([humanEdited, finalArtwork]))
+      .toBe("BYTE-IDENTICAL / SHA-256 MATCH");
+    finalArtwork.sha256 = "b".repeat(64);
+    expect(humanEditedFinalArtworkStatus([humanEdited, finalArtwork]))
+      .toBe("NO SHA-256 MATCH");
+    finalArtwork.verified = false;
+    expect(humanEditedFinalArtworkStatus([humanEdited, finalArtwork]))
+      .toBe("NOT VERIFIED");
+  });
+
   it("lists the accepted file types directly for every evidence role", () => {
     expect(evidenceRoleFileTypes("suno_project_zip")).toBe("ZIP");
     expect(evidenceRoleFileTypes("suno_screenshot")).toContain("PNG");

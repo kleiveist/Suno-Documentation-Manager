@@ -1,6 +1,6 @@
 schema_version = 1
 id = "suno-track"
-version = "1.8"
+version = "1.9"
 name = "Suno Track Documentation"
 blocker_statuses = ["FAIL", "BLOCKED", "NOT_VERIFIED"]
 
@@ -50,7 +50,7 @@ order = 6
 name = "06 AI Transparency"
 required = true
 when = "always"
-description = "Audio AI transparency plus the existing artwork transparency and disclosure checks."
+description = "Audio AI transparency plus an explicit YES/NO artwork disclosure decision."
 
 [[steps]]
 id = "release"
@@ -378,38 +378,30 @@ step_id = "human_work"
 kind = "field"
 required = true
 when = "always"
-missing_message = "Die ausdrückliche Angabe, ob gesungene Lyrics vorhanden sind, fehlt."
+missing_message = "Die ausdrückliche Angabe, ob das finale Audio Gesang enthält, fehlt."
 
 [[requirements]]
-key = "human_work.instrumental_consistency"
+key = "human_work.vocal_intent"
 step_id = "human_work"
 kind = "field"
 required = true
 when = "always"
-missing_message = "Die Angaben zu Instrumentaltrack, vorhandenen Vocal Lyrics und dem explizit gewählten Suno-Feld-Inhaltstyp widersprechen einander. Bitte Angaben ausdrücklich korrigieren."
+missing_message = "Die beabsichtigte Gesangsnutzung (VOCAL, INSTRUMENTAL oder UNSPECIFIED) wurde nicht ausdrücklich ausgewählt."
 
 [[requirements]]
-key = "human_work.suno_lyrics_field_content"
+key = "human_work.suno_content_classification"
 step_id = "human_work"
 kind = "field"
 required = true
 when = "always"
-missing_message = "Die ausdrückliche Angabe zum Inhalt des Suno-Lyrics-/Structure-Felds fehlt."
-
-[[requirements]]
-key = "human_work.suno_lyrics_content_types"
-step_id = "human_work"
-kind = "field"
-required = true
-when = "suno_lyrics_field_content"
-missing_message = "Mindestens ein Inhaltstyp des Suno-Lyrics-/Structure-Felds fehlt."
+missing_message = "Die eindeutige Inhaltsklassifizierung des Suno Generation Text Field fehlt."
 
 [[requirements]]
 key = "human_work.suno_lyrics_content_source"
 step_id = "human_work"
 kind = "field"
 required = true
-when = "suno_lyrics_field_content"
+when = "suno_content_non_empty"
 missing_message = "Die Quelle des Inhalts im Suno-Lyrics-/Structure-Feld fehlt."
 
 [[requirements]]
@@ -417,7 +409,7 @@ key = "human_work.suno_lyrics_field_text"
 step_id = "human_work"
 kind = "field"
 required = true
-when = "suno_lyrics_field_content"
+when = "suno_content_non_empty"
 missing_message = "Der Inhalt des Suno-Lyrics-/Structure-Felds fehlt."
 
 [[requirements]]
@@ -425,7 +417,7 @@ key = "human_work.suno_lyrics_other_content_type"
 step_id = "human_work"
 kind = "field"
 required = true
-when = "suno_lyrics_other_content_type"
+when = "suno_content_other"
 missing_message = "Die Beschreibung für den Inhaltstyp 'Other' fehlt."
 
 [[requirements]]
@@ -659,8 +651,8 @@ key = "ai_transparency.disclosure_result"
 step_id = "ai_transparency"
 kind = "field"
 required = true
-when = "ai_transparency_required"
-missing_message = "Das Ergebnis der sichtbaren AI-Kennzeichnung fehlt."
+when = "ai_artwork"
+missing_message = "Die explizite YES-/NO-Entscheidung zur sichtbaren AI-Kennzeichnung fehlt oder ist bei YES nicht vollständig belegt."
 
 [[requirements]]
 key = "release.final_audio"

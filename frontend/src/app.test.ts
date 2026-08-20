@@ -5,6 +5,7 @@ import {
   canonicalGuidedChoiceArray,
   canonicalGuidedChoiceList,
   canonicalGuidedChoiceValue,
+  canonicalTrackFieldPatch,
   canCreateTrackRevision,
   documentationAnswerLabel,
   externalAudioScreeningIsCurrent,
@@ -26,6 +27,7 @@ import {
   parseMultiChoiceValue,
   resetWorkspaceScopedUiState,
   SETTINGS_CATEGORY_DEFINITIONS,
+  SUNO_CONTENT_CLASSIFICATION_CHOICES,
   settingsCategoryNavigationMarkup,
   shouldDiscardLockedDraft,
   shouldIgnoreModalBackdropClick,
@@ -34,6 +36,7 @@ import {
   timestampArtifactLabel,
   timestampProviderIsReady,
   timestampProviderStatusLabel,
+  VOCAL_INTENT_CHOICES,
   visibleExternalAudioScreening,
   visibleLocalAudioScreening,
   externalTimestampStatusLabel,
@@ -88,6 +91,10 @@ describe("navigation", () => {
   it("uses the certificate language as the app language for shared UI copy", () => {
     expect(translateUiText("Einstellungen", "en")).toBe("Settings");
     expect(translateUiText("Einstellungen", "de")).toBe("Einstellungen");
+    expect(translateUiText("Die Nichtanwendung wurde bewusst dokumentiert.", "en"))
+      .toBe("The deliberate non-application has been documented.");
+    expect(translateUiText("Import-Zeitstempel dokumentieren nur den Import in SunoDM und nicht die tatsächliche Erstellungs- oder Bearbeitungsreihenfolge der Artwork-Dateien.", "en"))
+      .toContain("Import timestamps document only the import into SunoDM");
     expect(settingsCategoryNavigationMarkup("external", "en")).toContain("Global details");
     expect(settingsCategoryNavigationMarkup("external", "en")).toContain("External services");
     expect(settingsCategoryNavigationMarkup("external", "en")).toContain("Settings sections");
@@ -161,6 +168,68 @@ describe("navigation", () => {
     expect(normalized.sunoLyricsFieldContent).toBeNull();
     expect(normalized.sunoLyricsContentTypes).toEqual([]);
     expect(normalized.releaseNotes).toBe("Original Suno version | Radio edit");
+  });
+
+  it("keeps the canonical Suno classification and Vocal Intent choices exact and singular", () => {
+    expect(SUNO_CONTENT_CLASSIFICATION_CHOICES.map(([value]) => value)).toEqual([
+      "",
+      "STRUCTURE_ONLY",
+      "VOCAL_LYRICS_ONLY",
+      "MIXED",
+      "EMPTY",
+      "OTHER"
+    ]);
+    expect(VOCAL_INTENT_CHOICES.map(([value]) => value)).toEqual([
+      "",
+      "VOCAL",
+      "INSTRUMENTAL",
+      "UNSPECIFIED"
+    ]);
+  });
+
+  it("normalizes EMPTY details without deriving Vocal Intent or classification", () => {
+    const empty = normalizeGuidedTrackFields({
+      ...emptyTrackFields(),
+      sunoContentClassification: "EMPTY",
+      vocalIntent: "UNSPECIFIED",
+      sunoLyricsFieldContent: true,
+      sunoLyricsContentTypes: ["vocal_lyrics", "structure_instructions"],
+      sunoLyricsContentSource: "mixed",
+      sunoLyricsFieldText: "stale text",
+      sunoLyricsOtherContentType: "stale label"
+    });
+    expect(empty.sunoContentClassification).toBe("EMPTY");
+    expect(empty.vocalIntent).toBe("UNSPECIFIED");
+    expect(empty.sunoLyricsFieldContent).toBeNull();
+    expect(empty.sunoLyricsContentTypes).toEqual([]);
+    expect(empty.sunoLyricsContentSource).toBeNull();
+    expect(empty.sunoLyricsFieldText).toBe("");
+    expect(empty.sunoLyricsOtherContentType).toBe("");
+
+    const legacyOnly = normalizeGuidedTrackFields({
+      ...emptyTrackFields(),
+      instrumentalTrack: true,
+      vocalLyricsPresent: true,
+      sunoLyricsFieldContent: true,
+      sunoLyricsContentTypes: ["vocal_lyrics"],
+      sunoLyricsFieldText: "legacy vocal text"
+    });
+    expect(legacyOnly.sunoContentClassification).toBeNull();
+    expect(legacyOnly.vocalIntent).toBeNull();
+  });
+
+  it("omits both legacy classification controllers from new API patches", () => {
+    const patch = canonicalTrackFieldPatch({
+      ...emptyTrackFields(),
+      sunoContentClassification: "MIXED",
+      vocalIntent: "VOCAL",
+      sunoLyricsFieldContent: true,
+      sunoLyricsContentTypes: ["vocal_lyrics", "structure_instructions"]
+    });
+    expect(patch.sunoContentClassification).toBe("MIXED");
+    expect(patch.vocalIntent).toBe("VOCAL");
+    expect(patch).not.toHaveProperty("sunoLyricsFieldContent");
+    expect(patch).not.toHaveProperty("sunoLyricsContentTypes");
   });
 
   it("labels automatic dates as evidence-derived without adding another input fact", () => {

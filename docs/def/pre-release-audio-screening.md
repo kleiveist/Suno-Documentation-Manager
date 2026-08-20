@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Product team |
-| Last review | 2026-08-18 |
+| Last review | 2026-08-20 |
 | Audience | Product developers, reviewers, and operators |
 | Related ATP | [ATP-0017: Pre-release audio screening](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
@@ -53,7 +53,7 @@ No Chromaprint fingerprint is uploaded to ACRCloud. The provider receives only t
 
 ## Snapshot and integrity behavior
 
-For a new finalization, manifest schema 6 contains a sanitized `audioScreening` section. It captures local/external status, engine/provider identifiers, source linkage, timings, artifact paths and hashes, and concise matches, but excludes the raw fingerprint, raw provider response, and all secrets. The Markdown certificate and both root PDFs (format 5.2) render the same concise K.2 screening summary and the explicit technical/no-legal-claims boundary.
+For a new finalization, manifest schema 7 contains a sanitized `audioScreening` section. It captures local/external status, engine/provider identifiers, source linkage, timings, artifact paths and hashes, and concise matches, but excludes the raw fingerprint, raw provider response, and all secrets. The Markdown certificate and both PDF/A-2b root PDFs (format 6.0) render the same concise K.2 screening summary and the explicit technical/no-legal-claims boundary.
 
 Existing finalized certificates, manifests, PDFs, hash lists, and archived revisions are not regenerated or backfilled. A newer renderer only applies to new documentation/finalization snapshots. Historical verification hashes the existing published bytes.
 

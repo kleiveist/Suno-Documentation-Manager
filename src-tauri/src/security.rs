@@ -279,6 +279,31 @@ pub fn slugify(title: &str) -> Result<String> {
     Ok(result)
 }
 
+/// Build the canonical stem used only for newly created managed artwork files.
+/// Existing evidence paths are deliberately never normalized through this
+/// helper.
+pub fn canonical_artwork_stem(title: &str) -> Result<String> {
+    let mut result = String::new();
+    let mut separator = false;
+    for character in title.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !result.is_empty() {
+                result.push('_');
+            }
+            result.push(character.to_ascii_uppercase());
+            separator = false;
+        } else if !result.is_empty() {
+            separator = true;
+        }
+    }
+    if result.is_empty() {
+        return Err(AppError::Validation(
+            "Track title does not form a canonical ASCII artwork file stem.".into(),
+        ));
+    }
+    Ok(result)
+}
+
 /// Build a portable, human-readable file stem from a validated track title.
 /// Path separators, Windows-reserved punctuation, control characters, trailing
 /// dots/spaces, and device names are never emitted.
@@ -370,6 +395,20 @@ mod tests {
                     .to_string_lossy()
                     .ends_with(".tmp")
             })
+    }
+
+    #[test]
+    fn canonical_artwork_stem_is_ascii_uppercase_with_single_underscores() {
+        assert_eq!(canonical_artwork_stem(" My Track ").unwrap(), "MY_TRACK");
+        assert_eq!(
+            canonical_artwork_stem("Gravity: AI / Edit").unwrap(),
+            "GRAVITY_AI_EDIT"
+        );
+        assert_eq!(
+            canonical_artwork_stem("Björk Cover").unwrap(),
+            "BJ_RK_COVER"
+        );
+        assert!(canonical_artwork_stem("東京").is_err());
     }
 
     #[test]

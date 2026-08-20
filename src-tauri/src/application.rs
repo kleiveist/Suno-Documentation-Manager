@@ -14,15 +14,16 @@ use crate::model::{
     EvidenceMetadata, EvidencePreview, EvidenceProvenance, EvidenceRole, ExternalTimestampInput,
     ExternalTimestampRecord, ExternalTimestampStatus, ExternalTimestampSummary, FinalizationAnchor,
     FinalizeOptions, GlobalEvidenceItem, IntegrityState, LegacyCandidate, OperationProgress,
-    Profile, StepState, StepStatus, SubscriptionBillingCycle, TimestampProviderTestResult,
-    TimestampSecretInput, TimestampSettings, TrackCoverPreview, TrackDetail, TrackLibraryPlacement,
-    TrackLibrarySection, TrackPatch, TrackPatchRequest, TrackRecord, TrackStatus, TrackSummary,
-    ValidationResult, WorkspaceScan, WorkspaceSummary,
+    Profile, StepState, StepStatus, SubscriptionBillingCycle, SunoContentClassification,
+    SunoLyricsContentType, TimestampProviderTestResult, TimestampSecretInput, TimestampSettings,
+    TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch,
+    TrackPatchRequest, TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan,
+    WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
     atomic_write, atomic_write_new, canonical_workspace, contained_path, copy_new,
-    ensure_contained_directory, portable_relative, sha256_file, slugify,
+    ensure_contained_directory, portable_relative, sha256_bytes, sha256_file, slugify,
 };
 use crate::workflow;
 use base64::Engine;
@@ -1966,15 +1967,6 @@ impl WorkspaceApp {
                     .into(),
             ));
         }
-        if track.fields.depicts_real_person == Some(false)
-            && track.fields.depicts_real_event == Some(false)
-            && track.fields.contains_trademark == Some(false)
-        {
-            return Err(AppError::Validation(
-                "AI Transparency ist deaktiviert, weil alle drei Content-Checks mit Nein beantwortet wurden."
-                    .into(),
-            ));
-        }
         let evidence_items = self.verified_evidence(&track)?;
         let source = evidence_items
             .iter()
@@ -1992,7 +1984,6 @@ impl WorkspaceApp {
                 && item.verified
                 && item.verification_error.is_none()
                 && item.derived_from_evidence_id.as_deref() == Some(source.id.as_str())
-                && item.imported_at.as_str() >= source.imported_at.as_str()
                 && item.generator_version.as_deref()
                     == Some(crate::artwork::DISCLOSURE_GENERATOR_VERSION)
                 && item.generated_disclosure_text.as_deref() == Some(text.as_str())
@@ -2335,6 +2326,10 @@ impl WorkspaceApp {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(AppError::io(&live_directory, error)),
             }
+            return Err(AppError::Validation(
+                "Audio screening is stale because the authoritative release changed. Verify or replace the release audio and run local screening again before generating documents or hashes."
+                    .into(),
+            ));
         }
 
         let Some(release) = evidence.iter().find(|item| {
@@ -2550,10 +2545,10 @@ impl WorkspaceApp {
         });
         // Re-read all state after validation so the certificate uses exactly the gate input.
         track = self.persistence.track(id)?;
-        // Freeze the optional provider's actual configuration state only in
-        // the immutable certificate snapshot. Persisting this presentation
-        // fact on the editable track after the documentation-currentness gate
-        // would immediately make the documentation stale.
+        // Freeze the optional provider's actual configuration state in the
+        // immutable certificate snapshot. The same frozen value is copied to
+        // the finalized database record only after all currentness gates have
+        // passed, so the persisted snapshot can reproduce the certificate.
         let mut certificate_track = track.clone();
         let screening_settings = self.persistence.audio_screening_settings()?;
         let screening_credentials_present =
@@ -2761,6 +2756,10 @@ impl WorkspaceApp {
             }
         };
         track.integrity = post_publish_integrity;
+        track.audio_screening.external.configured_at_snapshot = certificate_track
+            .audio_screening
+            .external
+            .configured_at_snapshot;
         track.status = TrackStatus::Finalized;
         track.certificate = CertificateState {
             valid: true,
@@ -2958,22 +2957,12 @@ impl WorkspaceApp {
             return self.detail_from_record(track, false);
         }
 
-        let existing = self
-            .persistence
-            .timestamp_attachment_summary(&track.id, &certificate_id)?;
-        let records = self.persistence.external_timestamps(&track.id)?;
-        let already_verified = existing
-            .as_ref()
-            .is_some_and(|summary| summary.status == ExternalTimestampStatus::Verified)
-            || records.iter().any(|record| {
-                record.certificate_id == certificate_id
-                    && record.provider_metadata.as_ref().is_some_and(|metadata| {
-                        metadata.verification_result == ExternalTimestampStatus::Verified
-                            && metadata.signature_verified == Some(true)
-                            && metadata.trust_chain_verified == Some(true)
-                    })
-            });
-        if already_verified {
+        let (current_records, _, _) = self.external_timestamp_context(&track)?;
+        if let Some(verified_record) = current_records
+            .iter()
+            .rev()
+            .find(|record| currently_verified_provider_timestamp(record))
+        {
             self.save_timestamp_attachment_summary(
                 &track,
                 ExternalTimestampSummary {
@@ -2981,7 +2970,7 @@ impl WorkspaceApp {
                     message: "A technically verified external timestamp is already attached to this finalized snapshot."
                         .into(),
                     provider,
-                    record_id: existing.and_then(|summary| summary.record_id),
+                    record_id: Some(verified_record.id.clone()),
                     updated_at: Some(now()),
                 },
             )?;
@@ -3018,10 +3007,29 @@ impl WorkspaceApp {
                 updated_at: Some(now()),
             },
         )?;
-        let response = match external_timestamp::request_timestamp(
+        let anchor_path = contained_path(&track_root, Path::new(&anchor.relative_path), true)?;
+        let anchor_bytes =
+            fs::read(&anchor_path).map_err(|error| AppError::io(&anchor_path, error))?;
+        if !sha256_bytes(&anchor_bytes).eq_ignore_ascii_case(&anchor.sha256) {
+            self.save_timestamp_attachment_summary(
+                &track,
+                ExternalTimestampSummary {
+                    status: ExternalTimestampStatus::AnchorMismatch,
+                    message:
+                        "The selected timestamp anchor changed before the provider request started."
+                            .into(),
+                    provider,
+                    record_id: None,
+                    updated_at: Some(now()),
+                },
+            )?;
+            return self.detail_from_record(track, false);
+        }
+        let response = match external_timestamp::request_timestamp_for_artifact(
             &settings,
             secret.as_deref(),
             &anchor.sha256,
+            &anchor_bytes,
         ) {
             Ok(response) => response,
             Err(failure) => {
@@ -3042,7 +3050,11 @@ impl WorkspaceApp {
         // Recheck immediately after the network call. A timestamp response is
         // never published for a manifest that changed while the provider was
         // handling the digest request.
-        if self.verified_timestamp_anchor(&track_root).is_err() {
+        let post_request_anchor = self.verified_timestamp_anchor(&track_root);
+        if !post_request_anchor.as_ref().is_ok_and(|current| {
+            current.relative_path == anchor.relative_path
+                && current.sha256.eq_ignore_ascii_case(&anchor.sha256)
+        }) {
             self.save_timestamp_attachment_summary(
                 &track,
                 ExternalTimestampSummary {
@@ -3219,6 +3231,7 @@ impl WorkspaceApp {
         // half-created revision behind.
         let (prepared_track, analyzed_evidence) = self.prepare_revision_suno_analysis(track)?;
         track = prepared_track;
+        migrate_legacy_suno_semantics(&mut track.fields);
         let certificate_integrity = if certificate::verify(&root).is_ok() {
             "valid"
         } else {
@@ -3466,6 +3479,7 @@ impl WorkspaceApp {
 
         let mut track = self.persistence.track(id)?;
         let evidence = self.persistence.evidence(id)?;
+        migrate_legacy_suno_semantics(&mut track.fields);
         reconcile_evidence_derived_fields(&mut track, &evidence);
         track.workflow_id = current.id.clone();
         track.workflow_version = current.version.clone();
@@ -4495,19 +4509,64 @@ impl WorkspaceApp {
         let Some(certificate_id) = track.certificate.certificate_id.as_deref() else {
             return Ok(ExternalTimestampSummary::default());
         };
-        if let Some(summary) = self
+        let stored_summary = self
             .persistence
-            .timestamp_attachment_summary(&track.id, certificate_id)?
+            .timestamp_attachment_summary(&track.id, certificate_id)?;
+        if let Some(record) = records
+            .iter()
+            .rev()
+            .find(|record| currently_verified_provider_timestamp(record))
         {
-            return Ok(summary);
+            return Ok(ExternalTimestampSummary {
+                status: ExternalTimestampStatus::Verified,
+                message: record
+                    .provider_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.verification_message.clone())
+                    .filter(|message| !message.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        "The RFC 3161 response and its current sidecar integrity are technically verified."
+                            .into()
+                    }),
+                provider: record.provider.clone(),
+                record_id: Some(record.id.clone()),
+                updated_at: Some(record.imported_at.clone()),
+            });
+        }
+        if let Some(summary) = stored_summary
+            .as_ref()
+            .filter(|summary| summary.status != ExternalTimestampStatus::Verified)
+        {
+            return Ok(summary.clone());
         }
         let Some(record) = records
             .iter()
             .rev()
             .find(|record| record.certificate_id == certificate_id)
         else {
-            return Ok(ExternalTimestampSummary::default());
+            return Ok(if let Some(summary) = stored_summary {
+                ExternalTimestampSummary {
+                    status: ExternalTimestampStatus::VerificationFailed,
+                    message: "A stored VERIFIED timestamp summary has no currently verifiable published sidecar."
+                        .into(),
+                    provider: summary.provider,
+                    record_id: summary.record_id,
+                    updated_at: summary.updated_at,
+                }
+            } else {
+                ExternalTimestampSummary::default()
+            });
         };
+        if !record.integrity_verified {
+            return Ok(ExternalTimestampSummary {
+                status: ExternalTimestampStatus::VerificationFailed,
+                message: "External timestamp evidence is present, but its current sidecar or referenced-anchor integrity verification failed."
+                    .into(),
+                provider: record.provider.clone(),
+                record_id: Some(record.id.clone()),
+                updated_at: Some(record.imported_at.clone()),
+            });
+        }
         // Historical sidecars only record addendum-file integrity, not a
         // provider cryptographic result. A missing summary therefore never
         // promotes legacy or recovered evidence to VERIFIED.
@@ -4515,14 +4574,19 @@ impl WorkspaceApp {
             .provider_metadata
             .as_ref()
             .map(|metadata| match metadata.verification_result {
-                ExternalTimestampStatus::Verified => ExternalTimestampStatus::Attached,
+                ExternalTimestampStatus::Verified => ExternalTimestampStatus::VerificationFailed,
                 status => status,
             })
             .unwrap_or(ExternalTimestampStatus::Attached);
         Ok(ExternalTimestampSummary {
             status,
-            message: if record.provider_metadata.is_some() {
-                "External timestamp evidence is attached; provider verification status was recovered from its immutable record."
+            message: if record.provider_metadata.as_ref().is_some_and(|metadata| {
+                metadata.verification_result == ExternalTimestampStatus::Verified
+            }) {
+                "The immutable record claims VERIFIED, but the complete current RFC 3161 verification predicate is not satisfied."
+                    .into()
+            } else if record.provider_metadata.is_some() {
+                "External timestamp evidence is attached; its immutable provider verification status is shown without promotion."
                     .into()
             } else {
                 "Legacy manually recorded timestamp evidence is attached; it has not been automatically promoted to provider-verified evidence."
@@ -4589,6 +4653,7 @@ fn inspect_legacy(root: &Path) -> Result<LegacyInspection> {
             && portable != certificate::PDF_FILE_DE
             && !portable.starts_with(".archive/")
             && !portable.starts_with(".summary/")
+            && !portable.starts_with("03_DOCUMENTATION/AUDIO_SCREENING/")
             && !portable.starts_with("06_CERTIFICATE/")
         {
             evidence_files.push(portable);
@@ -4608,10 +4673,18 @@ fn inspect_legacy(root: &Path) -> Result<LegacyInspection> {
 
 fn infer_legacy_role(relative: &str) -> EvidenceRole {
     let value = relative.to_ascii_lowercase();
-    if value.contains("ai_original") {
+    if value.contains("suno_original") {
+        EvidenceRole::ArtworkSunoOriginal
+    } else if value.contains("ai_original") {
         EvidenceRole::AiArtworkOriginal
     } else if value.contains("ai_edited") {
         EvidenceRole::AiArtworkEdited
+    } else if (value.contains("human_edited") || value.contains("_edited"))
+        && [".png", ".jpg", ".jpeg"]
+            .iter()
+            .any(|extension| value.ends_with(extension))
+    {
+        EvidenceRole::HumanEditedArtwork
     } else if value.contains("_final")
         && [".png", ".jpg", ".jpeg"]
             .iter()
@@ -4699,6 +4772,135 @@ fn referenced_finalization_snapshot_id(track: &TrackRecord, certificate_id: &str
         // Certificate ID is already immutable and archived, so a namespaced
         // fallback keeps the association explicit without modifying history.
         .unwrap_or_else(|| format!("legacy-finalization-snapshot:{certificate_id}"))
+}
+
+/// A persisted summary is only presentation state. A positive RFC 3161 claim
+/// must be reconstructed from an intact, certificate-bound sidecar whose
+/// immutable provider record contains every required verification result.
+fn currently_verified_provider_timestamp(record: &ExternalTimestampRecord) -> bool {
+    let Some(metadata) = record.provider_metadata.as_ref() else {
+        return false;
+    };
+    record.integrity_verified
+        && record.referenced_artifact == crate::model::TimestampReferencedArtifact::EvidenceManifest
+        && record.referenced_hash_match == Some(true)
+        && record
+            .actual_sha256
+            .eq_ignore_ascii_case(&record.referenced_sha256)
+        && metadata.verification_result == ExternalTimestampStatus::Verified
+        && metadata.response_structure_valid == Some(true)
+        && metadata.provider_digest_match == Some(true)
+        && !metadata.request_nonce.trim().is_empty()
+        && !metadata.response_nonce.trim().is_empty()
+        && metadata.nonce_match == Some(true)
+        && !metadata.policy_oid.trim().is_empty()
+        && (metadata.requested_policy_oid.trim().is_empty() || metadata.policy_match == Some(true))
+        && metadata.signature_verified == Some(true)
+        && metadata.trust_chain_verified == Some(true)
+        && metadata.cryptographic_verifier
+            == crate::external_timestamp::RFC3161_CRYPTOGRAPHIC_VERIFIER
+        && !metadata.trust_anchor_sha256.is_empty()
+        && metadata
+            .trust_anchor_sha256
+            .iter()
+            .all(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Convert only unambiguous historical Suno content answers when the user
+/// explicitly starts a revision or upgrades the workflow. Ordinary reads and
+/// saves intentionally do not infer new semantic facts.
+fn migrate_legacy_suno_semantics(fields: &mut crate::model::TrackFields) -> bool {
+    if let Some(classification) = fields.suno_content_classification {
+        let mut changed = fields.suno_lyrics_field_content.is_some()
+            || !fields.suno_lyrics_content_types.is_empty();
+        fields.suno_lyrics_field_content = None;
+        fields.suno_lyrics_content_types.clear();
+        if classification == SunoContentClassification::Empty {
+            changed |= fields.suno_lyrics_content_source.is_some()
+                || !fields.suno_lyrics_field_text.is_empty()
+                || !fields.suno_lyrics_other_content_type.is_empty();
+            fields.suno_lyrics_content_source = None;
+            fields.suno_lyrics_field_text.clear();
+            fields.suno_lyrics_other_content_type.clear();
+        } else if classification != SunoContentClassification::Other {
+            changed |= !fields.suno_lyrics_other_content_type.is_empty();
+            fields.suno_lyrics_other_content_type.clear();
+        }
+        return changed;
+    }
+
+    let classification = if fields.suno_lyrics_field_content == Some(false) {
+        Some(SunoContentClassification::Empty)
+    } else if fields.suno_lyrics_content_types.is_empty() {
+        None
+    } else {
+        let only_vocal = fields
+            .suno_lyrics_content_types
+            .iter()
+            .all(|value| *value == SunoLyricsContentType::VocalLyrics);
+        let only_instructions = fields.suno_lyrics_content_types.iter().all(|value| {
+            matches!(
+                value,
+                SunoLyricsContentType::StructureInstructions
+                    | SunoLyricsContentType::SoundInstructions
+                    | SunoLyricsContentType::ArrangementInstructions
+            )
+        });
+        let only_other = fields
+            .suno_lyrics_content_types
+            .iter()
+            .all(|value| *value == SunoLyricsContentType::Other);
+        let has_vocal = fields
+            .suno_lyrics_content_types
+            .contains(&SunoLyricsContentType::VocalLyrics);
+        let has_instruction = fields.suno_lyrics_content_types.iter().any(|value| {
+            matches!(
+                value,
+                SunoLyricsContentType::StructureInstructions
+                    | SunoLyricsContentType::SoundInstructions
+                    | SunoLyricsContentType::ArrangementInstructions
+            )
+        });
+        let contains_only_vocal_and_instructions =
+            fields.suno_lyrics_content_types.iter().all(|value| {
+                matches!(
+                    value,
+                    SunoLyricsContentType::VocalLyrics
+                        | SunoLyricsContentType::StructureInstructions
+                        | SunoLyricsContentType::SoundInstructions
+                        | SunoLyricsContentType::ArrangementInstructions
+                )
+            });
+
+        if only_vocal {
+            Some(SunoContentClassification::VocalLyricsOnly)
+        } else if only_instructions {
+            Some(SunoContentClassification::StructureOnly)
+        } else if only_other {
+            Some(SunoContentClassification::Other)
+        } else if has_vocal && has_instruction && contains_only_vocal_and_instructions {
+            Some(SunoContentClassification::Mixed)
+        } else {
+            // Historical `mixed`, `other` combined with another value, and all
+            // other unclear combinations require an explicit new decision.
+            None
+        }
+    };
+
+    let Some(classification) = classification else {
+        return false;
+    };
+    fields.suno_content_classification = Some(classification);
+    fields.suno_lyrics_field_content = None;
+    fields.suno_lyrics_content_types.clear();
+    if classification == SunoContentClassification::Empty {
+        fields.suno_lyrics_content_source = None;
+        fields.suno_lyrics_field_text.clear();
+        fields.suno_lyrics_other_content_type.clear();
+    } else if classification != SunoContentClassification::Other {
+        fields.suno_lyrics_other_content_type.clear();
+    }
+    true
 }
 
 fn workflow_version_mismatch(track: &TrackRecord) -> Result<Option<String>> {
@@ -6071,11 +6273,11 @@ fn apply_patch_with_explicit_nulls(
     if let Some(value) = patch.vocal_lyrics_present {
         fields.vocal_lyrics_present = Some(value);
     }
-    if let Some(value) = patch.suno_lyrics_field_content {
-        fields.suno_lyrics_field_content = Some(value);
+    if let Some(value) = patch.vocal_intent {
+        fields.vocal_intent = Some(value);
     }
-    if let Some(value) = patch.suno_lyrics_content_types {
-        fields.suno_lyrics_content_types = value;
+    if let Some(value) = patch.suno_content_classification {
+        fields.suno_content_classification = Some(value);
     }
     if let Some(value) = patch.suno_lyrics_content_source {
         fields.suno_lyrics_content_source = Some(value);
@@ -6243,7 +6445,8 @@ fn apply_patch_with_explicit_nulls(
         match field.as_str() {
             "instrumentalTrack" => fields.instrumental_track = None,
             "vocalLyricsPresent" => fields.vocal_lyrics_present = None,
-            "sunoLyricsFieldContent" => fields.suno_lyrics_field_content = None,
+            "vocalIntent" => fields.vocal_intent = None,
+            "sunoContentClassification" => fields.suno_content_classification = None,
             "sunoLyricsContentSource" => fields.suno_lyrics_content_source = None,
             "externalAudioUploaded" => fields.external_audio_uploaded = None,
             "ownAudioUploaded" => fields.own_audio_uploaded = None,
@@ -6291,7 +6494,8 @@ mod tests {
     use crate::model::{
         CertificateLanguage, CustomRfc3161Settings, DocumentationAnswer, EmbeddedMetadata,
         FactOrigin, FinalizeOptions, SunoLyricsContentSource, SunoLyricsContentType,
-        TimestampProviderKind, TimestampReferencedArtifact, TimestampSettings, TimestampType,
+        TimestampProviderKind, TimestampProviderMetadata, TimestampReferencedArtifact,
+        TimestampSettings, TimestampType, VocalIntent,
     };
     use crate::workflow::CoverageStatus;
     use std::collections::BTreeMap;
@@ -6346,6 +6550,71 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn verified_timestamp_requires_the_current_complete_verifier_profile() {
+        let digest = "a".repeat(64);
+        let mut metadata = TimestampProviderMetadata {
+            protocol: "RFC 3161".into(),
+            request_nonce: "01".into(),
+            response_nonce: "01".into(),
+            nonce_match: Some(true),
+            policy_oid: "1.2.3.4".into(),
+            cryptographic_verifier: crate::external_timestamp::RFC3161_CRYPTOGRAPHIC_VERIFIER
+                .into(),
+            trust_anchor_sha256: vec!["b".repeat(64)],
+            response_structure_valid: Some(true),
+            provider_digest_match: Some(true),
+            signature_verified: Some(true),
+            trust_chain_verified: Some(true),
+            verification_result: ExternalTimestampStatus::Verified,
+            ..TimestampProviderMetadata::default()
+        };
+        let record = |metadata: TimestampProviderMetadata| ExternalTimestampRecord {
+            id: "timestamp-record".into(),
+            certificate_id: "certificate".into(),
+            sidecar_format_version: 2,
+            provider: "fixture TSA".into(),
+            timestamp_type: TimestampType::ElectronicTimestamp,
+            timestamp_value: "2026-08-20T07:38:27Z".into(),
+            referenced_artifact: TimestampReferencedArtifact::EvidenceManifest,
+            referenced_artifact_path: certificate::MANIFEST_FILE.into(),
+            referenced_sha256: digest.clone(),
+            actual_sha256: digest.clone(),
+            referenced_hash_match: Some(true),
+            external_reference_id: String::new(),
+            provider_verification_url: String::new(),
+            note: String::new(),
+            evidence_file_name: "TIMESTAMP_EVIDENCE.tsr".into(),
+            evidence_sha256: "c".repeat(64),
+            markdown_sha256: "d".repeat(64),
+            pdf_sha256: "e".repeat(64),
+            imported_at: "2026-08-20T07:38:27Z".into(),
+            provenance: "provider_automatic".into(),
+            provider_metadata: Some(metadata),
+            record_relative_path: "record/TIMESTAMP_RECORD.json".into(),
+            markdown_relative_path: "record/EXTERNAL_TIMESTAMP_ADDENDUM.md".into(),
+            pdf_relative_path: "record/EXTERNAL_TIMESTAMP_ADDENDUM.pdf".into(),
+            hash_list_relative_path: "record/TIMESTAMP_RECORD_SHA256.txt".into(),
+            integrity_verified_at_publication: true,
+            integrity_verified: true,
+            integrity_issues: Vec::new(),
+        };
+
+        assert!(currently_verified_provider_timestamp(&record(
+            metadata.clone()
+        )));
+
+        metadata.cryptographic_verifier = "sigstore-tsa 0.10.0".into();
+        assert!(!currently_verified_provider_timestamp(&record(
+            metadata.clone()
+        )));
+
+        metadata.cryptographic_verifier =
+            crate::external_timestamp::RFC3161_CRYPTOGRAPHIC_VERIFIER.into();
+        metadata.policy_oid.clear();
+        assert!(!currently_verified_provider_timestamp(&record(metadata)));
     }
 
     #[test]
@@ -6585,7 +6854,8 @@ mod tests {
                     final_export_date: Some("2026-08-03".into()),
                     instrumental_track: Some(true),
                     vocal_lyrics_present: Some(false),
-                    suno_lyrics_field_content: Some(false),
+                    vocal_intent: Some(VocalIntent::Instrumental),
+                    suno_content_classification: Some(SunoContentClassification::Empty),
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
@@ -6790,6 +7060,15 @@ mod tests {
         let mut legacy = app.persistence.track(&ready.id).expect("stored track");
         legacy.workflow_version = "1.7".into();
         legacy.audio_screening = Default::default();
+        legacy.fields.suno_content_classification = None;
+        legacy.fields.vocal_intent = None;
+        legacy.fields.suno_lyrics_field_content = Some(true);
+        legacy.fields.suno_lyrics_content_types = vec![
+            SunoLyricsContentType::VocalLyrics,
+            SunoLyricsContentType::StructureInstructions,
+        ];
+        legacy.fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Human);
+        legacy.fields.suno_lyrics_field_text = "Legacy vocal line\n[Drop]".into();
         app.persistence
             .save_track(&legacy)
             .expect("simulate old workflow");
@@ -6802,7 +7081,14 @@ mod tests {
             .track
             .expect("upgraded detail");
 
-        assert_eq!(upgraded.workflow_version, "1.8");
+        assert_eq!(upgraded.workflow_version, "1.9");
+        assert_eq!(
+            upgraded.fields.suno_content_classification,
+            Some(SunoContentClassification::Mixed)
+        );
+        assert_eq!(upgraded.fields.vocal_intent, None);
+        assert_eq!(upgraded.fields.suno_lyrics_field_content, None);
+        assert!(upgraded.fields.suno_lyrics_content_types.is_empty());
         assert_eq!(
             upgraded.audio_screening.local.status,
             AudioScreeningStatus::FingerprintGenerated
@@ -6850,6 +7136,14 @@ mod tests {
             replaced.audio_screening.external.status,
             AudioScreeningStatus::SkippedNotConfigured
         );
+        app.update_track(
+            &ready.id,
+            TrackPatch {
+                release_filename_difference_confirmed: Some(true),
+                ..TrackPatch::default()
+            },
+        )
+        .expect("confirm replacement filename difference");
         app.generate_documents(&ready.id, false)
             .expect("documents after replacement");
         app.calculate_hashes(&ready.id)
@@ -6881,6 +7175,7 @@ mod tests {
             custom: CustomRfc3161Settings {
                 provider_name: "Deterministic test TSA".into(),
                 endpoint,
+                ca_certificate_path: "unused-test-trust-anchor.der".into(),
                 timeout_seconds: 2,
                 ..Default::default()
             },
@@ -7642,7 +7937,11 @@ mod tests {
         );
         let before = app.load_track(&ready.id).expect("ready track");
         let documents_before = serde_json::to_value(&before.documents).expect("document state");
-        let integrity_before = serde_json::to_value(&before.integrity).expect("integrity state");
+        let mut integrity_before =
+            serde_json::to_value(&before.integrity).expect("integrity state");
+        // Loading re-runs the integrity check and therefore refreshes only
+        // this observation timestamp; the protected state must stay equal.
+        integrity_before["verifiedAt"] = serde_json::Value::Null;
         assert!(before.documents.current);
         assert!(before.integrity.verified);
 
@@ -7658,10 +7957,10 @@ mod tests {
             serde_json::to_value(&unchanged.documents).expect("document state after update"),
             documents_before
         );
-        assert_eq!(
-            serde_json::to_value(&unchanged.integrity).expect("integrity state after update"),
-            integrity_before
-        );
+        let mut integrity_after =
+            serde_json::to_value(&unchanged.integrity).expect("integrity state after update");
+        integrity_after["verifiedAt"] = serde_json::Value::Null;
+        assert_eq!(integrity_after, integrity_before);
 
         let finalized = app
             .finalize_track_with_options(&ready.id, FinalizeOptions { bilingual: false })
@@ -8224,6 +8523,10 @@ mod tests {
         let mut fields = crate::model::TrackFields {
             instrumental_track: Some(true),
             vocal_lyrics_present: Some(false),
+            vocal_intent: Some(VocalIntent::Vocal),
+            suno_content_classification: Some(SunoContentClassification::Mixed),
+            suno_lyrics_content_source: Some(SunoLyricsContentSource::Human),
+            suno_lyrics_field_text: "Lyrics\n[Bridge]".into(),
             generative_ai_used: Some(true),
             audio_ai_system: "Suno".into(),
             ai_generated_audio_elements: Some(DocumentationAnswer::Yes),
@@ -8231,6 +8534,8 @@ mod tests {
         };
         let request: TrackPatchRequest = serde_json::from_value(serde_json::json!({
             "instrumentalTrack": null,
+            "vocalIntent": null,
+            "sunoContentClassification": null,
             "generativeAiUsed": null,
             "aiGeneratedAudioElements": null
         }))
@@ -8239,10 +8544,116 @@ mod tests {
         apply_patch_with_explicit_nulls(&mut fields, request.patch, &request.explicit_null_fields);
 
         assert_eq!(fields.instrumental_track, None);
+        assert_eq!(fields.vocal_intent, None);
+        assert_eq!(fields.suno_content_classification, None);
         assert_eq!(fields.generative_ai_used, None);
         assert_eq!(fields.ai_generated_audio_elements, None);
         assert_eq!(fields.vocal_lyrics_present, Some(false));
         assert_eq!(fields.audio_ai_system, "Suno");
+    }
+
+    #[test]
+    fn legacy_suno_classification_migration_is_conservative_and_never_infers_intent() {
+        let cases = [
+            (
+                Some(false),
+                vec![SunoLyricsContentType::Mixed],
+                Some(SunoContentClassification::Empty),
+            ),
+            (
+                Some(true),
+                vec![SunoLyricsContentType::VocalLyrics],
+                Some(SunoContentClassification::VocalLyricsOnly),
+            ),
+            (
+                Some(true),
+                vec![
+                    SunoLyricsContentType::StructureInstructions,
+                    SunoLyricsContentType::SoundInstructions,
+                    SunoLyricsContentType::ArrangementInstructions,
+                ],
+                Some(SunoContentClassification::StructureOnly),
+            ),
+            (
+                Some(true),
+                vec![
+                    SunoLyricsContentType::VocalLyrics,
+                    SunoLyricsContentType::StructureInstructions,
+                ],
+                Some(SunoContentClassification::Mixed),
+            ),
+            (
+                Some(true),
+                vec![SunoLyricsContentType::Other],
+                Some(SunoContentClassification::Other),
+            ),
+        ];
+
+        for (legacy_answer, legacy_types, expected) in cases {
+            let mut fields = crate::model::TrackFields {
+                suno_lyrics_field_content: legacy_answer,
+                suno_lyrics_content_types: legacy_types,
+                suno_lyrics_content_source: Some(SunoLyricsContentSource::Human),
+                suno_lyrics_field_text: "legacy exact text".into(),
+                ..Default::default()
+            };
+            assert!(migrate_legacy_suno_semantics(&mut fields));
+            assert_eq!(fields.suno_content_classification, expected);
+            assert_eq!(fields.vocal_intent, None);
+            assert_eq!(fields.suno_lyrics_field_content, None);
+            assert!(fields.suno_lyrics_content_types.is_empty());
+            if expected == Some(SunoContentClassification::Empty) {
+                assert_eq!(fields.suno_lyrics_content_source, None);
+                assert!(fields.suno_lyrics_field_text.is_empty());
+            }
+        }
+
+        for ambiguous in [
+            vec![SunoLyricsContentType::Mixed],
+            vec![
+                SunoLyricsContentType::Other,
+                SunoLyricsContentType::VocalLyrics,
+            ],
+            vec![
+                SunoLyricsContentType::Other,
+                SunoLyricsContentType::StructureInstructions,
+            ],
+        ] {
+            let mut fields = crate::model::TrackFields {
+                suno_lyrics_field_content: Some(true),
+                suno_lyrics_content_types: ambiguous.clone(),
+                ..Default::default()
+            };
+            assert!(!migrate_legacy_suno_semantics(&mut fields));
+            assert_eq!(fields.suno_content_classification, None);
+            assert_eq!(fields.vocal_intent, None);
+            assert_eq!(fields.suno_lyrics_content_types, ambiguous);
+        }
+    }
+
+    #[test]
+    fn canonical_suno_classification_wins_over_conflicting_legacy_controllers() {
+        let mut fields = crate::model::TrackFields {
+            vocal_intent: Some(VocalIntent::Vocal),
+            suno_content_classification: Some(SunoContentClassification::Mixed),
+            suno_lyrics_field_content: Some(false),
+            suno_lyrics_content_types: vec![SunoLyricsContentType::Other],
+            suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
+            suno_lyrics_field_text: "Lyrics\n[Drop]".into(),
+            suno_lyrics_other_content_type: "stale legacy label".into(),
+            ..Default::default()
+        };
+
+        assert!(migrate_legacy_suno_semantics(&mut fields));
+        assert_eq!(
+            fields.suno_content_classification,
+            Some(SunoContentClassification::Mixed)
+        );
+        assert_eq!(fields.vocal_intent, Some(VocalIntent::Vocal));
+        assert_eq!(fields.suno_lyrics_field_content, None);
+        assert!(fields.suno_lyrics_content_types.is_empty());
+        assert_eq!(fields.suno_lyrics_field_text, "Lyrics\n[Drop]");
+        assert!(fields.suno_lyrics_other_content_type.is_empty());
     }
 
     fn certificate_file_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -8278,8 +8689,11 @@ mod tests {
             section = match line {
                 "## J. Evidence register" => Section::Other,
                 "## K. Integrity anchors and workflow" => Section::Fields,
-                "### Mandatory steps completed" => Section::CompletedSteps,
+                "### Mandatory steps completed" | "### K.1 Configured workflow checks" => {
+                    Section::CompletedSteps
+                }
                 "### N/A steps with reasons" => Section::NaReasons,
+                "### K.2 Pre-release audio screening" => Section::Other,
                 "## L. Technical certificate statement" => Section::Other,
                 _ => section,
             };
@@ -8594,6 +9008,12 @@ mod tests {
             TrackPatch {
                 suno_model: Some("v6 private preview".into()),
                 suno_plan_at_generation: Some("Historical Founder Plan".into()),
+                instrumental_track: Some(true),
+                vocal_lyrics_present: Some(false),
+                vocal_intent: Some(VocalIntent::Vocal),
+                suno_content_classification: Some(SunoContentClassification::Mixed),
+                suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
+                suno_lyrics_field_text: Some("Vocal line\n[Drop]".into()),
                 code_based_generation: Some(true),
                 code_audio_post_processed: Some(true),
                 code_audio_post_processing_operations: Some(vec![
@@ -8656,6 +9076,20 @@ mod tests {
             assisted.fields.suno_plan_at_generation,
             "Historical Founder Plan"
         );
+        assert_eq!(assisted.fields.instrumental_track, Some(true));
+        assert_eq!(assisted.fields.vocal_lyrics_present, Some(false));
+        assert_eq!(assisted.fields.vocal_intent, Some(VocalIntent::Vocal));
+        assert_eq!(
+            assisted.fields.suno_content_classification,
+            Some(SunoContentClassification::Mixed)
+        );
+        assert_eq!(
+            assisted.fields.suno_lyrics_content_source,
+            Some(SunoLyricsContentSource::Mixed)
+        );
+        assert_eq!(assisted.fields.suno_lyrics_field_text, "Vocal line\n[Drop]");
+        assert_eq!(assisted.fields.suno_lyrics_field_content, None);
+        assert!(assisted.fields.suno_lyrics_content_types.is_empty());
         assert_eq!(assisted.fields.code_audio_post_processed, Some(true));
         assert_eq!(
             assisted.fields.code_audio_post_processing_operations,
@@ -9050,6 +9484,21 @@ mod tests {
             .find(|item| item.role == EvidenceRole::ReleaseWav)
             .expect("old release evidence");
         assert_eq!(old_release.relative_path, "01_RELEASE/Old Track.wav");
+        let artwork_source = directory.path().join("human-edit.png");
+        image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 20, 30, 255]))
+            .save(&artwork_source)
+            .expect("artwork fixture");
+        let imported = app
+            .import_evidence_from(
+                &created.id,
+                EvidenceRole::HumanEditedArtwork,
+                &artwork_source,
+            )
+            .expect("human-edited artwork before title rename");
+        assert!(imported
+            .evidence
+            .iter()
+            .any(|item| item.relative_path == "05_ARTWORK/OLD_TRACK_HUMAN_EDITED.png"));
 
         let renamed = app
             .update_track(
@@ -9083,6 +9532,19 @@ mod tests {
             .root()
             .join("Singles/New Track/01_RELEASE/Old Track.wav")
             .exists());
+        let retained_artwork = renamed
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::HumanEditedArtwork)
+            .expect("retained artwork evidence");
+        assert_eq!(
+            retained_artwork.relative_path,
+            "05_ARTWORK/OLD_TRACK_HUMAN_EDITED.png"
+        );
+        assert!(app
+            .root()
+            .join("Singles/New Track/05_ARTWORK/OLD_TRACK_HUMAN_EDITED.png")
+            .is_file());
     }
 
     #[test]
@@ -9906,12 +10368,8 @@ mod tests {
                     final_export_date: Some("2026-08-03".into()),
                     instrumental_track: Some(true),
                     vocal_lyrics_present: Some(false),
-                    suno_lyrics_field_content: Some(true),
-                    suno_lyrics_content_types: Some(vec![
-                        SunoLyricsContentType::StructureInstructions,
-                        SunoLyricsContentType::SoundInstructions,
-                        SunoLyricsContentType::ArrangementInstructions,
-                    ]),
+                    vocal_intent: Some(VocalIntent::Instrumental),
+                    suno_content_classification: Some(SunoContentClassification::StructureOnly),
                     suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
                     suno_lyrics_field_text: Some(
                         "[Intro]\n[sidechained synth pad]\n[Drop]\n[Outro]".into(),
@@ -10058,6 +10516,16 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.role == EvidenceRole::AiArtworkEdited && item.verified));
+        let mut reordered_timestamp = disclosed
+            .evidence
+            .iter()
+            .find(|item| item.role == EvidenceRole::AiArtworkEdited)
+            .expect("generated disclosure evidence")
+            .clone();
+        reordered_timestamp.imported_at = "2000-01-01T00:00:00Z".into();
+        app.persistence
+            .save_evidence(&updated.id, &reordered_timestamp)
+            .expect("simulate a non-chronological import timestamp");
         let repeated = app
             .generate_artwork_disclosure(&updated.id, Some("AI-assisted".into()))
             .expect("idempotent disclosure request");
@@ -10233,11 +10701,36 @@ mod tests {
             certificate::PDF_FILE,
             certificate::CERTIFICATE_HASH_FILE,
         ] {
-            assert_eq!(
-                fs::read(track_root.join(relative)).expect("original certificate artifact"),
-                fs::read(reproduction_root.join(relative))
-                    .expect("reproduced certificate artifact"),
-                "same normalized snapshot produced different bytes for {relative}"
+            let original =
+                fs::read(track_root.join(relative)).expect("original certificate artifact");
+            let reproduced = fs::read(reproduction_root.join(relative))
+                .expect("reproduced certificate artifact");
+            let first_difference = original
+                .iter()
+                .zip(&reproduced)
+                .position(|(left, right)| left != right)
+                .unwrap_or_else(|| original.len().min(reproduced.len()));
+            let textual_context = if relative.ends_with(".json") || relative.ends_with(".md") {
+                let original_text = String::from_utf8_lossy(&original);
+                let reproduced_text = String::from_utf8_lossy(&reproduced);
+                original_text
+                    .lines()
+                    .zip(reproduced_text.lines())
+                    .enumerate()
+                    .find(|(_, (left, right))| left != right)
+                    .map(|(index, (left, right))| {
+                        format!(
+                            "; line {}: original={left:?}; reproduced={right:?}",
+                            index + 1
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            assert!(
+                original == reproduced,
+                "same normalized snapshot produced different bytes for {relative}; first differing byte {first_difference}{textual_context}"
             );
         }
 
@@ -10246,13 +10739,24 @@ mod tests {
         assert!(manifest.contains("\"relative_path\": \".\""));
         assert!(manifest.contains("01_RELEASE/End To End.wav"));
         assert!(manifest.contains("02_SUNO/suno-export.wav"));
-        assert!(manifest.contains("05_ARTWORK/End-To-End_AI_ORIGINAL.png"));
-        assert!(manifest.contains("05_ARTWORK/End-To-End_AI_EDITED.png"));
-        assert!(manifest.contains("05_ARTWORK/End-To-End_FINAL.png"));
+        assert!(manifest.contains("05_ARTWORK/END_TO_END_AI_ORIGINAL.png"));
+        assert!(manifest.contains("05_ARTWORK/END_TO_END_AI_EDITED.png"));
+        assert!(manifest.contains("05_ARTWORK/END_TO_END_FINAL.png"));
         assert!(manifest.contains("sourceGlobalEvidenceId"));
         let manifest_json: serde_json::Value =
             serde_json::from_str(&manifest).expect("manifest JSON");
-        assert_eq!(manifest_json["schema_version"].as_u64(), Some(5));
+        assert_eq!(
+            manifest_json["limitations"]["artwork_import_timestamps"].as_str(),
+            Some(crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE)
+        );
+        assert_eq!(
+            manifest_json["system_verification"]["human_edited_final_artwork_status"].as_str(),
+            Some("NOT VERIFIED")
+        );
+        assert_eq!(
+            manifest_json["schema_version"].as_u64(),
+            Some(u64::from(certificate::EVIDENCE_MANIFEST_SCHEMA_VERSION))
+        );
         assert_eq!(
             manifest_json["evidence_derived_metadata"]["suno_created_timestamp"].as_str(),
             Some("2026-08-02T06:38:06Z")
@@ -10322,7 +10826,7 @@ mod tests {
         assert!(!markdown.contains(P0_SUNO_ID));
         assert!(markdown.contains("Suno plan at generation [User-confirmed fact]: Pro"));
         assert!(markdown.contains("Suno Instrumental Mode Selected [User-confirmed fact]: YES"));
-        assert!(markdown.contains("Vocal Lyrics Present [User-confirmed fact]: NO"));
+        assert!(markdown.contains("Vocal Lyrics Present [Classification-derived presentation]: NO"));
         assert!(markdown.contains("Suno Generation Text Field"));
         assert!(markdown.contains("Suno Terms of Service"));
         assert!(markdown.contains("Suno, Inc."));
@@ -10437,7 +10941,8 @@ mod tests {
                     final_export_date: Some("2026-08-03".into()),
                     instrumental_track: Some(true),
                     vocal_lyrics_present: Some(false),
-                    suno_lyrics_field_content: Some(false),
+                    vocal_intent: Some(VocalIntent::Instrumental),
+                    suno_content_classification: Some(SunoContentClassification::Empty),
                     suno_style_prompt: Some("cinematic synthwave, driving bass".into()),
                     external_audio_uploaded: Some(false),
                     own_audio_uploaded: Some(false),
@@ -10948,6 +11453,26 @@ mod tests {
             .invalidation_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("changed after finalization")));
+    }
+
+    #[test]
+    fn legacy_artwork_role_detection_accepts_old_and_new_human_edited_names() {
+        assert_eq!(
+            infer_legacy_role("05_ARTWORK/Gravity-SUNO_ORIGINAL.jpeg"),
+            EvidenceRole::ArtworkSunoOriginal
+        );
+        assert_eq!(
+            infer_legacy_role("05_ARTWORK/Gravity_EDITED.jpeg"),
+            EvidenceRole::HumanEditedArtwork
+        );
+        assert_eq!(
+            infer_legacy_role("05_ARTWORK/Gravity_HUMAN_EDITED.jpeg"),
+            EvidenceRole::HumanEditedArtwork
+        );
+        assert_eq!(
+            infer_legacy_role("05_ARTWORK/Gravity_AI_EDITED.png"),
+            EvidenceRole::AiArtworkEdited
+        );
     }
 
     #[test]
@@ -11529,7 +12054,16 @@ mod tests {
 
         app.scan_workspace().expect("workspace scan");
         let rescanned = app.load_track(&finalized.id).expect("rescanned track");
-        assert_eq!(rescanned.evidence.len(), evidence_count);
+        assert_eq!(
+            rescanned.evidence.len(),
+            evidence_count,
+            "rescanned evidence paths: {:?}",
+            rescanned
+                .evidence
+                .iter()
+                .map(|item| item.relative_path.as_str())
+                .collect::<Vec<_>>()
+        );
         assert!(!rescanned
             .evidence
             .iter()
@@ -12183,13 +12717,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_upgrade_archives_finalized_v18_and_requires_fresh_v19_outputs() {
+    fn workflow_upgrade_archives_finalized_v19_and_requires_fresh_v110_outputs() {
         let directory = tempdir().expect("temporary directory");
         let app = WorkspaceApp::open(&directory.path().join("workspace"), true).expect("workspace");
         app.update_profile(complete_profile()).expect("profile");
         let finalized =
             finalize_acceptance_track(&app, &directory.path().join("fixtures"), "Workflow Upgrade");
-        assert_eq!(finalized.workflow_version, "1.8");
+        assert_eq!(finalized.workflow_version, "1.9");
         let track_root = app.root().join(&finalized.relative_path);
         let certificate_before = certificate_file_snapshot(&track_root);
         let hashes_before =
@@ -12206,17 +12740,17 @@ mod tests {
             )
             .expect("stored old-workflow override");
 
-        let workflow_v19 = workflow::config_with_version_for_test("1.9")
-            .expect("test-only workflow 1.9 configuration");
+        let workflow_v110 = workflow::config_with_version_for_test("1.10")
+            .expect("test-only workflow 1.10 configuration");
         let upgraded = app
-            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v19)
+            .re_evaluate_track_with_workflow(&finalized.id, &workflow_v110)
             .expect("explicit workflow reevaluation")
             .track
             .expect("upgraded track detail");
 
         assert_eq!(upgraded.status, TrackStatus::Active);
         assert_eq!(upgraded.workflow_id, "suno-track");
-        assert_eq!(upgraded.workflow_version, "1.9");
+        assert_eq!(upgraded.workflow_version, "1.10");
         assert!(!upgraded.documents.current);
         assert!(!upgraded.integrity.generated);
         assert!(!upgraded.integrity.verified);
@@ -12255,7 +12789,7 @@ mod tests {
         }
 
         assert!(matches!(
-            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v19),
+            app.re_evaluate_track_with_workflow(&finalized.id, &workflow_v110),
             Err(AppError::Validation(_))
         ));
         assert_eq!(
@@ -13535,11 +14069,11 @@ mod tests {
 
         let upgraded = app
             .re_evaluate_track(&track.id)
-            .expect("explicit 1.8 reevaluation")
+            .expect("explicit 1.9 reevaluation")
             .track
             .expect("reevaluated track");
 
-        assert_eq!(upgraded.workflow_version, "1.8");
+        assert_eq!(upgraded.workflow_version, "1.9");
         assert_eq!(upgraded.fields.suno_final_generation_date, "2026-08-17");
         assert_eq!(upgraded.fields.production_end_date, "2026-08-17");
         assert_eq!(
@@ -13587,7 +14121,7 @@ mod tests {
             .expect("explicit reevaluation")
             .track
             .expect("reevaluated track");
-        assert_eq!(upgraded.workflow_version, "1.8");
+        assert_eq!(upgraded.workflow_version, "1.9");
     }
 
     #[test]

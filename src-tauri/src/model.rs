@@ -303,6 +303,48 @@ pub enum DocumentationAnswer {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SunoContentClassification {
+    StructureOnly,
+    VocalLyricsOnly,
+    Mixed,
+    Empty,
+    Other,
+}
+
+impl SunoContentClassification {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StructureOnly => "STRUCTURE_ONLY",
+            Self::VocalLyricsOnly => "VOCAL_LYRICS_ONLY",
+            Self::Mixed => "MIXED",
+            Self::Empty => "EMPTY",
+            Self::Other => "OTHER",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VocalIntent {
+    Vocal,
+    Instrumental,
+    Unspecified,
+}
+
+impl VocalIntent {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Vocal => "VOCAL",
+            Self::Instrumental => "INSTRUMENTAL",
+            Self::Unspecified => "UNSPECIFIED",
+        }
+    }
+}
+
+/// Legacy multi-value classification retained only so existing track JSON
+/// remains readable. New records use `SunoContentClassification` instead.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SunoLyricsContentType {
     VocalLyrics,
@@ -835,7 +877,23 @@ pub struct TimestampProviderMetadata {
     pub issuer: String,
     pub certificate_subject: String,
     pub certificate_serial_number: String,
+    /// Request/response binding values retained for independent review of the
+    /// RFC 3161 exchange. Empty values keep historical sidecars byte-compatible.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub request_nonce: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub response_nonce: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requested_policy_oid: String,
     pub policy_oid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cryptographic_verifier: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trust_anchor_sha256: Vec<String>,
     pub response_structure_valid: Option<bool>,
     pub provider_digest_match: Option<bool>,
     pub signature_verified: Option<bool>,
@@ -962,7 +1020,15 @@ pub struct TrackFields {
     pub final_export_date: String,
     pub instrumental_track: Option<bool>,
     pub vocal_lyrics_present: Option<bool>,
+    pub vocal_intent: Option<VocalIntent>,
+    /// Legacy YES/NO controller retained only while reading historical track
+    /// records. New records use `sunoContentClassification` exclusively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suno_lyrics_field_content: Option<bool>,
+    pub suno_content_classification: Option<SunoContentClassification>,
+    /// Legacy multi-value classification. New records leave this empty and
+    /// serialize only `sunoContentClassification` once it is documented.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suno_lyrics_content_types: Vec<SunoLyricsContentType>,
     pub suno_lyrics_content_source: Option<SunoLyricsContentSource>,
     pub suno_lyrics_field_text: String,
@@ -1044,7 +1110,9 @@ impl Default for TrackFields {
             final_export_date: String::new(),
             instrumental_track: None,
             vocal_lyrics_present: None,
+            vocal_intent: None,
             suno_lyrics_field_content: None,
+            suno_content_classification: None,
             suno_lyrics_content_types: Vec::new(),
             suno_lyrics_content_source: None,
             suno_lyrics_field_text: String::new(),
@@ -1137,7 +1205,22 @@ impl TrackFields {
             self.third_party_sample_source.clear();
             self.third_party_sample_ownership.clear();
         }
-        if self.suno_lyrics_field_content == Some(false) {
+        if self.suno_content_classification == Some(SunoContentClassification::Empty) {
+            self.suno_lyrics_field_content = None;
+            self.suno_lyrics_content_types.clear();
+            self.suno_lyrics_content_source = None;
+            self.suno_lyrics_field_text.clear();
+            self.suno_lyrics_other_content_type.clear();
+        } else if self.suno_content_classification.is_some() {
+            // A canonical scalar supersedes the historical multi-value field.
+            self.suno_lyrics_field_content = None;
+            self.suno_lyrics_content_types.clear();
+            if self.suno_content_classification != Some(SunoContentClassification::Other) {
+                self.suno_lyrics_other_content_type.clear();
+            }
+        } else if self.suno_lyrics_field_content == Some(false) {
+            // Preserve the old conditional cleanup for records that have not
+            // yet gone through an explicit workflow upgrade or revision.
             self.suno_lyrics_content_types.clear();
             self.suno_lyrics_content_source = None;
             self.suno_lyrics_field_text.clear();
@@ -1262,8 +1345,8 @@ pub struct TrackPatch {
     pub final_export_date: Option<String>,
     pub instrumental_track: Option<bool>,
     pub vocal_lyrics_present: Option<bool>,
-    pub suno_lyrics_field_content: Option<bool>,
-    pub suno_lyrics_content_types: Option<Vec<SunoLyricsContentType>>,
+    pub vocal_intent: Option<VocalIntent>,
+    pub suno_content_classification: Option<SunoContentClassification>,
     pub suno_lyrics_content_source: Option<SunoLyricsContentSource>,
     pub suno_lyrics_field_text: Option<String>,
     pub suno_lyrics_other_content_type: Option<String>,
@@ -1844,11 +1927,36 @@ mod tests {
     }
 
     #[test]
-    fn documentation_enums_use_stable_snake_case_values() {
+    fn documentation_enums_use_stable_wire_values() {
         assert_eq!(
             serde_json::to_value(DocumentationAnswer::NotDocumented).expect("answer"),
             "not_documented"
         );
+        for (classification, expected) in [
+            (SunoContentClassification::StructureOnly, "STRUCTURE_ONLY"),
+            (
+                SunoContentClassification::VocalLyricsOnly,
+                "VOCAL_LYRICS_ONLY",
+            ),
+            (SunoContentClassification::Mixed, "MIXED"),
+            (SunoContentClassification::Empty, "EMPTY"),
+            (SunoContentClassification::Other, "OTHER"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(classification).expect("content classification"),
+                expected
+            );
+        }
+        for (intent, expected) in [
+            (VocalIntent::Vocal, "VOCAL"),
+            (VocalIntent::Instrumental, "INSTRUMENTAL"),
+            (VocalIntent::Unspecified, "UNSPECIFIED"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(intent).expect("vocal intent"),
+                expected
+            );
+        }
         assert_eq!(
             serde_json::to_value(SunoLyricsContentType::StructureInstructions)
                 .expect("content type"),
@@ -1868,6 +1976,57 @@ mod tests {
                 .expect("timestamp artifact"),
             "evidence_manifest"
         );
+    }
+
+    #[test]
+    fn new_suno_semantics_are_optional_without_legacy_inference() {
+        let fields: TrackFields = serde_json::from_value(serde_json::json!({
+            "sunoLyricsFieldContent": true,
+            "sunoLyricsContentTypes": ["vocal_lyrics", "structure_instructions"],
+            "vocalLyricsPresent": true
+        }))
+        .expect("legacy Suno semantic fields");
+
+        assert_eq!(fields.suno_content_classification, None);
+        assert_eq!(fields.vocal_intent, None);
+        assert_eq!(
+            fields.suno_lyrics_content_types,
+            vec![
+                SunoLyricsContentType::VocalLyrics,
+                SunoLyricsContentType::StructureInstructions,
+            ]
+        );
+
+        let empty = serde_json::to_value(TrackFields::default()).expect("empty track fields");
+        assert!(empty.get("sunoLyricsContentTypes").is_none());
+        assert!(empty["sunoContentClassification"].is_null());
+        assert!(empty["vocalIntent"].is_null());
+    }
+
+    #[test]
+    fn singular_suno_semantics_round_trip_as_canonical_values() {
+        let fields: TrackFields = serde_json::from_value(serde_json::json!({
+            "sunoContentClassification": "MIXED",
+            "vocalIntent": "VOCAL"
+        }))
+        .expect("canonical Suno semantic fields");
+
+        assert_eq!(
+            fields.suno_content_classification,
+            Some(SunoContentClassification::Mixed)
+        );
+        assert_eq!(fields.vocal_intent, Some(VocalIntent::Vocal));
+
+        let serialized = serde_json::to_value(fields).expect("serialize Suno semantic fields");
+        assert_eq!(serialized["sunoContentClassification"], "MIXED");
+        assert_eq!(serialized["vocalIntent"], "VOCAL");
+        assert!(serialized.get("sunoLyricsContentTypes").is_none());
+
+        assert!(
+            serde_json::from_value::<SunoContentClassification>(serde_json::json!("mixed"))
+                .is_err()
+        );
+        assert!(serde_json::from_value::<VocalIntent>(serde_json::json!("vocal")).is_err());
     }
 
     #[test]
@@ -1998,7 +2157,8 @@ mod tests {
     #[test]
     fn inactive_new_lyrics_and_audio_branches_are_cleared_without_inventing_answers() {
         let mut fields = TrackFields {
-            suno_lyrics_field_content: Some(false),
+            suno_content_classification: Some(SunoContentClassification::Empty),
+            suno_lyrics_field_content: Some(true),
             suno_lyrics_content_types: vec![SunoLyricsContentType::Other],
             suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
             suno_lyrics_field_text: "stale field text".into(),
@@ -2013,6 +2173,11 @@ mod tests {
 
         fields.normalize_conditionals();
 
+        assert_eq!(
+            fields.suno_content_classification,
+            Some(SunoContentClassification::Empty)
+        );
+        assert_eq!(fields.suno_lyrics_field_content, None);
         assert!(fields.suno_lyrics_content_types.is_empty());
         assert!(fields.suno_lyrics_content_source.is_none());
         assert!(fields.suno_lyrics_field_text.is_empty());
@@ -2021,6 +2186,28 @@ mod tests {
         assert!(fields.ai_assisted_audio_elements.is_none());
         assert!(fields.audio_disclosure_applied.is_none());
         assert!(fields.audio_disclosure_reason.is_empty());
+    }
+
+    #[test]
+    fn canonical_mixed_classification_supersedes_legacy_controllers_without_touching_intent() {
+        let mut fields = TrackFields {
+            vocal_intent: Some(VocalIntent::Instrumental),
+            suno_content_classification: Some(SunoContentClassification::Mixed),
+            suno_lyrics_field_content: Some(false),
+            suno_lyrics_content_types: vec![SunoLyricsContentType::Other],
+            suno_lyrics_content_source: Some(SunoLyricsContentSource::Human),
+            suno_lyrics_field_text: "Vocal line\n[Drop]".into(),
+            suno_lyrics_other_content_type: "stale legacy label".into(),
+            ..TrackFields::default()
+        };
+
+        fields.normalize_conditionals();
+
+        assert_eq!(fields.suno_lyrics_field_content, None);
+        assert!(fields.suno_lyrics_content_types.is_empty());
+        assert_eq!(fields.suno_lyrics_field_text, "Vocal line\n[Drop]");
+        assert!(fields.suno_lyrics_other_content_type.is_empty());
+        assert_eq!(fields.vocal_intent, Some(VocalIntent::Instrumental));
     }
 
     #[test]

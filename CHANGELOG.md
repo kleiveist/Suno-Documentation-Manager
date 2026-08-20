@@ -3,6 +3,17 @@
 <!-- AUTO-GENERATED:backlink END -->
 # Changelog
 
+## 2026-08-20
+
+- Raised the current Suno workflow to `1.9`, document templates to `1.10`, evidence-manifest schema to `7`, and Markdown/PDF certificate format to `6.0`; existing finalized and archived bytes remain unchanged.
+- Added an optional post-commit automatic timestamp phase fixed to the exact SHA-256 of finalized `EVIDENCE_MANIFEST.json`. RFC-3161 `VERIFIED` now requires a matching SHA-256 message imprint, fresh request/response nonce, returned policy OID and requested-policy match when configured, CMS signature, a critical sole `id-kp-timeStamping` EKU, signer validity at `genTime`, and a chain to explicitly configured TSA trust anchors. Provider failure never rolls back the phase-one certificate.
+- Kept manual/legacy timestamp attachments as explicit hash-comparison evidence and initial OpenTimestamps proofs as `ATTACHED`; neither path is promoted to RFC-3161 cryptographic verification. Sidecar reload now derives positive status only from the exact registered/published bytes, immutable snapshot binding, anchor, provider metadata, and the complete current verification predicate.
+- Vendored and narrowly hardened `sigstore-tsa` 0.10.0 from `prefix-dev/sigstore-rust` commit `2501a347c5c858bb91feb96f40f8eb67f06d6418` for declared-algorithm CMS verification, RSA PKCS#1/RSA-PSS support, and strict timestamping EKU checks.
+- Changed new German/English certificates and timestamp addendum PDFs to deterministic PDF/A-2b with XMP identification, a CMYK FOGRA39 output intent, and the complete DejaVu 2.37 Sans/Mono regular and bold font programs embedded under the DejaVu Fonts License. Manifest schema 7 records the archive profile, font names, font hashes, version, license, and output intent.
+- Replaced Suno Generation Text Field multi-selection with exactly one `STRUCTURE_ONLY`, `VOCAL_LYRICS_ONLY`, `MIXED`, `EMPTY`, or `OTHER` value and replaced Boolean Vocal Intent with independent `VOCAL`, `INSTRUMENTAL`, or `UNSPECIFIED` intent. Vocal lyrics plus structure instructions are `MIXED`; actual audio never changes intent.
+- Required every AI-generated or AI-assisted artwork to record Artwork Disclosure as explicit `YES` or `NO`; `YES` requires disclosure text and verified local lineage, while `NO` is retained as deliberate non-application.
+- Added informational `BYTE-IDENTICAL / SHA-256 MATCH` reporting for equal human-edited/final artwork, clarified that import timestamps do not prove creation/editing chronology, and standardized only new artwork filenames to an ASCII-uppercase track stem plus `_AI_ORIGINAL`, `_AI_EDITED`, `_HUMAN_EDITED`, or `_FINAL`. Existing and finalized evidence is never renamed.
+
 ## 2026-08-17
 
 - Hardened external-timestamp sidecar format v1 around a durable stage → SQLite registration → live publication sequence. The complete stage and parent are synchronized before registration, and live-parent synchronization precedes a compensating database rollback. Startup publishes matching registered pending stages, removes abandoned unregistered stages, and rejects unexpected unregistered live sidecars instead of adopting user-confirmed metadata.
@@ -11,7 +22,7 @@
 - Completed ATP-0016: all user Tests 01–18 passed their recorded automated or manual expectations, including the 120-dpi A–L PDF review and an independently reproduced retained portable-track review. No legal assessment or external timestamp-authority trust/qualification validation is claimed.
 
 - Raised the Suno workflow to `1.7`, document templates to `1.8`, SQLite schema to `5`, evidence-manifest schema to `5`, and Markdown/PDF certificate format to `5.0`.
-- Separated instrumental status, actual vocal lyrics, and Suno lyrics/structure-field content. Legacy lyrics values remain readable but do not imply vocal content until explicitly classified in an editable track or revision.
+- Replaced the current Suno-field multi-classification with one canonical Content Classification (`STRUCTURE_ONLY`, `VOCAL_LYRICS_ONLY`, `MIXED`, `EMPTY`, or `OTHER`) and made Vocal Intent an independent explicit `VOCAL`/`INSTRUMENTAL`/`UNSPECIFIED` value. Legacy arrays remain readable and migrate only on an explicit upgrade/revision when unambiguous; neither intent nor final-audio outcome is inferred or cross-blocked.
 - Kept historical `sunoPlanAtCreation` data in a separate legacy field; it never populates the new plan-at-generation fact, which remains `NOT DOCUMENTED` until explicitly confirmed.
 - Expanded Final Suno Generation into separate date, Suno ID, project URL, model, plan-at-generation, metadata-origin, download/export, and release/export hash-comparison facts.
 - Kept subscription coverage as a technical date-interval comparison and required document title, provider/source, and retrieval date for commercial Terms evidence; optional context remains factual and offline.

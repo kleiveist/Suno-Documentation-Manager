@@ -76,10 +76,10 @@ Accept disclosure generation when applicable artwork produces a separate visible
 | 5 | `REQ-ART-002` | Repeat TD-02 from identical input and settings. | Output bytes or the documented deterministic pixel representation match according to the implementation contract. | Two renders from identical 640×640 pixels and custom text produced identical raw output; changed pixels were asserted to remain in the fixed bottom-right region. | PASS | Rust `disclosure_renderer_is_deterministic_and_bottom_right_only` |
 | 6 | `REQ-ART-002` | Generate TD-03. | The supported custom text appears at the fixed bottom-right placement and lineage metadata records the exact normalized text. | Not run | NOT RUN | — |
 | 7 | `REQ-ART-002` | Review `AI_USAGE.md` and `artwork_process.md`. | Both identify service, AI base image, human changes, policy, applied result, text, and final relative output. | Not run | NOT RUN | — |
-| 8 | `REQ-ART-002` | Set policy to `Decide per artwork`. | The track requires an explicit decision; no automatic claim or silent processing occurs. | Not run | NOT RUN | — |
-| 9 | `REQ-ART-002` | Set policy to `No automatic visible disclosure`. | The choice and result are documented; the app does not falsely report that disclosure was applied. | Not run | NOT RUN | — |
+| 8 | `REQ-ART-002` | Set policy to `Decide per artwork`. | The track requires an explicit `YES`/`NO` decision; `YES` requires text and verified generated lineage, while `NO` is rendered as deliberate non-application. | Source-level workflow tests cover the decision and artifact branches. | PASS | Rust workflow disclosure tests; Vitest `requires a verified generated disclosure artifact for AI artwork` |
+| 9 | `REQ-ART-002` | Set policy to `No automatic visible disclosure`. | An explicit `YES`/`NO` decision is still required; the app does not falsely report that disclosure was applied when `NO` is chosen. | Frontend evaluation requires the decision under policy `none` and accepts explicit `NO`. | PASS | Vitest `requires the YES/NO artwork decision under the none policy and accepts deliberate NO` |
 | 10 | `REQ-ART-002` | Use TD-04. | AI disclosure requirements are excluded; the AI Transparency step accepts N/A only with a saved reason, and the human-only original is not processed automatically. | Not run | NOT RUN | — |
-| 11 | `REQ-ART-002` | Use TD-05 under the default `Always` policy. | AI Transparency is deactivated, the disclosure generator is unavailable, and a verified final Suno JPG/PNG does not need to match a generated disclosure image. | Native condition and disclosure gating returned false for the three-negative branch; the frontend hid disclosure controls and removed all AI Transparency missing items. | PASS | Rust `three_negative_content_checks_disable_ai_transparency`; Vitest `deactivates AI Transparency after three explicit No answers` |
+| 11 | `REQ-ART-002` | Use TD-05 under the default `Always` policy. | The content-note branches close, but the Artwork Disclosure decision stays visible. Explicit `NO` accepts a verified final JPG/PNG; `YES` requires the generated image and exact final SHA-256 match. | Native and frontend checks keep the decision mandatory after three negative content answers and preserve the separate Audio assessment. | PASS | Rust `three_negative_artwork_checks_do_not_disable_the_audio_ai_step`; Vitest `requires an explicit artwork disclosure decision even after three negative content checks` |
 
 ## Automated checks
 
@@ -88,7 +88,7 @@ cd src-tauri
 cargo test artwork_disclosure_preserves_original_and_creates_traceable_copy
 cargo test disclosure_renderer_is_deterministic_and_bottom_right_only
 cargo test end_to_end_documentation_workflow_creates_portable_certificate
-cargo test three_negative_content_checks_disable_ai_transparency
+cargo test three_negative_artwork_checks_do_not_disable_the_audio_ai_step
 ```
 
 Expected Rust evidence is `tests::artwork_disclosure_preserves_original`. Attach pixel/digest comparison, offline processing, branch, and document-output results when executed.

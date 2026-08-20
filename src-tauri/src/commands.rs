@@ -10,8 +10,8 @@ use crate::model::{
     TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
-use std::sync::{Arc, Mutex, MutexGuard};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{ipc::Channel, State};
 
 #[derive(Default)]
@@ -59,10 +59,15 @@ pub fn open_workspace(state: State<'_, AppState>) -> Result<Option<WorkspaceSumm
 }
 
 #[tauri::command]
-pub fn open_workspace_by_path(state: State<'_, AppState>, path: String) -> Result<WorkspaceSummary> {
+pub fn open_workspace_by_path(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<WorkspaceSummary> {
     let path = path.trim();
     if path.is_empty() {
-        return Err(AppError::InvalidWorkspace("No workspace path was provided.".to_string()));
+        return Err(AppError::InvalidWorkspace(
+            "No workspace path was provided.".to_string(),
+        ));
     }
     let app = WorkspaceApp::open(&PathBuf::from(path), false)?;
     let summary = app.summary()?;

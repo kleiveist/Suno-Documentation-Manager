@@ -5,7 +5,7 @@ use crate::model::{
     AudioScreeningState, AudioScreeningStatus, BlockingDeviation, CertificateLanguage,
     CertificateRenderOptions, DocumentationAnswer, EvidenceItem, EvidenceMetadata,
     EvidenceProvenance, EvidenceRole, FactOrigin, Profile, StepState, StepStatus,
-    SunoLyricsContentSource, SunoLyricsContentType, TrackFields, TrackRecord,
+    SunoContentClassification, SunoLyricsContentSource, TrackFields, TrackRecord, VocalIntent,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
@@ -26,7 +26,8 @@ pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
 pub const PDF_FILE_EN: &str = PDF_FILE;
 pub const PDF_FILE_DE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "5.2";
+pub const CERTIFICATE_FORMAT_VERSION: &str = "6.0";
+pub const EVIDENCE_MANIFEST_SCHEMA_VERSION: u32 = 7;
 
 /// Return a certificate label in the configured output language. The
 /// compatibility bilingual mode is used only for the Markdown presentation;
@@ -176,6 +177,9 @@ fn german_certificate_paragraph(english: &str) -> String {
         "The application records the external timestamp evidence and its referenced hash. It does not determine any legal qualification of the timestamp." => {
             "Die Anwendung dokumentiert den externen Zeitstempelnachweis und seinen referenzierten Hash. Sie trifft keine Aussage über eine rechtliche Qualifizierung des Zeitstempels."
         }
+        crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE => {
+            "Import-Zeitstempel dokumentieren nur den Import in SunoDM und nicht die tatsächliche Erstellungs- oder Bearbeitungsreihenfolge der Artwork-Dateien."
+        }
         _ => return german_certificate_label(english),
     };
     translated.to_owned()
@@ -313,6 +317,10 @@ fn german_certificate_label(english: &str) -> String {
         ),
         ("Evidence-derived metadata", "Aus Evidenzmetadaten"),
         ("User-confirmed fact", "Vom Nutzer bestätigte Angabe"),
+        (
+            "Classification-derived presentation",
+            "Aus der Klassifizierung abgeleitete Darstellung",
+        ),
         ("System verification", "Systemprüfung"),
         ("System value", "Systemwert"),
         (
@@ -554,7 +562,15 @@ fn german_certificate_label(english: &str) -> String {
         ("Trademark/logo note", "Anmerkung zu Marke/Logo"),
         ("Trademark/logo", "Marke/Logo"),
         ("Artwork disclosure applied", "Artwork-Hinweis angewendet"),
+        (
+            "Artwork disclosure deliberately not applied",
+            "Artwork-Hinweis bewusst nicht angewendet",
+        ),
         ("Artwork disclosure text", "Artwork-Hinweistext"),
+        (
+            "Human-edited/final artwork comparison",
+            "Vergleich von menschlich bearbeitetem und finalem Artwork",
+        ),
         ("Subscription evidence", "Abo-Evidence"),
         ("Terms document", "Dokument zu Nutzungsbedingungen"),
         ("Evidence ID", "Evidence-ID"),
@@ -1097,11 +1113,17 @@ fn generate_impl(
         .collect::<Result<Vec<_>>>()?;
     let automation = crate::workflow::automation_summary(track, evidence);
     let byte_identical_pairs = crate::workflow::byte_identical_pairs(evidence);
+    let human_edited_final_artwork_sha256_match =
+        crate::workflow::human_edited_final_artwork_sha256_match(evidence);
+    let human_edited_final_artwork_status =
+        crate::workflow::human_edited_final_artwork_status(evidence);
     let automatic_relationships = automatic_role_relationships(&evidence_values);
     let automatic_global_relationships =
         automatic_global_track_relationships(&track.id, &evidence_values);
+    let semantic_fields = track.fields.normalized_conditionals();
+    let pdf_archive = certificate_pdf::certificate_pdf_archive_metadata();
     let manifest = json!({
-        "schema_version": 6,
+        "schema_version": EVIDENCE_MANIFEST_SCHEMA_VERSION,
         "track": {
             "id": track.id,
             "title": track.fields.title,
@@ -1115,22 +1137,23 @@ fn generate_impl(
             "suno_profile_name": profile.suno_profile_name,
             "suno_handle": profile.suno_handle,
         },
-        "documented_facts": track.fields,
+        "documented_facts": &semantic_fields,
         "semantic_snapshot": {
             "suno_lyrics_structure": {
-                "instrumental_track": recorded_bool(track.fields.instrumental_track),
-                "vocal_lyrics_present": recorded_bool(track.fields.vocal_lyrics_present),
-                "suno_lyrics_field_content": recorded_bool(track.fields.suno_lyrics_field_content),
-                "content_types": suno_content_types(&track.fields),
-                "structure_instructions_present": structure_instructions_present(&track.fields),
-                "content_source": suno_content_source(&track.fields),
-                "exact_field_text": match track.fields.suno_lyrics_field_content {
-                    Some(true) => documented(&track.fields.suno_lyrics_field_text),
-                    Some(false) => "N/A",
+                "suno_instrumental_mode_selected": recorded_bool(semantic_fields.instrumental_track),
+                "content_classification": content_classification(&semantic_fields),
+                "vocal_intent": suno_vocal_intent(&semantic_fields),
+                "final_audio_contains_vocals": final_audio_contains_vocals(&semantic_fields),
+                "generation_text_field_used": generation_text_field_used(&semantic_fields),
+                "structure_instructions_present": structure_instructions_present(&semantic_fields),
+                "content_source": suno_content_source(&semantic_fields),
+                "exact_field_text": match semantic_fields.suno_content_classification {
+                    Some(SunoContentClassification::Empty) => "N/A",
+                    Some(_) => documented(&semantic_fields.suno_lyrics_field_text),
                     None => "NOT DOCUMENTED",
                 },
-                "legacy_data_classification": if track.fields.lyrics_source.trim().is_empty()
-                    && track.fields.lyrics_text.trim().is_empty()
+                "legacy_data_classification": if semantic_fields.lyrics_source.trim().is_empty()
+                    && semantic_fields.lyrics_text.trim().is_empty()
                 {
                     "N/A"
                 } else {
@@ -1175,6 +1198,15 @@ fn generate_impl(
             "rendering": render_options,
             "pdf_languages": ["en", "de"],
             "pdf_files": [PDF_FILE, PDF_FILE_DE],
+            "pdf_archive": {
+                "archive_format": pdf_archive.archive_format,
+                "font_embedding": pdf_archive.font_embedding,
+                "embedded_fonts": pdf_archive.embedded_fonts,
+                "embedded_font_sha256": pdf_archive.embedded_font_sha256,
+                "font_version": pdf_archive.font_version,
+                "font_license": pdf_archive.font_license,
+                "output_intent": pdf_archive.output_intent,
+            },
             "status": "DOCUMENTATION COMPLETE",
             "status_meaning": "configured documentation requirements completed",
             "workflow_pass_meaning": "Configured documentation requirements for this step were satisfied.",
@@ -1196,6 +1228,9 @@ fn generate_impl(
             "evidence_derived_metadata": "Metadata read from or captured with a local evidence import",
             "system_verification": "Local structural, hash, consistency, and configured workflow checks"
         },
+        "limitations": {
+            "artwork_import_timestamps": crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE,
+        },
         "evidence_derived_metadata": {
             "suno_created_timestamp": automation.suno_created_timestamp,
             "suno_id": automation.suno_id,
@@ -1215,6 +1250,8 @@ fn generate_impl(
             },
             "suno_metadata_detected": automation.suno_metadata_detected,
             "release_identical_to_suno_export": automation.release_identical_to_suno_export,
+            "human_edited_final_artwork_sha256_match": human_edited_final_artwork_sha256_match,
+            "human_edited_final_artwork_status": human_edited_final_artwork_status,
             "byte_identical_pairs": &byte_identical_pairs,
             "automatic_role_relationships": &automatic_relationships,
             "automatic_global_track_relationships": &automatic_global_relationships,
@@ -1310,7 +1347,7 @@ fn generate_impl(
     let suno_field_md = suno_field_markdown(&track.fields);
     let human_contribution_md = human_contribution_markdown(&track.fields);
     let ai_audio_md = ai_audio_markdown(&track.fields);
-    let ai_artwork_md = ai_artwork_markdown(&track.fields);
+    let ai_artwork_md = ai_artwork_markdown(&track.fields, evidence);
     let audio_screening_md = audio_screening_markdown(&track.audio_screening);
     let revision_archives = if archived_revisions.is_empty() {
         "NONE RECORDED".to_owned()
@@ -1495,13 +1532,18 @@ pub fn verify(track_root: &Path) -> Result<()> {
         }
     }
     let manifest = contained_path(track_root, Path::new(MANIFEST_FILE), true)?;
+    let requires_pdfa_2b = certificate_format_requires_pdfa_2b(&manifest)?;
     for pdf_path in required_certificate_pdf_paths(&manifest, &hashes)? {
         let bytes = verified_pdfs.get(pdf_path).ok_or_else(|| {
             AppError::Validation(format!(
                 "Certificate PDF hash entry was not verified: {pdf_path}"
             ))
         })?;
-        certificate_pdf::validate_pdf_bytes(bytes)?;
+        if requires_pdfa_2b {
+            certificate_pdf::validate_pdfa_2b_bytes(bytes)?;
+        } else {
+            certificate_pdf::validate_pdf_bytes(bytes)?;
+        }
     }
     Ok(())
 }
@@ -1770,6 +1812,7 @@ fn verify_staged_set(track_root: &Path, stage: &Path) -> Result<()> {
         }
     }
     let manifest_path = certificate_stage.join("EVIDENCE_MANIFEST.json");
+    let requires_pdfa_2b = certificate_format_requires_pdfa_2b(&manifest_path)?;
     let required_pdfs = required_certificate_pdf_paths(&manifest_path, &hashes)?;
     if required_pdfs.is_empty() {
         return Err(AppError::Validation(
@@ -1782,7 +1825,11 @@ fn verify_staged_set(track_root: &Path, stage: &Path) -> Result<()> {
                 "Staged certificate PDF hash entry was not verified: {pdf_path}"
             ))
         })?;
-        certificate_pdf::validate_pdf_bytes(bytes)?;
+        if requires_pdfa_2b {
+            certificate_pdf::validate_pdfa_2b_bytes(bytes)?;
+        } else {
+            certificate_pdf::validate_pdf_bytes(bytes)?;
+        }
     }
     Ok(())
 }
@@ -2020,9 +2067,8 @@ fn human_contribution_markdown(fields: &TrackFields) -> String {
 fn suno_field_markdown(fields: &TrackFields) -> String {
     let fields = fields.normalized_conditionals();
     let mut output = format!(
-        "## F. Suno Generation Text Field\n\n- Suno Instrumental Mode Selected [User-confirmed fact]: {}\n- Generation Text Field Available [User-confirmed fact]: {}\n- Generation Text Field Used [User-confirmed fact]: {}\n- Content Classification [User-confirmed fact]: {}\n- Vocal Lyrics Present [User-confirmed fact]: {}\n- Structure Instructions Present [User-confirmed fact]: {}\n- Vocal Intent [User-confirmed fact]: {}\n- Final Audio Contains Vocals [User-confirmed fact]: {}\n",
+        "## F. Suno Generation Text Field\n\n- Suno Instrumental Mode Selected [User-confirmed fact]: {}\n- Generation Text Field Used [User-confirmed fact]: {}\n- Content Classification [User-confirmed fact]: {}\n- Vocal Lyrics Present [Classification-derived presentation]: {}\n- Structure Instructions Present [Classification-derived presentation]: {}\n- Vocal Intent [User-confirmed fact]: {}\n- Final Audio Contains Vocals [User-confirmed fact]: {}\n",
         recorded_bool(fields.instrumental_track),
-        recorded_bool(fields.suno_lyrics_field_content),
         generation_text_field_used(&fields),
         content_classification(&fields),
         generation_field_vocal_lyrics_present(&fields),
@@ -2031,9 +2077,9 @@ fn suno_field_markdown(fields: &TrackFields) -> String {
         final_audio_contains_vocals(&fields),
     );
     output.push_str("\n### Exact Generation Text Field Content\n\n");
-    output.push_str(match fields.suno_lyrics_field_content {
-        Some(true) => documented(&fields.suno_lyrics_field_text),
-        Some(false) => "N/A",
+    output.push_str(match fields.suno_content_classification {
+        Some(SunoContentClassification::Empty) => "N/A",
+        Some(_) => documented(&fields.suno_lyrics_field_text),
         None => "NOT DOCUMENTED",
     });
     output.push_str("\n\n");
@@ -2099,7 +2145,7 @@ fn ai_audio_markdown(fields: &TrackFields) -> String {
     )
 }
 
-fn ai_artwork_markdown(fields: &TrackFields) -> String {
+fn ai_artwork_markdown(fields: &TrackFields, evidence: &[EvidenceItem]) -> String {
     let fields = fields.normalized_conditionals();
     let artwork_present = !matches!(fields.artwork_origin.as_str(), "" | "none");
     let ai_artwork = matches!(
@@ -2107,7 +2153,7 @@ fn ai_artwork_markdown(fields: &TrackFields) -> String {
         "ai_generated" | "ai_assisted"
     );
     format!(
-        "- Artwork origin [User-confirmed fact]: {}\n- AI image service [User-confirmed fact]: {}\n- Human artwork process [User-confirmed fact]: {}\n- Human artwork modifications [User-confirmed fact]: {}\n- Depicts real person [User-confirmed fact]: {}\n- Real-person note [User-confirmed fact]: {}\n- Depicts real event [User-confirmed fact]: {}\n- Real-event note [User-confirmed fact]: {}\n- Trademark/logo [User-confirmed fact]: {}\n- Trademark/logo note [User-confirmed fact]: {}\n- Artwork disclosure applied [User-confirmed fact]: {}\n- Artwork disclosure text [User-confirmed fact]: {}\n",
+        "- Artwork origin [User-confirmed fact]: {}\n- AI image service [User-confirmed fact]: {}\n- Human artwork process [User-confirmed fact]: {}\n- Human artwork modifications [User-confirmed fact]: {}\n- Depicts real person [User-confirmed fact]: {}\n- Real-person note [User-confirmed fact]: {}\n- Depicts real event [User-confirmed fact]: {}\n- Real-event note [User-confirmed fact]: {}\n- Trademark/logo [User-confirmed fact]: {}\n- Trademark/logo note [User-confirmed fact]: {}\n- Artwork disclosure applied [User-confirmed fact]: {}\n- Artwork disclosure deliberately not applied [User-confirmed fact]: {}\n- Artwork disclosure text [User-confirmed fact]: {}\n- Human-edited/final artwork comparison [System verification]: {}\n\n{}\n",
         documented(&fields.artwork_origin),
         if ai_artwork {
             documented(&fields.ai_image_service)
@@ -2170,63 +2216,52 @@ fn ai_artwork_markdown(fields: &TrackFields) -> String {
         } else {
             "N/A"
         },
+        match (ai_artwork, fields.disclosure_applied) {
+            (true, Some(false)) => "YES",
+            (true, Some(true)) | (false, _) => "N/A",
+            (true, None) => "NOT DOCUMENTED",
+        },
         if ai_artwork && fields.disclosure_applied == Some(true) {
             documented(&fields.disclosure_text)
         } else {
             "N/A"
         },
+        crate::workflow::human_edited_final_artwork_status(evidence),
+        crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE,
     )
 }
 
-fn suno_content_types(fields: &TrackFields) -> String {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A".into(),
-        None => "NOT DOCUMENTED".into(),
-        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED".into(),
-        Some(true) => fields
-            .suno_lyrics_content_types
-            .iter()
-            .map(|value| match value {
-                SunoLyricsContentType::VocalLyrics => "Vocal lyrics",
-                SunoLyricsContentType::StructureInstructions => "Structure instructions",
-                SunoLyricsContentType::SoundInstructions => "Sound instructions",
-                SunoLyricsContentType::ArrangementInstructions => "Arrangement instructions",
-                SunoLyricsContentType::Mixed => "Mixed",
-                SunoLyricsContentType::Other => "Other",
-            })
-            .collect::<Vec<_>>()
-            .join(" | "),
-    }
-}
-
 fn generation_text_field_used(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(true) if fields.suno_lyrics_field_text.trim().is_empty() => "NOT DOCUMENTED",
-        Some(true) => "YES",
-        Some(false) => "NO",
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::Empty) => "NO",
+        Some(_) => "YES",
         None => "NOT DOCUMENTED",
     }
 }
 
-fn content_classification(fields: &TrackFields) -> String {
-    suno_content_types(fields)
+fn content_classification(fields: &TrackFields) -> &'static str {
+    fields
+        .suno_content_classification
+        .map(SunoContentClassification::as_str)
+        .unwrap_or("NOT DOCUMENTED")
 }
 
 fn generation_field_vocal_lyrics_present(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A",
-        None => "NOT DOCUMENTED",
-        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED",
-        Some(true) => yes_no(
-            fields
-                .suno_lyrics_content_types
-                .contains(&SunoLyricsContentType::VocalLyrics),
-        ),
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::VocalLyricsOnly | SunoContentClassification::Mixed) => {
+            "YES"
+        }
+        Some(SunoContentClassification::StructureOnly) => "NO",
+        Some(SunoContentClassification::Empty) => "N/A",
+        Some(SunoContentClassification::Other) | None => "NOT DOCUMENTED",
     }
 }
 
 fn suno_vocal_intent(fields: &TrackFields) -> &'static str {
-    generation_field_vocal_lyrics_present(fields)
+    fields
+        .vocal_intent
+        .map(VocalIntent::as_str)
+        .unwrap_or("NOT DOCUMENTED")
 }
 
 fn final_audio_contains_vocals(fields: &TrackFields) -> &'static str {
@@ -2234,23 +2269,19 @@ fn final_audio_contains_vocals(fields: &TrackFields) -> &'static str {
 }
 
 fn structure_instructions_present(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A",
-        None => "NOT DOCUMENTED",
-        Some(true) if fields.suno_lyrics_content_types.is_empty() => "NOT DOCUMENTED",
-        Some(true) => yes_no(
-            fields
-                .suno_lyrics_content_types
-                .contains(&SunoLyricsContentType::StructureInstructions),
-        ),
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::StructureOnly | SunoContentClassification::Mixed) => "YES",
+        Some(SunoContentClassification::VocalLyricsOnly) => "NO",
+        Some(SunoContentClassification::Empty) => "N/A",
+        Some(SunoContentClassification::Other) | None => "NOT DOCUMENTED",
     }
 }
 
 fn suno_content_source(fields: &TrackFields) -> &'static str {
-    match fields.suno_lyrics_field_content {
-        Some(false) => "N/A",
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::Empty) => "N/A",
         None => "NOT DOCUMENTED",
-        Some(true) => match fields.suno_lyrics_content_source {
+        Some(_) => match fields.suno_lyrics_content_source {
             Some(SunoLyricsContentSource::Human) => "human",
             Some(SunoLyricsContentSource::Ai) => "AI",
             Some(SunoLyricsContentSource::Mixed) => "mixed",
@@ -2393,6 +2424,16 @@ fn certificate_format_requires_pdf(
     Ok(!required_certificate_pdf_paths(manifest_path, hashes)?.is_empty())
 }
 
+fn certificate_format_requires_pdfa_2b(manifest_path: &Path) -> Result<bool> {
+    let bytes = fs::read(manifest_path).map_err(|error| AppError::io(manifest_path, error))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
+    Ok(manifest
+        .get("certificate")
+        .and_then(|certificate| certificate.get("format_version"))
+        .and_then(serde_json::Value::as_str)
+        == Some(CERTIFICATE_FORMAT_VERSION))
+}
+
 fn required_certificate_pdf_paths(
     manifest_path: &Path,
     hashes: &BTreeMap<String, String>,
@@ -2405,6 +2446,16 @@ fn required_certificate_pdf_paths(
         .and_then(serde_json::Value::as_str);
     match format_version {
         Some(CERTIFICATE_FORMAT_VERSION) => {
+            if !hashes.contains_key(PDF_FILE) || !hashes.contains_key(PDF_FILE_DE) {
+                return Err(AppError::Validation(
+                    format!(
+                        "Certificate format {CERTIFICATE_FORMAT_VERSION} requires German and English PDF hash entries."
+                    ),
+                ));
+            }
+            Ok(&[PDF_FILE, PDF_FILE_DE])
+        }
+        Some("5.2") => {
             if !hashes.contains_key(PDF_FILE) || !hashes.contains_key(PDF_FILE_DE) {
                 return Err(AppError::Validation(
                     "Certificate format 5.2 requires German and English PDF hash entries.".into(),
@@ -2611,12 +2662,38 @@ mod tests {
     }
 
     #[test]
+    fn artwork_markdown_records_explicit_no_hash_match_and_timestamp_scope() {
+        let mut fields = TrackFields::default();
+        fields.artwork_origin = "ai_assisted".into();
+        fields.disclosure_applied = Some(false);
+        let human_edited = relationship_evidence("human-edited", EvidenceRole::HumanEditedArtwork);
+        let final_artwork = relationship_evidence("final", EvidenceRole::FinalArtwork);
+
+        let english = ai_artwork_markdown(&fields, &[human_edited, final_artwork]);
+        assert!(english
+            .contains("Artwork disclosure deliberately not applied [User-confirmed fact]: YES"));
+        assert!(english.contains("BYTE-IDENTICAL / SHA-256 MATCH"));
+        assert!(english.contains(crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE));
+
+        let german = localized_markdown_certificate(
+            &english,
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: false,
+            },
+        );
+        assert!(german.contains("Artwork-Hinweis bewusst nicht angewendet"));
+        assert!(german.contains("BYTE-IDENTICAL / SHA-256 MATCH"));
+        assert!(german.contains("Import-Zeitstempel dokumentieren nur den Import in SunoDM"));
+    }
+
+    #[test]
     fn suno_field_markdown_is_separate_from_human_contribution_for_ai_and_mixed_sources() {
         for source in [SunoLyricsContentSource::Ai, SunoLyricsContentSource::Mixed] {
             let mut fields = TrackFields::default();
             fields.human_editing_performed = Some(false);
-            fields.suno_lyrics_field_content = Some(true);
-            fields.suno_lyrics_content_types = vec![SunoLyricsContentType::StructureInstructions];
+            fields.suno_content_classification = Some(SunoContentClassification::StructureOnly);
+            fields.vocal_intent = Some(VocalIntent::Instrumental);
             fields.suno_lyrics_content_source = Some(source);
             fields.suno_lyrics_field_text = "[AI-or-mixed structure instruction]".into();
 
@@ -2627,7 +2704,7 @@ mod tests {
             assert!(!human.contains("[AI-or-mixed structure instruction]"));
             assert!(suno_field.starts_with("## F. Suno Generation Text Field\n"));
             assert!(suno_field.contains("- Generation Text Field Used [User-confirmed fact]: YES"));
-            assert!(suno_field.contains("- Vocal Intent [User-confirmed fact]: NO"));
+            assert!(suno_field.contains("- Vocal Intent [User-confirmed fact]: INSTRUMENTAL"));
             assert!(suno_field.contains("[AI-or-mixed structure instruction]"));
             assert!(!suno_field.starts_with("## E."));
         }
@@ -2638,15 +2715,167 @@ mod tests {
         let mut fields = TrackFields::default();
         fields.instrumental_track = Some(false);
         fields.vocal_lyrics_present = Some(true);
-        fields.suno_lyrics_field_content = Some(true);
-        fields.suno_lyrics_content_types = vec![SunoLyricsContentType::StructureInstructions];
+        fields.suno_content_classification = Some(SunoContentClassification::StructureOnly);
+        fields.vocal_intent = Some(VocalIntent::Instrumental);
         fields.suno_lyrics_content_source = Some(SunoLyricsContentSource::Human);
         fields.suno_lyrics_field_text = "[Intro]\n[Drop]".into();
 
         let markdown = suno_field_markdown(&fields);
-        assert!(markdown.contains("- Vocal Lyrics Present [User-confirmed fact]: NO"));
-        assert!(markdown.contains("- Structure Instructions Present [User-confirmed fact]: YES"));
+        assert!(
+            markdown.contains("- Vocal Lyrics Present [Classification-derived presentation]: NO")
+        );
+        assert!(markdown.contains(
+            "- Structure Instructions Present [Classification-derived presentation]: YES"
+        ));
+        assert!(markdown.contains("- Vocal Intent [User-confirmed fact]: INSTRUMENTAL"));
         assert!(markdown.contains("- Final Audio Contains Vocals [User-confirmed fact]: YES"));
+    }
+
+    fn generate_current_pdfa_fixture(track_root: &Path) -> serde_json::Value {
+        let hash_manifest = track_root.join(HASH_FILE);
+        fs::create_dir_all(hash_manifest.parent().expect("hash manifest parent"))
+            .expect("create hash manifest parent");
+        fs::write(
+            &hash_manifest,
+            format!("{DIGEST}  02_SUNO/semantic-fixture.txt\n"),
+        )
+        .expect("write hash manifest fixture");
+
+        let config = crate::workflow::config().expect("workflow config");
+        let steps = config
+            .steps
+            .iter()
+            .map(|step| StepState {
+                id: step.id.clone(),
+                status: StepStatus::Pass,
+                na_reason: None,
+                updated_at: Some("2026-08-20T10:00:00Z".into()),
+            })
+            .collect::<Vec<_>>();
+        let profile = Profile {
+            artist_name: "Semantic Fixture Artist".into(),
+            ..Profile::default()
+        };
+        let track = TrackRecord {
+            id: "semantic-manifest-fixture".into(),
+            relative_path: "semantic-manifest-fixture".into(),
+            status: crate::model::TrackStatus::Finalized,
+            workflow_id: config.id,
+            workflow_version: config.version,
+            profile_snapshot: profile.clone(),
+            library: Default::default(),
+            field_origins: Default::default(),
+            fields: TrackFields {
+                title: "Semantic Manifest Fixture".into(),
+                vocal_lyrics_present: Some(false),
+                vocal_intent: Some(VocalIntent::Vocal),
+                suno_content_classification: Some(SunoContentClassification::Mixed),
+                suno_lyrics_content_source: Some(SunoLyricsContentSource::Mixed),
+                suno_lyrics_field_text: "[Verse]\nSing this line\n[Drop]".into(),
+                ..TrackFields::default()
+            },
+            audio_screening: Default::default(),
+            documents: Default::default(),
+            integrity: Default::default(),
+            certificate: Default::default(),
+            created_at: "2026-08-20T09:00:00Z".into(),
+            updated_at: "2026-08-20T10:00:00Z".into(),
+            legacy: false,
+        };
+
+        generate(
+            track_root,
+            &track,
+            &profile,
+            &steps,
+            &[],
+            &[],
+            "semantic-manifest-certificate",
+            "2026-08-20T10:00:00Z",
+            "semantic-manifest-transaction",
+            CertificateRenderOptions::default(),
+        )
+        .expect("generate semantic manifest fixture");
+
+        serde_json::from_slice(
+            &fs::read(track_root.join(MANIFEST_FILE)).expect("read evidence manifest"),
+        )
+        .expect("parse evidence manifest")
+    }
+
+    #[test]
+    fn manifest_semantic_snapshot_keeps_canonical_suno_tokens_and_audio_outcome_independent() {
+        let workspace = tempfile::tempdir().expect("temporary track root");
+        let manifest = generate_current_pdfa_fixture(workspace.path());
+        let semantic = &manifest["semantic_snapshot"]["suno_lyrics_structure"];
+
+        assert_eq!(semantic["content_classification"], "MIXED");
+        assert_eq!(semantic["vocal_intent"], "VOCAL");
+        assert_eq!(semantic["final_audio_contains_vocals"], "NO");
+    }
+
+    #[test]
+    fn current_pdfa_certificate_rejects_missing_xmp_after_consistent_rehash() {
+        let workspace = tempfile::tempdir().expect("temporary track root");
+        let track_root = workspace.path();
+        let manifest = generate_current_pdfa_fixture(track_root);
+        assert_eq!(
+            manifest["certificate"]["format_version"],
+            CERTIFICATE_FORMAT_VERSION
+        );
+        assert_eq!(
+            manifest["certificate"]["pdf_archive"]["archive_format"],
+            "PDF/A-2b"
+        );
+        verify(track_root).expect("current PDF/A-2b certificate set must verify");
+
+        let pdf_path = track_root.join(PDF_FILE);
+        let mut archive = lopdf::Document::load_mem(
+            &fs::read(&pdf_path).expect("read current English certificate PDF"),
+        )
+        .expect("parse current English certificate PDF");
+        let root_id = archive
+            .trailer
+            .get(b"Root")
+            .and_then(lopdf::Object::as_reference)
+            .expect("catalog reference");
+        archive
+            .get_dictionary_mut(root_id)
+            .expect("catalog")
+            .remove(b"Metadata");
+        let mut tampered_pdf = Vec::new();
+        archive
+            .save_to(&mut tampered_pdf)
+            .expect("serialize PDF without XMP");
+        fs::write(&pdf_path, &tampered_pdf).expect("replace PDF with XMP-free fixture");
+
+        let certificate_hash_path = track_root.join(CERTIFICATE_HASH_FILE);
+        let current_hashes =
+            fs::read_to_string(&certificate_hash_path).expect("read certificate hash list");
+        let tampered_sha256 = sha256_bytes(&tampered_pdf);
+        // Re-hash the modified PDF deliberately. Verification must therefore
+        // fail on the current-format PDF/A contract, not on the ordinary byte hash.
+        let rewritten_hashes = current_hashes
+            .lines()
+            .map(|line| {
+                if line.ends_with(&format!("  {PDF_FILE}")) {
+                    format!("{tampered_sha256}  {PDF_FILE}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&certificate_hash_path, rewritten_hashes)
+            .expect("rewrite consistent certificate hash list");
+
+        let error = verify(track_root)
+            .expect_err("current certificate without PDF/A XMP must fail after consistent rehash");
+        assert!(
+            error.to_string().contains("no XMP metadata"),
+            "unexpected verification error: {error}"
+        );
     }
 
     #[test]
@@ -2945,6 +3174,19 @@ mod tests {
         }
         fs::write(
             &manifest_path,
+            "{\"certificate\":{\"format_version\":\"5.2\"}}\n",
+        )
+        .expect("historical bilingual certificate manifest fixture");
+        let historical_bilingual_hashes = BTreeMap::from([
+            (PDF_FILE.into(), DIGEST.into()),
+            (PDF_FILE_DE.into(), DIGEST.into()),
+        ]);
+        assert!(
+            certificate_format_requires_pdf(&manifest_path, &historical_bilingual_hashes)
+                .expect("historical bilingual certificate format")
+        );
+        fs::write(
+            &manifest_path,
             format!(
                 "{{\"certificate\":{{\"format_version\":\"{CERTIFICATE_FORMAT_VERSION}\"}}}}\n"
             ),
@@ -2968,10 +3210,12 @@ mod tests {
         )
         .expect("create documentation fixture directory");
         fs::write(&main_hash_path, main_hashes).expect("write main hash manifest fixture");
-        let manifest = format!(
-            "{{\"certificate\":{{\"format_version\":\"{CERTIFICATE_FORMAT_VERSION}\"}},\"fixture\":true}}\n"
-        )
-        .into_bytes();
+        // Publication rollback tests exercise file-transaction mechanics, not
+        // the archive renderer. Use the last historical dual-PDF format so the
+        // intentionally minimal parseable fixture is not misrepresented as
+        // current PDF/A-2b output.
+        let manifest =
+            b"{\"certificate\":{\"format_version\":\"5.2\"},\"fixture\":true}\n".to_vec();
         let certificate = b"# Fixture certificate\n".to_vec();
         let mut pdf_document = printpdf::PdfDocument::new("Fixture certificate");
         let pdf = pdf_document
@@ -2996,6 +3240,28 @@ mod tests {
         )
         .into_bytes();
         (manifest, certificate, pdf.clone(), pdf, certificate_hashes)
+    }
+
+    #[test]
+    fn historical_5_2_dual_non_pdfa_certificate_remains_verifiable() {
+        let workspace = tempfile::tempdir().expect("temporary track root");
+        let track_root = workspace.path();
+        let (manifest, certificate, pdf_en, pdf_de, certificate_hashes) =
+            publication_fixture(track_root);
+        fs::create_dir_all(track_root.join(CERTIFICATE_DIR))
+            .expect("create historical certificate directory");
+        fs::write(track_root.join(MANIFEST_FILE), manifest)
+            .expect("write historical evidence manifest");
+        fs::write(track_root.join(CERTIFICATE_FILE), certificate)
+            .expect("write historical Markdown certificate");
+        fs::write(track_root.join(PDF_FILE), pdf_en)
+            .expect("write historical English certificate PDF");
+        fs::write(track_root.join(PDF_FILE_DE), pdf_de)
+            .expect("write historical German certificate PDF");
+        fs::write(track_root.join(CERTIFICATE_HASH_FILE), certificate_hashes)
+            .expect("write historical certificate hash list");
+
+        verify(track_root).expect("historical 5.2 dual non-PDF/A certificate must verify");
     }
 
     fn assert_injected_publication_failure(failure: CertificatePublicationFailure) {

@@ -14,9 +14,11 @@ use crate::security::{
     portable_relative, sha256_file, validate_relative,
 };
 use chrono::Utc;
+use rustls_pki_types::CertificateDer;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use url::Url;
@@ -45,6 +47,7 @@ pub const SIGSTORE_PUBLIC_TSA_CERTCHAIN_ENDPOINT: &str =
     "https://timestamp.sigstore.dev/api/v1/timestamp/certchain";
 pub const OPEN_TIMESTAMPS_POOL_ENDPOINT: &str = "https://a.pool.opentimestamps.org/digest";
 const MAX_PROVIDER_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_TRUST_ANCHOR_BYTES: u64 = 5 * 1024 * 1024;
 // `RemoteCalendar.submit` returns a serialized `Timestamp`, not a complete
 // detached proof file. A usable OpenTimestamps `.ots` file wraps that response
 // with this official DetachedTimestampFile prefix, version and SHA-256 file
@@ -55,6 +58,8 @@ const OPEN_TIMESTAMPS_DETACHED_MAGIC: &[u8] = &[
 ];
 const OPEN_TIMESTAMPS_DETACHED_VERSION: u8 = 0x01;
 const OPEN_TIMESTAMPS_SHA256_FILE_HASH_OP: u8 = 0x08;
+pub const RFC3161_CRYPTOGRAPHIC_VERIFIER: &str =
+    "sunodm-rfc3161-v2/sigstore-tsa-0.10.0-rsa-pkcs1-pss-strict-eku";
 
 #[derive(Debug, Clone)]
 pub struct ProviderFailure {
@@ -162,6 +167,7 @@ trait TimestampProviderAdapter {
         settings: &TimestampSettings,
         secret: Option<&str>,
         digest: &str,
+        artifact_bytes: Option<&[u8]>,
         transport: &dyn TimestampHttpTransport,
     ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure>;
 }
@@ -189,7 +195,9 @@ fn provider_adapter(kind: TimestampProviderKind) -> Option<Box<dyn TimestampProv
             provider: "Sigstore Public TSA",
             endpoint: SIGSTORE_PUBLIC_TSA_ENDPOINT,
             adapter: "sigstore_public_tsa_rfc3161",
-            trust_root_available: true,
+            // A public cert-chain endpoint is not itself a pinned trust root.
+            // VERIFIED therefore still requires an explicit local CA file.
+            trust_root_available: false,
         })),
         TimestampProviderKind::OpenTimestamps => Some(Box::new(OpenTimestampsAdapter)),
         TimestampProviderKind::CustomRfc3161 => Some(Box::new(CustomRfc3161Adapter)),
@@ -222,15 +230,32 @@ pub fn settings_status(
         );
     }
     if settings.provider != TimestampProviderKind::CustomRfc3161 {
+        if matches!(
+            settings.provider,
+            TimestampProviderKind::FreeTsa | TimestampProviderKind::SigstorePublicTsa
+        ) && settings.custom.ca_certificate_path.trim().is_empty()
+        {
+            return (
+                ExternalTimestampStatus::VerificationConfigurationIncomplete,
+                "An explicit TSA CA trust-anchor file is required before RFC 3161 responses can be marked VERIFIED."
+                    .into(),
+            );
+        }
         return (
             ExternalTimestampStatus::Ready,
-            "Timestamp service is ready to attach external timestamp evidence.".into(),
+            "Timestamp service and explicit TSA trust anchor are ready.".into(),
         );
     }
     match validate_custom_settings(&settings.custom, secret_available) {
+        Ok(()) if settings.custom.ca_certificate_path.trim().is_empty() => (
+            ExternalTimestampStatus::VerificationConfigurationIncomplete,
+            "An explicit TSA CA trust-anchor file is required before RFC 3161 responses can be marked VERIFIED."
+                .into(),
+        ),
         Ok(()) => (
             ExternalTimestampStatus::Ready,
-            "Custom RFC 3161 timestamp service is configured.".into(),
+            "Custom RFC 3161 timestamp service and explicit TSA trust anchor are configured."
+                .into(),
         ),
         Err(failure) => (failure.status, failure.message),
     }
@@ -347,7 +372,7 @@ fn test_provider_with_transport(
             capabilities,
         };
     }
-    match request_timestamp_with_transport(settings, secret, &"00".repeat(32), transport) {
+    match request_timestamp_with_transport(settings, secret, &"00".repeat(32), None, transport) {
         Ok(response) => {
             let (status, message) =
                 if response.status == ExternalTimestampStatus::VerificationFailed {
@@ -385,18 +410,29 @@ fn test_provider_with_transport(
     }
 }
 
-pub fn request_timestamp(
+/// Request and cryptographically verify a timestamp for the exact finalized
+/// artifact bytes. The provider connection test uses the internal request path
+/// without artifact bytes, so it cannot be mistaken for a verified snapshot.
+pub fn request_timestamp_for_artifact(
     settings: &TimestampSettings,
     secret: Option<&str>,
     digest: &str,
+    artifact_bytes: &[u8],
 ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
-    request_timestamp_with_transport(settings, secret, digest, &UreqTimestampHttpTransport)
+    request_timestamp_with_transport(
+        settings,
+        secret,
+        digest,
+        Some(artifact_bytes),
+        &UreqTimestampHttpTransport,
+    )
 }
 
 fn request_timestamp_with_transport(
     settings: &TimestampSettings,
     secret: Option<&str>,
     digest: &str,
+    artifact_bytes: Option<&[u8]>,
     transport: &dyn TimestampHttpTransport,
 ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -414,7 +450,7 @@ fn request_timestamp_with_transport(
         status: ExternalTimestampStatus::Disabled,
         message: "External timestamp service is disabled.".into(),
     })?;
-    adapter.request(settings, secret, digest, transport)
+    adapter.request(settings, secret, digest, artifact_bytes, transport)
 }
 
 impl TimestampProviderAdapter for Rfc3161TimestampAdapter {
@@ -440,6 +476,7 @@ impl TimestampProviderAdapter for Rfc3161TimestampAdapter {
         settings: &TimestampSettings,
         secret: Option<&str>,
         digest: &str,
+        artifact_bytes: Option<&[u8]>,
         transport: &dyn TimestampHttpTransport,
     ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
         request_rfc3161(
@@ -450,6 +487,7 @@ impl TimestampProviderAdapter for Rfc3161TimestampAdapter {
             settings,
             secret,
             digest,
+            artifact_bytes,
             transport,
         )
     }
@@ -483,6 +521,7 @@ impl TimestampProviderAdapter for CustomRfc3161Adapter {
         settings: &TimestampSettings,
         secret: Option<&str>,
         digest: &str,
+        artifact_bytes: Option<&[u8]>,
         transport: &dyn TimestampHttpTransport,
     ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
         let provider = self.display_name(settings);
@@ -494,6 +533,7 @@ impl TimestampProviderAdapter for CustomRfc3161Adapter {
             settings,
             secret,
             digest,
+            artifact_bytes,
             transport,
         )
     }
@@ -522,6 +562,7 @@ impl TimestampProviderAdapter for OpenTimestampsAdapter {
         settings: &TimestampSettings,
         _secret: Option<&str>,
         digest: &str,
+        _artifact_bytes: Option<&[u8]>,
         transport: &dyn TimestampHttpTransport,
     ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
         let body = decode_sha256_hex(digest).map_err(|message| ProviderFailure {
@@ -609,6 +650,7 @@ fn request_rfc3161(
     settings: &TimestampSettings,
     secret: Option<&str>,
     digest: &str,
+    artifact_bytes: Option<&[u8]>,
     transport: &dyn TimestampHttpTransport,
 ) -> std::result::Result<ProviderTimestampResponse, ProviderFailure> {
     let policy_oid = custom
@@ -626,7 +668,7 @@ fn request_rfc3161(
     let response = transport.post(HttpRequest {
         url: endpoint.into(),
         headers,
-        body: request,
+        body: request.bytes,
         timeout_seconds: configured_timeout_seconds(settings),
     })?;
     ensure_successful_provider_http_response(&response)?;
@@ -636,27 +678,36 @@ fn request_rfc3161(
             message: "Timestamp provider returned an empty response.".into(),
         });
     }
-    let parsed = parse_rfc3161_response(&response.body, digest);
-    let structure_and_digest_match = parsed.digest_match == Some(true);
-    // The local parser validates the RFC 3161 container and message imprint,
-    // but does not yet implement CMS signature/trust-chain verification. Do
-    // not overstate that limited check as a cryptographically verified TSA.
-    let status = if structure_and_digest_match {
-        ExternalTimestampStatus::Attached
+    let parsed = parse_rfc3161_response(&response.body, digest, &request.nonce_hex, policy_oid);
+    let response_context_matches = parsed.error.is_none()
+        && parsed.digest_match == Some(true)
+        && parsed.nonce_match == Some(true)
+        && parsed.policy_match != Some(false);
+    let verification = if response_context_matches {
+        verify_rfc3161_cryptography(&response.body, digest, artifact_bytes, settings)
     } else {
-        ExternalTimestampStatus::VerificationFailed
-    };
-    let message = if structure_and_digest_match {
-        "RFC 3161 response structure and SHA-256 message imprint match the requested anchor; CMS signature and trust-chain verification are not asserted."
-            .into()
-    } else {
-        format!(
-            "Timestamp response was archived, but technical digest verification failed: {}",
-            parsed.error.as_deref().unwrap_or(
+        let reason = parsed.error.as_deref().unwrap_or_else(|| {
+            if parsed.digest_match != Some(true) {
                 "the returned message imprint does not match the requested SHA-256 digest"
-            )
-        )
+            } else if parsed.nonce_match != Some(true) {
+                "the returned nonce does not match the request nonce"
+            } else {
+                "the returned policy OID does not match the requested policy"
+            }
+        });
+        Rfc3161CryptographicVerification {
+            status: ExternalTimestampStatus::VerificationFailed,
+            signature_verified: None,
+            trust_chain_verified: None,
+            cryptographic_verifier: String::new(),
+            trust_anchor_sha256: Vec::new(),
+            message: format!(
+                "Timestamp response was archived, but RFC 3161 response verification failed: {reason}."
+            ),
+        }
     };
+    let status = verification.status;
+    let message = verification.message;
     Ok(ProviderTimestampResponse {
         provider: provider.into(),
         evidence_extension: "tsr".into(),
@@ -674,11 +725,18 @@ fn request_rfc3161(
             request_algorithm: "SHA-256".into(),
             response_format: "RFC 3161 TimeStampResp (.tsr)".into(),
             provider_endpoint_identifier: endpoint.into(),
+            request_nonce: request.nonce_hex,
+            response_nonce: parsed.nonce_hex,
+            nonce_match: parsed.nonce_match,
+            requested_policy_oid: policy_oid.unwrap_or_default().to_owned(),
             policy_oid: parsed.policy_oid,
+            policy_match: parsed.policy_match,
+            cryptographic_verifier: verification.cryptographic_verifier,
+            trust_anchor_sha256: verification.trust_anchor_sha256,
             response_structure_valid: Some(parsed.error.is_none()),
             provider_digest_match: parsed.digest_match,
-            signature_verified: None,
-            trust_chain_verified: None,
+            signature_verified: verification.signature_verified,
+            trust_chain_verified: verification.trust_chain_verified,
             verification_result: status,
             verification_message: message.clone(),
             verification_timestamp: Utc::now().to_rfc3339(),
@@ -811,7 +869,16 @@ fn open_timestamps_detached_proof(
     Ok(proof)
 }
 
-fn rfc3161_request(digest: &str, policy_oid: Option<&str>) -> std::result::Result<Vec<u8>, String> {
+#[derive(Debug, Clone)]
+struct Rfc3161Request {
+    bytes: Vec<u8>,
+    nonce_hex: String,
+}
+
+fn rfc3161_request(
+    digest: &str,
+    policy_oid: Option<&str>,
+) -> std::result::Result<Rfc3161Request, String> {
     // RFC 3161 TimeStampReq (v1), carrying only the SHA-256 message imprint.
     // No user, track, title, media, or project payload is placed in the
     // request.
@@ -822,13 +889,166 @@ fn rfc3161_request(digest: &str, policy_oid: Option<&str>) -> std::result::Resul
     if let Some(policy_oid) = policy_oid {
         elements.push(der_oid(policy_oid)?);
     }
-    // A nonce makes distinct requests distinguishable. It is generated as a
-    // positive ASN.1 INTEGER; no nonce is stored in evidence because it is not
-    // needed to verify the selected local anchor.
+    // A nonce binds the provider response to this one request. It is retained
+    // in the request context until the response has been checked.
     let nonce = Uuid::new_v4();
     elements.push(der_integer_unsigned(nonce.as_bytes()));
     elements.push(der_tlv(0x01, &[0xff])); // certReq = TRUE
-    Ok(der_sequence(&elements))
+    Ok(Rfc3161Request {
+        bytes: der_sequence(&elements),
+        nonce_hex: normalized_unsigned_hex(nonce.as_bytes()),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct Rfc3161CryptographicVerification {
+    status: ExternalTimestampStatus,
+    signature_verified: Option<bool>,
+    trust_chain_verified: Option<bool>,
+    cryptographic_verifier: String,
+    trust_anchor_sha256: Vec<String>,
+    message: String,
+}
+
+fn verify_rfc3161_cryptography(
+    response: &[u8],
+    expected_digest: &str,
+    artifact_bytes: Option<&[u8]>,
+    settings: &TimestampSettings,
+) -> Rfc3161CryptographicVerification {
+    let Some(artifact_bytes) = artifact_bytes else {
+        return Rfc3161CryptographicVerification {
+            status: ExternalTimestampStatus::Attached,
+            signature_verified: None,
+            trust_chain_verified: None,
+            cryptographic_verifier: String::new(),
+            trust_anchor_sha256: Vec::new(),
+            message: "RFC 3161 response structure, SHA-256 message imprint, nonce, and the provider-returned policy OID (including a requested-policy match when configured) were checked. This endpoint connection test did not supply finalized artifact bytes, so CMS and trust-chain verification were not asserted."
+                .into(),
+        };
+    };
+    let actual_digest = sha256_bytes(artifact_bytes);
+    if !actual_digest.eq_ignore_ascii_case(expected_digest) {
+        return Rfc3161CryptographicVerification {
+            status: ExternalTimestampStatus::AnchorMismatch,
+            signature_verified: None,
+            trust_chain_verified: None,
+            cryptographic_verifier: String::new(),
+            trust_anchor_sha256: Vec::new(),
+            message: "The finalized artifact bytes supplied to the RFC 3161 verifier no longer match the selected SHA-256 anchor."
+                .into(),
+        };
+    }
+    // The existing CA path is global timestamp configuration even though it is
+    // grouped with the custom-provider fields in the persisted settings. It is
+    // therefore also usable to pin a public RFC 3161 preset explicitly.
+    let trust_path = settings.custom.ca_certificate_path.trim();
+    if trust_path.is_empty() {
+        return Rfc3161CryptographicVerification {
+            status: ExternalTimestampStatus::VerificationConfigurationIncomplete,
+            signature_verified: None,
+            trust_chain_verified: None,
+            cryptographic_verifier: String::new(),
+            trust_anchor_sha256: Vec::new(),
+            message: "RFC 3161 response structure, SHA-256 message imprint, nonce, and the provider-returned policy OID (including a requested-policy match when configured) were checked, but no explicit TSA CA trust-anchor file is configured. The response remains archived without a VERIFIED claim."
+                .into(),
+        };
+    }
+    let (roots, fingerprints) = match load_trust_anchors(Path::new(trust_path)) {
+        Ok(value) => value,
+        Err(message) => {
+            return Rfc3161CryptographicVerification {
+                status: ExternalTimestampStatus::VerificationConfigurationIncomplete,
+                signature_verified: None,
+                trust_chain_verified: None,
+                cryptographic_verifier: String::new(),
+                trust_anchor_sha256: Vec::new(),
+                message,
+            };
+        }
+    };
+    let opts = sigstore_tsa::VerifyOpts::new().with_roots(roots);
+    match sigstore_tsa::verify_timestamp_response(response, artifact_bytes, opts) {
+        Ok(_) => Rfc3161CryptographicVerification {
+            status: ExternalTimestampStatus::Verified,
+            signature_verified: Some(true),
+            trust_chain_verified: Some(true),
+            cryptographic_verifier: RFC3161_CRYPTOGRAPHIC_VERIFIER.into(),
+            trust_anchor_sha256: fingerprints.clone(),
+            message: format!(
+                "RFC 3161 response verified with {RFC3161_CRYPTOGRAPHIC_VERIFIER}: SHA-256 message imprint, request nonce, provider-returned policy OID (and requested-policy match when configured), CMS signature, critical and sole timeStamping EKU, certificate validity at genTime, and chain to the configured trust anchor all match. Trust anchor SHA-256: {}.",
+                fingerprints.join(", ")
+            ),
+        },
+        Err(error) => {
+            let (signature_verified, trust_chain_verified) = match &error {
+                sigstore_tsa::Error::CertificateValidationError(_)
+                | sigstore_tsa::Error::InvalidEKU => (Some(true), Some(false)),
+                sigstore_tsa::Error::SignatureVerificationError(_) => (Some(false), None),
+                _ => (Some(false), None),
+            };
+            Rfc3161CryptographicVerification {
+                status: ExternalTimestampStatus::VerificationFailed,
+                signature_verified,
+                trust_chain_verified,
+                cryptographic_verifier: RFC3161_CRYPTOGRAPHIC_VERIFIER.into(),
+                trust_anchor_sha256: fingerprints,
+                message: format!(
+                    "RFC 3161 response was archived, but CMS/X.509 verification failed: {error}."
+                ),
+            }
+        }
+    }
+}
+
+fn load_trust_anchors(
+    path: &Path,
+) -> std::result::Result<(Vec<CertificateDer<'static>>, Vec<String>), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "The configured TSA trust-anchor file cannot be read.".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("The configured TSA trust anchor must be a regular, non-symlink file.".into());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_TRUST_ANCHOR_BYTES {
+        return Err(format!(
+            "The configured TSA trust-anchor file must contain 1 to {MAX_TRUST_ANCHOR_BYTES} bytes."
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|_| "The configured TSA trust-anchor file cannot be read.".to_owned())?;
+    let roots = if bytes.starts_with(b"-----BEGIN") {
+        rustls_pemfile::certs(&mut Cursor::new(bytes.as_slice()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| "The configured TSA trust-anchor PEM is invalid.".to_owned())?
+    } else {
+        vec![CertificateDer::from(bytes)]
+    };
+    if roots.is_empty() {
+        return Err("The configured TSA trust-anchor file contains no certificates.".into());
+    }
+    let fingerprints = roots
+        .iter()
+        .map(|certificate| sha256_bytes(certificate.as_ref()))
+        .collect();
+    Ok((roots, fingerprints))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn normalized_unsigned_hex(value: &[u8]) -> String {
+    let first_nonzero = value
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(value.len().saturating_sub(1));
+    value[first_nonzero..]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn der_sequence(elements: &[Vec<u8>]) -> Vec<u8> {
@@ -1033,12 +1253,25 @@ struct ParsedRfc3161Response {
     timestamp_value: String,
     serial_number: String,
     policy_oid: String,
+    nonce_hex: String,
     digest_match: Option<bool>,
+    nonce_match: Option<bool>,
+    policy_match: Option<bool>,
     error: Option<String>,
 }
 
-fn parse_rfc3161_response(bytes: &[u8], expected_digest: &str) -> ParsedRfc3161Response {
-    match parse_rfc3161_response_inner(bytes, expected_digest) {
+fn parse_rfc3161_response(
+    bytes: &[u8],
+    expected_digest: &str,
+    expected_nonce_hex: &str,
+    expected_policy_oid: Option<&str>,
+) -> ParsedRfc3161Response {
+    match parse_rfc3161_response_inner(
+        bytes,
+        expected_digest,
+        expected_nonce_hex,
+        expected_policy_oid,
+    ) {
         Ok(value) => value,
         Err(error) => ParsedRfc3161Response {
             error: Some(error),
@@ -1050,6 +1283,8 @@ fn parse_rfc3161_response(bytes: &[u8], expected_digest: &str) -> ParsedRfc3161R
 fn parse_rfc3161_response_inner(
     bytes: &[u8],
     expected_digest: &str,
+    expected_nonce_hex: &str,
+    expected_policy_oid: Option<&str>,
 ) -> std::result::Result<ParsedRfc3161Response, String> {
     let response = der_elements(der_sequence_content(bytes)?)?;
     let status_info = response
@@ -1107,16 +1342,26 @@ fn parse_rfc3161_response_inner(
     if tst_octet.tag != 0x04 || !remaining.is_empty() {
         return Err("RFC 3161 TSTInfo payload is invalid.".into());
     }
-    parse_tst_info(tst_octet.content, expected_digest)
+    parse_tst_info(
+        tst_octet.content,
+        expected_digest,
+        expected_nonce_hex,
+        expected_policy_oid,
+    )
 }
 
 fn parse_tst_info(
     bytes: &[u8],
     expected_digest: &str,
+    expected_nonce_hex: &str,
+    expected_policy_oid: Option<&str>,
 ) -> std::result::Result<ParsedRfc3161Response, String> {
     let values = der_elements(der_sequence_content(bytes)?)?;
     if values.len() < 5 || values[0].tag != 0x02 || values[1].tag != 0x06 || values[2].tag != 0x30 {
         return Err("RFC 3161 TSTInfo structure is invalid.".into());
+    }
+    if normalized_unsigned_hex(values[0].content) != "01" {
+        return Err("RFC 3161 TSTInfo version must be 1.".into());
     }
     let policy_oid = der_oid_text(values[1])?;
     let imprint_values = der_elements(values[2].content)?;
@@ -1140,11 +1385,36 @@ fn parse_tst_info(
         return Err("RFC 3161 generation time is missing.".into());
     }
     let timestamp_value = generalized_time_to_rfc3339(values[4].content)?;
+    let returned_nonces = values
+        .iter()
+        .skip(5)
+        .filter(|value| value.tag == 0x02)
+        .copied()
+        .collect::<Vec<_>>();
+    if returned_nonces.len() > 1 {
+        return Err("RFC 3161 TSTInfo contains more than one nonce.".into());
+    }
+    let nonce_hex = returned_nonces
+        .first()
+        .map(|value| {
+            der_integer_hex(*value)?;
+            Ok::<String, String>(normalized_unsigned_hex(value.content))
+        })
+        .transpose()?;
+    let nonce_match = Some(
+        nonce_hex
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(expected_nonce_hex)),
+    );
+    let policy_match = expected_policy_oid.map(|expected| policy_oid == expected);
     Ok(ParsedRfc3161Response {
         timestamp_value,
         serial_number,
         policy_oid,
+        nonce_hex: nonce_hex.unwrap_or_default(),
         digest_match: Some(returned_digest.eq_ignore_ascii_case(expected_digest)),
+        nonce_match,
+        policy_match,
         error: None,
     })
 }
@@ -1276,6 +1546,12 @@ fn stage_with_provider_metadata(
     }
     let referenced_sha256 = input.referenced_sha256.trim().to_ascii_lowercase();
     let referenced_hash_match = Some(actual_sha256 == referenced_sha256);
+    if provider_metadata.is_some() && referenced_hash_match != Some(true) {
+        return Err(AppError::Validation(
+            "The finalized manifest anchor changed before the provider response could be staged."
+                .into(),
+        ));
+    }
 
     let id = Uuid::new_v4().to_string();
     let live_relative = PathBuf::from(EXTERNAL_TIMESTAMPS_DIR).join(&id);
@@ -2356,8 +2632,33 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
     let Some(metadata) = &record.provider_metadata else {
         return "\n- Record source [System value]: Legacy manually recorded timestamp evidence\n- Provider response verification [System verification]: NOT RECORDED (legacy manually recorded timestamp evidence)\n".into();
     };
+    let rfc_verification_context = if metadata.protocol.contains("RFC 3161") {
+        let requested_policy = if metadata.requested_policy_oid.trim().is_empty() {
+            "NONE (provider policy accepted)"
+        } else {
+            metadata.requested_policy_oid.as_str()
+        };
+        let policy_match = if metadata.requested_policy_oid.trim().is_empty() {
+            "N/A"
+        } else {
+            optional_bool_label(metadata.policy_match)
+        };
+        format!(
+            "- Request nonce [System value]: `{}`\n- Response nonce [Provider-derived metadata]: `{}`\n- Nonce match [System verification]: {}\n- Requested policy OID [System value]: {}\n- Returned policy OID [Provider-derived metadata]: {}\n- Policy match [System verification]: {}\n- Cryptographic verifier [System value]: {}\n- Trust-anchor SHA-256 [System verification]: {}\n",
+            documented_md(&metadata.request_nonce),
+            documented_md(&metadata.response_nonce),
+            optional_bool_label(metadata.nonce_match),
+            documented_md(requested_policy),
+            documented_md(&metadata.policy_oid),
+            policy_match,
+            documented_md(&metadata.cryptographic_verifier),
+            documented_md(&metadata.trust_anchor_sha256.join(", ")),
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "\n### Provider response metadata\n\n- Record source [System value]: Automatically attached provider response\n- Referenced finalization snapshot ID [System value]: `{}`\n- Provider adapter [Provider-derived metadata]: {}\n- Protocol [Provider-derived metadata]: {}\n- Request algorithm [System value]: {}\n- Response format [Provider-derived metadata]: {}\n- Provider endpoint identifier [Provider-derived metadata]: {}\n- Archived raw provider response [System value]: {}\n- Archived raw provider response SHA-256 [System verification]: `{}`\n- Provider response structure valid [System verification]: {}\n- Provider digest match [System verification]: {}\n- CMS signature verified [System verification]: {}\n- Trust chain verified [System verification]: {}\n- Provider verification result [System verification]: {}\n- Provider verification message [System verification]: {}\n- Provider verification timestamp [System verification]: {}\n- Timestamp issuer [Provider-derived metadata]: {}\n- Timestamp certificate subject [Provider-derived metadata]: {}\n- Timestamp certificate serial number [Provider-derived metadata]: {}\n- Policy OID [Provider-derived metadata]: {}\n",
+        "\n### Provider response metadata\n\n- Record source [System value]: Automatically attached provider response\n- Referenced finalization snapshot ID [System value]: `{}`\n- Provider adapter [Provider-derived metadata]: {}\n- Protocol [Provider-derived metadata]: {}\n- Request algorithm [System value]: {}\n{rfc_verification_context}- Response format [Provider-derived metadata]: {}\n- Provider endpoint identifier [Provider-derived metadata]: {}\n- Archived raw provider response [System value]: {}\n- Archived raw provider response SHA-256 [System verification]: `{}`\n- Provider response structure valid [System verification]: {}\n- Provider digest match [System verification]: {}\n- CMS signature verified [System verification]: {}\n- Trust chain verified [System verification]: {}\n- Provider verification result [System verification]: {}\n- Provider verification message [System verification]: {}\n- Provider verification timestamp [System verification]: {}\n- Timestamp issuer [Provider-derived metadata]: {}\n- Timestamp certificate subject [Provider-derived metadata]: {}\n- Timestamp certificate serial number [Provider-derived metadata]: {}\n",
         documented_md(&metadata.referenced_revision_id),
         documented_md(&metadata.adapter),
         documented_md(&metadata.protocol),
@@ -2376,7 +2677,6 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
         documented_md(&metadata.issuer),
         documented_md(&metadata.certificate_subject),
         documented_md(&metadata.certificate_serial_number),
-        documented_md(&metadata.policy_oid),
     )
 }
 
@@ -2454,6 +2754,7 @@ pub fn referenced_artifact_label(value: TimestampReferencedArtifact) -> &'static
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use std::cell::{Cell, RefCell};
     use tempfile::tempdir;
 
@@ -2485,24 +2786,52 @@ mod tests {
         TimestampSettings {
             enabled: true,
             provider: TimestampProviderKind::FreeTsa,
+            custom: CustomRfc3161Settings {
+                // Parser/transport fixtures never enter certificate-chain
+                // verification, but current RFC configuration requires an
+                // explicit pin before a request can be attempted.
+                ca_certificate_path: "unused-test-trust-anchor.der".into(),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
 
     fn rfc3161_response_for_digest(digest: &str) -> Vec<u8> {
+        rfc3161_response_for_context(digest, None, "1.2.3.4")
+    }
+
+    fn rfc3161_response_for_context(
+        digest: &str,
+        nonce: Option<&[u8]>,
+        policy_oid: &str,
+    ) -> Vec<u8> {
+        rfc3161_response_for_context_and_version(digest, nonce, policy_oid, &[1])
+    }
+
+    fn rfc3161_response_for_context_and_version(
+        digest: &str,
+        nonce: Option<&[u8]>,
+        policy_oid: &str,
+        version: &[u8],
+    ) -> Vec<u8> {
         let digest = decode_sha256_hex(digest).expect("digest bytes");
         let algorithm = der_sequence(&[
             der_oid("2.16.840.1.101.3.4.2.1").expect("SHA-256 OID"),
             der_tlv(0x05, &[]),
         ]);
         let imprint = der_sequence(&[algorithm, der_tlv(0x04, &digest)]);
-        let tst_info = der_sequence(&[
-            der_integer_unsigned(&[1]),
-            der_oid("1.2.3.4").expect("policy OID"),
+        let mut tst_info_values = vec![
+            der_integer_unsigned(version),
+            der_oid(policy_oid).expect("policy OID"),
             imprint,
             der_integer_unsigned(&[42]),
             der_tlv(0x18, b"20260818120000Z"),
-        ]);
+        ];
+        if let Some(nonce) = nonce {
+            tst_info_values.push(der_integer_unsigned(nonce));
+        }
+        let tst_info = der_sequence(&tst_info_values);
         let encapsulated = der_sequence(&[
             der_oid("1.2.840.113549.1.9.16.1.4").expect("TSTInfo OID"),
             der_tlv(0xa0, &der_tlv(0x04, &tst_info)),
@@ -2518,6 +2847,157 @@ mod tests {
             der_tlv(0xa0, &signed_data),
         ]);
         der_sequence(&[der_sequence(&[der_integer_unsigned(&[0])]), token])
+    }
+
+    #[test]
+    fn rfc3161_parser_binds_nonce_and_requested_policy() {
+        let digest = "ab".repeat(32);
+        let nonce = [0x01, 0x23, 0x45, 0x67];
+        let response = rfc3161_response_for_context(&digest, Some(&nonce), "1.2.3.4");
+
+        let parsed = parse_rfc3161_response(&response, &digest, "01234567", Some("1.2.3.4"));
+        assert!(parsed.error.is_none(), "{:?}", parsed.error);
+        assert_eq!(parsed.digest_match, Some(true));
+        assert_eq!(parsed.nonce_match, Some(true));
+        assert_eq!(parsed.policy_match, Some(true));
+
+        let wrong_nonce = parse_rfc3161_response(&response, &digest, "89abcdef", Some("1.2.3.4"));
+        assert_eq!(wrong_nonce.nonce_match, Some(false));
+
+        let wrong_policy = parse_rfc3161_response(&response, &digest, "01234567", Some("1.2.3.5"));
+        assert_eq!(wrong_policy.policy_match, Some(false));
+    }
+
+    #[test]
+    fn rfc3161_parser_rejects_tst_info_versions_other_than_one() {
+        let digest = "ab".repeat(32);
+        let response =
+            rfc3161_response_for_context_and_version(&digest, Some(&[1]), "1.2.3.4", &[2]);
+
+        let parsed = parse_rfc3161_response(&response, &digest, "01", Some("1.2.3.4"));
+
+        assert_eq!(
+            parsed.error.as_deref(),
+            Some("RFC 3161 TSTInfo version must be 1.")
+        );
+    }
+
+    fn decode_test_fixture(value: &str) -> Vec<u8> {
+        let compact = value
+            .chars()
+            .filter(|character| !character.is_ascii_whitespace())
+            .collect::<String>();
+        base64::engine::general_purpose::STANDARD
+            .decode(compact)
+            .expect("base64 test fixture")
+    }
+
+    #[test]
+    fn signed_rfc3161_fixture_requires_and_verifies_an_explicit_trust_anchor() {
+        // Apache-2.0 sigstore-conformance fixture carried by sigstore-tsa.
+        let response = decode_test_fixture(include_str!("../testdata/rfc3161_valid.tsr.b64"));
+        let payload = decode_test_fixture(include_str!("../testdata/rfc3161_payload.b64"));
+        let root = decode_test_fixture(include_str!("../testdata/rfc3161_root.der.b64"));
+        let directory = tempdir().expect("temporary trust directory");
+        let root_path = directory.path().join("tsa-root.der");
+        fs::write(&root_path, root).expect("trust root fixture");
+        let settings = TimestampSettings {
+            custom: CustomRfc3161Settings {
+                ca_certificate_path: root_path.display().to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let verified = verify_rfc3161_cryptography(
+            &response,
+            &sha256_bytes(&payload),
+            Some(&payload),
+            &settings,
+        );
+
+        assert_eq!(verified.status, ExternalTimestampStatus::Verified);
+        assert_eq!(verified.signature_verified, Some(true));
+        assert_eq!(verified.trust_chain_verified, Some(true));
+        assert!(verified.message.contains("timeStamping EKU"));
+        assert!(verified.message.contains("Trust anchor SHA-256"));
+
+        let without_trust = verify_rfc3161_cryptography(
+            &response,
+            &sha256_bytes(&payload),
+            Some(&payload),
+            &TimestampSettings::default(),
+        );
+        assert_eq!(
+            without_trust.status,
+            ExternalTimestampStatus::VerificationConfigurationIncomplete
+        );
+        assert_ne!(without_trust.signature_verified, Some(true));
+        assert_ne!(without_trust.trust_chain_verified, Some(true));
+    }
+
+    #[test]
+    fn signed_rfc3161_fixture_rejects_a_changed_artifact() {
+        let response = decode_test_fixture(include_str!("../testdata/rfc3161_valid.tsr.b64"));
+        let mut payload = decode_test_fixture(include_str!("../testdata/rfc3161_payload.b64"));
+        let root = decode_test_fixture(include_str!("../testdata/rfc3161_root.der.b64"));
+        let directory = tempdir().expect("temporary trust directory");
+        let root_path = directory.path().join("tsa-root.der");
+        fs::write(&root_path, root).expect("trust root fixture");
+        let settings = TimestampSettings {
+            custom: CustomRfc3161Settings {
+                ca_certificate_path: root_path.display().to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        payload[0] ^= 1;
+
+        let verification = verify_rfc3161_cryptography(
+            &response,
+            &sha256_bytes(&payload),
+            Some(&payload),
+            &settings,
+        );
+
+        assert_eq!(
+            verification.status,
+            ExternalTimestampStatus::VerificationFailed
+        );
+        assert_ne!(verification.signature_verified, Some(true));
+        assert_ne!(verification.trust_chain_verified, Some(true));
+    }
+
+    #[test]
+    fn signed_rsa_rfc3161_fixture_verifies_through_the_application_profile() {
+        let response = decode_test_fixture(include_str!("../testdata/rfc3161_rsa_valid.tsr.b64"));
+        let payload = decode_test_fixture(include_str!("../testdata/rfc3161_payload.b64"));
+        let root = decode_test_fixture(include_str!("../testdata/rfc3161_rsa_root.der.b64"));
+        let directory = tempdir().expect("temporary trust directory");
+        let root_path = directory.path().join("rsa-tsa-root.der");
+        fs::write(&root_path, root).expect("RSA trust root fixture");
+        let settings = TimestampSettings {
+            custom: CustomRfc3161Settings {
+                ca_certificate_path: root_path.display().to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let verified = verify_rfc3161_cryptography(
+            &response,
+            &sha256_bytes(&payload),
+            Some(&payload),
+            &settings,
+        );
+
+        assert_eq!(verified.status, ExternalTimestampStatus::Verified);
+        assert_eq!(verified.signature_verified, Some(true));
+        assert_eq!(verified.trust_chain_verified, Some(true));
+        assert_eq!(
+            verified.cryptographic_verifier,
+            RFC3161_CRYPTOGRAPHIC_VERIFIER
+        );
     }
 
     #[test]
@@ -2540,9 +3020,14 @@ mod tests {
         let returned_digest = "22".repeat(32);
         let mock = MockTransport::successful(rfc3161_response_for_digest(&returned_digest));
 
-        let response =
-            request_timestamp_with_transport(&free_tsa_settings(), None, &requested_digest, &mock)
-                .expect("provider response is retained for diagnosis");
+        let response = request_timestamp_with_transport(
+            &free_tsa_settings(),
+            None,
+            &requested_digest,
+            None,
+            &mock,
+        )
+        .expect("provider response is retained for diagnosis");
 
         assert_eq!(mock.calls.get(), 1);
         assert_eq!(response.status, ExternalTimestampStatus::VerificationFailed);
@@ -2589,7 +3074,7 @@ mod tests {
             ..Default::default()
         };
 
-        let response = request_timestamp_with_transport(&settings, None, &digest, &mock)
+        let response = request_timestamp_with_transport(&settings, None, &digest, None, &mock)
             .expect("OTS proof response");
 
         assert_eq!(response.evidence_extension, "ots");
@@ -2656,6 +3141,7 @@ mod tests {
             &settings,
             None,
             &digest,
+            None,
             &MockTransport::successful(raw_calendar_response.clone()),
         )
         .expect("OTS response");
@@ -2720,8 +3206,13 @@ mod tests {
         let mock = MockTransport::successful(rfc3161_response_for_digest(&"00".repeat(32)));
 
         if let Ok(anchor) = finalized_manifest_anchor(track_root) {
-            let _ =
-                request_timestamp_with_transport(&free_tsa_settings(), None, &anchor.sha256, &mock);
+            let _ = request_timestamp_with_transport(
+                &free_tsa_settings(),
+                None,
+                &anchor.sha256,
+                None,
+                &mock,
+            );
         }
         assert_eq!(mock.calls.get(), 0, "no digest request may leave the app");
         assert!(finalized_manifest_anchor(track_root)

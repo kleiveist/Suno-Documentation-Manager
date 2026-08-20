@@ -2,12 +2,12 @@ import type { DesktopApi } from "./api/desktop";
 import { toUserMessage } from "./api/desktop";
 import {
   calculateMissingRequirements,
-  contentCheckAllNegative,
   evaluateRequirements,
   evidenceRoleFileTypes,
   evidenceRoleLabel,
   filenameMatchesDocumentedTitle,
   finalizationGate,
+  humanEditedFinalArtworkStatus,
   statusLabel,
   stepStatuses,
   subscriptionEvidenceRelevance,
@@ -46,6 +46,7 @@ import {
   type SubscriptionBillingCycle,
   type TrackCoverPreview,
   type TrackDetail,
+  type TrackFieldPatch,
   type TrackFields,
   type TrackLibraryAssignment,
   type TrackSummary,
@@ -976,13 +977,20 @@ const aiSystemSuggestions = [
   "Suno", "ChatGPT / OpenAI", "Udio", "Stable Audio", "ElevenLabs"
 ] as const;
 
-const sunoLyricsContentTypeChoices: readonly GuidedChoice[] = [
-  ["vocal_lyrics", "Vocal Lyrics"],
-  ["structure_instructions", "Strukturanweisungen, z. B. [Intro] oder [Drop]"],
-  ["sound_instructions", "Soundanweisungen"],
-  ["arrangement_instructions", "Arrangement-Anweisungen"],
-  ["mixed", "Gemischter Inhalt"],
-  ["other", "Sonstiger Inhalt"]
+export const SUNO_CONTENT_CLASSIFICATION_CHOICES: readonly SingleChoiceOption[] = [
+  ["", "Bitte auswählen"],
+  ["STRUCTURE_ONLY", "STRUCTURE_ONLY – nur Struktur-, Sound- oder Arrangement-Anweisungen"],
+  ["VOCAL_LYRICS_ONLY", "VOCAL_LYRICS_ONLY – nur Vocal Lyrics"],
+  ["MIXED", "MIXED – Vocal Lyrics und Struktur-Anweisungen"],
+  ["EMPTY", "EMPTY – Textfeld leer"],
+  ["OTHER", "OTHER – sonstiger Inhalt"]
+];
+
+export const VOCAL_INTENT_CHOICES: readonly SingleChoiceOption[] = [
+  ["", "Bitte auswählen"],
+  ["VOCAL", "VOCAL – Gesang beabsichtigt"],
+  ["INSTRUMENTAL", "INSTRUMENTAL – kein Gesang beabsichtigt"],
+  ["UNSPECIFIED", "UNSPECIFIED – bewusst nicht spezifiziert"]
 ];
 
 const audioDisclosureLocationChoices: readonly GuidedChoice[] = [
@@ -1013,6 +1021,17 @@ const releaseNoteChoices: readonly GuidedChoice[] = [
  */
 export function normalizeGuidedTrackFields(fields: TrackFields): TrackFields {
   const normalized = structuredClone(fields);
+  if (normalized.sunoContentClassification !== null) {
+    normalized.sunoLyricsFieldContent = null;
+    normalized.sunoLyricsContentTypes = [];
+    if (normalized.sunoContentClassification === "EMPTY") {
+      normalized.sunoLyricsContentSource = null;
+      normalized.sunoLyricsFieldText = "";
+      normalized.sunoLyricsOtherContentType = "";
+    } else if (normalized.sunoContentClassification !== "OTHER") {
+      normalized.sunoLyricsOtherContentType = "";
+    }
+  }
   normalized.externalAudioSource = canonicalGuidedChoiceValue(normalized.externalAudioSource, externalAudioSourceChoices);
   normalized.externalAudioOwnership = canonicalGuidedChoiceValue(normalized.externalAudioOwnership, externalAudioRightsChoices);
   normalized.ownAudioSource = canonicalGuidedChoiceValue(normalized.ownAudioSource, ownAudioSourceChoices);
@@ -1035,6 +1054,16 @@ export function normalizeGuidedTrackFields(fields: TrackFields): TrackFields {
   );
   normalized.releaseNotes = canonicalGuidedChoiceList(normalized.releaseNotes, releaseNoteChoices);
   return normalized;
+}
+
+export function canonicalTrackFieldPatch(fields: TrackFields): TrackFieldPatch {
+  const normalized = normalizeGuidedTrackFields(fields);
+  const {
+    sunoLyricsFieldContent: _legacyContentAnswer,
+    sunoLyricsContentTypes: _legacyContentTypes,
+    ...patch
+  } = normalized;
+  return patch;
 }
 
 const evidenceProvenanceLabel = (value: TrackDetail["evidence"][number]["provenance"]): string => ({
@@ -2005,7 +2034,8 @@ export class SunoDocumentationApp {
         ? `<li><strong>Technische Suno-ID</strong><span>${escapeHtml(track.automation.sunoId)}</span></li>`
         : "",
       `<li><strong>Release identisch zum Suno-Export</strong><span>${track.automation.releaseIdenticalToSunoExport ? "PASS" : "Nicht nachgewiesen"}</span></li>`,
-      `<li><strong>Byte-identische Paare</strong><span>${track.automation.byteIdenticalPairs.length}</span></li>`
+      `<li><strong>Byte-identische Paare</strong><span>${track.automation.byteIdenticalPairs.length}</span></li>`,
+      `<li><strong>Menschlich bearbeitetes/finales Artwork</strong><span>${escapeHtml(humanEditedFinalArtworkStatus(track.evidence))}</span></li>`
     ].filter(Boolean).join("");
     return `<section class="panel check-summary">
       <div class="panel-heading"><div><p class="overline">Gesamtprüfung</p><h3>Dokumentationsstatus</h3></div><span class="check-warning-count ${summary.warningCount === 0 ? "is-clear" : ""}">${summary.warningCount} Warnungen</span></div>
@@ -2125,8 +2155,9 @@ export class SunoDocumentationApp {
         const hasLegacyLyrics = Boolean(draft.legacyLyricsSource || draft.legacyLyricsText.trim());
         body = `<section class="question-group lyrics-structure-section"><div><p class="overline">Suno Generation Text Field</p><h4>Suno-Textfeld, Vocal Intent und finales Audio getrennt dokumentieren</h4><p>Strukturanweisungen wie [Intro], [Drop] oder [Outro] werden nicht als Vocal Lyrics oder Gesang gewertet. Die Klassifikation des Textfeldes und das tatsächliche Audioergebnis bleiben getrennte Angaben.</p></div>
           ${this.boolQuestion("instrumentalTrack", "Suno-Instrumentalmodus ausgewählt?", "UI-Einstellung in Suno; daraus wird das Audioergebnis nicht automatisch abgeleitet.", draft.instrumentalTrack)}
-          ${this.boolQuestion("sunoLyricsFieldContent", "Generierungstextfeld verfügbar?", "Gibt an, ob das Suno-Textfeld für diesen Track Inhalt enthält.", draft.sunoLyricsFieldContent)}
-          ${conditional.has("sunoLyricsContentTypes") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("sunoLyricsContentTypes", "Inhaltsklassifizierung", draft.sunoLyricsContentTypes, sunoLyricsContentTypeChoices, true)}${this.renderGenerationTextFieldFacts(draft)}${conditional.has("sunoLyricsOtherContentType") ? this.textField("sunoLyricsOtherContentType", "Sonstiger Content-Typ", "Faktisch beschreiben", draft.sunoLyricsOtherContentType, true) : ""}${singleChoiceFieldMarkup("sunoLyricsContentSource", "Content source", draft.sunoLyricsContentSource ?? "", [["human", "Human"], ["ai", "AI"], ["mixed", "Mixed"]], true)}${this.textArea("sunoLyricsFieldText", "Exakter Inhalt des Suno-Textfelds", "Exakte verwendete Fassung einschließlich eckiger Klammern dokumentieren.", draft.sunoLyricsFieldText, true)}</div>` : ""}
+          <div class="field-grid two-col">${this.selectField("sunoContentClassification", "Inhaltsklassifizierung", draft.sunoContentClassification ?? "", SUNO_CONTENT_CLASSIFICATION_CHOICES, true)}${this.selectField("vocalIntent", "Vocal Intent", draft.vocalIntent ?? "", VOCAL_INTENT_CHOICES, true)}</div>
+          ${this.renderGenerationTextFieldFacts(draft)}
+          ${conditional.has("sunoLyricsFieldText") ? `<div class="conditional-panel"><div class="conditional-line"></div>${conditional.has("sunoLyricsOtherContentType") ? this.textField("sunoLyricsOtherContentType", "Sonstiger Content-Typ", "Faktisch beschreiben", draft.sunoLyricsOtherContentType, true) : ""}${singleChoiceFieldMarkup("sunoLyricsContentSource", "Content source", draft.sunoLyricsContentSource ?? "", [["human", "Human"], ["ai", "AI"], ["mixed", "Mixed"]], true)}${this.textArea("sunoLyricsFieldText", "Exakter Inhalt des Suno-Textfelds", "Exakte verwendete Fassung einschließlich eckiger Klammern dokumentieren.", draft.sunoLyricsFieldText, true)}</div>` : ""}
           ${this.boolQuestion("vocalLyricsPresent", "Finaler Audioinhalt enthält Gesang?", "Tatsächliches Ergebnis des finalen Audios; nicht aus dem Textfeld automatisch ableiten.", draft.vocalLyricsPresent)}
           ${hasLegacyLyrics ? `<div class="legacy-data-notice">${icon("info")}<div class="legacy-data-notice-copy"><strong>Historische Lyrics-Angaben – nicht automatisch klassifiziert</strong><p>Quelle: ${escapeHtml(draft.legacyLyricsSource || "Not documented")}</p>${draft.legacyLyricsText ? `<pre>${escapeHtml(draft.legacyLyricsText)}</pre>` : ""}<small>Diese unverändert erhaltenen Altwerte bestimmen weder Vocal Lyrics noch Content-Typen. Prüfe die neuen Felder ausdrücklich.</small></div><button type="button" class="icon-button danger legacy-data-remove" data-action="remove-legacy-lyrics" aria-label="Historische Lyrics-Angaben entfernen" title="Historische Lyrics-Angaben entfernen" ${isTrackContentLocked(track.status) ? "disabled" : ""}>${icon("trash")}</button></div>` : ""}
         </section>
@@ -2137,6 +2168,7 @@ export class SunoDocumentationApp {
       }
       case "artwork":
         body = `<div class="policy-card artwork-factual-notice">${icon("info")}<div><p class="overline">Nur relevante Angaben</p><h4>Faktische Dokumentation</h4><p>Die App dokumentiert deine Bestätigung und trifft keine rechtliche Entscheidung.</p></div></div><div class="field-grid two-col">${this.selectField("artworkOrigin", "Entstehung des Artworks", draft.artworkOrigin, [["", "Bitte auswählen"], ["none", "Kein Artwork"], ["human", "Menschlich erstellt"], ["ai_generated", "KI-generiert"], ["ai_assisted", "KI-assistiert"]], true)}${conditional.has("aiImageService") ? this.suggestedTextField("aiImageService", "KI-Bilddienst", "Verwendeter Dienst", draft.aiImageService, aiSystemSuggestions, true) : ""}</div>
+          <div class="technical-note">${icon("info")}<p>Import-Zeitstempel dokumentieren nur den Import in SunoDM und nicht die tatsächliche Erstellungs- oder Bearbeitungsreihenfolge der Artwork-Dateien.</p></div>
           <div class="form-section"><p class="field-label">Suno-Original-Artwork</p>${this.inlineEvidenceActions(track, [["artwork_suno_original", "Suno-Original importieren"]])}</div>
           ${conditional.has("humanArtworkProcessOperations") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkProcessOperations", "Menschlicher Arbeitsprozess", draft.humanArtworkProcessOperations, humanArtworkProcessChoices)}${this.textArea("humanArtworkProcessNotes", "Beschreibung / Ergänzungen", "Arbeitsprozess frei beschreiben oder die Auswahl ergänzen", draft.humanArtworkProcessNotes)}</div>` : ""}
           ${conditional.has("humanArtworkModifications") ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.multiChoiceArrayField("humanArtworkModifications", "Menschliche Änderungen", draft.humanArtworkModifications, aiArtworkHumanChangeChoices, true)}${conditional.has("customArtworkChange") ? this.textArea("customArtworkChange", "Sonstige menschliche Bearbeitung – Details", "Frei beschreibbare zusätzliche Änderung", draft.customArtworkChange) : ""}</div>` : ""}
@@ -2164,7 +2196,7 @@ export class SunoDocumentationApp {
               : `<div class="danger-banner is-warning">${icon("alert")}<div><strong>Generative AI used: NOT DOCUMENTED</strong><span>Die Angabe ist offen. Erst YES blendet die Audio-Detailfragen ein; NO markiert sie als N/A.</span></div></div>`}
           </section>
           <section class="question-group ai-assessment-section"><div><p class="overline">AI Transparency Assessment – Artwork</p><h4>${this.policyLabel(track.profileSnapshot.artworkTransparencyPolicy)}</h4><p>Projektinterne Artwork-Regel; keine pauschale gesetzliche Aussage.</p></div>
-            ${conditional.has("disclosure") ? `<div class="field-grid two-col">${this.textField("disclosureText", "Sichtbarer Artwork-Hinweis", "AI-assisted", draft.disclosureText, true)}${track.profileSnapshot.artworkTransparencyPolicy === "per_artwork" ? this.boolQuestion("disclosureApplied", "Sichtbaren Artwork-Hinweis anwenden?", "Bei Ja muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied) : `<div class="read-only-field"><span>Artwork-Status</span><strong>${draft.disclosureApplied ? "Lokal erzeugt" : "Noch nicht erzeugt"}</strong></div>`}</div><button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Artwork-Hinweis lokal erzeugen</button>` : `<div class="neutral-message">${icon("info")}<div><strong>Kein aktiver Artwork-Disclosure-Schritt</strong><span>${contentCheckAllNegative(draft) ? "Die drei Artwork-Content-Checks wurden mit Nein beantwortet." : "Grundlage: dokumentierte Artwork-Entstehung und Track-Policy."}</span></div></div>`}
+            ${conditional.has("disclosure") ? `${this.boolQuestion("disclosureApplied", "Sichtbaren Artwork-Hinweis anwenden?", "Explizite YES-/NO-Entscheidung. Bei YES muss die gekennzeichnete Fassung lokal erzeugt werden.", draft.disclosureApplied)}${draft.disclosureApplied === true ? `<div class="conditional-panel"><div class="conditional-line"></div>${this.textField("disclosureText", "Sichtbarer Artwork-Hinweis", "AI-assisted", draft.disclosureText, true)}<button type="button" class="button button--accent" data-action="generate-disclosure">${icon("certificate")} Sichtbaren Artwork-Hinweis lokal erzeugen</button></div>` : draft.disclosureApplied === false ? `<div class="neutral-message">${icon("info")}<div><strong>Artwork-Hinweis: NO</strong><span>Die Nichtanwendung wurde bewusst dokumentiert.</span></div></div>` : `<div class="danger-banner is-warning">${icon("alert")}<div><strong>Artwork-Hinweis: Entscheidung offen</strong><span>Für jedes KI-Artwork muss YES oder NO ausdrücklich dokumentiert werden.</span></div></div>`}` : `<div class="neutral-message">${icon("info")}<div><strong>Artwork-Disclosure: N/A</strong><span>Für dieses Artwork wurde keine KI-Entstehung dokumentiert.</span></div></div>`}
           </section>`;
         break;
       case "release":
@@ -2200,26 +2232,21 @@ export class SunoDocumentationApp {
   }
 
   private renderGenerationTextFieldFacts(fields: TrackFields): string {
-    const content = fields.sunoLyricsFieldContent;
-    const hasType = (type: TrackFields["sunoLyricsContentTypes"][number]): boolean => fields.sunoLyricsContentTypes.includes(type);
-    const fieldValue = content === false
-      ? "N/A"
-      : content === null
-        ? "NOT DOCUMENTED"
-        : fields.sunoLyricsFieldText.trim()
-          ? "YES"
-          : "NOT DOCUMENTED";
-    const classifiedValue = content === false
-      ? "N/A"
-      : content === null || !fields.sunoLyricsContentTypes.length
-        ? "NOT DOCUMENTED"
-        : hasType("vocal_lyrics") ? "YES" : "NO";
-    const structureValue = content === false
-      ? "N/A"
-      : content === null || !fields.sunoLyricsContentTypes.length
-        ? "NOT DOCUMENTED"
-        : hasType("structure_instructions") ? "YES" : "NO";
-    return `<div class="field-grid two-col generation-text-field-facts"><div class="read-only-field"><span>Generierungstextfeld verwendet</span><strong>${fieldValue}</strong></div><div class="read-only-field"><span>Vocal Lyrics vorhanden</span><strong>${classifiedValue}</strong></div><div class="read-only-field"><span>Strukturanweisungen vorhanden</span><strong>${structureValue}</strong></div><div class="read-only-field"><span>Vokale Intention</span><strong>${classifiedValue}</strong></div></div>`;
+    const classification = fields.sunoContentClassification;
+    const fieldValue = classification === null
+      ? "NOT DOCUMENTED"
+      : classification === "EMPTY" ? "NO" : "YES";
+    const vocalLyricsValue = classification === null
+      ? "NOT DOCUMENTED"
+      : classification === "EMPTY" ? "N/A"
+        : classification === "OTHER" ? "NOT DOCUMENTED"
+          : classification === "VOCAL_LYRICS_ONLY" || classification === "MIXED" ? "YES" : "NO";
+    const structureValue = classification === null
+      ? "NOT DOCUMENTED"
+      : classification === "EMPTY" ? "N/A"
+        : classification === "OTHER" ? "NOT DOCUMENTED"
+          : classification === "STRUCTURE_ONLY" || classification === "MIXED" ? "YES" : "NO";
+    return `<div class="field-grid two-col generation-text-field-facts"><div class="read-only-field"><span>Generierungstextfeld verwendet</span><strong>${fieldValue}</strong></div><div class="read-only-field"><span>Vocal Lyrics vorhanden</span><strong>${vocalLyricsValue}</strong></div><div class="read-only-field"><span>Strukturanweisungen vorhanden</span><strong>${structureValue}</strong></div><div class="read-only-field"><span>Vokale Intention</span><strong>${escapeHtml(fields.vocalIntent ?? "NOT DOCUMENTED")}</strong></div></div>`;
   }
 
   private renderPreReleaseAudioScreening(track: TrackDetail): string {
@@ -2445,6 +2472,11 @@ export class SunoDocumentationApp {
                 <div><dt>Adapter</dt><dd>${escapeHtml(record.providerMetadata.adapter || "Not documented")}</dd></div>
                 ${record.providerMetadata.providerResponseFileName || record.providerMetadata.providerResponseSha256 ? `<div><dt>Raw provider proof</dt><dd>${escapeHtml(record.providerMetadata.providerResponseFileName || "Not documented")}${record.providerMetadata.providerResponseSha256 ? ` · <code>${escapeHtml(record.providerMetadata.providerResponseSha256)}</code>` : ""}</dd></div>` : ""}
                 <div><dt>Provider digest match</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.providerDigestMatch)}</dd></div>
+                ${record.providerMetadata.requestNonce ? `<div><dt>Request/response nonce</dt><dd><code>${escapeHtml(record.providerMetadata.requestNonce)}</code> · ${externalTimestampMatchLabel(record.providerMetadata.nonceMatch ?? null)}</dd></div>` : ""}
+                ${record.providerMetadata.requestedPolicyOid || record.providerMetadata.policyOid ? `<div><dt>Requested/returned policy</dt><dd>${escapeHtml(record.providerMetadata.requestedPolicyOid || "none")} / ${escapeHtml(record.providerMetadata.policyOid || "Not documented")} · ${record.providerMetadata.requestedPolicyOid ? externalTimestampMatchLabel(record.providerMetadata.policyMatch ?? null) : "N/A"}</dd></div>` : ""}
+                <div><dt>CMS signature / trust chain</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.signatureVerified)} / ${externalTimestampMatchLabel(record.providerMetadata.trustChainVerified)}</dd></div>
+                ${record.providerMetadata.cryptographicVerifier ? `<div><dt>Cryptographic verifier</dt><dd>${escapeHtml(record.providerMetadata.cryptographicVerifier)}</dd></div>` : ""}
+                ${record.providerMetadata.trustAnchorSha256?.length ? `<div><dt>Trust-anchor SHA-256</dt><dd><code>${escapeHtml(record.providerMetadata.trustAnchorSha256.join(", "))}</code></dd></div>` : ""}
                 <div><dt>Verification result</dt><dd>${escapeHtml(externalTimestampStatusLabel(record.providerMetadata.verificationResult))}</dd></div>
                 ${record.providerMetadata.issuer ? `<div><dt>Timestamp issuer</dt><dd>${escapeHtml(record.providerMetadata.issuer)}</dd></div>` : ""}
                 ${record.providerMetadata.policyOid ? `<div><dt>Policy OID</dt><dd>${escapeHtml(record.providerMetadata.policyOid)}</dd></div>` : ""}
@@ -2617,21 +2649,38 @@ export class SunoDocumentationApp {
   }
 
   private renderTimestampProviderConfiguration(settings: TimestampSettings): string {
-    if (settings.provider !== "custom_rfc3161") return "";
+    const isRfc3161 = settings.provider === "free_tsa"
+      || settings.provider === "sigstore_public_tsa"
+      || settings.provider === "custom_rfc3161";
+    if (!isRfc3161) return "";
     const custom = settings.custom;
+    const trustAnchorField = this.textField(
+      "timestampCaCertificatePath",
+      "TSA CA Trust Anchor",
+      "Lokaler PEM- oder DER-Pfad (erforderlich für VERIFIED)",
+      custom.caCertificatePath,
+      true
+    );
+    if (settings.provider !== "custom_rfc3161") {
+      return `<details class="timestamp-provider-advanced" open><summary>RFC-3161-Verifikation</summary>
+        <p>VERIFIED wird nur nach CMS-Signatur-, Nonce-, Policy-, EKU-, Gültigkeits- und Vertrauensketteprüfung gegen diesen ausdrücklich gewählten Trust Anchor vergeben.</p>
+        <div class="field-grid two-col">${trustAnchorField}</div>
+      </details>`;
+    }
     const auth = custom.authenticationMode;
     const needsSecret = auth === "basic" || auth === "bearer_token" || auth === "api_key";
     const secretLabel = auth === "basic" ? "Passwort" : auth === "api_key" ? "API-Key" : "Token";
     return `<details class="timestamp-provider-advanced" open><summary>Erweiterte Einstellungen für Custom RFC 3161</summary>
-      <p>Nur für einen eigenen RFC-3161-Dienst. Die drei kostenlosen Presets benötigen diese Angaben nicht.</p>
+      <p>Provider-, Authentifizierungs- und Policy-Angaben für den eigenen RFC-3161-Dienst. Der Trust Anchor ist für den Status VERIFIED erforderlich.</p>
       <div class="field-grid two-col">
         ${this.textField("timestampCustomProviderName", "Provider Name", "z. B. Unternehmens-TSA", custom.providerName)}
         ${this.textField("timestampCustomEndpoint", "TSA Endpoint", "https://…", custom.endpoint, false, "url")}
         ${this.selectField("timestampAuthenticationMode", "Authentication Mode", auth, [["none", "Keine Authentifizierung"], ["basic", "Basic Authentication"], ["bearer_token", "Bearer Token"], ["api_key", "API-Key"], ["client_certificate", "Client Certificate"]])}
         ${this.textField("timestampTimeoutSeconds", "Timeout (Sekunden, max. 120)", "15", String(custom.timeoutSeconds), false, "number")}
         ${this.textField("timestampPolicyOid", "Policy OID", "Optional", custom.policyOid)}
+        ${trustAnchorField}
         ${auth === "basic" ? this.textField("timestampUsername", "Username", "Optionaler Accountname", custom.username) : ""}
-        ${auth === "client_certificate" ? `${this.textField("timestampClientCertificatePath", "Client Certificate", "Lokaler Zertifikatspfad", custom.clientCertificatePath)}${this.textField("timestampCaCertificatePath", "CA Certificate", "Optionaler lokaler CA-Pfad", custom.caCertificatePath)}` : ""}
+        ${auth === "client_certificate" ? this.textField("timestampClientCertificatePath", "Client Certificate", "Lokaler Zertifikatspfad", custom.clientCertificatePath) : ""}
         ${needsSecret ? `<label class="field"><span class="field-label">${secretLabel}</span><input type="password" name="timestampSecret" autocomplete="new-password" placeholder="Nur lokal sicher speichern"></label><label class="timestamp-clear-secret"><input type="checkbox" name="timestampClearSecret"><span>Gespeicherte Zugangsdaten entfernen</span></label>` : ""}
       </div>
     </details>`;
@@ -2859,7 +2908,7 @@ export class SunoDocumentationApp {
     return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group data-choice-array ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : `<p class="field-help">Mehrere Angaben können gleichzeitig ausgewählt und durch Freitext ergänzt werden.</p>`}</fieldset>`;
   }
 
-  private selectField(name: string, label: string, value: string, options: Array<[string, string]>, required = false): string {
+  private selectField(name: string, label: string, value: string, options: readonly SingleChoiceOption[], required = false): string {
     return `<label class="field"><span class="field-label">${escapeHtml(label)}${required ? " *" : ""}</span><select name="${name}" ${required ? "required" : ""}>${options.map(([id, text]) => `<option value="${escapeHtml(id)}" ${value === id ? "selected" : ""}>${escapeHtml(text)}</option>`).join("")}</select></label>`;
   }
 
@@ -3659,8 +3708,8 @@ export class SunoDocumentationApp {
   private async saveTrackDraft(): Promise<void> {
     if (!this.state.trackDraft) return;
     if (this.rejectLockedContentMutation()) return;
-    const normalizedDraft = normalizeGuidedTrackFields(this.state.trackDraft);
-    const updated = await this.withBusy("Track-Angaben werden gespeichert …", () => this.api.updateTrack(this.requireTrack().id, normalizedDraft));
+    const patch = canonicalTrackFieldPatch(this.state.trackDraft);
+    const updated = await this.withBusy("Track-Angaben werden gespeichert …", () => this.api.updateTrack(this.requireTrack().id, patch));
     if (updated) { this.applyTrack(updated); this.showToast("success", "Schritt gespeichert", "Der Dokumentationsstatus wurde neu bewertet."); }
   }
 
@@ -3671,8 +3720,8 @@ export class SunoDocumentationApp {
       this.draftDirty = false;
       return true;
     }
-    const normalizedDraft = normalizeGuidedTrackFields(this.state.trackDraft);
-    const updated = await this.withBusy("Ungespeicherte Angaben werden zuerst gesichert …", () => this.api.updateTrack(this.state.track!.id, normalizedDraft));
+    const patch = canonicalTrackFieldPatch(this.state.trackDraft);
+    const updated = await this.withBusy("Ungespeicherte Angaben werden zuerst gesichert …", () => this.api.updateTrack(this.state.track!.id, patch));
     if (!updated) return false;
     this.applyTrack(updated);
     return true;

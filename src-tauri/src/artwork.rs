@@ -1,6 +1,8 @@
 use crate::error::{AppError, Result};
 use crate::model::{EvidenceItem, EvidenceProvenance, EvidenceRole};
-use crate::security::{atomic_write_new, contained_path, portable_relative, sha256_file, slugify};
+use crate::security::{
+    atomic_write_new, canonical_artwork_stem, contained_path, portable_relative, sha256_file,
+};
 use chrono::Utc;
 use font8x8::UnicodeFonts;
 use image::imageops::FilterType;
@@ -72,8 +74,10 @@ pub fn generate_disclosure(
     }
     let image = image::open(&source_path).map_err(|e| AppError::Image(e.to_string()))?;
     let output = draw_label(image, text)?;
-    let relative =
-        PathBuf::from("05_ARTWORK").join(format!("{}_AI_EDITED.png", slugify(track_title)?));
+    let relative = PathBuf::from("05_ARTWORK").join(format!(
+        "{}_AI_EDITED.png",
+        canonical_artwork_stem(track_title)?
+    ));
     let destination = contained_path(track_root, &relative, false)?;
     let mut bytes = Vec::new();
     output
@@ -195,7 +199,7 @@ mod tests {
         let track_root = directory.path().join("track");
         let artwork_directory = track_root.join("05_ARTWORK");
         fs::create_dir_all(&artwork_directory).expect("artwork directory");
-        let original = artwork_directory.join("Test-Track_AI_ORIGINAL.png");
+        let original = artwork_directory.join("TEST_TRACK_AI_ORIGINAL.png");
         RgbaImage::from_pixel(320, 320, Rgba([20, 40, 80, 255]))
             .save(&original)
             .expect("original fixture");
@@ -203,8 +207,8 @@ mod tests {
         let source = EvidenceItem {
             id: Uuid::new_v4().to_string(),
             role: EvidenceRole::AiArtworkOriginal,
-            file_name: "Test-Track_AI_ORIGINAL.png".into(),
-            relative_path: "05_ARTWORK/Test-Track_AI_ORIGINAL.png".into(),
+            file_name: "TEST_TRACK_AI_ORIGINAL.png".into(),
+            relative_path: "05_ARTWORK/TEST_TRACK_AI_ORIGINAL.png".into(),
             sha256: Some(original_hash.clone()),
             size_bytes: fs::metadata(&original).expect("original metadata").len(),
             imported_at: Utc::now().to_rfc3339(),
@@ -225,7 +229,7 @@ mod tests {
         assert_eq!(generated.role, EvidenceRole::AiArtworkEdited);
         assert_eq!(
             generated.relative_path,
-            "05_ARTWORK/Test-Track_AI_EDITED.png"
+            "05_ARTWORK/TEST_TRACK_AI_EDITED.png"
         );
         assert_eq!(
             sha256_file(&original).expect("original digest after generation"),

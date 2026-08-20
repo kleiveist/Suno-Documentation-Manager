@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-18 |
+| Last review | 2026-08-20 |
 | Audience | Product developers and acceptance owners |
 | Related ATP | [ATP-0008: Finalization gate](../atp/active/ATP-0008-finalization-gate.md); [ATP-0017: Pre-release audio screening](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
@@ -41,7 +41,7 @@ The repository file [workflows/suno-track.toml](../../workflows/suno-track.toml)
 ```toml
 schema_version = 1
 id = "suno-track"
-version = "1.8"
+version = "1.9"
 name = "Suno Track Documentation"
 ```
 
@@ -101,7 +101,7 @@ Answer values are not interchangeable with step statuses:
 | 01 | `track` | Track | Title, production dates, commercial intent, and workflow identity |
 | 02 | `source` | Source | Guided external, own, code-based, and third-party source branches plus applicable rights and evidence |
 | 03 | `suno` | Suno | Model, project URL, optional project/version ID, final-generation date and ID, optional exact download date, plan at generation, metadata origin, export evidence, and filename confirmation |
-| 04 | `human-work` | Human Work | Separate instrumental, vocal-lyrics, and Suno lyrics/structure-field facts; complete style prompt; and guided human or post-export edits that actually occurred |
+| 04 | `human-work` | Human Work | Separate Suno Instrumental Mode, scalar Content Classification, explicit Vocal Intent, and final-audio outcome; complete style prompt; and guided human or post-export edits that actually occurred |
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
 | 06 | `ai-transparency` | AI Transparency | Separate factual Audio and Artwork assessments, including tri-state audio indicators and disclosure status; no legal AI assessment |
 | 07 | `release` | Release | Final release audio, guided release-note choices, export facts, and the current automatic local Chromaprint screening summary |
@@ -130,13 +130,13 @@ The following branch rules are mandatory:
 | Code-based generation | Hide code-generation evidence and the post-processing question | Require one supported source-code/source-text file and its generated WAV or MP3 under `02_SUNO/`; require an explicit post-processing answer |
 | Code-audio post-processing | Do not request operations and do not generate editing claims | Require one or more selected operations; an optional free-text note is retained only with `Other post-processing` |
 | Third-party samples uploaded | Hide sample details | Require sample source, permission/license note, and applicable evidence |
-| Instrumental and vocal answers | `Instrumental = YES` with `Vocal lyrics = NO` is valid, regardless of non-vocal Suno-field instructions | `Instrumental = YES` with `Vocal lyrics = YES` is a blocking contradiction that the user must correct; no text analysis resolves it automatically |
-| Suno lyrics/structure field content | `NO` clears content types, source, and current field text | `YES` requires exact text, at least one content type, and a human/AI/mixed source; `Other` also requires its factual label |
+| Vocal Intent and final audio | Intent is not inferred from classification, mode, text, or audio | Require an explicit `VOCAL`, `INSTRUMENTAL`, or `UNSPECIFIED` choice and a separate final-audio vocals answer; no mismatch between them blocks |
+| Suno Generation Text Field classification | `EMPTY` clears and makes source, exact text, and Other label inapplicable | Require exactly one canonical classification; every non-`EMPTY` value requires exact text and human/AI/mixed source, while `OTHER` also requires its factual label |
 | Human or post-export editing | Do not add generic editing claims | Require at least one specific operation from the applicable guided multi-selection |
 | Artwork origin | Hide process fields that do not match the selected origin | Human artwork can record multiple process operations plus editable notes; AI-assisted artwork requires at least one selected human change |
 | Generative AI used for audio | `NO` makes the dependent Audio assessment N/A with a reason | `YES` requires the AI system, all six tri-state factual indicators, and a tri-state disclosure answer |
 | Audio disclosure | `NO` is a deliberate documented answer and can retain a factual reason; `NOT DOCUMENTED` remains visibly distinct | `YES` requires at least one disclosure location and the exact text; commercial intent plus generative AI plus `NOT DOCUMENTED` blocks finalization |
-| AI-generated or AI-assisted artwork | Human/no-artwork branches retain their justified N/A reasons for artwork-only facts | Require AI original and one final artwork under Artwork plus applicable service, policy decision, disclosure result, and locally generated provenance/source lineage when disclosure applies; three negative artwork content checks do not deactivate the separate Audio assessment |
+| AI-generated or AI-assisted artwork | Human/no-artwork branches retain their justified N/A reasons for artwork-only facts | Require AI original, one final artwork, and an explicit disclosure `YES`/`NO` independently of policy and content checks; `YES` additionally requires text, locally generated provenance/source lineage, and final-byte identity; `NO` is a deliberate documented non-application |
 | Real person, real event, trademark, or logo content check | End that question | Require a factual note and any configured evidence; do not decide legality |
 | External license evidence | Do not ask for unrelated license fields | Require evidence selection, contained copy, and integrity inclusion |
 | Authoritative release evidence | A missing/replaced/removed source leaves local screening `NOT RUN` or `STALE` and blocks the release requirement until the current managed bytes are fingerprinted | A supported managed release source is fingerprinted by the bundled verified Chromaprint engine and binds source Evidence ID/path/SHA-256 in portable screening artifacts |
@@ -147,7 +147,7 @@ Source categories, rights bases, human-work operations, post-export operations, 
 
 Suno model, plan at generation, and AI-system/provider names remain unrestricted strings. The UI offers consistent known-name suggestions, but a historical, custom, or future value is valid and must round-trip exactly; the evaluator checks only that the applicable string is non-empty. In particular, a known new selection can display `ChatGPT / OpenAI` without rewriting historical free text such as a prior misspelling.
 
-Legacy lyrics source/text values are deserialized into explicitly labeled compatibility fields. They do not populate the new vocal answer, Suno-field answer, content types, or source. The evaluator reports those new facts as `NOT DOCUMENTED` until the user classifies them in mutable state; it never scans `[Intro]`, `[Verse]`, or similar text to guess semantics.
+Legacy lyrics source/text values, the former field-content Boolean, and the former content-type array are deserialized only as explicitly labeled compatibility data. They do not populate Content Classification, Vocal Intent, final-audio vocal presence, or content source. The evaluator reports the new scalar answers as `NOT DOCUMENTED` until the user explicitly supplies them; it never scans `[Intro]`, `[Verse]`, or similar text to guess semantics.
 
 ## Evidence-derived Suno automation
 
@@ -197,7 +197,7 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 - every applicable mandatory step is `PASS` or justified `N/A`;
 - no blocking deviation is open;
 - every required evidence role has a present, contained, readable file;
-- instrumental and vocal-lyrics answers are present and mutually consistent, and any populated Suno lyrics/structure field has exact text, at least one content type, and an explicit content source;
+- Suno Instrumental Mode, final-audio vocal presence, one scalar Content Classification, and an explicit Vocal Intent are all answered independently; `EMPTY` makes text/source inapplicable, while every other classification requires exact text and source and `OTHER` additionally requires a label;
 - original release and Suno-export filenames either match the documented title or have an explicit intentional-deviation confirmation;
 - every evidence-derived fact still matches the identified evidence ID, SHA-256, and embedded value, and the authoritative date fields match that fact;
 - a commercial track's recorded final-generation date is inside verified selected subscription coverage;
@@ -205,14 +205,14 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 - verified local Terms evidence is never consistent with `Terms evidence not available: YES`; the native update rejects creation of this state, and any imported contradiction is a blocking `terms_evidence_availability_conflict` that certificate rendering also refuses;
 - the Final Suno Generation facts keep date, IDs, URL, model, plan at generation, metadata origin, and download/export date as distinct values rather than conflating an ID or date;
 - the Audio AI assessment records whether generative AI was used and, when positive, the AI system, six tri-state factual indicators, and disclosure status; commercial generative-AI use with disclosure `NOT DOCUMENTED` remains blocked, while deliberate `NO` is retained without legal evaluation;
-- every policy-required artwork disclosure has `generated_disclosure` provenance, the supported generator version, the exact configured text, a verified AI-original source ID, and bytes identical to final artwork;
+- every AI artwork has an explicit disclosure `YES`/`NO`; every `YES` has `generated_disclosure` provenance, the supported generator version, the exact configured text, a verified AI-original source ID, and bytes identical to final artwork;
 - the local audio-screening record has `FINGERPRINT GENERATED` status and is bound to the current authoritative release Evidence ID, relative path, and SHA-256; an engine/format/processing failure is not converted into a fingerprint;
 - generated documents match their normalized inputs and template versions;
 - `SHA256SUMS.txt` exists and covers the required current set;
 - native re-verification has verified every listed file; and
 - the selected workflow and application versions are recorded.
 
-External timestamp evidence is deliberately absent from this gate. It can be attached only after a successful technical finalization, when the selected manifest/certificate/hash anchor is stable. Its later addendum neither changes the original gate result nor upgrades `PASS` or `DOCUMENTATION COMPLETE` into a legal or evidentiary-strength conclusion.
+External timestamp evidence is deliberately absent from this gate. It can be attached only after a successful technical finalization commit, when the phase-one anchors are stable. A configured automatic RFC-3161 action then uses only the exact finalized Evidence Manifest; manual/legacy attachment can use another permitted stable anchor. Every timestamp outcome remains separate from the gate, never rolls back `DOCUMENTATION COMPLETE`, and does not turn it into a legal or evidentiary-strength conclusion.
 
 The optional ACRCloud result is also absent from the gate. It can be requested only from Step 09 after explicit workspace configuration, and it never runs automatically during import, document generation, hash operations, opening a workspace, validation, or finalization. Its provider statuses are technical comparison facts, not copyright, ownership, permission, infringement, legality, or release-clearance determinations.
 
@@ -232,7 +232,7 @@ Every track and certificate stores both `workflow_id` and `workflow_version`. A 
 
 ```text
 Finalized with workflow 1.0
-Current workflow version: 1.8
+Current workflow version: 1.9
 ```
 
 Re-evaluation is explicit. Until the stored track version matches the current workflow, new managed documents, hashes, and certificates are blocked so a certificate cannot name an older workflow while applying newer rules. Re-evaluation creates new working state and, after successful acceptance, a new revision; it never rewrites the meaning of an archived `1.0` result.
@@ -247,7 +247,7 @@ Re-evaluation is explicit. Until the stored track version matches the current wo
 | `REQ-WFL-004` | `FAIL`, `BLOCKED`, `NOT VERIFIED`, missing evidence, stale documents, and hash failure block finalization. | [ATP-0008](../atp/active/ATP-0008-finalization-gate.md) |
 | `REQ-WFL-005` | A workflow version change never retroactively mutates a finalized certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
 | `REQ-WFL-006` | A finalized snapshot remains read-only and navigable; an explicit archived revision is required before editing or refinalization, and a post-finalization mismatch invalidates the current certificate. | [ATP-0010](../atp/active/ATP-0010-certificate-invalidation-and-revision.md) |
-| `REQ-WFL-007` | Native finalization accepts instrumental tracks with non-vocal Suno instructions, but blocks a positive instrumental/vocal contradiction, stale derivation origins, unconfirmed filename deviations, uncovered commercial generation dates, commercial Terms with missing core metadata, and any verified-Terms/unavailable contradiction. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
+| `REQ-WFL-007` | Native finalization requires the scalar Content Classification and explicitly selected Vocal Intent, accepts every Intent/final-audio cross-product without inference or mismatch blocking, and still blocks stale derivation origins, unconfirmed filename deviations, uncovered commercial generation dates, commercial Terms with missing core metadata, and any verified-Terms/unavailable contradiction. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
 | `REQ-WFL-008` | Valid structured Suno WAV metadata authoritatively derives the final-generation, production-end, and optional download/export dates without mutating a finalized snapshot. | [ATP-0015](../atp/active/ATP-0015-technical-evidence-certificate.md) |
 | `REQ-WFL-009` | Audio and Artwork AI facts remain separate, and commercial generative-AI use cannot pass with an audio disclosure status of `NOT DOCUMENTED`. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
 | `REQ-WFL-010` | `NO`, `N/A`, and `NOT DOCUMENTED` remain distinct in evaluation and generated snapshots; `PASS` means only configured step-documentation completion. | [ATP-0016](../atp/active/ATP-0016-evidence-certificate-workflow-5.md) |
@@ -287,6 +287,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-20 | Raised the workflow to 1.9 for scalar Content Classification, explicit independent Vocal Intent, explicit AI-artwork disclosure decisions, artwork identity/chronology/filename semantics, and the post-commit fixed-manifest RFC-3161 boundary. | Project team |
 | 2026-08-18 | Raised the workflow to 1.8 for current local Chromaprint screening of authoritative release evidence and optional non-blocking explicit ACRCloud screening in Step 09. | Project team |
 | 2026-08-17 | Defined verified local Terms evidence plus an unavailable claim as a native-update rejection and blocking consistency/rendering contradiction without changing workflow version 1.7. | Project team |
 | 2026-08-17 | Raised the workflow to 1.7 for separated instrumental/vocal/Suno-field facts, complete Final Suno Generation and commercial Terms metadata, separate Audio/Artwork AI assessments, precise answer/status semantics, and post-finalization timestamp boundaries. | Project team |

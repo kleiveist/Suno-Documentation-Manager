@@ -69,6 +69,22 @@ function trackFolderName(title: string): string {
   return title.trim();
 }
 
+function canonicalArtworkStem(title: string): string {
+  const stem = title.trim().replace(/[^a-z\d]+/giu, "_").replace(/^_+|_+$/gu, "").toLocaleUpperCase("en-US");
+  return stem || "TRACK";
+}
+
+function managedArtworkName(title: string, role: EvidenceRole, extension: string): string | null {
+  const suffix: Partial<Record<EvidenceRole, string>> = {
+    artwork_suno_original: "SUNO_ORIGINAL",
+    ai_artwork_original: "AI_ORIGINAL",
+    ai_artwork_edited: "AI_EDITED",
+    human_edited_artwork: "HUMAN_EDITED",
+    final_artwork: "FINAL"
+  };
+  return suffix[role] ? `${canonicalArtworkStem(title)}_${suffix[role]}.${extension}` : null;
+}
+
 function trackRelativePath(library: TrackLibraryAssignment, title: string): string {
   const parent = library.section === "album" ? library.albumTitle!.trim() : "Singles";
   return `${parent}/${trackFolderName(title)}`;
@@ -139,8 +155,10 @@ function makeTrack(
     finalExportDate: complete ? "2026-07-24" : "",
     instrumentalTrack: complete ? false : null,
     vocalLyricsPresent: complete ? true : null,
-    sunoLyricsFieldContent: complete ? true : null,
-    sunoLyricsContentTypes: complete ? ["vocal_lyrics"] : [],
+    vocalIntent: complete ? "VOCAL" : null,
+    sunoLyricsFieldContent: null,
+    sunoContentClassification: complete ? "VOCAL_LYRICS_ONLY" : null,
+    sunoLyricsContentTypes: [],
     sunoLyricsContentSource: complete ? ("human" as const) : null,
     sunoLyricsFieldText: complete ? "Eigene Lyrics – im Track-Dokument vollständig gespeichert." : "",
     sunoStylePrompt: complete ? "cinematic synthwave, driving bass, wide vocal" : "",
@@ -171,13 +189,17 @@ function makeTrack(
     audioDisclosureLocations: complete ? ["Release-Metadaten"] : [],
     audioDisclosureText: complete ? "AI-generated audio" : ""
   };
-  const originalArtwork = evidence("ai_artwork_original", `${title}_AI_ORIGINAL.png`);
+  const originalArtwork = evidence("ai_artwork_original", managedArtworkName(title, "ai_artwork_original", "png")!);
   const disclosedArtwork: EvidenceItem = {
-    ...evidence("ai_artwork_edited", `${title}_AI_EDITED.png`),
+    ...evidence("ai_artwork_edited", managedArtworkName(title, "ai_artwork_edited", "png")!),
     provenance: "generated_disclosure",
     derivedFromEvidenceId: originalArtwork.id,
     generatorVersion: "local-disclosure-v1",
     generatedDisclosureText: fields.disclosureText
+  };
+  const finalArtwork: EvidenceItem = {
+    ...evidence("final_artwork", managedArtworkName(title, "final_artwork", "jpeg")!),
+    sha256: disclosedArtwork.sha256
   };
   const items = complete
     ? [
@@ -186,7 +208,7 @@ function makeTrack(
         { ...evidence("subscription_payment", "subscription_2026-07.pdf"), provenance: "global_copy" as const, sourceGlobalEvidenceId: "demo-global-subscription", coverageStart: "2026-07-01", coverageEnd: "2026-07-31" },
         originalArtwork,
         disclosedArtwork,
-        evidence("final_artwork", `${title}_FINAL.jpeg`),
+        finalArtwork,
         {
           ...evidence("suno_terms_rights", "suno_terms.pdf"),
           provenance: "global_copy" as const,
@@ -250,7 +272,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.9",
+      templateVersion: "1.10",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -324,9 +346,9 @@ function timestampProviderCapabilities(provider: TimestampProviderKind): Timesta
     openTimestamps: provider === "open_timestamps",
     requiresAuthentication: provider === "custom_rfc3161",
     supportsSha256: provider !== "disabled",
-    supportsOfflineVerification: provider === "open_timestamps",
+    supportsOfflineVerification: provider === "open_timestamps" || rfc3161,
     returnsSignedTimestamp: rfc3161,
-    externalTrustRootAvailable: provider === "sigstore_public_tsa",
+    externalTrustRootAvailable: false,
     qualificationStatus: "unknown"
   };
 }
@@ -339,7 +361,13 @@ function configuredTimestampProviderStatus(
     return { status: "disabled", statusMessage: "External timestamp service is disabled." };
   }
   if (settings.provider !== "custom_rfc3161") {
-    return { status: "ready", statusMessage: `${timestampProviderLabel(settings.provider)} is ready for a timestamp request.` };
+    if (settings.provider !== "open_timestamps" && !settings.custom.caCertificatePath.trim()) {
+      return {
+        status: "verification_configuration_incomplete",
+        statusMessage: "Select an explicit TSA CA trust-anchor file before RFC 3161 responses can be marked VERIFIED."
+      };
+    }
+    return { status: "ready", statusMessage: `${timestampProviderLabel(settings.provider)} and its explicit trust anchor are ready.` };
   }
   if (!settings.custom.providerName.trim() || !settings.custom.endpoint.trim()) {
     return {
@@ -356,7 +384,13 @@ function configuredTimestampProviderStatus(
   if (settings.custom.authenticationMode === "client_certificate" && !settings.custom.clientCertificatePath.trim()) {
     return { status: "authentication_required", statusMessage: "Select a configured client certificate for this provider." };
   }
-  return { status: "ready", statusMessage: `${settings.custom.providerName.trim()} is ready for a timestamp request.` };
+  if (!settings.custom.caCertificatePath.trim()) {
+    return {
+      status: "verification_configuration_incomplete",
+      statusMessage: "Select an explicit TSA CA trust-anchor file before RFC 3161 responses can be marked VERIFIED."
+    };
+  }
+  return { status: "ready", statusMessage: `${settings.custom.providerName.trim()} and its explicit trust anchor are ready.` };
 }
 
 function normalizeTimestampSettings(next: TimestampSettings, timestampSecretConfigured = false): TimestampSettings {
@@ -416,6 +450,50 @@ function normalizeAudioScreeningSettings(
     localEngineVersion: undefined
   };
   return { ...normalized, ...configuredAudioScreeningStatus(normalized, credentialsConfigured) };
+}
+
+export function normalizeCanonicalSunoSemantics(fields: TrackDetail["fields"]): void {
+  if (fields.sunoContentClassification === null) return;
+  fields.sunoLyricsFieldContent = null;
+  fields.sunoLyricsContentTypes = [];
+  if (fields.sunoContentClassification === "EMPTY") {
+    fields.sunoLyricsContentSource = null;
+    fields.sunoLyricsFieldText = "";
+    fields.sunoLyricsOtherContentType = "";
+  } else if (fields.sunoContentClassification !== "OTHER") {
+    fields.sunoLyricsOtherContentType = "";
+  }
+}
+
+export function migrateLegacySunoSemantics(fields: TrackDetail["fields"]): void {
+  if (fields.sunoContentClassification !== null) {
+    normalizeCanonicalSunoSemantics(fields);
+    return;
+  }
+  const legacy = fields.sunoLyricsContentTypes ?? [];
+  let classification: TrackDetail["fields"]["sunoContentClassification"] = null;
+  if (fields.sunoLyricsFieldContent === false) {
+    classification = "EMPTY";
+  } else if (legacy.length > 0) {
+    const onlyVocal = legacy.every((value) => value === "vocal_lyrics");
+    const isInstruction = (value: (typeof legacy)[number]): boolean => [
+      "structure_instructions",
+      "sound_instructions",
+      "arrangement_instructions"
+    ].includes(value);
+    const onlyInstructions = legacy.every(isInstruction);
+    const onlyOther = legacy.every((value) => value === "other");
+    const hasVocal = legacy.includes("vocal_lyrics");
+    const hasInstruction = legacy.some(isInstruction);
+    const onlyVocalAndInstructions = legacy.every((value) => value === "vocal_lyrics" || isInstruction(value));
+    if (onlyVocal) classification = "VOCAL_LYRICS_ONLY";
+    else if (onlyInstructions) classification = "STRUCTURE_ONLY";
+    else if (onlyOther) classification = "OTHER";
+    else if (hasVocal && hasInstruction && onlyVocalAndInstructions) classification = "MIXED";
+  }
+  if (classification === null) return;
+  fields.sunoContentClassification = classification;
+  normalizeCanonicalSunoSemantics(fields);
 }
 
 function reconcileAutomaticDate(
@@ -1042,6 +1120,7 @@ export function createDemoApi(): DesktopApi {
       const track = mutableTrack(trackId);
       const previousTitle = track.fields.title;
       track.fields = { ...track.fields, ...clone(patch) };
+      normalizeCanonicalSunoSemantics(track.fields);
       if (patch.title !== undefined) {
         track.relativePath = trackRelativePath(track.library, patch.title);
         if (patch.title !== previousTitle) {
@@ -1117,7 +1196,7 @@ export function createDemoApi(): DesktopApi {
             : "zip";
       const next = role === "suno_final_export"
         ? sunoEvidence(`${role}.${extension}`, "2026-08-17T06:38:06Z")
-        : evidence(role, `${role}.${extension}`);
+        : evidence(role, managedArtworkName(track.title, role, extension) ?? `${role}.${extension}`);
       const replaceIndex = replaceEvidenceId
         ? track.evidence.findIndex((item) => item.id === replaceEvidenceId && item.role === role)
         : -1;
@@ -1184,7 +1263,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.9",
+        templateVersion: "1.10",
         files: documentFiles
       };
       track.integrity.generated = false;
@@ -1201,7 +1280,7 @@ export function createDemoApi(): DesktopApi {
       if (!source) throw new Error("Importiere zuerst das unveränderte KI-Artwork.");
       if (!track.evidence.some((item) => item.role === "ai_artwork_edited")) {
         track.evidence.push({
-          ...evidence("ai_artwork_edited", `${track.title}_AI_EDITED.png`),
+          ...evidence("ai_artwork_edited", managedArtworkName(track.title, "ai_artwork_edited", "png")!),
           provenance: "generated_disclosure",
           derivedFromEvidenceId: source.id,
           generatorVersion: "local-disclosure-v1",
@@ -1403,6 +1482,7 @@ export function createDemoApi(): DesktopApi {
       if (track.status !== "FINALIZED") {
         throw new Error("Nur ein finalisierter Track kann eine neue Revision beginnen.");
       }
+      migrateLegacySunoSemantics(track.fields);
       track.status = "ACTIVE";
       track.certificate = { valid: false };
       track.integrity.generated = false;
@@ -1426,6 +1506,7 @@ export function createDemoApi(): DesktopApi {
         throw new Error("Der Track wurde durch eine neuere Revision ersetzt und kann nicht mehr geändert werden.");
       }
       const archived = track.status === "FINALIZED";
+      migrateLegacySunoSemantics(track.fields);
       track.workflowId = WORKFLOW_ID;
       track.workflowVersion = WORKFLOW_VERSION;
       track.status = "ACTIVE";

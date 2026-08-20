@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-17 |
+| Last review | 2026-08-20 |
 | Audience | Developers implementing or reviewing legacy import |
 | Related ATP | [ATP-0003: Legacy track import](../atp/active/ATP-0003-legacy-track-import.md) |
 
@@ -44,7 +44,7 @@ Legacy scanning is read-only with respect to every candidate track directory. It
 4. Never follow a symbolic link outside the canonical workspace root.
 5. Never turn an unknown answer into `No` solely to make a branch N/A.
 6. Never write a managed document over existing content before preview, confirmation, and backup.
-7. Never infer vocal presence, Suno-field content type, or human contribution from lyrics text or bracket syntax.
+7. Never infer Vocal Intent, final-audio vocal presence, Content Classification, or human contribution from lyrics text or bracket syntax. Only an explicit workflow upgrade or new revision may map an unambiguous historical content array; it never migrates Vocal Intent.
 8. Never bind a historical timestamp-like file to a certificate or revision without the explicit post-finalization attachment transaction.
 
 ## Candidate detection
@@ -103,11 +103,11 @@ Conflicting documents, duplicate candidate roles, malformed manifests, unsupport
 
 ## Semantic migration of older track JSON
 
-Older `lyricsSource` and `lyricsText` values remain readable under explicitly labeled legacy compatibility fields. They do not populate the new `Vocal lyrics present`, `Suno lyrics/structure field content`, content-type, or content-source answers. In particular, the importer does not interpret `[Intro]`, `[Drop]`, `[Verse]`, or unrestricted prose. The new facts remain `NOT DOCUMENTED` until the user reviews them in a non-finalized track or an explicitly created revision.
+Older `lyricsSource` and `lyricsText` values remain readable under explicitly labeled legacy compatibility fields. They do not populate Content Classification, Vocal Intent, final-audio vocal presence, or content source. In particular, the importer does not interpret `[Intro]`, `[Drop]`, `[Verse]`, or unrestricted prose. The new facts remain `NOT DOCUMENTED` until the user reviews them in a non-finalized track or an explicitly created revision.
 
 The former `sunoPlanAtCreation` JSON name remains readable only as the separate `legacySunoPlanAtCreation` historical value. It is never copied into or presented as `sunoPlanAtGeneration`. If an older track has no explicitly confirmed new value, `Suno plan at generation` remains `NOT DOCUMENTED` and the applicable workflow requirement remains blocked until the user confirms it in mutable state. Generated review output may show the legacy value as historical user data, but it must state that this is not a plan-at-generation claim. Known provider suggestions apply only to new selections; historical spellings are preserved.
 
-Existing finalized certificate, manifest, hash, PDF, and revision bytes are never upgraded in place. Workflow 1.7, template 1.8, manifest schema 5, certificate/PDF 5.0, and the new semantic fields apply to new tracks, mutable older tracks, or a new revision after the prior snapshot has been archived.
+Existing finalized certificate, manifest, hash, PDF, timestamp sidecar, and revision bytes are never upgraded in place. Current workflow 1.9, template 1.10, manifest schema 7, certificate/PDF format 6.0, PDF/A-2b output, and the new semantic fields apply only to new tracks, mutable older tracks, or a new revision after the prior snapshot has been archived. No importer renames historical or finalized artwork to the current title-based convention, embeds fonts into an older PDF, or promotes a manual/legacy timestamp record to cryptographically verified RFC-3161 evidence.
 
 ## Scan algorithm
 
@@ -206,6 +206,7 @@ Reviewers compare pre-scan and post-scan candidate-tree hashes to prove that dis
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-20 | Clarified that current workflow/template/manifest/certificate/PDF-A behavior applies only to mutable or new revisions and never renames artwork, rewrites older PDFs, or promotes legacy timestamp evidence. | Project team |
 | 2026-08-17 | Corrected migration semantics so legacy plan-at-creation remains separate and the new plan-at-generation stays `NOT DOCUMENTED` until explicit confirmation. | Project team |
 | 2026-08-17 | Documented non-inferential migration for legacy lyrics/provider fields, exact `NO`/`N/A`/`NOT DOCUMENTED` semantics, immutable older certificate formats, and explicit revision-bound timestamp attachment. | Project team |
 | 2026-08-13 | Added indexed-legacy provenance, recoverable evidence removal, and marker-scoped certificate recovery. | Project team |

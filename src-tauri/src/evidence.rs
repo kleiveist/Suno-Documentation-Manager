@@ -134,6 +134,11 @@ pub fn validate_type(role: &EvidenceRole, source: &Path) -> Result<()> {
 }
 
 fn validate_signature(source: &Path, extension: &str) -> Result<()> {
+    const OPEN_TIMESTAMPS_DETACHED_MAGIC: &[u8] = &[
+        0x00, b'O', b'p', b'e', b'n', b'T', b'i', b'm', b'e', b's', b't', b'a', b'm', b'p', b's',
+        0x00, 0x00, b'P', b'r', b'o', b'o', b'f', 0x00, 0xbf, 0x89, 0xe2, 0xe8, 0x84, 0xe8, 0x92,
+        0x94,
+    ];
     let mut file = fs::File::open(source).map_err(|error| AppError::io(source, error))?;
     let mut header = [0_u8; 64];
     let count = file
@@ -174,6 +179,7 @@ fn validate_signature(source: &Path, extension: &str) -> Result<()> {
         // inferred here; the dedicated timestamp workflow records and hashes
         // the exact non-empty bytes.
         "tsr" | "tst" | "p7s" => !bytes.is_empty(),
+        "ots" => bytes.starts_with(OPEN_TIMESTAMPS_DETACHED_MAGIC),
         _ => false,
     };
     if count == 0 || !matches {
@@ -555,26 +561,29 @@ fn managed_file_name(track_title: &str, role: &EvidenceRole, original: &str) -> 
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let release_role = matches!(
-        role,
-        EvidenceRole::ReleaseWav | EvidenceRole::ReleaseMp3 | EvidenceRole::ReleaseMp4
-    );
-    let safe_title = if release_role {
-        crate::security::safe_file_stem(track_title)?
-    } else {
-        crate::security::slugify(track_title)?
-    };
     let suffix = match role {
         EvidenceRole::ArtworkSunoOriginal => Some("SUNO_ORIGINAL"),
         EvidenceRole::AiArtworkOriginal => Some("AI_ORIGINAL"),
         EvidenceRole::AiArtworkEdited => Some("AI_EDITED"),
-        EvidenceRole::HumanEditedArtwork => Some("EDITED"),
+        EvidenceRole::HumanEditedArtwork => Some("HUMAN_EDITED"),
         EvidenceRole::FinalArtwork => Some("FINAL"),
         _ => None,
     };
     Ok(match suffix {
-        Some(suffix) => format!("{safe_title}_{suffix}.{extension}"),
-        None if release_role => format!("{safe_title}.{extension}"),
+        Some(suffix) => format!(
+            "{}_{suffix}.{extension}",
+            crate::security::canonical_artwork_stem(track_title)?
+        ),
+        None if matches!(
+            role,
+            EvidenceRole::ReleaseWav | EvidenceRole::ReleaseMp3 | EvidenceRole::ReleaseMp4
+        ) =>
+        {
+            format!(
+                "{}.{extension}",
+                crate::security::safe_file_stem(track_title)?
+            )
+        }
         None => original.to_owned(),
     })
 }
@@ -732,17 +741,24 @@ mod tests {
         let source = directory.path().join("original.png");
         fs::write(&source, b"\x89PNG\r\n\x1a\nfixture bytes").expect("artwork source");
 
-        let imported = import(
-            &track_root,
-            "My Track",
-            EvidenceRole::AiArtworkOriginal,
-            &source,
-        )
-        .expect("artwork import");
-        assert_eq!(
-            imported.relative_path,
-            "05_ARTWORK/My-Track_AI_ORIGINAL.png"
-        );
+        for (role, expected) in [
+            (
+                EvidenceRole::AiArtworkOriginal,
+                "05_ARTWORK/MY_TRACK_AI_ORIGINAL.png",
+            ),
+            (
+                EvidenceRole::AiArtworkEdited,
+                "05_ARTWORK/MY_TRACK_AI_EDITED.png",
+            ),
+            (
+                EvidenceRole::HumanEditedArtwork,
+                "05_ARTWORK/MY_TRACK_HUMAN_EDITED.png",
+            ),
+            (EvidenceRole::FinalArtwork, "05_ARTWORK/MY_TRACK_FINAL.png"),
+        ] {
+            let imported = import(&track_root, "My Track", role, &source).expect("artwork import");
+            assert_eq!(imported.relative_path, expected);
+        }
 
         let disguised = directory.path().join("disguised.png");
         fs::write(&disguised, b"plain text, not a PNG").expect("disguised artwork");

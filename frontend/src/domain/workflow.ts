@@ -21,7 +21,7 @@ export interface WorkflowStepDefinition {
 }
 
 export const WORKFLOW_ID = "suno-track";
-export const WORKFLOW_VERSION = "1.8";
+export const WORKFLOW_VERSION = "1.9";
 
 export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
@@ -185,12 +185,26 @@ const hasDisclosedFinalArtwork = (evidence: EvidenceItem[], fields: TrackFields)
     && disclosedHashes.has(item.sha256!)
   );
 };
+export const humanEditedFinalArtworkStatus = (evidence: EvidenceItem[]): "BYTE-IDENTICAL / SHA-256 MATCH" | "NO SHA-256 MATCH" | "NOT VERIFIED" => {
+  const verifiedForRole = (role: EvidenceRole): EvidenceItem[] => evidence.filter((item) =>
+    item.role === role
+    && item.verified
+    && Boolean(item.sha256)
+    && !item.verificationError
+  );
+  const humanEdited = verifiedForRole("human_edited_artwork");
+  const finalArtwork = verifiedForRole("final_artwork");
+  if (!humanEdited.length || finalArtwork.length !== 1) return "NOT VERIFIED";
+  return humanEdited.some((item) => item.sha256 === finalArtwork[0].sha256)
+    ? "BYTE-IDENTICAL / SHA-256 MATCH"
+    : "NO SHA-256 MATCH";
+};
 const isAiArtwork = (fields: TrackFields): boolean =>
   fields.artworkOrigin === "ai_generated" || fields.artworkOrigin === "ai_assisted";
 const hasCoveringSubscriptionEvidence = (evidence: EvidenceItem[], fields: TrackFields): boolean =>
   subscriptionProductionCoverageStatus(evidence, fields) === "YES";
 
-export function visibleConditionalFields(fields: TrackFields, profile: GlobalProfile): Set<string> {
+export function visibleConditionalFields(fields: TrackFields, _profile: GlobalProfile): Set<string> {
   const visible = new Set<string>();
   if (fields.externalAudioUploaded === true) {
     visible.add("externalAudioSource");
@@ -222,11 +236,10 @@ export function visibleConditionalFields(fields: TrackFields, profile: GlobalPro
   }
   if (fields.humanEditingPerformed === true) visible.add("humanEditingDetails");
   if (fields.postExportEditingPerformed === true) visible.add("postExportEditingDetails");
-  if (fields.sunoLyricsFieldContent === true) {
-    visible.add("sunoLyricsContentTypes");
+  if (fields.sunoContentClassification !== null && fields.sunoContentClassification !== "EMPTY") {
     visible.add("sunoLyricsContentSource");
     visible.add("sunoLyricsFieldText");
-    if (fields.sunoLyricsContentTypes.includes("other")) visible.add("sunoLyricsOtherContentType");
+    if (fields.sunoContentClassification === "OTHER") visible.add("sunoLyricsOtherContentType");
   }
   if (fields.generativeAiUsed === true) {
     visible.add("audioAiSystem");
@@ -241,7 +254,7 @@ export function visibleConditionalFields(fields: TrackFields, profile: GlobalPro
   if (isAiArtwork(fields)) {
     visible.add("aiImageService");
     visible.add("aiArtworkOriginal");
-    if (profile.artworkTransparencyPolicy !== "none" && !contentCheckAllNegative(fields)) visible.add("disclosure");
+    visible.add("disclosure");
   }
   if (fields.artworkOrigin === "human") visible.add("humanArtworkProcessOperations");
   if (fields.artworkOrigin === "ai_assisted") {
@@ -319,24 +332,13 @@ export function evaluateRequirements(
   add("suno-filename", "suno", "Suno-Exportdateiname stimmt mit Titel überein oder Abweichung ist bestätigt", filenameRequirementMet(evidence, "suno_final_export", fields.title, fields.sunoExportFilenameDifferenceConfirmed), "suno_final_export");
 
   add("instrumental-answer", "human_work", "Angabe: Instrumentaltrack", fields.instrumentalTrack !== null);
-  add("vocal-lyrics-answer", "human_work", "Angabe: Vocal Lyrics vorhanden", fields.vocalLyricsPresent !== null);
-  if (fields.instrumentalTrack !== null && fields.vocalLyricsPresent !== null) {
-    const vocalClassificationConflict = fields.sunoLyricsFieldContent === true
-      && fields.vocalLyricsPresent === false
-      && fields.sunoLyricsContentTypes.includes("vocal_lyrics");
-    add(
-      "instrumental-vocal-consistency",
-      "human_work",
-      "Instrumental-/Vocal-Angaben und die Vocal-Lyrics-Klassifikation müssen widerspruchsfrei sein",
-      !(fields.instrumentalTrack && fields.vocalLyricsPresent) && !vocalClassificationConflict
-    );
-  }
-  add("suno-lyrics-field-answer", "human_work", "Angabe: Inhalt im Suno-Lyrics-/Structure-Feld", fields.sunoLyricsFieldContent !== null);
-  if (fields.sunoLyricsFieldContent === true) {
-    add("suno-lyrics-content-types", "human_work", "Art des Inhalts im Suno-Lyrics-/Structure-Feld", hasSelections(fields.sunoLyricsContentTypes));
+  add("final-audio-vocals", "human_work", "Angabe: Finales Audio enthält Gesang", fields.vocalLyricsPresent !== null);
+  add("vocal-intent", "human_work", "Beabsichtigte Gesangsnutzung", fields.vocalIntent !== null);
+  add("suno-content-classification", "human_work", "Eindeutige Inhaltsklassifizierung des Suno Generation Text Field", fields.sunoContentClassification !== null);
+  if (fields.sunoContentClassification !== null && fields.sunoContentClassification !== "EMPTY") {
     add("suno-lyrics-content-source", "human_work", "Quelle des Inhalts im Suno-Lyrics-/Structure-Feld", fields.sunoLyricsContentSource !== null);
     add("suno-lyrics-field-text", "human_work", "Exakter Inhalt des Suno-Lyrics-/Structure-Felds", hasText(fields.sunoLyricsFieldText));
-    if (fields.sunoLyricsContentTypes.includes("other")) {
+    if (fields.sunoContentClassification === "OTHER") {
       add("suno-lyrics-other-content-type", "human_work", "Beschreibung des sonstigen Suno-Feldinhalts", hasText(fields.sunoLyricsOtherContentType));
     }
   }
@@ -357,10 +359,7 @@ export function evaluateRequirements(
     if (fields.depictsRealPerson === true) add("real-person-notes", "artwork", "Notiz zur dargestellten realen Person", hasText(fields.realPersonNotes));
     if (fields.depictsRealEvent === true) add("real-event-notes", "artwork", "Notiz zum dargestellten realen Ereignis", hasText(fields.realEventNotes));
     if (fields.containsTrademark === true) add("trademark-notes", "artwork", "Notiz zur dargestellten Marke oder zum Logo", hasText(fields.trademarkNotes));
-    const disclosureRequired = isAiArtwork(fields)
-      && !contentCheckAllNegative(fields)
-      && (profile.artworkTransparencyPolicy === "always"
-        || (profile.artworkTransparencyPolicy === "per_artwork" && fields.disclosureApplied === true));
+    const disclosureRequired = isAiArtwork(fields) && fields.disclosureApplied === true;
     const finalArtworkComplete = disclosureRequired
       ? hasDisclosedFinalArtwork(evidence, fields)
       : hasEvidence(evidence, "final_artwork");
@@ -376,19 +375,18 @@ export function evaluateRequirements(
       add("ai-service", "ai_transparency", "Verwendeter KI-Bilddienst", hasText(fields.aiImageService));
       add("profile-ai-service", "ai_transparency", "Globaler Standarddienst für KI-Bilder", hasText(profile.defaultAiImageService));
       add("ai-policy", "ai_transparency", "KI-Transparenzrichtlinie", hasText(profile.artworkTransparencyPolicy));
-      const hasDisclosureArtifact = localDisclosureArtifacts(evidence, fields).length > 0;
-      if (profile.artworkTransparencyPolicy === "always" && (fields.disclosureApplied !== true || !hasDisclosureArtifact)) {
-        add("ai-disclosure", "ai_transparency", "Sichtbarer KI-Hinweis", false);
-      } else if (profile.artworkTransparencyPolicy === "always") {
-        add("ai-disclosure", "ai_transparency", "Sichtbarer KI-Hinweis", true);
-      } else if (profile.artworkTransparencyPolicy === "per_artwork" && fields.disclosureApplied === null) {
-        add("ai-disclosure-decision", "ai_transparency", "Entscheidung zum sichtbaren KI-Hinweis", false);
-      } else if (profile.artworkTransparencyPolicy === "per_artwork" && fields.disclosureApplied === true && !hasDisclosureArtifact) {
-        add("ai-disclosure-decision", "ai_transparency", "Erzeugte Fassung mit sichtbarem KI-Hinweis", false);
-      } else if (profile.artworkTransparencyPolicy === "per_artwork") {
-        add("ai-disclosure-decision", "ai_transparency", "Entscheidung zum sichtbaren KI-Hinweis", true);
-      }
     }
+    const hasDisclosureArtifact = localDisclosureArtifacts(evidence, fields).length > 0;
+    const disclosureDecisionComplete = fields.disclosureApplied === false
+      || (fields.disclosureApplied === true && hasText(fields.disclosureText) && hasDisclosureArtifact);
+    add(
+      "ai-disclosure-decision",
+      "ai_transparency",
+      fields.disclosureApplied === true
+        ? "Artwork-Hinweistext und lokal erzeugte Fassung"
+        : "Explizite YES-/NO-Entscheidung zum Artwork-Hinweis",
+      disclosureDecisionComplete
+    );
   }
 
   add("generative-ai-answer", "ai_transparency", "Angabe zur Verwendung generativer KI im Audio", fields.generativeAiUsed !== null);

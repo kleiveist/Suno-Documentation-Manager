@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-18 |
+| Last review | 2026-08-20 |
 | Audience | Product developers and architects |
 | Related ATP | [Active product acceptance](../atp/active/active.md) |
 
@@ -62,7 +62,7 @@ flowchart LR
     Services -.->|explicit optional HTTPS request only| Provider
 ```
 
-There is no backend service, remote database, telemetry endpoint, cloud dependency, or required runtime network edge. The only runtime network edges are optional and user-started: a configured external timestamp provider after finalization and an ACRCloud identification request in Step 09. Neither is contacted during startup, import, replacement, document/hash generation, verification, workflow evaluation, or finalization.
+There is no backend service, remote database, telemetry endpoint, cloud dependency, or required runtime network edge. The only runtime network edges are optional and user-started: a configured external timestamp provider after the phase-one finalization commit and an ACRCloud identification request in Step 09. Neither is contacted during startup, import, replacement, document/hash generation, verification, workflow evaluation, or the immutable phase-one certificate transaction. When explicitly enabled, automatic timestamping is a separate phase two reached by the user's finalization action; its failure cannot roll back phase one.
 
 ## Runtime responsibilities
 
@@ -78,7 +78,7 @@ There is no backend service, remote database, telemetry endpoint, cloud dependen
 | `ArtworkService` | Produce a local visible disclosure while preserving the AI original and documenting the process | Replace an original image or label project policy as a universal legal requirement |
 | `AudioScreeningService` | Run the bundled verified Chromaprint engine against authoritative release evidence; create bounded, explicit ACRCloud sample requests and portable technical records | Use a system executable, upload a Chromaprint fingerprint, retry or contact a provider in the background, expose credentials, or make a legal/rights conclusion |
 | `HashService` | Generate and verify SHA-256 records using native Rust code | Depend on a shell command for normal product behavior or hash excluded mutable areas |
-| `CertificateService` | Validate the finalization gate, produce certificate artifacts, expose stable anchors, durably stage/register/publish certificate-bound external-timestamp addenda, reverify current and archived published bytes, detect later mismatch, invalidate, archive, and revise | Assert authorship, timestamp qualification, legal compliance, evidentiary weight, or governmental certification; auto-adopt unregistered timestamp metadata |
+| `CertificateService` | Validate the finalization gate; produce PDF/A-2b certificate artifacts; fix the automatic RFC-3161 anchor to the finalized manifest; verify imprint, nonce, policy, CMS signature, strict TSA EKU/time validity, and explicitly pinned chain; durably stage/register/publish addenda; reverify current/archived sidecar bytes; invalidate, archive, and revise | Assert authorship, timestamp legal qualification, legal compliance, evidentiary weight, or governmental certification; trust an implicit TSA root; promote manual/legacy/OTS evidence to RFC-3161 verification; auto-adopt unregistered timestamp metadata |
 | `PersistenceService` | Own the SQLite connection, transactions, migrations, and index recovery | Accept raw SQL from TypeScript or make SQLite the only surviving track record |
 
 ## Typed command boundary
@@ -157,7 +157,7 @@ Portable finalized track state
     ├── imported evidence
     ├── generated documentation
     ├── SHA256SUMS.txt
-    ├── certificate, manifest, and root-level technical PDF
+    ├── certificate, manifest, and both root-level technical PDFs
     └── archived revisions
 ```
 
@@ -165,11 +165,11 @@ SQLite makes local interaction transactional and efficient. It is intentionally 
 
 Evidence metadata distinguishes `managed_copy`, `global_copy`, `generated_disclosure`, and `indexed_legacy`. Generated disclosure records link to the verified AI-original evidence ID and retain the generator version and exact disclosure text. Those portable manifest fields allow a reviewer and the native gate to distinguish local derivation from a manually imported look-alike.
 
-Finalization renders `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` (English) and `SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf` (German) locally in native Rust from the same frozen track/profile/step/evidence snapshot as the JSON manifest and Markdown certificate. Both fixed root PDFs are excluded from the earlier `SHA256SUMS.txt` set to avoid cycles; their complete SHA-256 digests are instead required entries in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`. The certificate directory and both root PDFs share one marker-backed staging, verification, rollback, recovery, and revision lifecycle.
+Finalization renders `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` (English) and `SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf` (German) locally in native Rust from the same frozen track/profile/step/evidence snapshot as the JSON manifest and Markdown certificate. Current format-6.0 output is deterministic PDF/A-2b with complete bundled DejaVu 2.37 font programs and a CMYK FOGRA39 output intent. Both fixed root PDFs are excluded from the earlier `SHA256SUMS.txt` set to avoid cycles; their complete SHA-256 digests are instead required entries in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`. The certificate directory and both root PDFs share one marker-backed staging, verification, rollback, recovery, and revision lifecycle.
 
 The pre-release audio-screening service is local by default. Its bundled pinned Chromaprint runner is selected by application target and hash-checked before direct execution; it does not use the `PATH`, a user-selected executable, or a substitute hash-based algorithm. The resulting `03_DOCUMENTATION/AUDIO_SCREENING/LOCAL_FINGERPRINT.json`, detached `LOCAL_FINGERPRINT.sha256`, and `AUDIO_SCREENING.md` are portable phase-one documentation and therefore flow through normal document freshness and SHA-256 integrity processing. ACRCloud is an optional, separate user-started HTTPS edge: secrets stay in workspace-local private configuration, the request uses only a bounded audio sample, and its structured result plus any safe provider response are archived as normal hash-covered documentation artifacts. It cannot block finalization or alter a finalized snapshot.
 
-Post-finalization timestamp attachment uses a separate two-authority transaction: create and verify immutable sidecar-v1 bytes in contained staging, synchronize the completed stage and parent, register the certificate-bound row in SQLite, then publish and synchronize the registered directory live. A compensating database rollback occurs only after live removal is parent-synchronized; otherwise the registration remains recoverable. Workspace recovery completes only matching registered pending state, discards unregistered staging, and rejects an unregistered live sidecar. Load verification requires the canonical immutable record bytes, rejects injected runtime/trust claims even with a renewed hash list, and hashes the published addendum bytes and pinned Markdown/PDF digests without invoking the current renderer; the mutable current integrity result exists only in the returned view model. Revision lookup requires `revision.json.previous_certificate.certificateId` to match the sidecar, keeping registered archived records visible and independently verifiable without folding them into the base certificate result.
+Post-finalization timestamp attachment uses a separate two-authority transaction: create and verify immutable sidecar-v1 bytes in contained staging, synchronize the completed stage and parent, register the certificate-bound row in SQLite, then publish and synchronize the registered directory live. Automatic RFC-3161 fixes the anchor to the exact finalized Evidence Manifest and verifies the SHA-256 imprint, nonce, policy contract, CMS signature, critical sole timestamping EKU, validity at `genTime`, and chain to explicit local TSA trust anchors before a `VERIFIED` record can be staged. Manual/legacy evidence remains a hash-comparison record; initial OpenTimestamps evidence remains `ATTACHED`. A compensating database rollback occurs only after live removal is parent-synchronized; otherwise the registration remains recoverable. Workspace recovery completes only matching registered pending state, discards unregistered staging, and rejects an unregistered live sidecar. Load verification requires canonical immutable record bytes and exact published hashes without invoking the current renderer or network; it reconstructs positive RFC-3161 status only from an intact complete predicate bound to the manifest/certificate/revision. Revision lookup requires `revision.json.previous_certificate.certificateId` to match the sidecar, keeping archived records independently verifiable without folding them into the base certificate result.
 
 Evidence import is dispatched as blocking native work rather than running on the webview event loop. Copy and SHA-256 calculation share one bounded-buffer stream. Routine track loading performs metadata checks instead of repeatedly hashing evidence above 64 MiB; explicit verification and integrity/finalization remain full checks. Preview commands embed only bounded images or text, and treat project ZIPs as metadata-only. An explicit replacement preserves the evidence ID, archives the previous bytes, and coordinates the filesystem change with the SQLite update so an occupied `(track_id, relative_path)` never becomes a raw user-facing uniqueness error.
 
@@ -229,6 +229,7 @@ Acceptance owners execute [ATP-0012](../atp/active/ATP-0012-filesystem-containme
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-20 | Added the phase-one/phase-two network boundary, fixed-manifest RFC-3161 trust predicate with explicit TSA roots, manual/OTS separation, and PDF/A-2b/full-font certificate architecture. | Project team |
 | 2026-08-18 | Added the local Chromaprint and explicit optional ACRCloud screening boundary, provider network edge, portability/integrity rules, and ATP-0017 mapping. | Project team |
 | 2026-08-17 | Added the sidecar-v1 database-before-live publication, recovery, immutable-byte verification, and archived-sidecar architecture. | Project team |
 | 2026-08-17 | Added the typed Terms-metadata update and post-finalization external-timestamp command boundaries, including the prohibition on legal qualification claims. | Project team |
