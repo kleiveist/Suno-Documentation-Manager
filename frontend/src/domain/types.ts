@@ -405,6 +405,8 @@ export interface AutomaticConsistencyFinding {
   level: AutomaticConsistencyFindingLevel;
   message: string;
   stepId: StepId;
+  /** Free-form deviation content is display data, not localizable system copy. */
+  userProvided?: boolean;
 }
 
 export interface AutomaticConsistencyPresentation {

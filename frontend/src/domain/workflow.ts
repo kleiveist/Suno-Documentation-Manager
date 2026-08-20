@@ -31,9 +31,9 @@ export const WORKFLOW_STEPS: readonly WorkflowStepDefinition[] = [
   { id: "track", number: "01", shortLabel: "Track", title: "Track", description: "Titel und Produktionszeitraum", required: true },
   { id: "source", number: "02", shortLabel: "Quelle", title: "Source", description: "Audioquellen und Rechtezuordnung", required: true },
   { id: "suno", number: "03", shortLabel: "Suno", title: "Suno", description: "Projekt, Modell und Erstellungstarif", required: true },
-  { id: "human_work", number: "04", shortLabel: "Human Work", title: "Menschliche Arbeit", description: "Vocal Lyrics, Suno-Feldinhalt und bestätigte Bearbeitungen", required: true },
+  { id: "human_work", number: "04", shortLabel: "Human work", title: "Menschliche Arbeit", description: "Vocal Lyrics, Suno-Feldinhalt und bestätigte Bearbeitungen", required: true },
   { id: "artwork", number: "05", shortLabel: "Artwork", title: "Artwork", description: "Entstehung und Content-Check", required: true },
-  { id: "ai_transparency", number: "06", shortLabel: "AI-Hinweis", title: "KI-Transparenz", description: "Audio-Assessment und Artwork-Disclosure", required: true },
+  { id: "ai_transparency", number: "06", shortLabel: "AI Disclosure", title: "KI-Transparenz", description: "Audio-Assessment und Artwork-Disclosure", required: true },
   { id: "release", number: "07", shortLabel: "Release", title: "Release", description: "Letzte Bearbeitung und Release-Dateien", required: true },
   { id: "evidence_licenses", number: "08", shortLabel: "Evidence", title: "Evidence & Lizenzen", description: "Nachweise vollständig zuordnen", required: true },
   { id: "integrity", number: "09", shortLabel: "Integrität", title: "Integrität", description: "Dokumente, SHA-256 und Verifikation", required: true },
@@ -241,7 +241,8 @@ export function automaticConsistencyPresentation(track: TrackDetail): AutomaticC
       code: `deviation:${deviation.id}`,
       level: deviation.blocking ? "BLOCKING" : "WARNING",
       message: deviation.description,
-      stepId: "finalize"
+      stepId: "finalize",
+      userProvided: true
     });
   }
 
@@ -542,7 +543,7 @@ export function evaluateRequirements(
       "terms-evidence",
       "evidence_licenses",
       verifiedTerms.length
-        ? "Terms evidence exists, but descriptive metadata is incomplete: Titel, Provider und gültiges Abrufdatum sind erforderlich"
+        ? "Terms evidence exists, but descriptive metadata is incomplete: document title, provider/source, and retrieval date are required."
         : "Verifizierter lokaler Suno-Terms-/Rights-Nachweis mit Titel, Provider und Abrufdatum",
       completeTerms && fields.sunoTermsEvidenceNotAvailable !== true,
       "suno_terms_rights"

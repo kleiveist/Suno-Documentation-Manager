@@ -77,6 +77,7 @@ import {
   type ColorTheme
 } from "./ui/theme";
 import {
+  hasUiTranslation,
   translateRenderedUi,
   translateUiText,
   type AppLanguage
@@ -135,6 +136,22 @@ interface AppState {
   termsMetadataDialog: { evidenceId: string | null; metadata: EvidenceMetadata } | null;
   theme: ColorTheme;
   toast: ToastState | null;
+}
+
+/** Collect persisted or entered data that must never be mistaken for UI copy. */
+function collectUserText(target: Set<string>, value: unknown, seen = new Set<object>()): void {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) target.add(trimmed);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectUserText(target, item, seen));
+    return;
+  }
+  if (!value || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  Object.values(value).forEach((item) => collectUserText(target, item, seen));
 }
 
 export type WorkspaceScopedUiState = Pick<
@@ -769,16 +786,16 @@ function audioScreeningStatusClass(status: AudioScreeningStatus): "is-valid" | "
   return "";
 }
 
-function formatAudioDuration(milliseconds: number | undefined): string {
-  if (!Number.isFinite(milliseconds) || !milliseconds || milliseconds < 0) return "Nicht dokumentiert";
+function formatAudioDuration(milliseconds: number | undefined, language: AppLanguage = "de"): string {
+  if (!Number.isFinite(milliseconds) || !milliseconds || milliseconds < 0) return translateUiText("Nicht dokumentiert", language);
   const totalSeconds = Math.round(milliseconds / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = String(totalSeconds % 60).padStart(2, "0");
   return `${minutes}:${seconds}`;
 }
 
-function formatAudioTimestamp(milliseconds: number | undefined): string {
-  return formatAudioDuration(milliseconds);
+function formatAudioTimestamp(milliseconds: number | undefined, language: AppLanguage = "de"): string {
+  return formatAudioDuration(milliseconds, language);
 }
 
 export function externalTimestampSummaryFor(
@@ -1206,6 +1223,131 @@ export class SunoDocumentationApp {
     return this.state.profile.certificateLanguage === "de" ? "de" : "en";
   }
 
+  private get numberLocale(): string {
+    return this.language === "de" ? "de-DE" : "en-US";
+  }
+
+  /** Localize known system copy only; free user content stays untouched. */
+  private t(value: string): string {
+    return translateUiText(value, this.language);
+  }
+
+  private localizedLabels(values: readonly string[]): string {
+    return values.map((value) => this.t(value)).join(", ");
+  }
+
+  /**
+   * Hashing/document operations use `currentFile` for an actual path. Native
+   * audio screening alone uses it for a fixed progress sentence, which can be
+   * localized safely without ever changing a user-selected filename.
+   */
+  private progressCurrentFile(operation: ActiveOperationProgress): string {
+    const value = operation.progress.currentFile ?? "";
+    return operation.kind === "audio_screening" && value
+      ? this.systemText(value)
+      : value;
+  }
+
+  /**
+   * Backend results are system copy, not user text. Known messages are mapped
+   * exactly; an unmapped low-level diagnostic is replaced with locale-safe
+   * copy so a German screen never leaks an English warning (or vice versa).
+   */
+  private systemText(value: string, fallback?: string): string {
+    if (hasUiTranslation(value, this.language)) return this.t(value);
+    return fallback ?? (this.language === "en"
+      ? "Technical status detail is not available."
+      : "Technische Statusmeldung ist nicht verfügbar.");
+  }
+
+  /**
+   * `translateRenderedUi` is retained for legacy static templates. Supply it
+   * only data-owned values so a track title, file name, lyric, or free text
+   * that happens to equal a catalog entry is never localized as UI copy.
+   */
+  private protectedRenderedValues(): ReadonlySet<string> {
+    const values = new Set<string>();
+    const track = this.state.track;
+
+    collectUserText(values, this.state.workspace && {
+      name: this.state.workspace.name,
+      path: this.state.workspace.path
+    });
+    collectUserText(values, this.state.profile);
+    collectUserText(values, this.state.tracks.map(({ title, relativePath, library }) => ({ title, relativePath, library })));
+    collectUserText(values, this.state.albums);
+    collectUserText(values, this.state.trackDraft);
+    collectUserText(values, this.state.globalEvidence.map(({ fileName, relativePath, metadata }) => ({ fileName, relativePath, metadata })));
+    collectUserText(values, this.state.termsMetadataDialog?.metadata);
+    collectUserText(values, this.state.query);
+    collectUserText(values, this.state.operationProgress?.progress.currentFile);
+    collectUserText(values, this.state.scanResult?.candidates?.map(({ name, relativePath }) => ({ name, relativePath })));
+    collectUserText(values, this.state.evidencePreview && {
+      fileName: this.state.evidencePreview.fileName,
+      relativePath: this.state.evidencePreview.relativePath,
+      textContent: this.state.evidencePreview.textContent
+    });
+    collectUserText(values, this.state.folderImport && {
+      sourcePath: this.state.folderImport.sourcePath,
+      albumTitle: this.state.folderImport.albumTitle,
+      unassignedFiles: this.state.folderImport.unassignedFiles,
+      tracks: this.state.folderImport.tracks.map(({ title, sourcePath, files, unassignedFiles }) => ({
+        title,
+        sourcePath,
+        files: files.map(({ fileName }) => fileName),
+        unassignedFiles
+      }))
+    });
+    collectUserText(values, {
+      timestampSettings: {
+        custom: this.state.timestampSettings.custom
+      },
+      audioScreeningSettings: {
+        host: this.state.audioScreeningSettings.host,
+        localEngineVersion: this.state.audioScreeningSettings.localEngineVersion
+      }
+    });
+
+    if (track) {
+      const { consistencyIssues: _consistencyIssues, ...automation } = track.automation;
+      collectUserText(values, {
+        title: track.title,
+        relativePath: track.relativePath,
+        library: track.library,
+        profileSnapshot: track.profileSnapshot,
+        fields: track.fields,
+        automation,
+        evidence: track.evidence.map(({ fileName, relativePath, metadata, generatedDisclosureText }) => ({
+          fileName,
+          relativePath,
+          metadata,
+          generatedDisclosureText
+        })),
+        documents: track.documents,
+        certificate: track.certificate,
+        integrityMismatchFiles: track.integrity.mismatchFiles,
+        externalTimestamps: track.externalTimestamps,
+        deviations: track.blockingDeviations?.map(({ title, description }) => ({ title, description })),
+        audioMatches: track.audioScreening.external.matches,
+        audioSourcePaths: {
+          local: track.audioScreening.local.sourceRelativePath,
+          external: track.audioScreening.external.sourceRelativePath
+        }
+      });
+    }
+    return values;
+  }
+
+  private syncDocumentLanguage(): void {
+    const document = this.root.ownerDocument;
+    document.documentElement.lang = this.language;
+    const description = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+    description?.setAttribute(
+      "content",
+      this.t("Lokale Desktop-App für nachvollziehbare Suno-Track-Dokumentation und Integritätsprüfung")
+    );
+  }
+
   start(): void {
     this.initializeTheme();
     this.root.addEventListener("click", (event) => void this.handleClick(event));
@@ -1223,7 +1365,7 @@ export class SunoDocumentationApp {
       const workspace = await this.api.restoreWorkspace(path);
       await this.enterWorkspace(workspace);
     } catch (error) {
-      const message = toUserMessage(error);
+      const message = toUserMessage(error, this.language);
       const pathUnavailable = /not found|does not exist|existiert nicht|nicht gefunden|keine Datei|no such file/i.test(message);
       if (pathUnavailable) {
         this.clearWorkspacePathFromStorage();
@@ -1233,7 +1375,7 @@ export class SunoDocumentationApp {
         pathUnavailable ? "Gespeicherter Workspace nicht verfügbar" : "Workspace konnte nicht geladen werden",
         pathUnavailable
           ? "Der zuletzt verwendete Workspace wurde nicht mehr gefunden. Bitte wähle einen anderen Workspace."
-          : `Gespeicherter Workspace konnte nicht geladen werden: ${message}`
+          : this.t(`Gespeicherter Workspace konnte nicht geladen werden: ${message}`)
       );
     }
   }
@@ -1334,7 +1476,7 @@ export class SunoDocumentationApp {
     try {
       return await action();
     } catch (error) {
-      this.showToast("error", "Aktion nicht abgeschlossen", toUserMessage(error));
+      this.showToast("error", "Aktion nicht abgeschlossen", toUserMessage(error, this.language));
       return undefined;
     } finally {
       this.state.busy = false;
@@ -1382,7 +1524,7 @@ export class SunoDocumentationApp {
         this.syncBusyLayer();
       });
     } catch (error) {
-      this.showToast("error", "Aktion nicht abgeschlossen", toUserMessage(error));
+      this.showToast("error", "Aktion nicht abgeschlossen", toUserMessage(error, this.language));
       return undefined;
     } finally {
       active = false;
@@ -1410,8 +1552,8 @@ export class SunoDocumentationApp {
     const percent = operationProgressPercent(operation.kind, progress);
     const detail = progress.totalBytes > 0
       ? this.language === "en"
-        ? `${formatBytes(progress.processedBytes)} of ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} files`
-        : `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
+        ? `${formatBytes(progress.processedBytes, this.language)} of ${formatBytes(progress.totalBytes, this.language)} · ${progress.processedFiles}/${progress.totalFiles} files`
+        : `${formatBytes(progress.processedBytes, this.language)} von ${formatBytes(progress.totalBytes, this.language)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
       : progress.totalFiles > 0
         ? this.language === "en" ? `${progress.processedFiles} of ${progress.totalFiles} files` : `${progress.processedFiles} von ${progress.totalFiles} Dateien`
         : this.language === "en" ? "Preparing file set" : "Dateisatz wird vorbereitet";
@@ -1438,8 +1580,9 @@ export class SunoDocumentationApp {
     const currentFile = current.querySelector<HTMLElement>('[data-operation-value="file"]');
     if (currentFile) {
       const fileName = progress.currentFile ?? "";
-      currentFile.textContent = fileName;
-      currentFile.title = fileName;
+      const filePresentation = this.progressCurrentFile(operation);
+      currentFile.textContent = filePresentation;
+      currentFile.title = filePresentation;
       currentFile.hidden = fileName.length === 0;
     }
 
@@ -1471,12 +1614,13 @@ export class SunoDocumentationApp {
       return `<div class="busy-layer" role="status" aria-live="polite"><span class="spinner"></span><span>${escapeHtml(translateUiText(this.state.busyLabel, this.language))}</span></div>`;
     }
     const progress = operation.progress;
+    const currentFile = this.progressCurrentFile(operation);
     const percent = operationProgressPercent(operation.kind, progress);
     const configuration = OPERATION_PROGRESS_CONFIGURATION[operation.kind];
     const detail = progress.totalBytes > 0
       ? this.language === "en"
-        ? `${formatBytes(progress.processedBytes)} of ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} files`
-        : `${formatBytes(progress.processedBytes)} von ${formatBytes(progress.totalBytes)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
+        ? `${formatBytes(progress.processedBytes, this.language)} of ${formatBytes(progress.totalBytes, this.language)} · ${progress.processedFiles}/${progress.totalFiles} files`
+        : `${formatBytes(progress.processedBytes, this.language)} von ${formatBytes(progress.totalBytes, this.language)} · ${progress.processedFiles}/${progress.totalFiles} Dateien`
       : progress.totalFiles > 0
         ? this.language === "en" ? `${progress.processedFiles} of ${progress.totalFiles} files` : `${progress.processedFiles} von ${progress.totalFiles} Dateien`
         : this.language === "en" ? "Preparing file set" : "Dateisatz wird vorbereitet";
@@ -1491,7 +1635,7 @@ export class SunoDocumentationApp {
           <div class="operation-orbit" aria-hidden="true"><i></i><i></i><i></i><span>${icon(configuration.iconName)}</span><b data-operation-value="percent">${percent}%</b></div>
           <div class="operation-stream" aria-hidden="true"><i>01</i><i>a7</i><i>f3</i><i>9c</i><i>42</i><i>e8</i></div>
         </div>
-        <div class="operation-status"><strong data-operation-value="stage">${escapeHtml(operationStageLabel(progress.stage, operation.kind))}</strong><span data-operation-value="detail">${escapeHtml(detail)}</span><code data-operation-value="file" title="${escapeHtml(progress.currentFile ?? "")}"${progress.currentFile ? "" : " hidden"}>${escapeHtml(progress.currentFile ?? "")}</code></div>
+        <div class="operation-status"><strong data-operation-value="stage">${escapeHtml(operationStageLabel(progress.stage, operation.kind))}</strong><span data-operation-value="detail">${escapeHtml(detail)}</span><code data-operation-value="file" title="${escapeHtml(currentFile)}"${progress.currentFile ? "" : " hidden"}>${escapeHtml(currentFile)}</code></div>
         <div class="operation-meter" data-operation-value="meter" role="progressbar" aria-label="Fortschritt" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><i data-operation-value="meter-bar" style="width:${percent}%"></i></div>
         <ol class="operation-steps">${configuration.steps.map((step, index) => `<li data-operation-step class="${index < activeStep ? "is-complete" : index === activeStep ? "is-active" : ""}"><span data-operation-step-badge="${index < activeStep ? "complete" : "pending"}">${index < activeStep ? icon("check") : index + 1}</span><strong>${escapeHtml(step)}</strong></li>`).join("")}</ol>
         <div class="operation-tip">${icon("info")}<p><strong>Währenddessen</strong><span data-operation-value="tip">${escapeHtml(tip)}</span></p></div>
@@ -1649,9 +1793,10 @@ export class SunoDocumentationApp {
   }
 
   private render(): void {
+    this.syncDocumentLanguage();
     if (!this.state.workspace) {
       this.root.innerHTML = this.renderWelcome();
-      translateRenderedUi(this.root, this.language);
+      translateRenderedUi(this.root, this.language, this.protectedRenderedValues());
       return;
     }
     const view = this.renderCurrentView();
@@ -1679,7 +1824,7 @@ export class SunoDocumentationApp {
         ${this.renderToast()}
         ${this.renderBusyLayer()}
       </div>`;
-    translateRenderedUi(this.root, this.language);
+    translateRenderedUi(this.root, this.language, this.protectedRenderedValues());
   }
 
   private renderWelcome(): string {
@@ -1782,7 +1927,7 @@ export class SunoDocumentationApp {
       : "Einzelner Track erkannt";
     return `<section class="folder-import-preview"><p class="overline">Import erkannt</p><strong>${heading}</strong><small>${proposal.tracks.length} ${proposal.tracks.length === 1 ? "Track" : "Tracks"} erkannt · Produktionsstart bleibt offen, sofern er nicht dokumentiert ist.</small><div class="folder-import-tracks">${proposal.tracks.map((track) => {
       const recognised = track.files.filter((file) => file.selected).map((file) => `${file.fileName} (${file.roles.join(", ")})`);
-      return `<div><strong>${escapeHtml(track.title)}</strong>${recognised.length ? `<small>${escapeHtml(recognised.join(" · "))}</small>` : "<small>Keine eindeutig zuordenbare Evidence erkannt.</small>"}${track.ambiguities.length ? `<small class="warning">⚠ ${escapeHtml(track.ambiguities.join(" · "))} – Auswahl bleibt offen</small>` : ""}${track.unassignedFiles.length ? `<small>Nicht zugeordnet: ${escapeHtml(track.unassignedFiles.join(", "))}</small>` : ""}</div>`;
+      return `<div><strong>${escapeHtml(track.title)}</strong>${recognised.length ? `<small>${escapeHtml(recognised.join(" · "))}</small>` : "<small>Keine eindeutig zuordenbare Evidence erkannt.</small>"}${track.ambiguities.length ? `<small class="warning">⚠ ${escapeHtml(track.ambiguities.map((message) => this.systemText(message)).join(" · "))} – Auswahl bleibt offen</small>` : ""}${track.unassignedFiles.length ? `<small>Nicht zugeordnet: ${escapeHtml(track.unassignedFiles.join(", "))}</small>` : ""}</div>`;
     }).join("")}</div>${proposal.unassignedFiles.length ? `<small>Nicht zugeordnet: ${escapeHtml(proposal.unassignedFiles.join(", "))}</small>` : ""}</section>`;
   }
 
@@ -1876,8 +2021,8 @@ export class SunoDocumentationApp {
       metadata.mimeType ? `<div><dt>Medientyp</dt><dd>${escapeHtml(metadata.mimeType)}</dd></div>` : "",
       metadata.audioFormat ? `<div><dt>Audioformat</dt><dd>${escapeHtml(metadata.audioFormat)}</dd></div>` : "",
       typeof metadata.audioChannels === "number" ? `<div><dt>Kanäle</dt><dd>${metadata.audioChannels}</dd></div>` : "",
-      typeof metadata.audioSampleRateHz === "number" ? `<div><dt>Sample Rate</dt><dd>${metadata.audioSampleRateHz.toLocaleString("de-DE")} Hz</dd></div>` : "",
-      typeof metadata.audioDurationMilliseconds === "number" ? `<div><dt>Dauer</dt><dd>${(metadata.audioDurationMilliseconds / 1000).toLocaleString("de-DE", { maximumFractionDigits: 3 })} s</dd></div>` : "",
+      typeof metadata.audioSampleRateHz === "number" ? `<div><dt>Sample Rate</dt><dd>${metadata.audioSampleRateHz.toLocaleString(this.numberLocale)} Hz</dd></div>` : "",
+      typeof metadata.audioDurationMilliseconds === "number" ? `<div><dt>Dauer</dt><dd>${(metadata.audioDurationMilliseconds / 1000).toLocaleString(this.numberLocale, { maximumFractionDigits: 3 })} s</dd></div>` : "",
       typeof metadata.audioBitDepth === "number" ? `<div><dt>Bit-Tiefe</dt><dd>${metadata.audioBitDepth} Bit</dd></div>` : "",
       metadata.sunoStudioDetected ? `<div><dt>Suno Studio</dt><dd>Erkannt · Evidence-derived metadata</dd></div>` : "",
       metadata.sunoCreatedTimestamp ? `<div><dt>Suno-created</dt><dd>${escapeHtml(metadata.sunoCreatedTimestamp)}</dd></div>` : "",
@@ -1887,11 +2032,11 @@ export class SunoDocumentationApp {
       ? `<div class="evidence-preview-stage"><img src="${escapeHtml(preview.dataUrl)}" alt="Vorschau von ${escapeHtml(preview.fileName)}"></div>`
       : preview.textContent !== undefined && preview.textContent !== null
         ? `<pre class="evidence-preview-text">${escapeHtml(preview.textContent)}</pre>`
-        : `<div class="evidence-preview-unavailable">${icon("file")}<p>${escapeHtml(preview.message ?? "Für diese Datei ist keine Vorschau verfügbar.")}</p></div>`;
+        : `<div class="evidence-preview-unavailable">${icon("file")}<p>${escapeHtml(this.systemText(preview.message ?? "Für diese Datei ist keine Vorschau verfügbar."))}</p></div>`;
     return `<div class="modal-backdrop" data-action="close-modal"><section class="modal evidence-preview-modal" role="dialog" aria-modal="true" aria-labelledby="evidence-preview-title" data-modal-panel>
       <div class="modal-head"><div><p class="overline">Evidence-Vorschau</p><h2 id="evidence-preview-title">${escapeHtml(preview.fileName)}</h2></div><button class="icon-button" data-action="close-modal" aria-label="Vorschau schließen">${icon("close")}</button></div>
       ${content}
-      <dl class="evidence-preview-meta"><div><dt>Rolle</dt><dd>${escapeHtml(evidenceRoleLabel(preview.role))}</dd></div><div><dt>Größe</dt><dd>${escapeHtml(formatBytes(preview.sizeBytes))}</dd></div><div><dt>Pfad</dt><dd>${escapeHtml(preview.relativePath)}</dd></div>${technicalMetadata}</dl>
+      <dl class="evidence-preview-meta"><div><dt>Rolle</dt><dd>${escapeHtml(evidenceRoleLabel(preview.role))}</dd></div><div><dt>Größe</dt><dd>${escapeHtml(formatBytes(preview.sizeBytes, this.language))}</dd></div><div><dt>Pfad</dt><dd>${escapeHtml(preview.relativePath)}</dd></div>${technicalMetadata}</dl>
       <div class="modal-actions"><button type="button" class="button button--secondary" data-action="close-modal">Schließen</button></div>
     </section></div>`;
   }
@@ -1907,12 +2052,12 @@ export class SunoDocumentationApp {
       <p class="overline">Track Documentation Completion Certificate</p>
       <h2 id="certificate-popup-title">Dokumentation erfolgreich finalisiert</h2>
       <span class="certificate-popup-result">${icon("check")} DOCUMENTATION COMPLETE</span>
-      <p class="certificate-popup-meaning"><strong>Meaning:</strong> configured documentation requirements completed.</p>
+      <p class="certificate-popup-meaning"><strong>${this.t("Meaning:")}</strong> ${this.t("Configured documentation requirements completed.")}</p>
       <dl class="certificate-popup-facts">
         <div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div>
         <div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div>
         <div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div>
-        <div><dt>Finalisiert</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div>
+        <div><dt>Finalisiert</dt><dd>${formatDate(track.certificate.finalizedAt, true, this.language)}</dd></div>
         <div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div>
         <div><dt>Integrität</dt><dd>${track.integrity.verifiedCount} / ${track.integrity.fileCount} Dateien verifiziert</dd></div>
         <div><dt>Evidence</dt><dd>${track.evidence.length} Dateien</dd></div>
@@ -1978,7 +2123,7 @@ export class SunoDocumentationApp {
   }
 
   private metricCard(iconName: "tracks" | "current" | "check" | "certificate", label: string, value: number, note: string, color: string): string {
-    return `<article class="metric-card"><span class="metric-icon metric-icon--${color}">${icon(iconName)}</span><div><span>${label}</span><strong>${value.toLocaleString("de-DE")}</strong><small>${note}</small></div></article>`;
+    return `<article class="metric-card"><span class="metric-icon metric-icon--${color}">${icon(iconName)}</span><div><span>${label}</span><strong>${value.toLocaleString(this.numberLocale)}</strong><small>${note}</small></div></article>`;
   }
 
   private renderTracks(): string {
@@ -2038,7 +2183,7 @@ export class SunoDocumentationApp {
       <span class="track-identity"><strong>${escapeHtml(track.title)}</strong><small>${escapeHtml(track.relativePath)}${track.legacy ? this.language === "en" ? " · Legacy import" : " · Legacy-Import" : ""}</small></span>
       <span class="status-chip status-chip--${track.status.toLowerCase()}">${statusLabel(track.status)}</span>
       <span class="row-progress"><progress max="100" value="${track.progress}" aria-label="${track.progress} Prozent"></progress><b>${track.progress}%</b></span>
-      ${detailed ? `<time>${formatDate(track.updatedAt)}</time>` : `<span class="missing-hint">${track.missingCount ? `${track.missingCount} offen` : "Vollständig"}</span>`}
+      ${detailed ? `<time>${formatDate(track.updatedAt, false, this.language)}</time>` : `<span class="missing-hint">${track.missingCount ? `${track.missingCount} offen` : "Vollständig"}</span>`}
       <span class="row-arrow">${icon("arrow")}</span>
     </button>`;
   }
@@ -2058,7 +2203,7 @@ export class SunoDocumentationApp {
         <div class="hero-progress"><strong>${track.progress}%</strong><span>dokumentiert</span><progress class="progress-track" max="100" value="${track.progress}" aria-label="Dokumentationsfortschritt ${track.progress} Prozent"></progress></div>
       </section>
       <nav class="track-tabs" aria-label="Track-Ansichten">${tabs.map(([id, label]) => `<button class="${this.state.trackTab === id ? "is-active" : ""}" data-track-tab="${id}">${label}</button>`).join("")}</nav>
-      <div class="track-content">${workflowUpgrade ? `<div class="policy-card">${icon("info")}<div><p class="overline">Workflow-Upgrade verfügbar</p><h4>${escapeHtml(workflowUpgrade.message)}</h4><p>Der bisherige Zertifikatssnapshot bleibt unverändert. Die Neubewertung verlangt aktuelle Dokumente, Prüfsummen und ein neues Zertifikat.</p></div>${workflowUpgrade.action ? `<button class="button button--secondary" data-action="${workflowUpgrade.action}">Mit aktuellem Workflow neu bewerten</button>` : ""}</div>` : ""}${this.renderTrackTab(track)}</div>
+      <div class="track-content">${workflowUpgrade ? `<div class="policy-card">${icon("info")}<div><p class="overline">Workflow-Upgrade verfügbar</p><h4>${escapeHtml(this.systemText(workflowUpgrade.message))}</h4><p>Der bisherige Zertifikatssnapshot bleibt unverändert. Die Neubewertung verlangt aktuelle Dokumente, Prüfsummen und ein neues Zertifikat.</p></div>${workflowUpgrade.action ? `<button class="button button--secondary" data-action="${workflowUpgrade.action}">Mit aktuellem Workflow neu bewerten</button>` : ""}</div>` : ""}${this.renderTrackTab(track)}</div>
     </div>`;
   }
 
@@ -2085,7 +2230,7 @@ export class SunoDocumentationApp {
         ${this.renderTrackCheckSummary(track)}
         <div class="panel missing-panel ${missing.length === 0 ? "is-complete" : ""}">
           <div class="panel-heading"><div><p class="overline">Finalisierungs-Gate</p><h3>${missing.length ? "Was fehlt noch?" : "Bereit zur Finalisierung"}</h3></div><span class="missing-total">${missing.length}</span></div>
-          ${missing.length ? `<ul class="missing-list">${missing.slice(0, 8).map((item) => `<li><span>${icon("alert")}</span><div><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(this.runtimeSteps().find((step) => step.id === item.stepId)?.title ?? item.stepId)}</small></div><button data-step-open="${item.stepId}">${item.evidenceRole ? "Nachweis" : "Öffnen"} ${icon("arrow")}</button></li>`).join("")}</ul>${missing.length > 8 ? `<button class="text-button" data-track-tab="evidence">Alle ${missing.length} offenen Punkte anzeigen</button>` : ""}` : `<div class="success-message">${icon("check")}<div><strong>Alle lokalen Vorprüfungen sind erfüllt.</strong><span>Rust validiert den Track vor der Finalisierung nochmals vollständig.</span></div></div>`}
+          ${missing.length ? `<ul class="missing-list">${missing.slice(0, 8).map((item) => `<li><span>${icon("alert")}</span><div><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(this.runtimeSteps().find((step) => step.id === item.stepId)?.title ?? item.stepId)}</small></div><button data-step-open="${item.stepId}">${item.evidenceRole ? "Nachweis" : "Öffnen"} ${icon("arrow")}</button></li>`).join("")}</ul>${missing.length > 8 ? `<button class="text-button" data-track-tab="evidence">${this.t(`Alle ${missing.length} offenen Punkte anzeigen`)}</button>` : ""}` : `<div class="success-message">${icon("check")}<div><strong>Alle lokalen Vorprüfungen sind erfüllt.</strong><span>Rust validiert den Track vor der Finalisierung nochmals vollständig.</span></div></div>`}
         </div>
         <div class="panel workflow-panel"><div class="panel-heading"><div><p class="overline">Geführter Ablauf</p><h3>10 Dokumentationsschritte</h3></div><span class="workflow-id">${escapeHtml(this.state.workflow?.id ?? track.workflowId)} · v${escapeHtml(this.state.workflow?.version ?? track.workflowVersion)}</span></div>
           <div class="step-list">${statuses.map((step, index) => this.renderStepRow(step.id, step.status, index)).join("")}</div>
@@ -2119,14 +2264,14 @@ export class SunoDocumentationApp {
       `<li><strong>Menschlich bearbeitetes/finales Artwork</strong><span>${escapeHtml(humanEditedFinalArtworkStatus(track.evidence))}</span></li>`
     ].filter(Boolean).join("");
     return `<section class="panel check-summary">
-      <div class="panel-heading"><div><p class="overline">Gesamtprüfung</p><h3>Dokumentationsstatus</h3></div><span class="check-warning-count ${consistency.outcome === "PASS" ? "is-clear" : ""}">Automatische Konsistenz: ${escapeHtml(consistency.outcome)} · ${consistency.warningCount} WARNING · ${consistency.infoCount} INFO</span></div>
+      <div class="panel-heading"><div><p class="overline">Gesamtprüfung</p><h3>Dokumentationsstatus</h3></div><span class="check-warning-count ${consistency.outcome === "PASS" ? "is-clear" : ""}">${escapeHtml(this.t(`Automatische Konsistenz: ${this.t(consistency.outcome)} · ${consistency.warningCount} WARNING · ${consistency.infoCount} INFO`))}</span></div>
       <div class="check-summary-grid">
         ${this.checkSummaryItem("Dokumentation", summary.documentation, summary.documentation === "vollständig")}
         ${this.checkSummaryItem("Dateiintegrität", summary.fileIntegrity, summary.fileIntegrity === "geprüft")}
         ${this.checkSummaryItem("Suno-Metadaten", summary.sunoMetadata, summary.sunoMetadata === "erkannt", summary.sunoMetadata === "nicht erkannt")}
         ${this.checkSummaryItem("Subscription-Zeitraum", summary.subscriptionCoverage, summary.subscriptionCoverage === "passend" || summary.subscriptionCoverage === "nicht erforderlich", summary.subscriptionCoverage === "nicht geprüft")}
       </div>
-      <details class="check-details"><summary>Technische Details anzeigen</summary><ul>${technicalFacts}</ul>${findings.length ? `<div class="check-issues"><strong>Automatische Konsistenz</strong><ul>${findings.map((finding) => `<li>${icon(finding.level === "INFO" ? "info" : "alert")}<span><strong>${escapeHtml(finding.level)}</strong> · ${escapeHtml(finding.message)}</span></li>`).join("")}</ul></div>` : `<p class="check-details-clear">Keine Konsistenzabweichungen erkannt.</p>`}</details>
+      <details class="check-details"><summary>Technische Details anzeigen</summary><ul>${technicalFacts}</ul>${findings.length ? `<div class="check-issues"><strong>Automatische Konsistenz</strong><ul>${findings.map((finding) => `<li>${icon(finding.level === "INFO" ? "info" : "alert")}<span><strong>${escapeHtml(finding.level)}</strong> · ${escapeHtml(finding.userProvided ? finding.message : this.systemText(finding.message))}</span></li>`).join("")}</ul></div>` : `<p class="check-details-clear">Keine Konsistenzabweichungen erkannt.</p>`}</details>
     </section>`;
   }
 
@@ -2163,7 +2308,7 @@ export class SunoDocumentationApp {
   private renderFinalizedSnapshotNotice(track: TrackDetail): string {
     const presentation = finalizedTrackPresentation(track);
     if (!presentation) return "";
-    return `<div class="policy-card finalized-snapshot-notice ${presentation.invalid ? "is-invalid" : ""}">${icon(presentation.invalid ? "alert" : "lock")}<div><p class="overline">Revisionsschutz</p><h4>${escapeHtml(presentation.title)}</h4><p>${escapeHtml(presentation.message)}</p></div>${presentation.actionLabel ? `<button class="button ${presentation.invalid ? "button--danger" : "button--primary"}" data-action="create-revision">${icon("current")} ${escapeHtml(presentation.actionLabel)}</button>` : ""}</div>`;
+    return `<div class="policy-card finalized-snapshot-notice ${presentation.invalid ? "is-invalid" : ""}">${icon(presentation.invalid ? "alert" : "lock")}<div><p class="overline">Revisionsschutz</p><h4>${escapeHtml(this.systemText(presentation.title))}</h4><p>${escapeHtml(this.systemText(presentation.message))}</p></div>${presentation.actionLabel ? `<button class="button ${presentation.invalid ? "button--danger" : "button--primary"}" data-action="create-revision">${icon("current")} ${escapeHtml(this.systemText(presentation.actionLabel))}</button>` : ""}</div>`;
   }
 
   private renderWorkflowEditor(track: TrackDetail, stepId: StepId): string {
@@ -2179,7 +2324,7 @@ export class SunoDocumentationApp {
     return `<div class="editor-layout">
       <aside class="workflow-rail">
         <button class="rail-back" data-action="back-overview">${icon("arrow")} Track-Übersicht</button>
-        <div class="rail-progress"><span>${index + 1} / 10</span><progress max="10" value="${index + 1}" aria-label="Schritt ${index + 1} von 10"></progress></div>
+        <div class="rail-progress"><span>${index + 1} / 10</span><progress max="10" value="${index + 1}" aria-label="${this.t(`Schritt ${index + 1} von 10`)}"></progress></div>
         <nav aria-label="Workflow-Schritte">${runtimeSteps.map((runtimeStep) => {
           const step = statuses.find((entry) => entry.id === runtimeStep.id) ?? { id: runtimeStep.id, status: "NOT_RUN" as const };
           const item = this.state.workflow?.steps.find((entry) => entry.id === step.id);
@@ -2188,13 +2333,13 @@ export class SunoDocumentationApp {
         }).join("")}</nav>
       </aside>
       <section class="editor-main">
-        <header class="editor-head"><div><p class="overline">Schritt ${escapeHtml(definition?.number ?? fallback.number)}</p><h3>${escapeHtml(label)}</h3><p>${escapeHtml(description)}</p></div><span class="status-chip step-status-chip step-status-chip--${currentStatus.toLowerCase().replace("_", "-")}">${statusLabel(currentStatus)}</span></header>
+        <header class="editor-head"><div><p class="overline">${this.t(`Schritt ${definition?.number ?? fallback.number}`)}</p><h3>${escapeHtml(label)}</h3><p>${escapeHtml(description)}</p></div><span class="status-chip step-status-chip step-status-chip--${currentStatus.toLowerCase().replace("_", "-")}">${statusLabel(currentStatus)}</span></header>
         ${this.renderFinalizedSnapshotNotice(track)}
         ${naEligible ? `<div class="na-control">${icon("info")}<div><strong>Dieser Schritt hat für den aktuellen Track keine anwendbaren Pflichtpunkte.</strong><span>N/A wird nur mit einer gespeicherten sachlichen Begründung akzeptiert.</span></div>${currentStatus === "N_A" ? `<button class="button button--secondary" data-reset-na="${stepId}" ${isTrackContentLocked(track.status) ? "disabled" : ""}>N/A zurücksetzen</button>` : `<button class="button button--secondary" data-mark-na="${stepId}" ${isTrackContentLocked(track.status) ? "disabled" : ""}>Als N/A dokumentieren</button>`}</div>` : ""}
         ${this.renderStepContent(track, stepId)}
         <footer class="editor-footer">
           <button class="button button--secondary" ${index === 0 ? "disabled" : ""} data-step-open="${runtimeSteps[Math.max(index - 1, 0)].id}">${icon("arrow")} Zurück</button>
-          ${index < runtimeSteps.length - 1 ? `<button class="button button--dark" data-step-open="${runtimeSteps[index + 1].id}">Weiter: ${escapeHtml(runtimeSteps[index + 1].title)} ${icon("arrow")}</button>` : ""}
+          ${index < runtimeSteps.length - 1 ? `<button class="button button--dark" data-step-open="${runtimeSteps[index + 1].id}">${escapeHtml(this.t(`Weiter: ${this.t(runtimeSteps[index + 1].title)}`))} ${icon("arrow")}</button>` : ""}
         </footer>
       </section>
     </div>`;
@@ -2240,7 +2385,7 @@ export class SunoDocumentationApp {
           ${this.renderGenerationTextFieldFacts(draft)}
           ${conditional.has("sunoLyricsFieldText") ? `<div class="conditional-panel"><div class="conditional-line"></div>${conditional.has("sunoLyricsOtherContentType") ? this.textField("sunoLyricsOtherContentType", "Sonstiger Content-Typ", "Faktisch beschreiben", draft.sunoLyricsOtherContentType, true) : ""}${singleChoiceFieldMarkup("sunoLyricsContentSource", "Content source", draft.sunoLyricsContentSource ?? "", [["human", "Human"], ["ai", "AI"], ["mixed", "Mixed"]], true)}${this.textArea("sunoLyricsFieldText", "Exakter Inhalt des Suno-Textfelds", "Exakte verwendete Fassung einschließlich eckiger Klammern dokumentieren.", draft.sunoLyricsFieldText, true)}</div>` : ""}
           ${this.boolQuestion("vocalLyricsPresent", "Finaler Audioinhalt enthält Gesang?", "Tatsächliches Ergebnis des finalen Audios; nicht aus dem Textfeld automatisch ableiten.", draft.vocalLyricsPresent)}
-          ${hasLegacyLyrics ? `<div class="legacy-data-notice">${icon("info")}<div class="legacy-data-notice-copy"><strong>Historische Lyrics-Angaben – nicht automatisch klassifiziert</strong><p>Quelle: ${escapeHtml(draft.legacyLyricsSource || "Not documented")}</p>${draft.legacyLyricsText ? `<pre>${escapeHtml(draft.legacyLyricsText)}</pre>` : ""}<small>Diese unverändert erhaltenen Altwerte bestimmen weder Vocal Lyrics noch Content-Typen. Prüfe die neuen Felder ausdrücklich.</small></div><button type="button" class="icon-button danger legacy-data-remove" data-action="remove-legacy-lyrics" aria-label="Historische Lyrics-Angaben entfernen" title="Historische Lyrics-Angaben entfernen" ${isTrackContentLocked(track.status) ? "disabled" : ""}>${icon("trash")}</button></div>` : ""}
+          ${hasLegacyLyrics ? `<div class="legacy-data-notice">${icon("info")}<div class="legacy-data-notice-copy"><strong>Historische Lyrics-Angaben – nicht automatisch klassifiziert</strong><p>${escapeHtml(this.t(`Quelle: ${draft.legacyLyricsSource || this.t("Not documented")}`))}</p>${draft.legacyLyricsText ? `<pre>${escapeHtml(draft.legacyLyricsText)}</pre>` : ""}<small>Diese unverändert erhaltenen Altwerte bestimmen weder Vocal Lyrics noch Content-Typen. Prüfe die neuen Felder ausdrücklich.</small></div><button type="button" class="icon-button danger legacy-data-remove" data-action="remove-legacy-lyrics" aria-label="Historische Lyrics-Angaben entfernen" title="Historische Lyrics-Angaben entfernen" ${isTrackContentLocked(track.status) ? "disabled" : ""}>${icon("trash")}</button></div>` : ""}
         </section>
           ${this.textArea("sunoStylePrompt", "Suno-Style-Prompt", "Den in Suno verwendeten Style-Prompt vollständig dokumentieren.", draft.sunoStylePrompt, true)}
           ${this.boolQuestion("humanEditingPerformed", "Menschliche Bearbeitung durchgeführt?", "Nur bestätigen, wenn sie tatsächlich stattgefunden hat. Freitext wird nicht zur Vocal-Lyrics-Klassifikation verwendet.", draft.humanEditingPerformed)}
@@ -2271,7 +2416,7 @@ export class SunoDocumentationApp {
               ${conditional.has("audioDisclosureLocations") ? this.multiChoiceArrayField("audioDisclosureLocations", "Disclosure locations", draft.audioDisclosureLocations, audioDisclosureLocationChoices, true) : ""}
               ${conditional.has("audioDisclosureText") ? this.textArea("audioDisclosureText", "Disclosure text", "Tatsächlich verwendeten Hinweis dokumentieren", draft.audioDisclosureText, true) : ""}
               ${conditional.has("audioDisclosureReason") ? this.textArea("audioDisclosureReason", "Reason / note for NO", "Optionaler sachlicher Grund; die App bewertet ihn nicht rechtlich.", draft.audioDisclosureReason) : ""}
-              ${draft.commercialUseIntended && draft.audioDisclosureApplied === "not_documented" ? `<div class="danger-banner is-warning">${icon("alert")}<div><strong>Audio-Disclosure: NOT DOCUMENTED</strong><span>Bei kommerziell vorgesehener Nutzung mit generativer KI bleibt AI Transparency offen.</span></div></div>` : ""}
+              ${draft.commercialUseIntended && draft.audioDisclosureApplied === "not_documented" ? `<div class="danger-banner is-warning">${icon("alert")}<div><strong>Audio-Disclosure: NOT DOCUMENTED</strong><span>Bei kommerziell vorgesehener Nutzung mit generativer KI bleibt KI-Transparenz offen.</span></div></div>` : ""}
             </div>` : generativeAiAudioDetailState(draft.generativeAiUsed) === "not_applicable"
               ? `<div class="neutral-message">${icon("info")}<div><strong>Audio-Detailfragen: N/A</strong><span>„Generative AI used“ wurde ausdrücklich mit NO dokumentiert.</span></div></div>`
               : `<div class="danger-banner is-warning">${icon("alert")}<div><strong>Generative AI used: NOT DOCUMENTED</strong><span>Die Angabe ist offen. Erst YES blendet die Audio-Detailfragen ein; NO markiert sie als N/A.</span></div></div>`}
@@ -2348,20 +2493,20 @@ export class SunoDocumentationApp {
       <div class="screening-summary-grid">
         <article class="screening-summary ${localClass}">
           <div class="screening-summary-head"><span>${icon("hash")}</span><div><small>Lokale Audio-Fingerprint-Prüfung</small><strong>Chromaprint</strong></div><b>${escapeHtml(audioScreeningStatusLabel(local.status))}</b></div>
-          <p>${escapeHtml(local.message)}</p>
+          <p>${escapeHtml(this.systemText(local.message))}</p>
           <dl>
             <div><dt>Quelle</dt><dd>${escapeHtml(sourceLabel)}</dd></div>
             <div><dt>Source SHA-256</dt><dd>${local.sourceSha256 ? `<code>${escapeHtml(local.sourceSha256)}</code>` : "Nicht dokumentiert"}</dd></div>
-            <div><dt>Audio-Dauer</dt><dd>${formatAudioDuration(local.durationMilliseconds)}</dd></div>
+            <div><dt>Audio-Dauer</dt><dd>${formatAudioDuration(local.durationMilliseconds, this.language)}</dd></div>
             <div><dt>Chromaprint</dt><dd>${escapeHtml([local.engine, local.engineVersion].filter(Boolean).join(" ") || "Nicht dokumentiert")}</dd></div>
           </dl>
-          ${local.generatedAt ? `<small class="screening-checked-at">Erzeugt: ${formatDate(local.generatedAt, true)}</small>` : ""}
+          ${local.generatedAt ? `<small class="screening-checked-at">Erzeugt: ${formatDate(local.generatedAt, true, this.language)}</small>` : ""}
           <button type="button" class="button button--secondary" data-action="run-local-audio-screening" ${locked || !canRunLocal ? "disabled" : ""}>${icon("scan")} Lokale Prüfung ${localCurrent ? "erneut" : "starten"}</button>
         </article>
         <article class="screening-summary ${externalClass}">
           <div class="screening-summary-head"><span>${icon("tracks")}</span><div><small>Externe Katalogprüfung</small><strong>ACRCloud</strong></div><b>${escapeHtml(audioScreeningStatusLabel(visibleExternal.status))}</b></div>
-          <p>${escapeHtml(visibleExternal.message)}</p>
-          ${externalCurrent && external.checkedAt ? `<small class="screening-checked-at">Zuletzt geprüft: ${formatDate(external.checkedAt, true)}</small>` : ""}
+          <p>${escapeHtml(this.systemText(visibleExternal.message))}</p>
+          ${externalCurrent && external.checkedAt ? `<small class="screening-checked-at">Zuletzt geprüft: ${formatDate(external.checkedAt, true, this.language)}</small>` : ""}
           ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="screening-match-warning">${icon("alert")} Ein externer Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</div>` : ""}
         </article>
       </div>
@@ -2376,11 +2521,11 @@ export class SunoDocumentationApp {
     return `<div class="${embedded ? "embedded-content" : "evidence-page"}">
       <div class="section-intro"><div><p class="overline">Lokale Nachweise</p><h3>Evidence & Lizenzen</h3><p>Originale bleiben am Quellort. Importierte Kopien werden gehasht und niemals still überschrieben.</p></div><button class="button button--primary" data-action="import-evidence" ${locked ? "disabled" : ""}>${icon("upload")} Evidence importieren</button></div>
       ${this.renderStepConsistencyIssues(track, "evidence_licenses")}
-      ${missing.length ? `<div class="evidence-needed"><strong>${missing.length} erforderliche Nachweise fehlen</strong><div>${missing.map((item) => {
-        if (item.evidenceRole === "subscription_payment") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – unten aus globaler Evidence zuordnen</span>`;
-        if (item.evidenceRole === "suno_terms_rights") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(item.label)} – globale Datei unter Einstellungen registrieren</span>`;
+      ${missing.length ? `<div class="evidence-needed"><strong>${this.t(`${missing.length} erforderliche Nachweise fehlen`)}</strong><div>${missing.map((item) => {
+        if (item.evidenceRole === "subscription_payment") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(this.t(`${item.label} – unten aus globaler Evidence zuordnen`))}</span>`;
+        if (item.evidenceRole === "suno_terms_rights") return `<span class="evidence-reminder">${icon("info")} ${escapeHtml(this.t(`${item.label} – globale Datei unter Einstellungen registrieren`))}</span>`;
         const current = [...track.evidence].reverse().find((evidence) => evidence.role === item.evidenceRole);
-        return `<button data-import-role="${item.evidenceRole}" ${current ? `data-replace-evidence="${escapeHtml(current.id)}"` : ""} ${locked ? "disabled" : ""}>${icon(current ? "upload" : "plus")}<span><strong>${escapeHtml(item.label)}</strong><small>${current ? "Vorhandene Datei sicher ersetzen" : escapeHtml(evidenceRoleLabel(item.evidenceRole!))}</small><small>Gefordert: ${escapeHtml(evidenceRoleFileTypes(item.evidenceRole!))}</small></span></button>`;
+        return `<button data-import-role="${item.evidenceRole}" ${current ? `data-replace-evidence="${escapeHtml(current.id)}"` : ""} ${locked ? "disabled" : ""}>${icon(current ? "upload" : "plus")}<span><strong>${escapeHtml(item.label)}</strong><small>${current ? "Vorhandene Datei sicher ersetzen" : escapeHtml(evidenceRoleLabel(item.evidenceRole!))}</small><small>${escapeHtml(this.t(`Gefordert: ${evidenceRoleFileTypes(item.evidenceRole!)}`))}</small></span></button>`;
       }).join("")}</div></div>` : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalEvidencePicker(track, locked) : ""}
       ${track.fields.commercialUseIntended ? this.renderGlobalTermsEvidencePicker(track, locked, hasTermsEvidence) : ""}
@@ -2392,22 +2537,29 @@ export class SunoDocumentationApp {
   }
 
   private renderEvidenceRow(item: EvidenceItem, locked: boolean): string {
+    const provenance = this.t(evidenceProvenanceLabel(item.provenance));
+    const role = this.t(evidenceRoleLabel(item.role));
+    const verification = this.t(item.verified ? "Verifiziert" : "Nicht verifiziert");
+    const verificationMarkup = item.verified ? `${icon("check")} ${escapeHtml(verification)}` : escapeHtml(verification);
+    const previewLabel = this.t("Evidence-Vorschau öffnen");
+    const verifyLabel = this.t("Evidence prüfen");
+    const removeLabel = this.t("Evidence entfernen");
     const sunoTechnical = item.role === "suno_final_export" && item.metadata?.sunoStudioDetected
-      ? `<small class="evidence-suno-meta">Suno Studio · ${escapeHtml(item.metadata.sunoCreatedTimestamp || "Zeitstempel nicht dokumentiert")}${item.metadata.sunoId ? ` · ID ${escapeHtml(item.metadata.sunoId)}` : ""}</small>`
+      ? `<small class="evidence-suno-meta">Suno Studio · ${escapeHtml(item.metadata.sunoCreatedTimestamp || this.t("Zeitstempel nicht dokumentiert"))}${item.metadata.sunoId ? ` · ID ${escapeHtml(item.metadata.sunoId)}` : ""}</small>`
       : "";
-    return `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><button class="evidence-name" data-preview-evidence="${escapeHtml(item.id)}" title="Evidence-Vorschau öffnen"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(evidenceProvenanceLabel(item.provenance))}</small>${item.metadata?.documentTitle ? `<small>${escapeHtml(item.metadata.documentTitle)} · ${escapeHtml(item.metadata.provider)}</small>` : ""}${sunoTechnical}</button><span>${escapeHtml(evidenceRoleLabel(item.role))}</span><span class="verification ${item.verified ? "is-valid" : ""}">${item.verified ? icon("check") + " Verifiziert" : "Nicht verifiziert"}</span><span>${formatBytes(item.sizeBytes)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${escapeHtml(item.id)}" aria-label="Evidence prüfen">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${escapeHtml(item.id)}" aria-label="Evidence entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></span></div>`;
+    return `<div class="evidence-row"><span class="file-icon">${icon("file")}</span><button class="evidence-name" data-preview-evidence="${escapeHtml(item.id)}" title="${escapeHtml(previewLabel)}"><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(item.relativePath)} · ${escapeHtml(provenance)}</small>${item.metadata?.documentTitle ? `<small>${escapeHtml(item.metadata.documentTitle)} · ${escapeHtml(item.metadata.provider)}</small>` : ""}${sunoTechnical}</button><span>${escapeHtml(role)}</span><span class="verification ${item.verified ? "is-valid" : ""}">${verificationMarkup}</span><span>${formatBytes(item.sizeBytes, this.language)}</span><span class="row-actions"><button class="icon-button" data-verify-evidence="${escapeHtml(item.id)}" aria-label="${escapeHtml(verifyLabel)}">${icon("shield")}</button><button class="icon-button danger" data-remove-evidence="${escapeHtml(item.id)}" aria-label="${escapeHtml(removeLabel)}" ${locked ? "disabled" : ""}>${icon("trash")}</button></span></div>`;
   }
 
   private renderDeviations(track: TrackDetail, locked = false): string {
     const deviations = track.blockingDeviations ?? [];
     if (!deviations.length) return `<div class="neutral-message">${icon("check")}<div><strong>Keine Abweichungen erfasst.</strong><span>Ungeklärte blockierende Abweichungen verhindern die Finalisierung.</span></div></div>`;
-    return `<div class="deviation-list">${deviations.map((item) => `<article class="deviation ${item.resolved ? "is-resolved" : ""}">${icon(item.resolved ? "check" : "alert")}<div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p><small>${item.resolved ? `Gelöst ${formatDate(item.resolvedAt, true)}` : `Erfasst ${formatDate(item.createdAt, true)}`}</small></div><div>${!item.resolved ? `<button class="button button--small button--secondary" data-resolve-deviation="${item.id}" ${locked ? "disabled" : ""}>Als gelöst markieren</button>` : ""}<button class="icon-button danger" data-remove-deviation="${item.id}" aria-label="Abweichung entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></div></article>`).join("")}</div>`;
+    return `<div class="deviation-list">${deviations.map((item) => `<article class="deviation ${item.resolved ? "is-resolved" : ""}">${icon(item.resolved ? "check" : "alert")}<div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p><small>${item.resolved ? `Gelöst ${formatDate(item.resolvedAt, true, this.language)}` : `Erfasst ${formatDate(item.createdAt, true, this.language)}`}</small></div><div>${!item.resolved ? `<button class="button button--small button--secondary" data-resolve-deviation="${item.id}" ${locked ? "disabled" : ""}>Als gelöst markieren</button>` : ""}<button class="icon-button danger" data-remove-deviation="${item.id}" aria-label="Abweichung entfernen" ${locked ? "disabled" : ""}>${icon("trash")}</button></div></article>`).join("")}</div>`;
   }
 
   private renderStepConsistencyIssues(track: TrackDetail, stepId: StepId): string {
     const issues = track.automation.consistencyIssues.filter((item) => item.stepId === stepId);
     if (!issues.length) return "";
-    return `<div class="consistency-notices">${issues.map((item) => `<div class="danger-banner ${item.blocking ? "" : "is-warning"}">${icon(item.blocking ? "alert" : "info")}<div><strong>${item.blocking ? "Abweichung erkannt" : "Hinweis"}</strong><span>${escapeHtml(item.message)}</span></div></div>`).join("")}</div>`;
+    return `<div class="consistency-notices">${issues.map((item) => `<div class="danger-banner ${item.blocking ? "" : "is-warning"}">${icon(item.blocking ? "alert" : "info")}<div><strong>${item.blocking ? "Abweichung erkannt" : "Hinweis"}</strong><span>${escapeHtml(this.systemText(item.message))}</span></div></div>`).join("")}</div>`;
   }
 
   private renderGlobalEvidencePicker(track: TrackDetail, locked = false): string {
@@ -2418,11 +2570,18 @@ export class SunoDocumentationApp {
       .filter((value): value is string => Boolean(value)));
     const productionCoverage = subscriptionProductionCoverageStatus(track.evidence, track.fields);
     const generationCoverage = subscriptionGenerationCoverageStatus(track.evidence, track.fields);
-    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum und Finalgeneration</h4><p>Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner. Produktionszeitraum: <strong>${productionCoverage.replace("_", " ")}</strong> · Finalgeneration: <strong>${generationCoverage.replace("_", " ")}</strong>. Mehrere lückenlos anschließende Abrechnungszeiträume werden gemeinsam gewertet. Dies ist ausschließlich ein Datumsabgleich, keine Rechteaussage.</p></div>${subscriptions.length ? `<div>${subscriptions.map((item) => {
+    const productionCoverageLabel = this.t(productionCoverage.replace("_", " "));
+    const generationCoverageLabel = this.t(generationCoverage.replace("_", " "));
+    const productionCaption = this.t("Produktion:");
+    const finalGenerationCaption = this.t("Finalgeneration:");
+    const coverageIntroduction = this.t("Beim Zuordnen kopiert der native Dienst den Nachweis in den Track-Ordner. Produktionszeitraum:");
+    const coverageNote = this.t("Mehrere lückenlos anschließende Abrechnungszeiträume werden gemeinsam gewertet. Dies ist ausschließlich ein Datumsabgleich, keine Rechteaussage.");
+    return `<section class="global-picker"><div><p class="overline">Global registriert</p><h4>Abo-Nachweis für Produktionszeitraum und Finalgeneration</h4><p>${coverageIntroduction} <strong>${productionCoverageLabel}</strong> · ${finalGenerationCaption} <strong>${generationCoverageLabel}</strong>. ${coverageNote}</p></div>${subscriptions.length ? `<div>${subscriptions.map((item) => {
       const coverage = subscriptionEvidenceRelevance(item, track.fields);
       const attached = attachedIds.has(item.id);
       const productionLabel = coverage.coversProduction ? "YES" : coverage.overlapsProduction ? "TEILWEISE" : "NO";
-      return `<article class="${coverage.relevant || attached ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)} · Produktion: ${productionLabel} · Finalgeneration: ${coverage.coversGeneration ? "YES" : track.fields.sunoFinalGenerationDate ? "NO" : "NOT VERIFIED"}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !coverage.relevant ? "disabled" : ""}>${attached ? "Zugeordnet" : coverage.relevant ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
+      const generationLabel = coverage.coversGeneration ? "YES" : track.fields.sunoFinalGenerationDate ? "NO" : "NOT VERIFIED";
+      return `<article class="${coverage.relevant || attached ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart, false, this.language)} – ${formatDate(item.coverageEnd, false, this.language)} · ${productionCaption} ${this.t(productionLabel)} · ${finalGenerationCaption} ${this.t(generationLabel)}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached || !coverage.relevant ? "disabled" : ""}>${attached ? "Zugeordnet" : coverage.relevant ? "Diesem Track zuordnen" : "Nicht passend"}</button></article>`;
     }).join("")}</div>` : `<p class="empty-inline">Noch keine globale Abo-Evidence. Registriere sie unter Einstellungen.</p>`}</section>`;
   }
 
@@ -2436,7 +2595,9 @@ export class SunoDocumentationApp {
       ${terms.length ? `<div>${terms.map((item) => {
         const attached = attachedIds.has(item.id);
         const metadataComplete = termsMetadataComplete(item.metadata);
-        return `<article class="${attached && metadataComplete ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Provider nicht dokumentiert")} · Abruf ${formatDate(item.metadata?.retrievalDate)}</small><small>${metadataComplete ? "Kernmetadaten vollständig" : "Terms evidence exists, but descriptive metadata is incomplete."}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached ? "disabled" : ""}>${attached ? "Im Projekt hinterlegt" : "Diesem Projekt zuordnen"}</button></article>`;
+        const provider = item.metadata?.provider?.trim() || this.t("Provider nicht dokumentiert");
+        const retrieval = formatDate(item.metadata?.retrievalDate, false, this.language);
+        return `<article class="${attached && metadataComplete ? "is-covering" : ""}">${icon("file")}<span><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(this.t(`${provider} · Abruf ${retrieval}`))}</small><small>${metadataComplete ? "Kernmetadaten vollständig" : "Terms evidence exists, but descriptive metadata is incomplete."}</small></span><button class="button button--small button--secondary" data-attach-global="${item.id}" ${locked || attached ? "disabled" : ""}>${attached ? "Im Projekt hinterlegt" : "Diesem Projekt zuordnen"}</button></article>`;
       }).join("")}</div>` : `<p class="empty-inline">Noch keine globalen Suno-Nutzungsbedingungen. Registriere die Datei unter Einstellungen.</p>`}
       ${track.fields.sunoTermsEvidenceNotAvailable === true ? `<div class="danger-banner is-warning">${icon("info")}<div><strong>Historischer Status: Terms evidence not available</strong><span>Dieser Legacy-Wert bleibt erhalten, erfüllt Workflow 1.7 bei kommerzieller Nutzung aber nicht. Erforderlich sind lokale Evidence sowie Titel, Provider und Abrufdatum.${hasTermsEvidence ? " Eine Datei ist bereits vorhanden; prüfe ihre Metadaten." : ""}</span></div></div>` : ""}
     </section>`;
@@ -2446,11 +2607,11 @@ export class SunoDocumentationApp {
     const mismatches = track.integrity.mismatchFiles;
     const locked = isTrackContentLocked(track.status);
     return `<div class="integrity-page">
-      <div class="integrity-hero ${track.integrity.verified && !mismatches.length ? "is-valid" : ""}"><span>${icon("shield")}</span><div><p class="overline">SHA-256 Integrität</p><h3>${track.integrity.verified ? "Dateien erfolgreich verifiziert" : "Integritätsprüfung ausstehend"}</h3><p>${track.integrity.fileCount} Dateien gehasht · ${track.integrity.verifiedCount} Dateien verifiziert</p></div><strong>${track.integrity.verified && !mismatches.length ? "PASS" : track.integrity.generated ? "NICHT VERIFIZIERT" : "NICHT ERZEUGT"}</strong></div>
-      ${mismatches.length ? `<div class="danger-banner">${icon("alert")}<div><strong>${mismatches.length} Integritätsabweichungen</strong><span>${mismatches.map(escapeHtml).join(", ")}</span></div></div>` : ""}
-      <div class="integrity-actions"><article class="action-card">${icon("file")}<div><h4>1. Dokumente erzeugen</h4><p>Versionierte Markdown- und Textdokumente aus den aktuellen Angaben erstellen.</p><span>${track.documents.current ? "Aktuell · " + formatDate(track.documents.generatedAt, true) : "Ausstehend oder veraltet"}</span></div><button class="button button--secondary" data-action="generate-documents" ${locked ? "disabled" : ""}>Erzeugen</button></article>
+      <div class="integrity-hero ${track.integrity.verified && !mismatches.length ? "is-valid" : ""}"><span>${icon("shield")}</span><div><p class="overline">SHA-256 Integrität</p><h3>${track.integrity.verified ? "Dateien erfolgreich verifiziert" : "Integritätsprüfung ausstehend"}</h3><p>${this.t(`${track.integrity.fileCount} Dateien gehasht · ${track.integrity.verifiedCount} Dateien verifiziert`)}</p></div><strong>${track.integrity.verified && !mismatches.length ? "PASS" : track.integrity.generated ? "NICHT VERIFIZIERT" : "NICHT ERZEUGT"}</strong></div>
+      ${mismatches.length ? `<div class="danger-banner">${icon("alert")}<div><strong>${this.t(`${mismatches.length} Integritätsabweichungen`)}</strong><span>${mismatches.map(escapeHtml).join(", ")}</span></div></div>` : ""}
+      <div class="integrity-actions"><article class="action-card">${icon("file")}<div><h4>1. Dokumente erzeugen</h4><p>Versionierte Markdown- und Textdokumente aus den aktuellen Angaben erstellen.</p><span>${track.documents.current ? this.t(`Aktuell · ${formatDate(track.documents.generatedAt, true, this.language)}`) : "Ausstehend oder veraltet"}</span></div><button class="button button--secondary" data-action="generate-documents" ${locked ? "disabled" : ""}>Erzeugen</button></article>
       <article class="action-card">${icon("hash")}<div><h4>2. SHA-256 berechnen</h4><p>Alle relevanten Dateien in einer extern prüfbaren Hashliste erfassen.</p><span>${track.integrity.generated ? `${track.integrity.fileCount} Dateien` : "Ausstehend"}</span></div><button class="button button--secondary" data-action="calculate-hashes" ${locked || !track.documents.current ? "disabled" : ""}>Berechnen</button></article>
-      <article class="action-card">${icon("shield")}<div><h4>3. Prüfsummen verifizieren</h4><p>Hashliste erneut lesen und jede erfasste Datei nativ überprüfen.</p><span>${track.integrity.verified ? formatDate(track.integrity.verifiedAt, true) : "Ausstehend"}</span></div><button class="button button--primary" data-action="verify-hashes" ${!track.integrity.generated ? "disabled" : ""}>Verifizieren</button></article></div>
+      <article class="action-card">${icon("shield")}<div><h4>3. Prüfsummen verifizieren</h4><p>Hashliste erneut lesen und jede erfasste Datei nativ überprüfen.</p><span>${track.integrity.verified ? formatDate(track.integrity.verifiedAt, true, this.language) : "Ausstehend"}</span></div><button class="button button--primary" data-action="verify-hashes" ${!track.integrity.generated ? "disabled" : ""}>Verifizieren</button></article></div>
       ${this.renderAudioScreeningIntegritySection(track)}
       <div class="technical-note">${icon("info")}<p><strong>Unabhängig prüfbar.</strong> SHA256SUMS.txt bleibt möglichst mit <code>sha256sum -c</code> kompatibel. Zertifikat, Archiv und interne Verwaltungsdaten werden nicht in dieselbe Hashliste aufgenommen.</p></div>
     </div>`;
@@ -2476,16 +2637,16 @@ export class SunoDocumentationApp {
           ? `<button class="button button--primary" data-action="run-external-audio-screening">${icon("upload")} ${external.status === "provider_unavailable" || external.status === "authentication_failed" ? "Erneut versuchen" : "ACRCloud-Prüfung starten"}</button>`
           : `<button class="button button--secondary" data-action="open-audio-screening-settings">${icon("settings")} Zu Einstellungen</button>`;
     const sample = externalCurrent && external.sampleOffsetMilliseconds !== undefined && external.sampleDurationMilliseconds !== undefined
-      ? `${formatAudioTimestamp(external.sampleOffsetMilliseconds)}–${formatAudioTimestamp(external.sampleOffsetMilliseconds + external.sampleDurationMilliseconds)}`
-      : "Nicht dokumentiert";
+      ? `${formatAudioTimestamp(external.sampleOffsetMilliseconds, this.language)}–${formatAudioTimestamp(external.sampleOffsetMilliseconds + external.sampleDurationMilliseconds, this.language)}`
+      : this.t("Nicht dokumentiert");
     const matches = external.matches.length
       ? `<div class="screening-match-list">${external.matches.map((match) => `<article><strong>${escapeHtml(match.title || "Titel nicht dokumentiert")}</strong><span>${escapeHtml((match.artists ?? []).join(", ") || "Artist nicht dokumentiert")}${match.album ? ` · ${escapeHtml(match.album)}` : ""}${match.score !== undefined ? ` · Score ${escapeHtml(String(match.score))}` : ""}</span>${match.isrc || match.acrid ? `<small>${match.isrc ? `ISRC ${escapeHtml(match.isrc)}` : ""}${match.isrc && match.acrid ? " · " : ""}${match.acrid ? `ACRID ${escapeHtml(match.acrid)}` : ""}</small>` : ""}</article>`).join("")}</div>`
       : "";
     return `<section class="panel audio-screening-integrity-section">
       <div class="panel-heading"><div><p class="overline">Pre-Release Audio Screening</p><h3>Audio-Fingerprint</h3><p>Chromaprint ist ein akustischer Fingerprint und wird getrennt von der SHA-256-Dateiintegrität dargestellt. ACRCloud bleibt eine bewusste, optionale externe Prüfung.</p></div></div>
       <div class="audio-screening-integrity-grid">
-        <article class="audio-screening-card ${audioScreeningStatusClass(local.status)}"><span>${icon("hash")}</span><div><small>Chromaprint · lokal</small><h4>${escapeHtml(audioScreeningStatusLabel(local.status))}</h4><p>${escapeHtml(local.message)}</p>${local.generatedAt ? `<small>Erzeugt: ${formatDate(local.generatedAt, true)}</small>` : ""}</div></article>
-        <article class="audio-screening-card ${audioScreeningStatusClass(visibleExternal.status)}"><span>${icon("tracks")}</span><div><small>ACRCloud · extern</small><h4>${escapeHtml(audioScreeningStatusLabel(visibleExternal.status))}</h4><p>${escapeHtml(visibleExternal.message)}</p>${externalCurrent && external.checkedAt ? `<small>Geprüft: ${formatDate(external.checkedAt, true)} · Sample: ${sample}</small>` : ""}</div></article>
+        <article class="audio-screening-card ${audioScreeningStatusClass(local.status)}"><span>${icon("hash")}</span><div><small>Chromaprint · lokal</small><h4>${escapeHtml(this.t(audioScreeningStatusLabel(local.status)))}</h4><p>${escapeHtml(this.systemText(local.message))}</p>${local.generatedAt ? `<small>Erzeugt: ${formatDate(local.generatedAt, true, this.language)}</small>` : ""}</div></article>
+        <article class="audio-screening-card ${audioScreeningStatusClass(visibleExternal.status)}"><span>${icon("tracks")}</span><div><small>ACRCloud · extern</small><h4>${escapeHtml(this.t(audioScreeningStatusLabel(visibleExternal.status)))}</h4><p>${escapeHtml(this.systemText(visibleExternal.message))}</p>${externalCurrent && external.checkedAt ? `<small>Geprüft: ${formatDate(external.checkedAt, true, this.language)} · Sample: ${sample}</small>` : ""}</div></article>
       </div>
       ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="audio-screening-alert">${icon("alert")}<div><strong>ACRCloud meldet eine Audio-Übereinstimmung</strong><span>Der externe Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</span></div></div>${matches}` : ""}
       ${!settings.enabled || !settings.credentialsConfigured ? `<p class="audio-screening-configuration">Extern: ÜBERSPRUNGEN – kein ACRCloud-Zugang eingerichtet. Die lokale Chromaprint-Prüfung bleibt davon unabhängig.</p>` : ""}
@@ -2551,7 +2712,7 @@ export class SunoDocumentationApp {
               <dl>
                 <div><dt>Anchor path</dt><dd>${escapeHtml(record.referencedArtifactPath)}</dd></div>
                 <div><dt>Timestamp evidence</dt><dd>${escapeHtml(record.evidenceFileName)} · <code>${escapeHtml(record.evidenceSha256)}</code></dd></div>
-                <div><dt>Imported at</dt><dd>${formatDate(record.importedAt, true)}</dd></div>
+                <div><dt>Imported at</dt><dd>${formatDate(record.importedAt, true, this.language)}</dd></div>
                 <div><dt>Provenance</dt><dd>${escapeHtml(record.provenance)}</dd></div>
               </dl>
               ${record.providerMetadata ? `<dl>
@@ -2569,8 +2730,8 @@ export class SunoDocumentationApp {
                 ${record.providerMetadata.policyOid ? `<div><dt>Policy OID</dt><dd>${escapeHtml(record.providerMetadata.policyOid)}</dd></div>` : ""}
               </dl>` : ""}
               ${record.externalReferenceId ? `<p>External reference ID: ${escapeHtml(record.externalReferenceId)}</p>` : ""}
-              ${record.providerVerificationUrl ? `<p>${presentation.endpointLabel}: ${escapeHtml(record.providerVerificationUrl)}</p>` : ""}
-              ${integrity.issues.length ? `<p>${escapeHtml(integrity.issues.join(" · "))}</p>` : ""}
+              ${record.providerVerificationUrl ? `<p>${escapeHtml(this.t(presentation.endpointLabel))}: ${escapeHtml(record.providerVerificationUrl)}</p>` : ""}
+              ${integrity.issues.length ? `<p>${escapeHtml(integrity.issues.map((issue) => this.systemText(issue)).join(" · "))}</p>` : ""}
             </details>
           </article>`;
         })()
@@ -2578,7 +2739,7 @@ export class SunoDocumentationApp {
     return `<section class="panel external-timestamp-section">
       <div class="panel-heading"><div><p class="overline">Post-finalization attachment</p><h3>External Timestamp Evidence</h3><p>Der Timestamp-Anchor wird automatisch aus dem finalisierten Zertifikatssnapshot bestimmt. Der ursprüngliche Manifest-/Hash-Snapshot bleibt unverändert.</p></div>${action}</div>
       <div class="timestamp-summary">${icon("lock")}<div><strong>Basiszertifikat (Phase 1): NOT RECORDED BY DESIGN</strong><span>Der unveränderliche Zertifikatssnapshot wurde vor dem externen Provider-Aufruf abgeschlossen. Spätere Nachweise gehören ausschließlich in separate Addenda.</span></div></div>
-      <div class="timestamp-summary ${statusClass}">${icon(statusIcon)}<div><strong>Aktueller Nachtrag (Phase 2): ${escapeHtml(externalTimestampStatusLabel(summary.status))}</strong><span>${escapeHtml(summary.message)}</span></div></div>
+      <div class="timestamp-summary ${statusClass}">${icon(statusIcon)}<div><strong>${escapeHtml(this.t(`Aktueller Nachtrag (Phase 2): ${this.t(externalTimestampStatusLabel(summary.status))}`))}</strong><span>${escapeHtml(this.systemText(summary.message))}</span></div></div>
       ${summary.status === "not_recorded" ? `<p class="timestamp-summary-copy">Der Track ist technisch vollständig finalisiert. Ein externer Zeitstempel wurde für diesen Zertifikatssnapshot noch nicht hinterlegt.</p>${providerReady ? "" : `<p class="timestamp-summary-copy">Kein externer Timestamp-Dienst eingerichtet.</p>`}` : ""}
       ${recordMarkup}
       <p class="certificate-disclaimer">This records technical external timestamp evidence. No legal qualification of the timestamp is determined by Suno Documentation Manager.</p>
@@ -2622,7 +2783,7 @@ export class SunoDocumentationApp {
           ? `<button class="button button--finalize" data-action="show-certificate-popup">${icon("certificate")} Zertifikat anzeigen</button>`
           : ""
         : `<button class="button button--finalize" data-action="finalize-track" ${!ready ? "disabled" : ""}>${icon("certificate")} Dokumentation finalisieren</button>`}
-      <div class="technical-note">${icon("info")}<p><strong>PASS:</strong> Configured documentation requirements for this step were satisfied.<br><strong>DOCUMENTATION COMPLETE:</strong> Meaning: configured documentation requirements completed.</p></div>
+      <div class="technical-note">${icon("info")}<p><strong>PASS:</strong> ${this.t("Configured documentation requirements for this step were satisfied.")}<br><strong>DOCUMENTATION COMPLETE:</strong> ${this.t("Meaning: configured documentation requirements completed.")}</p></div>
       <p class="certificate-disclaimer">Das Zertifikat bestätigt ausschließlich den Abschluss des konfigurierten Dokumentations- und Integritätsworkflows. Es ist keine behördliche Zertifizierung, Rechtsberatung oder unabhängige Feststellung von Urheberschaft oder Rechtskonformität.</p>
       ${this.renderExternalTimestampSection(track)}
     </div>`;
@@ -2634,7 +2795,7 @@ export class SunoDocumentationApp {
     const consistency = automaticConsistencyPresentation(track);
     return `<div class="certificate-view ${track.certificate.valid ? "is-valid" : "is-invalid"}">
       <div class="certificate-paper"><header><div class="certificate-seal">${icon("certificate")}</div><div><p>Suno Documentation Manager</p><h3>Track Documentation<br>Completion Certificate</h3></div><span class="certificate-result">${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "CERTIFICATE INVALID"}</span></header>
-      <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Automatische Konsistenz</dt><dd>${escapeHtml(consistency.outcome)}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div><div><dt>Meaning</dt><dd>configured documentation requirements completed</dd></div></dl>
+      <div class="certificate-rule"></div><dl><div><dt>Certificate ID</dt><dd>${escapeHtml(track.certificate.certificateId)}</dd></div><div><dt>Track</dt><dd>${escapeHtml(track.title)}</dd></div><div><dt>Artist</dt><dd>${escapeHtml(track.profileSnapshot.artistName)}</dd></div><div><dt>Workflow</dt><dd>${escapeHtml(track.workflowId)} · ${escapeHtml(track.certificate.workflowVersion ?? track.workflowVersion)}</dd></div><div><dt>Finalisierung</dt><dd>${formatDate(track.certificate.finalizedAt, true, this.language)}</dd></div><div><dt>Evidence-Dateien</dt><dd>${track.evidence.length}</dd></div><div><dt>Blockierende Abweichungen</dt><dd>${deviations.length}</dd></div><div><dt>Automatische Konsistenz</dt><dd>${escapeHtml(consistency.outcome)}</dd></div><div><dt>Finales Ergebnis</dt><dd>${track.certificate.valid ? "DOCUMENTATION COMPLETE" : "INVALID"}</dd></div><div><dt>${this.t("Meaning")}</dt><dd>${this.t("configured documentation requirements completed")}</dd></div></dl>
       <footer>PASS means: Configured documentation requirements for this step were satisfied. This certificate confirms completion of the configured documentation workflow and integrity checks. It does not constitute governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.</footer></div>
       <div class="certificate-actions">${track.certificate.valid ? `<button class="button button--secondary" data-action="show-certificate-popup">${icon("certificate")} Zertifikatsübersicht öffnen</button>` : ""}${canCreateTrackRevision(track.status) ? `<button class="button button--primary" data-action="create-revision">${icon("current")} Neue Revision anlegen und bearbeiten</button>` : ""}${track.certificate.valid && canCreateTrackRevision(track.status) ? `<button class="button button--danger-soft" data-action="invalidate-certificate">Zertifikat invalidieren</button>` : ""}</div>
       ${this.renderExternalTimestampSection(track)}
@@ -2645,9 +2806,9 @@ export class SunoDocumentationApp {
     const scan = this.state.scanResult;
     return `<div class="page-content workspace-page">
       <div class="page-lead"><div><p class="overline">Lokaler Projektordner</p><h2>${escapeHtml(this.state.workspace?.name)}</h2><p class="path-display">${icon("workspace")} ${escapeHtml(this.state.workspace?.path)}</p></div><button class="button button--primary" data-action="scan-workspace">${icon("scan")} Workspace scannen</button></div>
-      <section class="workspace-stats"><article><span>${icon("tracks")}</span><div><strong>${this.state.tracks.length}</strong><small>indexierte Tracks</small></div></article><article><span>${icon("scan")}</span><div><strong>${formatDate(this.state.workspace?.lastScannedAt)}</strong><small>zuletzt gescannt</small></div></article><article><span>${icon("shield")}</span><div><strong>Lokal</strong><small>SQLite + Track-Ordner</small></div></article></section>
+      <section class="workspace-stats"><article><span>${icon("tracks")}</span><div><strong>${this.state.tracks.length}</strong><small>indexierte Tracks</small></div></article><article><span>${icon("scan")}</span><div><strong>${formatDate(this.state.workspace?.lastScannedAt, false, this.language)}</strong><small>zuletzt gescannt</small></div></article><article><span>${icon("shield")}</span><div><strong>Lokal</strong><small>SQLite + Track-Ordner</small></div></article></section>
       <section class="panel workspace-scan"><div class="panel-heading"><div><p class="overline">Bestehende Projekte</p><h3>Legacy-Track-Import</h3><p>Der Scan erkennt bekannte Ordner, Evidence und Hashlisten. Bestehende Dateien werden dabei niemals verändert.</p></div></div>
-        ${scan ? `<div class="scan-summary"><span><strong>${scan.discovered}</strong> erkannt</span><span><strong>${scan.indexed}</strong> indexiert</span><span><strong>${scan.unchanged}</strong> unverändert</span></div>${scan.warnings.length ? `<ul class="warning-list">${scan.warnings.map((warning) => `<li>${icon("alert")} ${escapeHtml(warning)}</li>`).join("")}</ul>` : ""}${scan.candidates?.length ? `<div class="candidate-list">${scan.candidates.map((candidate) => `<article><span class="file-icon">${icon("workspace")}</span><div><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(candidate.relativePath)}</small><p>${candidate.missingItems.length ? `Fehlt: ${candidate.missingItems.map(escapeHtml).join(", ")}` : "Bekannte Struktur erkannt"}</p></div><span class="status-chip">${candidate.status === "NOT_VERIFIED" ? "Nicht verifiziert" : candidate.status === "INCOMPLETE" ? "Unvollständig" : "Indexiert"}</span>${candidate.hasManagedDocumentCollision ? `<span class="collision-note">${icon("alert")} Bestehendes Dokument – keine Übernahme ohne Bestätigung und Sicherung</span>` : ""}</article>`).join("")}</div>` : ""}` : `<div class="scan-placeholder">${icon("scan")}<div><strong>Noch kein Scan in dieser Sitzung</strong><span>Legacy-Projekte beginnen als „Nicht verifiziert“. Fehlende historische Angaben werden nie erfunden.</span></div></div>`}
+        ${scan ? `<div class="scan-summary"><span><strong>${scan.discovered}</strong> erkannt</span><span><strong>${scan.indexed}</strong> indexiert</span><span><strong>${scan.unchanged}</strong> unverändert</span></div>${scan.warnings.length ? `<ul class="warning-list">${scan.warnings.map((warning) => `<li>${icon("alert")} ${escapeHtml(this.systemText(warning))}</li>`).join("")}</ul>` : ""}${scan.candidates?.length ? `<div class="candidate-list">${scan.candidates.map((candidate) => `<article><span class="file-icon">${icon("workspace")}</span><div><strong>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(candidate.relativePath)}</small><p>${candidate.missingItems.length ? `${this.t("Fehlt:")} ${candidate.missingItems.map((item) => escapeHtml(this.systemText(item))).join(", ")}` : "Bekannte Struktur erkannt"}</p></div><span class="status-chip">${candidate.status === "NOT_VERIFIED" ? "Nicht verifiziert" : candidate.status === "INCOMPLETE" ? "Unvollständig" : "Indexiert"}</span>${candidate.hasManagedDocumentCollision ? `<span class="collision-note">${icon("alert")} Bestehendes Dokument – keine Übernahme ohne Bestätigung und Sicherung</span>` : ""}</article>`).join("")}</div>` : ""}` : `<div class="scan-placeholder">${icon("scan")}<div><strong>Noch kein Scan in dieser Sitzung</strong><span>Legacy-Projekte beginnen als „Nicht verifiziert“. Fehlende historische Angaben werden nie erfunden.</span></div></div>`}
       </section>
       <section class="panel safety-panel"><div>${icon("lock")}<div><h3>Dateisystem-Sicherheit</h3><p>Alle Dateizugriffe laufen über enge native Commands. Pfade werden kanonisiert, Traversal und Symlink-Escapes abgewiesen und Schreibvorgänge atomar ausgeführt.</p></div></div><ul><li>${icon("check")} Kein stilles Überschreiben</li><li>${icon("check")} Relative Track-Pfade</li><li>${icon("check")} Originale bleiben erhalten</li></ul></section>
       <div class="workspace-actions"><button class="button button--secondary" data-action="open-workspace">Anderen Workspace öffnen</button><button class="button button--secondary" data-action="create-workspace">Neuen Workspace anlegen</button></div>
@@ -2686,10 +2847,19 @@ export class SunoDocumentationApp {
         <header class="settings-category-header"><span class="settings-category-index">3</span><div><p class="overline">${SETTINGS_CATEGORY_DEFINITIONS[2].description}</p><h3>${SETTINGS_CATEGORY_DEFINITIONS[2].label}</h3><p>Workspaceweit verwaltete Evidence-Dateien mit eigener Import-, Bearbeitungs- und Entfernen-Logik.</p></div></header>
         <div class="settings-category-body settings-files-body">
           <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Wiederverwendbare Nachweise</p><h3>Suno-Abo-Evidence</h3><p>Registriere jeden Beleg einmal. Bezahlrhythmus und Startdatum bestimmen automatisch den abgedeckten Monat oder das abgedeckte Jahr.</p></div><button class="button button--secondary" data-action="import-global-evidence">${icon("upload")} Abo-Nachweis registrieren</button></div>
-            ${subscriptions.length ? `<div class="global-evidence-list">${subscriptions.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart)} – ${formatDate(item.coverageEnd)}</small></div><span class="verification is-valid">${icon("check")} Gehasht</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globalen Nachweis entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
+            ${subscriptions.length ? `<div class="global-evidence-list">${subscriptions.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.fileName)}</strong><small>${formatDate(item.coverageStart, false, this.language)} – ${formatDate(item.coverageEnd, false, this.language)}</small></div><span class="verification is-valid">${icon("check")} ${this.t("Gehasht")}</span><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="${escapeHtml(this.t("Globalen Nachweis entfernen"))}">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch kein globaler Abo-Nachweis registriert.</p>`}
           </section>
           <section class="panel global-evidence-panel"><div class="panel-heading"><div><p class="overline">Globale Datei für alle Projekte</p><h3>Archivierte Suno-Nutzungsbedingungen</h3><p>Dokumenttitel, Provider und Abrufdatum sind Kernmetadaten. Die lokale PDF und ihre Metadaten werden in jedes neue sowie jedes noch bearbeitbare Projekt kopiert. Finalisierte Snapshots bleiben unverändert.</p><p>Source URL, Effective Date, anwendbarer Produktionszeitraum und sachliche Notiz sind optional. SunoDM trifft keine Rechte- oder Gültigkeitsaussage.</p></div><button class="button button--secondary" data-action="import-global-terms">${icon("upload")} Terms-Evidence registrieren</button></div>
-            ${terms.length ? `<div class="global-evidence-list terms-evidence-list">${terms.map((item) => `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(item.metadata?.provider || "Provider nicht dokumentiert")} · Abruf ${formatDate(item.metadata?.retrievalDate)}</small><small>${escapeHtml(item.metadata?.sourceUrl || "Source URL: Not documented")} · ${escapeHtml(item.fileName)}</small></div><span class="verification ${termsMetadataComplete(item.metadata) ? "is-valid" : ""}">${termsMetadataComplete(item.metadata) ? icon("check") + " Vollständig" : "Metadaten fehlen"}</span><button class="button button--small button--secondary" data-edit-global-terms="${item.id}">Metadaten bearbeiten</button><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="Globale Nutzungsbedingungen entfernen">${icon("trash")}</button></article>`).join("")}</div>` : `<p class="empty-inline">Noch keine globale PDF mit Suno-Nutzungsbedingungen registriert.</p>`}
+            ${terms.length ? `<div class="global-evidence-list terms-evidence-list">${terms.map((item) => {
+              const provider = item.metadata?.provider?.trim() || this.t("Provider nicht dokumentiert");
+              const retrieval = formatDate(item.metadata?.retrievalDate, false, this.language);
+              const sourceUrl = item.metadata?.sourceUrl || this.t("Source URL: Not documented");
+              const metadataComplete = termsMetadataComplete(item.metadata);
+              const metadataStatus = this.t(metadataComplete ? "Vollständig" : "Metadaten fehlen");
+              const editLabel = this.t("Metadaten bearbeiten");
+              const removeLabel = this.t("Globale Nutzungsbedingungen entfernen");
+              return `<article><span class="file-icon">${icon("file")}</span><div><strong>${escapeHtml(item.metadata?.documentTitle || item.fileName)}</strong><small>${escapeHtml(this.t(`${provider} · Abruf ${retrieval}`))}</small><small>${escapeHtml(sourceUrl)} · ${escapeHtml(item.fileName)}</small></div><span class="verification ${metadataComplete ? "is-valid" : ""}">${metadataComplete ? `${icon("check")} ${escapeHtml(metadataStatus)}` : escapeHtml(metadataStatus)}</span><button class="button button--small button--secondary" data-edit-global-terms="${item.id}">${escapeHtml(editLabel)}</button><button class="icon-button danger" data-remove-global-evidence="${item.id}" aria-label="${escapeHtml(removeLabel)}">${icon("trash")}</button></article>`;
+            }).join("")}</div>` : `<p class="empty-inline">Noch keine globale PDF mit Suno-Nutzungsbedingungen registriert.</p>`}
           </section>
         </div>
       </section>
@@ -2713,8 +2883,8 @@ export class SunoDocumentationApp {
         ${this.selectField("timestampProvider", "Timestamp Provider", settings.provider, [["free_tsa", "FreeTSA"], ["open_timestamps", "OpenTimestamps"], ["sigstore_public_tsa", "Sigstore Public TSA"], ["custom_rfc3161", "Custom RFC 3161"], ["disabled", "Disabled"]])}
         <label class="toggle-row timestamp-auto-toggle"><span><strong>Automatisch nach Finalisierung</strong><small>Phase 1 bleibt bei einem Providerfehler vollständig abgeschlossen.</small></span><input type="checkbox" name="timestampAutoAfterFinalization" aria-label="Zeitstempel automatisch nach Finalisierung anhängen" ${settings.autoAfterFinalization ? "checked" : ""}><i aria-hidden="true"></i></label>
       </div>
-      <p class="timestamp-settings-note"><strong>Protokoll: ${escapeHtml(protocol.label)}</strong><br>${escapeHtml(protocol.detail)}</p>
-      <div class="timestamp-provider-status ${statusClass}"><div><strong>Status: ${escapeHtml(timestampProviderStatusLabel(status))}</strong><span>${escapeHtml(message || "Noch nicht getestet.")}</span>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-timestamp-provider" ${settings.enabled && settings.provider !== "disabled" ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
+      <p class="timestamp-settings-note"><strong>${escapeHtml(this.t(`Protokoll: ${this.t(protocol.label)}`))}</strong><br>${escapeHtml(this.t(protocol.detail))}</p>
+      <div class="timestamp-provider-status ${statusClass}"><div><strong>${escapeHtml(this.t(`Status: ${this.t(timestampProviderStatusLabel(status))}`))}</strong><span>${escapeHtml(this.systemText(message || "Noch nicht getestet."))}</span>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true, this.language)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-timestamp-provider" ${settings.enabled && settings.provider !== "disabled" ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
       <div data-timestamp-provider-configuration>${this.renderTimestampProviderConfiguration(settings)}</div>
       <p class="timestamp-settings-note">${icon("shield")} Zugangsdaten werden ausschließlich über die getrennte lokale sichere Konfiguration gespeichert. Sie erscheinen nie in Tracks, Evidenz, PDFs, Manifesten oder Revisionen.</p>
     </div></div>`;
@@ -2726,10 +2896,10 @@ export class SunoDocumentationApp {
     const message = result?.message ?? settings.statusMessage;
     const testedAt = result?.testedAt ?? settings.lastTestedAt;
     const statusClass = status === "ready" ? "is-valid" : status === "disabled" || status === "not_configured" ? "" : "is-warning";
-    const engineStatus = settings.localEngineAvailable ? "YES" : "NO";
+    const engineStatus = this.t(settings.localEngineAvailable ? "YES" : "NO");
     const engineVersion = settings.localEngineVersion ? ` · ${settings.localEngineVersion}` : "";
-    return `<div class="settings-section audio-screening-settings-section"><div class="settings-section-copy"><span>06</span><div><h3>Pre-Release Audio Screening</h3><p>Lokaler Chromaprint-Fingerprint plus eine bewusst gestartete, optionale ACRCloud-Katalogprüfung.</p></div></div><div>
-      <div class="audio-screening-local-engine"><span>${icon("hash")}</span><div><strong>Lokale Prüfung: Chromaprint verfügbar: ${engineStatus}${escapeHtml(engineVersion)}</strong><small>Die lokale Fingerprint-Erzeugung benötigt keine Netzwerkverbindung.</small></div></div>
+    return `<div class="settings-section audio-screening-settings-section"><div class="settings-section-copy"><span>06</span><div><h3>Pre-Release Audio Screening</h3><p>Lokaler Chromaprint-Fingerprint plus eine bewusst gestartete, optionale ACRCloud-Katalogprüfung.</p><a class="text-button audio-screening-doc-link" href="https://github.com/kleiveist/Suno-Documentation-Manager/blob/main/docs/def/pre-release-audio-screening.md" target="_blank" rel="noopener noreferrer">${icon("arrow")} Dokumentation zum Audio-Screening öffnen</a></div></div><div>
+      <div class="audio-screening-local-engine"><span>${icon("hash")}</span><div><strong>${this.t("Lokale Prüfung: Chromaprint verfügbar:")} <span>${engineStatus}${escapeHtml(engineVersion)}</span></strong><small>Die lokale Fingerprint-Erzeugung benötigt keine Netzwerkverbindung.</small></div></div>
       <label class="toggle-row"><span><strong>ACRCloud aktiviert</strong><small>Die externe Prüfung wird nie beim App-Start, Import, Hashing oder Finalisieren ausgelöst.</small></span><input type="checkbox" name="audioScreeningEnabled" aria-label="ACRCloud-Audio-Screening aktivieren" ${settings.enabled ? "checked" : ""}><i aria-hidden="true"></i></label>
       <div class="field-grid two-col timestamp-settings-grid">
         ${this.textField("audioScreeningHost", "ACRCloud Host", "z. B. identify-eu-west-1.acrcloud.com", settings.host)}
@@ -2737,7 +2907,7 @@ export class SunoDocumentationApp {
         <label class="field"><span class="field-label">Access Key</span><input type="password" name="audioScreeningAccessKey" autocomplete="new-password" placeholder="Nur lokal sicher speichern"></label>
         <label class="field"><span class="field-label">Access Secret</span><input type="password" name="audioScreeningAccessSecret" autocomplete="new-password" placeholder="Nur lokal sicher speichern"></label>
       </div>
-      <div class="timestamp-provider-status ${statusClass}"><div><strong>Status: ${escapeHtml(audioScreeningProviderStatusLabel(status))}</strong><span>${escapeHtml(message || "Noch nicht getestet.")}</span><small>${settings.credentialsConfigured ? "Access Key und Access Secret sind lokal konfiguriert; Werte werden nie angezeigt." : "Noch keine vollständigen lokalen Zugangsdaten hinterlegt."}</small>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-audio-screening-provider" ${settings.enabled ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
+      <div class="timestamp-provider-status ${statusClass}"><div><strong>${escapeHtml(this.t(`Status: ${this.t(audioScreeningProviderStatusLabel(status))}`))}</strong><span>${escapeHtml(this.systemText(message || "Noch nicht getestet."))}</span><small>${settings.credentialsConfigured ? "Access Key und Access Secret sind lokal konfiguriert; Werte werden nie angezeigt." : "Noch keine vollständigen lokalen Zugangsdaten hinterlegt."}</small>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true, this.language)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-audio-screening-provider" ${settings.enabled ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
       <p class="timestamp-settings-note">${icon("shield")} SunoDM zeigt kein ACRCloud-Loginfenster. Lege das Projekt bei ACRCloud an und hinterlege hier nur Host, Access Key und Access Secret. Die Zugangsdaten bleiben getrennt von Trackdaten, Evidenz, PDFs, Manifesten und Revisionen.</p>
     </div></div>`;
   }
@@ -2884,7 +3054,7 @@ export class SunoDocumentationApp {
     const target = form.querySelector<HTMLElement>("[data-timestamp-provider-configuration]");
     if (!target) return;
     target.innerHTML = this.renderTimestampProviderConfiguration(this.readTimestampSettings(form));
-    translateRenderedUi(target, this.language);
+    translateRenderedUi(target, this.language, this.protectedRenderedValues());
   }
 
   private inlineEvidenceActions(track: TrackDetail, actions: Array<[EvidenceRole, string]>): string {
@@ -2969,7 +3139,7 @@ export class SunoDocumentationApp {
     const sunoId = track.automation.sunoId;
     if (!track.automation.sunoMetadataDetected || !timestamp || !sunoId) return "";
 
-    return `<section class="policy-card"><div>${icon("check")}<p class="overline">Automatisch aus Suno-WAV erkannt</p><h4>Aus Dateimetadaten</h4><dl><div><dt>Suno Studio</dt><dd>Ja</dd></div><div><dt>Download/Export</dt><dd>${escapeHtml(formatDate(track.fields.sunoDownloadExportDate))}</dd></div><div><dt>Suno ID</dt><dd><code>${escapeHtml(sunoId)}</code></dd></div></dl><details><summary>Technische Details</summary><p>Embedded Suno export timestamp: <code>${escapeHtml(timestamp)}</code></p></details></div></section>`;
+    return `<section class="policy-card"><div>${icon("check")}<p class="overline">Automatisch aus Suno-WAV erkannt</p><h4>Aus Dateimetadaten</h4><dl><div><dt>Suno Studio</dt><dd>Ja</dd></div><div><dt>Download/Export</dt><dd>${escapeHtml(formatDate(track.fields.sunoDownloadExportDate, false, this.language))}</dd></div><div><dt>Suno ID</dt><dd><code>${escapeHtml(sunoId)}</code></dd></div></dl><details><summary>Technische Details</summary><p>Embedded Suno export timestamp: <code>${escapeHtml(timestamp)}</code></p></details></div></section>`;
   }
 
   private textArea(name: string, label: string, placeholder: string, value: string, required = false): string {
@@ -2981,9 +3151,11 @@ export class SunoDocumentationApp {
     const known = new Set(options.map(([option]) => option));
     const choices: GuidedChoice[] = [
       ...options,
-      ...selected.filter((item) => !known.has(item)).map((item) => [item, `Bisherige Auswahl: ${item} (bitte prüfen)`] as const)
+      ...selected.filter((item) => !known.has(item)).map((item) => [item, this.language === "en"
+        ? `Previous selection: ${item} (please review)`
+        : `Bisherige Auswahl: ${item} (bitte prüfen)`] as const)
     ];
-    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${name}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : ""}</fieldset>`;
+    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${name}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(known.has(option) ? this.guidedChoiceLabel(option, optionLabel) : optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : ""}</fieldset>`;
   }
 
   private multiChoiceArrayField(
@@ -2997,9 +3169,11 @@ export class SunoDocumentationApp {
     const known = new Set(options.map(([option]) => option));
     const choices: GuidedChoice[] = [
       ...options,
-      ...selected.filter((item) => !known.has(item)).map((item) => [item, `Bisheriger Freitext: ${item}`] as const)
+      ...selected.filter((item) => !known.has(item)).map((item) => [item, this.language === "en"
+        ? `Previous free text: ${item}`
+        : `Bisheriger Freitext: ${item}`] as const)
     ];
-    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group data-choice-array ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : `<p class="field-help">Mehrere Angaben können gleichzeitig ausgewählt und durch Freitext ergänzt werden.</p>`}</fieldset>`;
+    return `<fieldset class="multi-choice-field field--wide" data-multi-choice-group data-choice-array ${required ? `data-multi-choice-required aria-required="true"` : ""}><legend>${escapeHtml(label)}${required ? " *" : ""}</legend><div>${choices.map(([option, optionLabel]) => `<label><input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(option)}" data-multi-choice ${selected.includes(option) ? "checked" : ""}><span>${escapeHtml(known.has(option) ? this.guidedChoiceLabel(option, optionLabel) : optionLabel)}</span></label>`).join("")}</div>${required ? `<p class="field-help">Wähle mindestens einen tatsächlich ausgeführten Schritt aus.</p>` : `<p class="field-help">Mehrere Angaben können gleichzeitig ausgewählt und durch Freitext ergänzt werden.</p>`}</fieldset>`;
   }
 
   private selectField(name: string, label: string, value: string, options: readonly SingleChoiceOption[], required = false): string {
@@ -3009,9 +3183,15 @@ export class SunoDocumentationApp {
   private guidedSingleChoiceField(name: string, label: string, value: string, choices: readonly GuidedChoice[], required = false): string {
     const selected = canonicalGuidedChoiceValue(value, choices);
     const known = choices.some(([option]) => option === selected);
-    const options: SingleChoiceOption[] = choices.map(([option, optionLabel]) => [option, optionLabel]);
-    if (selected && !known) options.unshift([selected, `Bisheriger Wert: ${selected} (bitte prüfen)`]);
+    const options: SingleChoiceOption[] = choices.map(([option, optionLabel]) => [option, this.guidedChoiceLabel(option, optionLabel)]);
+    if (selected && !known) options.unshift([selected, this.language === "en"
+      ? `Previous value: ${selected} (please review)`
+      : `Bisheriger Wert: ${selected} (bitte prüfen)`]);
     return singleChoiceFieldMarkup(name, label, selected, options, required);
+  }
+
+  private guidedChoiceLabel(option: string, germanLabel: string): string {
+    return this.language === "en" ? option : germanLabel;
   }
 
   private boolQuestion(name: string, label: string, help: string, value: boolean | null): string {
@@ -3050,7 +3230,7 @@ export class SunoDocumentationApp {
     if (button.dataset.action === "create-album") {
       event.preventDefault();
       event.stopPropagation();
-      const title = window.prompt("Name des neuen Albumordners:")?.trim();
+      const title = window.prompt(this.t("Name des neuen Albumordners:"))?.trim();
       if (!title) return;
       const albums = await this.withBusy(
         "Albumordner wird angelegt …",
@@ -3075,7 +3255,7 @@ export class SunoDocumentationApp {
     if (albumTitle) {
       event.preventDefault();
       event.stopPropagation();
-      const newTitle = window.prompt("Neuer Name des Albumordners:", albumTitle)?.trim();
+      const newTitle = window.prompt(this.t("Neuer Name des Albumordners:"), albumTitle)?.trim();
       if (!newTitle || newTitle === albumTitle) return;
       const result = await this.withBusy(
         "Albumordner wird umbenannt …",
@@ -3163,13 +3343,13 @@ export class SunoDocumentationApp {
       const prompt = selected?.provenance === "indexed_legacy"
         ? "Historisch indexierte Evidence entfernen? Die Datei wird nachvollziehbar unter .archive/removals gesichert und nicht gelöscht."
         : "Importierte Evidence-Kopie aus dem Track entfernen? Die Originaldatei am Quellort bleibt erhalten.";
-      if (window.confirm(prompt)) {
+      if (window.confirm(this.t(prompt))) {
         await this.trackMutation("Evidence wird entfernt …", () => this.api.removeEvidence(this.requireTrack().id, button.dataset.removeEvidence!), "Evidence entfernt");
       }
       return;
     }
     if (button.dataset.removeGlobalEvidence) {
-      if (window.confirm("Global registrierten Nachweis entfernen? Bereits in Tracks kopierte Evidence bleibt bestehen.")) {
+      if (window.confirm(this.t("Global registrierten Nachweis entfernen? Bereits in Tracks kopierte Evidence bleibt bestehen."))) {
         await this.withBusy("Nachweis wird entfernt …", () => this.api.removeGlobalEvidence(button.dataset.removeGlobalEvidence!));
         this.state.globalEvidence = await this.api.listGlobalEvidence();
         this.showToast("success", "Nachweis entfernt", "Bereits zugeordnete Track-Kopien wurden nicht verändert.");
@@ -3202,7 +3382,7 @@ export class SunoDocumentationApp {
     }
     if (button.dataset.markNa) {
       if (!(await this.flushDraft())) return;
-      const reason = window.prompt("Warum ist dieser Schritt für den Track nicht anwendbar? Eine konkrete Begründung ist erforderlich.");
+      const reason = window.prompt(this.t("Warum ist dieser Schritt für den Track nicht anwendbar? Eine konkrete Begründung ist erforderlich."));
       if (!reason?.trim()) return;
       await this.trackMutation("N/A-Begründung wird gespeichert …", () => this.api.setStepStatus(this.requireTrack().id, button.dataset.markNa as StepId, "N_A", reason.trim()), "N/A dokumentiert");
       return;
@@ -3226,7 +3406,7 @@ export class SunoDocumentationApp {
         if (missing.length) {
           this.state.view = "settings";
           this.state.settingsCategory = "global";
-          this.showToast("info", "Zuerst Stammdaten vervollständigen", `Für einen unveränderlichen Track-Snapshot fehlen: ${missing.join(", ")}.`);
+          this.showToast("info", "Zuerst Stammdaten vervollständigen", this.t(`Für einen unveränderlichen Track-Snapshot fehlen: ${this.localizedLabels(missing)}.`));
           this.render();
         } else {
           this.state.showTrackLibrary = false;
@@ -3239,7 +3419,7 @@ export class SunoDocumentationApp {
         break;
       }
       case "scan-folder-import": {
-        const proposal = await this.withBusy("Ordner wird analysiert …", () => this.api.scanImportFolder());
+        const proposal = await this.withBusy("Ordner wird analysiert …", () => this.api.scanImportFolder(this.language));
         if (proposal) {
           this.state.folderImport = proposal;
           this.showToast("info", "Ordner analysiert", `${proposal.tracks.length} ${proposal.tracks.length === 1 ? "Track" : "Tracks"} erkannt. Nur eindeutige Dateien werden übernommen.`);
@@ -3259,7 +3439,7 @@ export class SunoDocumentationApp {
       case "close-modal": this.state.showNewTrack = false; this.state.folderImport = null; this.state.showTrackLibrary = false; this.state.showSubscriptionEvidence = false; this.state.evidencePreview = null; this.state.showCertificatePopup = false; this.state.termsMetadataDialog = null; this.render(); break;
       case "remove-legacy-lyrics": {
         if (this.rejectLockedContentMutation()) break;
-        if (!window.confirm("Historische Lyrics-Angaben aus diesem bearbeitbaren Track entfernen? Die neuen Lyrics-/Structure-Felder bleiben unverändert.")) break;
+        if (!window.confirm(this.t("Historische Lyrics-Angaben aus diesem bearbeitbaren Track entfernen? Die neuen Lyrics-/Structure-Felder bleiben unverändert."))) break;
         const updated = await this.withBusy(
           "Historische Lyrics-Angaben werden entfernt …",
           () => this.api.updateTrack(this.requireTrack().id, { legacyLyricsSource: "", legacyLyricsText: "" })
@@ -3290,7 +3470,7 @@ export class SunoDocumentationApp {
       case "back-overview": if (await this.flushDraft()) { this.state.activeStep = null; this.state.trackTab = "overview"; this.render(); } break;
       case "scan-workspace": await this.scanWorkspace(); break;
       case "adopt-legacy-profile":
-        if (window.confirm("Treffen die aktuellen Workspace-Stammdaten auf diesen historischen Track zu? Sie werden als Track-Snapshot übernommen.")) await this.trackMutation("Stammdaten werden als Legacy-Snapshot übernommen …", () => this.api.adoptLegacyProfile(this.requireTrack().id), "Legacy-Snapshot übernommen");
+        if (window.confirm(this.t("Treffen die aktuellen Workspace-Stammdaten auf diesen historischen Track zu? Sie werden als Track-Snapshot übernommen."))) await this.trackMutation("Stammdaten werden als Legacy-Snapshot übernommen …", () => this.api.adoptLegacyProfile(this.requireTrack().id), "Legacy-Snapshot übernommen");
         break;
       case "import-evidence": await this.chooseEvidenceRole(); break;
       case "import-global-evidence": this.state.showNewTrack = false; this.state.showTrackLibrary = false; this.state.evidencePreview = null; this.state.showSubscriptionEvidence = true; this.render(); break;
@@ -3325,7 +3505,11 @@ export class SunoDocumentationApp {
           this.state.timestampSettings = outcome.settings;
           this.state.timestampProviderTest = outcome.test;
           const successful = outcome.test?.status === "ready";
-          this.showToast(successful ? "success" : "info", "Verbindungstest", outcome.test?.message ?? outcome.settings.statusMessage);
+          this.showToast(
+            successful ? "success" : "info",
+            "Verbindungstest",
+            this.systemText(outcome.test?.message ?? outcome.settings.statusMessage)
+          );
         }
         break;
       }
@@ -3340,7 +3524,11 @@ export class SunoDocumentationApp {
           this.state.audioScreeningSettings = outcome.settings;
           this.state.audioScreeningProviderTest = outcome.test;
           const successful = outcome.test?.status === "ready";
-          this.showToast(successful ? "success" : "info", "ACRCloud-Verbindung", outcome.test?.message ?? outcome.settings.statusMessage);
+          this.showToast(
+            successful ? "success" : "info",
+            "ACRCloud-Verbindung",
+            this.systemText(outcome.test?.message ?? outcome.settings.statusMessage)
+          );
         }
         break;
       }
@@ -3357,7 +3545,7 @@ export class SunoDocumentationApp {
         this.showToast(
           successful ? "success" : "info",
           successful ? "Externer Zeitstempel angehängt" : externalTimestampStatusLabel(summary.status),
-          summary.message
+          this.systemText(summary.message)
         );
         break;
       }
@@ -3374,21 +3562,21 @@ export class SunoDocumentationApp {
           this.rejectLockedContentMutation();
           break;
         }
-        if (window.confirm("Zertifikat als ungültig markieren? Der finalisierte Snapshot wird nicht still überschrieben.")) await this.runAction("Zertifikat wird invalidiert …", () => this.api.invalidateCertificate(this.requireTrack().id), true);
+        if (window.confirm(this.t("Zertifikat als ungültig markieren? Der finalisierte Snapshot wird nicht still überschrieben."))) await this.runAction("Zertifikat wird invalidiert …", () => this.api.invalidateCertificate(this.requireTrack().id), true);
         break;
       case "create-revision":
         if (!canCreateTrackRevision(this.requireTrack().status)) {
           this.rejectLockedContentMutation();
           break;
         }
-        if (window.confirm("Neue Revision anlegen? Der bisherige Certificate-/Manifest-Snapshot wird zuerst unter .archive/revisions gesichert.")) await this.runAction("Neue Revision wird angelegt …", () => this.api.createRevision(this.requireTrack().id), true);
+        if (window.confirm(this.t("Neue Revision anlegen? Der bisherige Certificate-/Manifest-Snapshot wird zuerst unter .archive/revisions gesichert."))) await this.runAction("Neue Revision wird angelegt …", () => this.api.createRevision(this.requireTrack().id), true);
         break;
       case "re-evaluate-track":
         if (this.requireTrack().status === "SUPERSEDED") {
           this.rejectLockedContentMutation();
           break;
         }
-        if (window.confirm("Track mit dem aktuellen Workflow neu bewerten? Ein finalisierter Snapshot wird zuerst unverändert als Revision archiviert; Dokumente, Prüfsummen und Zertifikat müssen danach neu erzeugt werden.")) await this.runAction("Workflow wird aktualisiert und neu bewertet …", () => this.api.reEvaluateTrack(this.requireTrack().id), this.requireTrack().status === "FINALIZED");
+        if (window.confirm(this.t("Track mit dem aktuellen Workflow neu bewerten? Ein finalisierter Snapshot wird zuerst unverändert als Revision archiviert; Dokumente, Prüfsummen und Zertifikat müssen danach neu erzeugt werden."))) await this.runAction("Workflow wird aktualisiert und neu bewertet …", () => this.api.reEvaluateTrack(this.requireTrack().id), this.requireTrack().status === "FINALIZED");
         break;
     }
   }
@@ -3402,7 +3590,7 @@ export class SunoDocumentationApp {
         this.state.showNewTrack = false;
         this.state.view = "settings";
         this.state.settingsCategory = "global";
-        this.showToast("error", "Track nicht angelegt", `Vervollständige zuerst: ${profileMissing.join(", ")}.`);
+        this.showToast("error", "Track nicht angelegt", this.t(`Vervollständige zuerst: ${this.localizedLabels(profileMissing)}.`));
         this.render();
         return;
       }
@@ -3484,14 +3672,14 @@ export class SunoDocumentationApp {
         return;
       }
       const imported = await this.withBusy("Abo-Nachweis wird registriert …", async () => {
-        const item = await this.api.importGlobalEvidence("subscription_payment", coverageStart, billingCycle);
+        const item = await this.api.importGlobalEvidence("subscription_payment", coverageStart, billingCycle, this.language);
         if (!item) return null;
         return { item, globalEvidence: await this.api.listGlobalEvidence() };
       });
       if (imported) {
         this.state.globalEvidence = imported.globalEvidence;
         this.state.showSubscriptionEvidence = false;
-        this.showToast("success", "Abo-Nachweis registriert", `Abgedeckter Zeitraum: ${formatDate(coverageStart)} – ${formatDate(imported.item.coverageEnd ?? coverageEnd)}.`);
+        this.showToast("success", "Abo-Nachweis registriert", `Abgedeckter Zeitraum: ${formatDate(coverageStart, false, this.language)} – ${formatDate(imported.item.coverageEnd ?? coverageEnd, false, this.language)}.`);
         this.render();
       }
       return;
@@ -3520,7 +3708,7 @@ export class SunoDocumentationApp {
         async () => {
           const item = dialog.evidenceId
             ? await this.api.updateGlobalTermsEvidenceMetadata(dialog.evidenceId, metadata)
-            : await this.api.importGlobalTermsEvidence(metadata);
+            : await this.api.importGlobalTermsEvidence(metadata, this.language);
           if (!item) return null;
           return {
             globalEvidence: await this.api.listGlobalEvidence(),
@@ -3675,9 +3863,9 @@ export class SunoDocumentationApp {
       field?.removeAttribute("hidden");
       albumInput.disabled = false;
       albumInput.required = true;
-      albumInput.setCustomValidity(albumInput.value.trim()
+      albumInput.setCustomValidity(this.t(albumInput.value.trim()
         ? "Der Albumtitel darf höchstens 200 Zeichen und keine Pfadtrenner, Steuerzeichen oder reservierten Ordnernamen enthalten."
-        : "Gib für einen Album-Track einen Albumtitel an.");
+        : "Gib für einen Album-Track einen Albumtitel an."));
       albumInput.reportValidity();
       albumInput.focus();
     }
@@ -3713,7 +3901,7 @@ export class SunoDocumentationApp {
 
   private async chooseWorkspace(kind: "open" | "create"): Promise<void> {
     if (!(await this.flushDraft())) return;
-    const workspace = await this.withBusy(kind === "open" ? "Ordnerdialog wird geöffnet …" : "Workspace wird angelegt …", () => kind === "open" ? this.api.openWorkspace() : this.api.createWorkspace());
+    const workspace = await this.withBusy(kind === "open" ? "Ordnerdialog wird geöffnet …" : "Workspace wird angelegt …", () => kind === "open" ? this.api.openWorkspace(this.language) : this.api.createWorkspace(this.language));
     if (workspace) await this.enterWorkspace(workspace);
   }
 
@@ -3730,13 +3918,13 @@ export class SunoDocumentationApp {
   private async importEvidence(role: EvidenceRole, replaceEvidenceId?: string): Promise<void> {
     if (this.rejectLockedContentMutation()) return;
     if (!(await this.flushDraft())) return;
-    if (replaceEvidenceId && !window.confirm("Vorhandene Evidence durch die neu ausgewählte Datei ersetzen? Die bisherige verwaltete Kopie wird lokal archiviert.")) return;
+    if (replaceEvidenceId && !window.confirm(this.t("Vorhandene Evidence durch die neu ausgewählte Datei ersetzen? Die bisherige verwaltete Kopie wird lokal archiviert."))) return;
     const track = this.requireTrack();
     const metadata = this.collectEvidenceMetadata(role);
     if (metadata === null) return;
     const imported = await this.withBusy(
       "Datei auswählen; große Dateien werden im Hintergrund kopiert und gehasht …",
-      () => this.api.importEvidence(track.id, role, replaceEvidenceId, metadata)
+      () => this.api.importEvidence(track.id, role, replaceEvidenceId, metadata, this.language)
     );
     if (imported) {
       if (role === "final_artwork") this.trackCoverCache.delete(track.id);
@@ -3744,13 +3932,15 @@ export class SunoDocumentationApp {
       const overriddenBySunoMetadata = role === "suno_final_export"
         && imported.automation.sunoMetadataDetected
         && this.hasManualSunoDateOverriddenByMetadata(track, imported);
+      const importMessage = this.t(`${evidenceRoleLabel(role)} wurde kopiert, gehasht und dem Track zugeordnet.`);
+      const archivedMessage = replaceEvidenceId ? ` ${this.t("Die vorherige Kopie wurde archiviert.")}` : "";
       const sunoSummary = role === "suno_final_export" && imported.automation.sunoMetadataDetected
-        ? ` Suno Studio und der eingebettete Erzeugungszeitpunkt wurden automatisch erkannt.${imported.automation.sunoId ? " Die technische Suno-ID wurde als Evidence erhalten." : ""}`
+        ? ` ${this.t("Suno Studio und der eingebettete Erzeugungszeitpunkt wurden automatisch erkannt.")}${imported.automation.sunoId ? ` ${this.t("Die technische Suno-ID wurde als Evidence erhalten.")}` : ""}`
         : "";
       this.showToast(
         "success",
         replaceEvidenceId ? "Evidence ersetzt" : "Evidence importiert",
-        `${evidenceRoleLabel(role)} wurde kopiert, gehasht und dem Track zugeordnet.${replaceEvidenceId ? " Die vorherige Kopie wurde archiviert." : ""}${sunoSummary}`
+        `${importMessage}${archivedMessage}${sunoSummary}`
       );
       if (overriddenBySunoMetadata) {
         this.showToast(
@@ -3779,8 +3969,8 @@ export class SunoDocumentationApp {
 
   private async chooseEvidenceRole(): Promise<void> {
     if (this.rejectLockedContentMutation()) return;
-    const labels = evidenceRoles.map((role, index) => `${index + 1}: ${evidenceRoleLabel(role)}`).join("\n");
-    const choice = window.prompt(`Rolle der Evidence wählen:\n\n${labels}\n\nNummer eingeben:`);
+    const labels = evidenceRoles.map((role, index) => `${index + 1}: ${this.t(evidenceRoleLabel(role))}`).join("\n");
+    const choice = window.prompt(`${this.t("Rolle der Evidence wählen:")}\n\n${labels}\n\n${this.t("Nummer eingeben:")}`);
     if (!choice) return;
     const role = evidenceRoles[Number(choice) - 1];
     if (!role) { this.showToast("error", "Ungültige Rolle", "Wähle eine Nummer aus der angezeigten Liste."); return; }
@@ -3793,9 +3983,9 @@ export class SunoDocumentationApp {
   private async addDeviation(): Promise<void> {
     if (this.rejectLockedContentMutation()) return;
     if (!(await this.flushDraft())) return;
-    const description = window.prompt("Abweichung sachlich beschreiben:");
+    const description = window.prompt(this.t("Abweichung sachlich beschreiben:"));
     if (!description?.trim()) return;
-    const blocking = window.confirm("Soll diese Abweichung die Finalisierung blockieren?");
+    const blocking = window.confirm(this.t("Soll diese Abweichung die Finalisierung blockieren?"));
     await this.trackMutation("Abweichung wird gespeichert …", () => this.api.addDeviation(this.requireTrack().id, description, blocking), "Abweichung gespeichert");
   }
 
@@ -3835,7 +4025,11 @@ export class SunoDocumentationApp {
     if (!result) return;
     if (result.track) this.applyTrack(result.track);
     else await this.refreshTracks();
-    this.showToast("success", "Aktion abgeschlossen", result.message);
+    this.showToast(
+      "success",
+      "Aktion abgeschlossen",
+      this.systemText(result.message, this.language === "en" ? "Action completed." : "Aktion abgeschlossen.")
+    );
   }
 
   private async runProgressAction(
@@ -3850,7 +4044,11 @@ export class SunoDocumentationApp {
     if (!result) return;
     if (result.track) this.applyTrack(result.track);
     else await this.refreshTracks();
-    this.showToast("success", "Aktion abgeschlossen", result.message);
+    this.showToast(
+      "success",
+      "Aktion abgeschlossen",
+      this.systemText(result.message, this.language === "en" ? "Action completed." : "Aktion abgeschlossen.")
+    );
   }
 
   private async finalizeTrack(): Promise<void> {
@@ -3859,12 +4057,19 @@ export class SunoDocumentationApp {
     const track = this.requireTrack();
     const workflowBlocker = workflowUpgradeFinalizationBlocker(track, this.state.workflow);
     if (workflowBlocker) {
-      this.showToast("error", "Workflow-Neubewertung erforderlich", workflowBlocker);
+      this.showToast("error", "Workflow-Neubewertung erforderlich", this.systemText(workflowBlocker));
       return;
     }
     const validation = await this.withBusy("Finalisierungs-Gate wird nativ geprüft …", () => this.api.validateTrack(track.id));
     if (!validation) return;
-    if (!validation.valid) { this.showToast("error", "Finalisierung blockiert", [...validation.missingItems, ...validation.blockingItems].join(" · ")); return; }
+    if (!validation.valid) {
+      this.showToast(
+        "error",
+        "Finalisierung blockiert",
+        [...validation.missingItems, ...validation.blockingItems].map((item) => this.systemText(item)).join(" · ")
+      );
+      return;
+    }
     const result = await this.withOperationProgress(
       "finalization",
       "Unveränderlicher Snapshot und Zertifikat werden erzeugt …",
@@ -3876,7 +4081,11 @@ export class SunoDocumentationApp {
       this.state.showCertificatePopup = Boolean(
         this.state.track?.certificate.valid && this.state.track.certificate.certificateId
       );
-      this.showToast("success", "Dokumentation finalisiert", result.message);
+      this.showToast(
+        "success",
+        "Dokumentation finalisiert",
+        this.systemText(result.message, this.language === "en" ? "Documentation finalized." : "Dokumentation finalisiert.")
+      );
     }
   }
 
@@ -3889,7 +4098,10 @@ export class SunoDocumentationApp {
     let adoptExisting = false;
     if (preview.adoptionRequired || preview.collisions.length > 0) {
       const collisionList = preview.collisions.join("\n");
-      adoptExisting = window.confirm(`Bestehende verwaltete Dokumente erkannt:\n\n${collisionList}\n\nDie native Anwendung sichert den vorhandenen Zustand unter .archive, bevor neue verwaltete Dokumente geschrieben werden. Fortfahren?`);
+      const confirmation = this.language === "en"
+        ? `Existing managed documents detected:\n\n${collisionList}\n\nThe native application preserves the existing state under .archive before writing new managed documents. Continue?`
+        : `Bestehende verwaltete Dokumente erkannt:\n\n${collisionList}\n\nDie native Anwendung sichert den vorhandenen Zustand unter .archive, bevor neue verwaltete Dokumente geschrieben werden. Fortfahren?`;
+      adoptExisting = window.confirm(confirmation);
       if (!adoptExisting) {
         this.showToast("info", "Dokumentgenerierung abgebrochen", "Bestehende Dateien wurden nicht verändert.");
         return;

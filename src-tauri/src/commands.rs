@@ -3,11 +3,11 @@ use crate::error::{AppError, Result};
 use crate::folder_import::{FolderImportExecutionInput, FolderImportProposal};
 use crate::model::{
     ActionResult, AudioScreeningProviderTestResult, AudioScreeningSecretInput,
-    AudioScreeningSettings, CreateTrackInput, DeviationInput, DocumentPreview, EvidenceMetadata,
-    EvidencePreview, EvidenceRole, FinalizeOptions, GlobalEvidenceItem, OperationProgress, Profile,
-    StepStatus, SubscriptionBillingCycle, TimestampProviderTestResult, TimestampSecretInput,
-    TimestampSettings, TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackPatchRequest,
-    TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
+    AudioScreeningSettings, CertificateLanguage, CreateTrackInput, DeviationInput, DocumentPreview,
+    EvidenceMetadata, EvidencePreview, EvidenceRole, FinalizeOptions, GlobalEvidenceItem,
+    OperationProgress, Profile, StepStatus, SubscriptionBillingCycle, TimestampProviderTestResult,
+    TimestampSecretInput, TimestampSettings, TrackCoverPreview, TrackDetail, TrackLibraryPlacement,
+    TrackPatchRequest, TrackSummary, ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::workflow::WorkflowDefinition;
 use std::path::PathBuf;
@@ -39,15 +39,81 @@ fn with_workspace<T>(
     operation(guard.as_ref().ok_or(AppError::NoWorkspace)?)
 }
 
+#[derive(Clone, Copy)]
+enum NativeFileDialogLabel {
+    OpenWorkspaceTitle,
+    CreateWorkspaceTitle,
+    ImportGlobalEvidenceTitle,
+    SupportedEvidenceFilter,
+    ImportGlobalTermsEvidenceTitle,
+    ImportFolderTitle,
+    ImportEvidenceTitle,
+}
+
+/// rfd dialogs are native windows, so DOM-based UI translation cannot reach
+/// their titles or filter labels.  Keep the fixed app-supplied copy mapped in
+/// one place and default absent IPC input to the app's default language.
+fn native_file_dialog_label(
+    language: Option<CertificateLanguage>,
+    label: NativeFileDialogLabel,
+) -> &'static str {
+    match (language.unwrap_or_default(), label) {
+        (CertificateLanguage::De, NativeFileDialogLabel::OpenWorkspaceTitle) => {
+            "Workspace auswählen"
+        }
+        (CertificateLanguage::En, NativeFileDialogLabel::OpenWorkspaceTitle) => "Choose workspace",
+        (CertificateLanguage::De, NativeFileDialogLabel::CreateWorkspaceTitle) => {
+            "Neuen Workspace anlegen"
+        }
+        (CertificateLanguage::En, NativeFileDialogLabel::CreateWorkspaceTitle) => {
+            "Create new workspace"
+        }
+        (CertificateLanguage::De, NativeFileDialogLabel::ImportGlobalEvidenceTitle) => {
+            "Globalen Nachweis registrieren"
+        }
+        (CertificateLanguage::En, NativeFileDialogLabel::ImportGlobalEvidenceTitle) => {
+            "Register global evidence"
+        }
+        (CertificateLanguage::De, NativeFileDialogLabel::SupportedEvidenceFilter) => {
+            "Unterstützte Nachweise"
+        }
+        (CertificateLanguage::En, NativeFileDialogLabel::SupportedEvidenceFilter) => {
+            "Supported evidence"
+        }
+        (CertificateLanguage::De, NativeFileDialogLabel::ImportGlobalTermsEvidenceTitle) => {
+            "Suno-Nutzungsbedingungen als PDF auswählen"
+        }
+        (CertificateLanguage::En, NativeFileDialogLabel::ImportGlobalTermsEvidenceTitle) => {
+            "Choose Suno terms of service PDF"
+        }
+        (CertificateLanguage::De, NativeFileDialogLabel::ImportFolderTitle) => {
+            "Musikprojekt-Ordner importieren"
+        }
+        (CertificateLanguage::En, NativeFileDialogLabel::ImportFolderTitle) => {
+            "Import music project folder"
+        }
+        (CertificateLanguage::De, NativeFileDialogLabel::ImportEvidenceTitle) => {
+            "Evidence importieren"
+        }
+        (CertificateLanguage::En, NativeFileDialogLabel::ImportEvidenceTitle) => "Import evidence",
+    }
+}
+
 #[tauri::command]
 pub fn get_workflow() -> Result<WorkflowDefinition> {
     crate::workflow::definition()
 }
 
 #[tauri::command]
-pub fn open_workspace(state: State<'_, AppState>) -> Result<Option<WorkspaceSummary>> {
+pub fn open_workspace(
+    state: State<'_, AppState>,
+    language: Option<CertificateLanguage>,
+) -> Result<Option<WorkspaceSummary>> {
     let Some(path) = rfd::FileDialog::new()
-        .set_title("Workspace auswählen")
+        .set_title(native_file_dialog_label(
+            language,
+            NativeFileDialogLabel::OpenWorkspaceTitle,
+        ))
         .pick_folder()
     else {
         return Ok(None);
@@ -76,9 +142,15 @@ pub fn open_workspace_by_path(
 }
 
 #[tauri::command]
-pub fn create_workspace(state: State<'_, AppState>) -> Result<Option<WorkspaceSummary>> {
+pub fn create_workspace(
+    state: State<'_, AppState>,
+    language: Option<CertificateLanguage>,
+) -> Result<Option<WorkspaceSummary>> {
     let Some(path) = rfd::FileDialog::new()
-        .set_title("Neuen Workspace anlegen")
+        .set_title(native_file_dialog_label(
+            language,
+            NativeFileDialogLabel::CreateWorkspaceTitle,
+        ))
         .pick_folder()
     else {
         return Ok(None);
@@ -193,10 +265,17 @@ pub fn import_global_evidence(
     role: EvidenceRole,
     coverage_start: String,
     billing_cycle: SubscriptionBillingCycle,
+    language: Option<CertificateLanguage>,
 ) -> Result<Option<GlobalEvidenceItem>> {
     let Some(source) = rfd::FileDialog::new()
-        .set_title("Globalen Nachweis registrieren")
-        .add_filter("Unterstützte Nachweise", role.allowed_extensions())
+        .set_title(native_file_dialog_label(
+            language,
+            NativeFileDialogLabel::ImportGlobalEvidenceTitle,
+        ))
+        .add_filter(
+            native_file_dialog_label(language, NativeFileDialogLabel::SupportedEvidenceFilter),
+            role.allowed_extensions(),
+        )
         .pick_file()
     else {
         return Ok(None);
@@ -216,10 +295,14 @@ pub fn import_global_evidence(
 pub fn import_global_terms_evidence(
     state: State<'_, AppState>,
     metadata: EvidenceMetadata,
+    language: Option<CertificateLanguage>,
 ) -> Result<Option<GlobalEvidenceItem>> {
     let role = EvidenceRole::SunoTermsRights;
     let Some(source) = rfd::FileDialog::new()
-        .set_title("Suno-Nutzungsbedingungen als PDF auswählen")
+        .set_title(native_file_dialog_label(
+            language,
+            NativeFileDialogLabel::ImportGlobalTermsEvidenceTitle,
+        ))
         .add_filter("PDF", role.allowed_extensions())
         .pick_file()
     else {
@@ -298,9 +381,15 @@ pub fn create_track(state: State<'_, AppState>, input: CreateTrackInput) -> Resu
 }
 
 #[tauri::command]
-pub fn scan_import_folder(state: State<'_, AppState>) -> Result<Option<FolderImportProposal>> {
+pub fn scan_import_folder(
+    state: State<'_, AppState>,
+    language: Option<CertificateLanguage>,
+) -> Result<Option<FolderImportProposal>> {
     let Some(source) = rfd::FileDialog::new()
-        .set_title("Musikprojekt-Ordner importieren")
+        .set_title(native_file_dialog_label(
+            language,
+            NativeFileDialogLabel::ImportFolderTitle,
+        ))
         .pick_folder()
     else {
         return Ok(None);
@@ -432,9 +521,13 @@ pub async fn import_evidence(
     role: EvidenceRole,
     replace_evidence_id: Option<String>,
     metadata: Option<EvidenceMetadata>,
+    language: Option<CertificateLanguage>,
 ) -> Result<Option<TrackDetail>> {
     let Some(source) = rfd::FileDialog::new()
-        .set_title("Evidence importieren")
+        .set_title(native_file_dialog_label(
+            language,
+            NativeFileDialogLabel::ImportEvidenceTitle,
+        ))
         .pick_file()
     else {
         return Ok(None);
@@ -680,4 +773,63 @@ pub fn create_revision(state: State<'_, AppState>, track_id: String) -> Result<A
 #[tauri::command]
 pub fn re_evaluate_track(state: State<'_, AppState>, track_id: String) -> Result<ActionResult> {
     with_workspace(&state, |app| app.re_evaluate_track(&track_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{native_file_dialog_label, NativeFileDialogLabel};
+    use crate::model::CertificateLanguage;
+
+    #[test]
+    fn native_file_dialog_labels_follow_language_and_default_to_english() {
+        let labels = [
+            (
+                NativeFileDialogLabel::OpenWorkspaceTitle,
+                "Workspace auswählen",
+                "Choose workspace",
+            ),
+            (
+                NativeFileDialogLabel::CreateWorkspaceTitle,
+                "Neuen Workspace anlegen",
+                "Create new workspace",
+            ),
+            (
+                NativeFileDialogLabel::ImportGlobalEvidenceTitle,
+                "Globalen Nachweis registrieren",
+                "Register global evidence",
+            ),
+            (
+                NativeFileDialogLabel::SupportedEvidenceFilter,
+                "Unterstützte Nachweise",
+                "Supported evidence",
+            ),
+            (
+                NativeFileDialogLabel::ImportGlobalTermsEvidenceTitle,
+                "Suno-Nutzungsbedingungen als PDF auswählen",
+                "Choose Suno terms of service PDF",
+            ),
+            (
+                NativeFileDialogLabel::ImportFolderTitle,
+                "Musikprojekt-Ordner importieren",
+                "Import music project folder",
+            ),
+            (
+                NativeFileDialogLabel::ImportEvidenceTitle,
+                "Evidence importieren",
+                "Import evidence",
+            ),
+        ];
+
+        for (label, german, english) in labels {
+            assert_eq!(
+                native_file_dialog_label(Some(CertificateLanguage::De), label),
+                german
+            );
+            assert_eq!(
+                native_file_dialog_label(Some(CertificateLanguage::En), label),
+                english
+            );
+            assert_eq!(native_file_dialog_label(None, label), english);
+        }
+    }
 }

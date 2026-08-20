@@ -721,7 +721,8 @@ describe("statuses and finalization", () => {
     expect(presentation.findings).toContainEqual(expect.objectContaining({
       code: "deviation:note-1",
       level: "WARNING",
-      stepId: "finalize"
+      stepId: "finalize",
+      userProvided: true
     }));
     expect(finalizationGate(track, profile).valid).toBe(true);
   });

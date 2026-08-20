@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 import { createDemoApi } from "./demo";
+import { hasUiTranslation, translateUiText, type AppLanguage } from "../ui/i18n";
 import type {
   ActionResult,
   AudioScreeningProviderTestResult,
@@ -38,8 +39,8 @@ export type OperationProgressHandler = (progress: OperationProgress) => void;
 export interface DesktopApi {
   readonly mode: "tauri" | "demo";
   getWorkflow(): Promise<WorkflowDefinitionDto>;
-  openWorkspace(): Promise<WorkspaceSummary | null>;
-  createWorkspace(): Promise<WorkspaceSummary | null>;
+  openWorkspace(language?: AppLanguage): Promise<WorkspaceSummary | null>;
+  createWorkspace(language?: AppLanguage): Promise<WorkspaceSummary | null>;
   restoreWorkspace(path: string): Promise<WorkspaceSummary>;
   scanWorkspace(): Promise<ScanResult>;
   getProfile(): Promise<GlobalProfile>;
@@ -55,8 +56,8 @@ export interface DesktopApi {
   updateAudioScreeningSecret(input: AudioScreeningSecretInput): Promise<void>;
   testAudioScreeningProvider(): Promise<AudioScreeningProviderTestResult>;
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]>;
-  importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle): Promise<GlobalEvidenceItem | null>;
-  importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null>;
+  importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle, language?: AppLanguage): Promise<GlobalEvidenceItem | null>;
+  importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<GlobalEvidenceItem | null>;
   updateGlobalTermsEvidenceMetadata(evidenceId: string, metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem>;
   removeGlobalEvidence(evidenceId: string): Promise<void>;
   attachGlobalEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
@@ -64,7 +65,7 @@ export interface DesktopApi {
   listAlbums(): Promise<string[]>;
   createAlbum(title: string): Promise<string[]>;
   createTrack(input: TrackCreateInput): Promise<TrackDetail>;
-  scanImportFolder(): Promise<FolderImportProposal | null>;
+  scanImportFolder(language?: AppLanguage): Promise<FolderImportProposal | null>;
   executeFolderImport(input: FolderImportExecutionInput): Promise<TrackDetail[]>;
   loadTrack(trackId: string): Promise<TrackDetail>;
   loadTrackCover(trackId: string): Promise<TrackCoverPreview | null>;
@@ -76,7 +77,7 @@ export interface DesktopApi {
   resolveDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   removeDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   setStepStatus(trackId: string, stepId: StepId, status: StepStatus, naReason?: string): Promise<TrackDetail>;
-  importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>): Promise<TrackDetail | null>;
+  importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<TrackDetail | null>;
   removeEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
   previewEvidence(trackId: string, evidenceId: string): Promise<EvidencePreview>;
   verifyEvidence(trackId: string, evidenceId?: string): Promise<TrackDetail>;
@@ -128,18 +129,18 @@ class TauriDesktopApi implements DesktopApi {
     return command("get_workflow");
   }
 
-  async openWorkspace(): Promise<WorkspaceSummary | null> {
+  async openWorkspace(language?: AppLanguage): Promise<WorkspaceSummary | null> {
     try {
-      return await command<WorkspaceSummary | null>("open_workspace");
+      return await command<WorkspaceSummary | null>("open_workspace", language ? { language } : undefined);
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
     }
   }
 
-  async createWorkspace(): Promise<WorkspaceSummary | null> {
+  async createWorkspace(language?: AppLanguage): Promise<WorkspaceSummary | null> {
     try {
-      return await command<WorkspaceSummary | null>("create_workspace");
+      return await command<WorkspaceSummary | null>("create_workspace", language ? { language } : undefined);
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
@@ -198,18 +199,26 @@ class TauriDesktopApi implements DesktopApi {
     return command("list_global_evidence");
   }
 
-  async importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle): Promise<GlobalEvidenceItem | null> {
+  async importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle, language?: AppLanguage): Promise<GlobalEvidenceItem | null> {
     try {
-      return await command<GlobalEvidenceItem | null>("import_global_evidence", { role, coverageStart, billingCycle });
+      return await command<GlobalEvidenceItem | null>("import_global_evidence", {
+        role,
+        coverageStart,
+        billingCycle,
+        ...(language ? { language } : {})
+      });
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
     }
   }
 
-  async importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem | null> {
+  async importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<GlobalEvidenceItem | null> {
     try {
-      return await command<GlobalEvidenceItem | null>("import_global_terms_evidence", { metadata });
+      return await command<GlobalEvidenceItem | null>("import_global_terms_evidence", {
+        metadata,
+        ...(language ? { language } : {})
+      });
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
@@ -256,9 +265,9 @@ class TauriDesktopApi implements DesktopApi {
     return command("create_track", { input });
   }
 
-  async scanImportFolder(): Promise<FolderImportProposal | null> {
+  async scanImportFolder(language?: AppLanguage): Promise<FolderImportProposal | null> {
     try {
-      return await command<FolderImportProposal | null>("scan_import_folder");
+      return await command<FolderImportProposal | null>("scan_import_folder", language ? { language } : undefined);
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
       throw error;
@@ -297,10 +306,11 @@ class TauriDesktopApi implements DesktopApi {
     return command("set_step_status", { trackId, stepId, status, naReason });
   }
 
-  async importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>): Promise<TrackDetail | null> {
+  async importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<TrackDetail | null> {
     try {
       const args: Record<string, unknown> = { trackId, role, replaceEvidenceId };
       if (metadata) args.metadata = metadata;
+      if (language) args.language = language;
       return await command<TrackDetail | null>("import_evidence", args);
     } catch (error) {
       if (error instanceof DesktopCommandError && isCancel(error.cause)) return null;
@@ -387,17 +397,30 @@ export class DesktopCommandError extends Error {
   }
 }
 
-export function toUserMessage(error: unknown): string {
-  if (error instanceof DesktopCommandError) return error.message;
-  if (error instanceof Error && error.message.trim()) return error.message;
-  if (typeof error === "string" && error.trim()) return error;
+export function toUserMessage(error: unknown, language?: AppLanguage): string {
+  let message = "";
+  if (error instanceof DesktopCommandError) message = error.message;
+  else if (error instanceof Error && error.message.trim()) message = error.message;
+  else if (typeof error === "string" && error.trim()) message = error;
   if (typeof error === "object" && error !== null) {
     const record = error as Record<string, unknown>;
     for (const key of ["message", "error", "detail", "reason"]) {
-      if (typeof record[key] === "string" && record[key].trim()) return record[key];
+      if (!message && typeof record[key] === "string" && record[key].trim()) message = record[key];
     }
   }
-  return "Die lokale Aktion konnte nicht abgeschlossen werden.";
+  if (!message) {
+    return language === "en"
+      ? "The local action could not be completed."
+      : "Die lokale Aktion konnte nicht abgeschlossen werden.";
+  }
+  if (!language) return message;
+  const translated = translateUiText(message, language);
+  if (hasUiTranslation(message, language)) return translated;
+  // Native code still has a few low-level diagnostic messages that are not
+  // user copy. Do not surface them in the opposite UI language.
+  return language === "en"
+    ? "The local action could not be completed."
+    : "Die lokale Aktion konnte nicht abgeschlossen werden.";
 }
 
 export function createDesktopApi(target: Window = window): DesktopApi {

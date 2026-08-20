@@ -25,6 +25,22 @@ describe("error presentation", () => {
     expect(error.message).toBe("Dateityp nicht zulässig");
     expect(error.commandName).toBe("import_evidence");
   });
+
+  it("localizes known native errors and hides unmapped low-level diagnostics", () => {
+    expect(toUserMessage("No workspace is open.", "de")).toBe("Kein Workspace ist geöffnet.");
+    expect(toUserMessage("No workspace is open.", "en")).toBe("No workspace is open.");
+    expect(toUserMessage("Kein Workspace ist geöffnet.", "de")).toBe("Kein Workspace ist geöffnet.");
+    expect(toUserMessage("The operation is blocked: Track title is missing.", "de"))
+      .toBe("Der Vorgang ist blockiert: Tracktitel fehlt.");
+    expect(toUserMessage("The operation is blocked: Internal driver fault 42", "de"))
+      .toBe("Der Vorgang ist blockiert: Technisches Detail ist nicht verfügbar.");
+    expect(toUserMessage("File operation failed for releases/My Track.wav: Permission denied", "de"))
+      .toBe("Dateioperation für releases/My Track.wav fehlgeschlagen: Technisches Detail ist nicht verfügbar.");
+    expect(toUserMessage("Internal driver fault 42", "de"))
+      .toBe("Die lokale Aktion konnte nicht abgeschlossen werden.");
+    expect(toUserMessage("Interner Treiberfehler 42", "en"))
+      .toBe("The local action could not be completed.");
+  });
 });
 
 describe("runtime selection", () => {
@@ -53,6 +69,37 @@ describe("runtime selection", () => {
       coverageStart: "2026-08-01",
       billingCycle: "annual"
     });
+  });
+
+  it("passes the active UI language to every native file picker", async () => {
+    invokeMock.mockResolvedValue(null);
+    const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
+
+    await api.openWorkspace("de");
+    await api.createWorkspace("en");
+    await api.importGlobalEvidence("subscription_payment", "2026-08-01", "annual", "de");
+    await api.importGlobalTermsEvidence({}, "en");
+    await api.scanImportFolder("de");
+    await api.importEvidence("track-1", "suno_final_export", undefined, undefined, "en");
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["open_workspace", { language: "de" }],
+      ["create_workspace", { language: "en" }],
+      ["import_global_evidence", {
+        role: "subscription_payment",
+        coverageStart: "2026-08-01",
+        billingCycle: "annual",
+        language: "de"
+      }],
+      ["import_global_terms_evidence", { metadata: {}, language: "en" }],
+      ["scan_import_folder", { language: "de" }],
+      ["import_evidence", {
+        trackId: "track-1",
+        role: "suno_final_export",
+        replaceEvidenceId: undefined,
+        language: "en"
+      }]
+    ]);
   });
 
   it("passes required descriptive metadata to the global Suno terms importer", async () => {
