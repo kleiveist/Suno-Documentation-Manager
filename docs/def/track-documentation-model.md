@@ -269,7 +269,7 @@ This is a project transparency policy. The product does not label it as a univer
 
 ## Generated documents
 
-Template version `1.10` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, complete evidence metadata, and current audio-screening state; fact origins and automation results are additionally retained in the manifest and certificate snapshot. The internal freshness digest may include the full local fingerprint, but managed prose never does. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
+Template version `1.11` is recorded so that a document can be regenerated deterministically from the same normalized inputs. Generation combines the track's current embedded profile snapshot, track facts, workflow results, complete evidence metadata, and current audio-screening state including multi-sample coverage; fact origins and automation results are additionally retained in the manifest and certificate snapshot. The internal freshness digest may include the full local fingerprint, but managed prose never does. Regeneration removes the previous managed `03_DOCUMENTATION/Lyrics.md` and `03_DOCUMENTATION/Styles.md`; an unmanaged file at either old path remains untouched.
 
 Generated headings, explanatory prose, and guided-choice values are always English. German UI labels are mapped to their stable English values before rendering. An unknown legacy selection is represented by an English reclassification notice rather than copying potentially non-English unrestricted text into a generated choice field. User-authored factual content that must remain exact—such as lyrics, the Suno style prompt, a disclosure text, or an individually required factual note—is preserved verbatim and is not treated as generated prose.
 
@@ -321,7 +321,7 @@ The certificate/manifest screening summary excludes the full fingerprint, raw AC
 
 The PDF renderer paginates long sections and wraps long URLs, UUIDs, paths, labels, and SHA-256 values without truncating their factual content. SHA-256 labels remain intact, full digests remain readable, and every page carries the Certificate ID plus `Seite X / Y`. The same normalized certificate snapshot produces the same factual content and deterministic bytes; transient UI state and random presentation data do not enter the renderer.
 
-Current certificate PDFs and timestamp addendum PDFs identify themselves as PDF/A-2b in XMP, use PDF 1.7 without encryption, and carry the CMYK `Coated FOGRA39 (ISO 12647-2:2004)` output intent. The renderer embeds the complete font programs rather than subsets. The bundled font identity is fixed as follows and is also emitted in manifest schema 7 under `certificate.pdf_archive` with archive format, embedding mode `full`, font version `DejaVu 2.37`, license `DejaVu Fonts License`, and output intent:
+Current certificate PDFs and timestamp addendum PDFs identify themselves as PDF/A-2b in XMP, use PDF 1.7 without encryption, and carry the CMYK `Coated FOGRA39 (ISO 12647-2:2004)` output intent. The renderer embeds the complete font programs rather than subsets. The bundled font identity is fixed as follows and is also emitted in manifest schema 8 under `certificate.pdf_archive` with archive format, embedding mode `full`, font version `DejaVu 2.37`, license `DejaVu Fonts License`, and output intent:
 
 | Embedded font | SHA-256 |
 | --- | --- |
@@ -420,6 +420,7 @@ The authoritative acceptance records are [ATP-0002](../atp/active/ATP-0002-track
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-20 | Added deterministic bounded ACRCloud multi-sample state, plan/coverage results, and manifest/certificate reporting; advanced the template to 1.11, manifest to 8, and certificate/PDF format to 6.1. | Project team |
 | 2026-08-20 | Advanced template to 1.10, manifest schema to 7, and certificate/PDF format to 6.0; defined PDF/A-2b/full DejaVu embedding and the fixed-manifest cryptographically verified RFC-3161 sidecar path alongside distinct legacy/manual/OTS paths. | Project team |
 | 2026-08-19 | Finalization now creates separate German and English certificate PDFs and advances the certificate format to 5.2. | Project team |
 | 2026-08-18 | Added portable local/optional-external audio-screening state and artifacts; advanced template to 1.9, manifest to 6, and certificate/PDF to 5.1. | Project team |

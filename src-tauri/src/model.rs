@@ -543,6 +543,26 @@ pub enum AudioScreeningStatus {
     Stale,
 }
 
+/// Describes how the external catalog screening selected audio from a release.
+/// `SingleSample` remains the deserialization default for records written by
+/// versions before configurable coverage was introduced.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioScreeningMode {
+    #[default]
+    SingleSample,
+    MultiSample,
+}
+
+impl AudioScreeningMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleSample => "SINGLE-SAMPLE",
+            Self::MultiSample => "MULTI-SAMPLE",
+        }
+    }
+}
+
 /// Configuration health for the optional ACRCloud provider. It is deliberately
 /// separate from `AudioScreeningStatus`: a provider configuration is not a
 /// per-track screening result.
@@ -567,6 +587,14 @@ pub struct AudioScreeningSettings {
     pub enabled: bool,
     pub host: String,
     pub timeout_seconds: u32,
+    /// Percentage of the configured duration basis requested for external
+    /// screening. The execution planner applies its independent 25-request
+    /// and 12-second-per-request safety bounds.
+    pub intensity_percent: u8,
+    /// When false, `reference_duration_seconds` is used as the duration basis
+    /// and the resulting target is still capped at the actual track duration.
+    pub dynamic_by_track_duration: bool,
+    pub reference_duration_seconds: u64,
     pub status: AudioScreeningProviderStatus,
     pub status_message: String,
     pub credentials_configured: bool,
@@ -582,6 +610,9 @@ impl Default for AudioScreeningSettings {
             enabled: false,
             host: String::new(),
             timeout_seconds: 30,
+            intensity_percent: 5,
+            dynamic_by_track_duration: true,
+            reference_duration_seconds: 300,
             status: AudioScreeningProviderStatus::Disabled,
             status_message: "External ACRCloud screening is disabled.".into(),
             credentials_configured: false,
@@ -624,6 +655,26 @@ pub struct AudioScreeningMatch {
     pub acrid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
+}
+
+/// Technical result of one non-overlapping ACRCloud sample. Raw provider
+/// payloads remain only in the portable response archive named by the optional
+/// path and digest; they are deliberately not returned through normal track
+/// summaries.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioScreeningSampleRecord {
+    pub sequence: u32,
+    pub offset_milliseconds: u64,
+    pub end_offset_milliseconds: u64,
+    pub duration_milliseconds: u64,
+    pub status: AudioScreeningStatus,
+    pub message: String,
+    pub matches: Vec<AudioScreeningMatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_relative_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_sha256: Option<String>,
 }
 
 /// Durable state for the local Chromaprint run. The fingerprint itself is
@@ -691,6 +742,22 @@ pub struct AudioScreeningExternalRecord {
     pub source_size_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<String>,
+    /// New records use `MULTI-SAMPLE`; the default keeps historical records
+    /// readable without a migration.
+    pub screening_mode: AudioScreeningMode,
+    pub requested_intensity_percent: u8,
+    pub dynamic_by_track_duration: bool,
+    pub reference_duration_seconds: u64,
+    pub target_duration_milliseconds: u64,
+    pub planned_request_count: u32,
+    pub executed_request_count: u32,
+    pub unique_sample_count: u32,
+    pub overlapping_sample_count: u32,
+    pub duplicate_sample_count: u32,
+    pub unique_sample_duration_milliseconds: u64,
+    pub track_coverage_percent: f64,
+    pub provider_status: AudioScreeningProviderStatus,
+    pub samples: Vec<AudioScreeningSampleRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_offset_milliseconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -722,6 +789,20 @@ impl Default for AudioScreeningExternalRecord {
             source_sha256: String::new(),
             source_size_bytes: 0,
             checked_at: None,
+            screening_mode: AudioScreeningMode::SingleSample,
+            requested_intensity_percent: 5,
+            dynamic_by_track_duration: true,
+            reference_duration_seconds: 300,
+            target_duration_milliseconds: 0,
+            planned_request_count: 0,
+            executed_request_count: 0,
+            unique_sample_count: 0,
+            overlapping_sample_count: 0,
+            duplicate_sample_count: 0,
+            unique_sample_duration_milliseconds: 0,
+            track_coverage_percent: 0.0,
+            provider_status: AudioScreeningProviderStatus::Disabled,
+            samples: Vec::new(),
             sample_offset_milliseconds: None,
             sample_duration_milliseconds: None,
             source_duration_milliseconds: None,
@@ -799,6 +880,20 @@ pub struct AudioScreeningExternalSummary {
     pub source_size_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<String>,
+    pub screening_mode: AudioScreeningMode,
+    pub requested_intensity_percent: u8,
+    pub dynamic_by_track_duration: bool,
+    pub reference_duration_seconds: u64,
+    pub target_duration_milliseconds: u64,
+    pub planned_request_count: u32,
+    pub executed_request_count: u32,
+    pub unique_sample_count: u32,
+    pub overlapping_sample_count: u32,
+    pub duplicate_sample_count: u32,
+    pub unique_sample_duration_milliseconds: u64,
+    pub track_coverage_percent: f64,
+    pub provider_status: AudioScreeningProviderStatus,
+    pub samples: Vec<AudioScreeningSampleRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_offset_milliseconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -824,6 +919,20 @@ impl From<&AudioScreeningExternalRecord> for AudioScreeningExternalSummary {
             source_sha256: record.source_sha256.clone(),
             source_size_bytes: record.source_size_bytes,
             checked_at: record.checked_at.clone(),
+            screening_mode: record.screening_mode,
+            requested_intensity_percent: record.requested_intensity_percent,
+            dynamic_by_track_duration: record.dynamic_by_track_duration,
+            reference_duration_seconds: record.reference_duration_seconds,
+            target_duration_milliseconds: record.target_duration_milliseconds,
+            planned_request_count: record.planned_request_count,
+            executed_request_count: record.executed_request_count,
+            unique_sample_count: record.unique_sample_count,
+            overlapping_sample_count: record.overlapping_sample_count,
+            duplicate_sample_count: record.duplicate_sample_count,
+            unique_sample_duration_milliseconds: record.unique_sample_duration_milliseconds,
+            track_coverage_percent: record.track_coverage_percent,
+            provider_status: record.provider_status,
+            samples: record.samples.clone(),
             sample_offset_milliseconds: record.sample_offset_milliseconds,
             sample_duration_milliseconds: record.sample_duration_milliseconds,
             source_duration_milliseconds: record.source_duration_milliseconds,
@@ -2252,6 +2361,40 @@ mod tests {
         assert!(!public.contains("INTERNAL_LOCAL_TRACK_ID"));
         assert!(!public.contains("INTERNAL_EXTERNAL_TRACK_ID"));
         assert!(public.contains("Technical result only."));
+    }
+
+    #[test]
+    fn audio_screening_coverage_fields_default_for_legacy_settings_and_records() {
+        let settings: AudioScreeningSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "host": "identify-eu-west-1.acrcloud.com",
+            "timeoutSeconds": 30
+        }))
+        .expect("legacy settings");
+        assert_eq!(settings.intensity_percent, 5);
+        assert!(settings.dynamic_by_track_duration);
+        assert_eq!(settings.reference_duration_seconds, 300);
+
+        let record: AudioScreeningExternalRecord = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "provider": "ACRCloud",
+            "status": "no_match_detected",
+            "message": "Legacy record",
+            "trackId": "track-1",
+            "sourceEvidenceId": "release-1",
+            "sourceRelativePath": "01_RELEASE/release.wav",
+            "sourceSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sourceSizeBytes": 1,
+            "requestCount": 1,
+            "matches": []
+        }))
+        .expect("legacy external record");
+        assert_eq!(record.screening_mode, AudioScreeningMode::SingleSample);
+        assert_eq!(record.requested_intensity_percent, 5);
+        assert!(record.dynamic_by_track_duration);
+        assert_eq!(record.reference_duration_seconds, 300);
+        assert!(record.samples.is_empty());
+        assert_eq!(record.executed_request_count, 0);
     }
 
     #[test]

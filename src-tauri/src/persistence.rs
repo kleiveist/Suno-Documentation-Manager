@@ -1378,6 +1378,27 @@ mod tests {
     }
 
     #[test]
+    fn legacy_audio_screening_settings_load_new_coverage_defaults() {
+        let directory = tempdir().expect("temporary workspace");
+        let persistence = Persistence::initialize(directory.path()).expect("persistence");
+        persistence
+            .open()
+            .expect("connection")
+            .execute(
+                "INSERT INTO audio_screening_settings(singleton,data_json) VALUES(1,?1)",
+                [r#"{"enabled":true,"host":"identify-eu-west-1.acrcloud.com","timeoutSeconds":20}"#],
+            )
+            .expect("legacy settings row");
+
+        let settings = persistence
+            .audio_screening_settings()
+            .expect("read legacy settings");
+        assert_eq!(settings.intensity_percent, 5);
+        assert!(settings.dynamic_by_track_duration);
+        assert_eq!(settings.reference_duration_seconds, 300);
+    }
+
+    #[test]
     fn sqlite_v1_migration_backfills_legacy_provenance_conservatively() {
         let mut connection = Connection::open_in_memory().expect("in-memory database");
         connection

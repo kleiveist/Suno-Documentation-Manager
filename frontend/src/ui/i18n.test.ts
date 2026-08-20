@@ -7,6 +7,12 @@ describe("bidirectional system localization", () => {
   it("translates known UI copy in both directions", () => {
     expect(translateUiText("Einstellungen", "en")).toBe("Settings");
     expect(translateUiText("Settings", "de")).toBe("Einstellungen");
+    expect(translateUiText("ACRCloud-Prüfintensität", "en")).toBe("ACRCloud screening intensity");
+    expect(translateUiText("Reference length (minutes)", "de")).toBe("Referenzlänge (Minuten)");
+    expect(translateUiText("18 % · Ziel: ca. 54 Sekunden · 5 ACRCloud-Requests", "en"))
+      .toBe("18% · target: approx. 54 seconds · 5 ACRCloud requests");
+    expect(translateUiText("Feste Obergrenze: maximal 25 ACRCloud-Requests bzw. 300 Sekunden eindeutiges Audio pro Track; jeder Request enthält höchstens 12 Sekunden.", "en"))
+      .toBe("Hard limit: at most 25 ACRCloud requests and 300 seconds of unique audio per track; each request contains at most 12 seconds.");
     expect(translateUiText("External timestamp service is disabled.", "de"))
       .toBe("Der externe Zeitstempeldienst ist deaktiviert.");
     expect(translateUiText("Der externe Zeitstempeldienst ist deaktiviert.", "en"))

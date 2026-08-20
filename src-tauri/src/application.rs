@@ -424,6 +424,7 @@ impl WorkspaceApp {
         if settings.timeout_seconds == 0 {
             settings.timeout_seconds = 30;
         }
+        audio_screening::validate_acrcloud_sampling_settings(&settings)?;
         if let Ok(normalized) = audio_screening::normalize_acrcloud_host(&settings.host) {
             settings.host = normalized;
         }

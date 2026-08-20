@@ -690,6 +690,93 @@ export function audioScreeningProviderIsReady(settings: AudioScreeningSettings):
   return settings.enabled && settings.credentialsConfigured && settings.status === "ready";
 }
 
+const ACRCLOUD_SAMPLE_MAX_SECONDS = 12;
+const ACRCLOUD_MAX_REQUESTS = 25;
+const ACRCLOUD_MAX_UNIQUE_SECONDS = ACRCLOUD_SAMPLE_MAX_SECONDS * ACRCLOUD_MAX_REQUESTS;
+
+export interface AudioScreeningIntensityEstimate {
+  /** The duration used for this preview. A dynamic setting uses the actual track when known. */
+  calculationDurationSeconds: number;
+  targetDurationSeconds: number;
+  requestedRequestCount: number;
+  actualRequestCount: number;
+  maxUniqueDurationSeconds: number;
+  capped: boolean;
+}
+
+/**
+ * Mirrors the native planning limits for settings previews. The native layer
+ * remains authoritative at run time because only it has the verified source
+ * duration, but the UI must never promise more than 25 distinct 12-second
+ * requests or 300 seconds of unique audio.
+ */
+export function audioScreeningIntensityEstimate(
+  settings: Pick<AudioScreeningSettings, "intensityPercent" | "dynamicByTrackDuration" | "referenceDurationSeconds">,
+  actualTrackDurationSeconds?: number
+): AudioScreeningIntensityEstimate {
+  const intensityPercent = Number.isFinite(settings.intensityPercent)
+    ? Math.min(Math.max(Math.trunc(settings.intensityPercent), 1), 100)
+    : 5;
+  const referenceDurationSeconds = Number.isFinite(settings.referenceDurationSeconds)
+    ? Math.min(Math.max(Math.trunc(settings.referenceDurationSeconds), 1), 3_600)
+    : 300;
+  const knownTrackDuration = Number.isFinite(actualTrackDurationSeconds) && actualTrackDurationSeconds! > 0
+    ? actualTrackDurationSeconds!
+    : undefined;
+  const calculationDurationSeconds = settings.dynamicByTrackDuration && knownTrackDuration
+    ? knownTrackDuration
+    : referenceDurationSeconds;
+  const availableDurationSeconds = knownTrackDuration ?? calculationDurationSeconds;
+  // In fixed-reference mode the reference only determines the requested
+  // coverage. A known shorter release still cannot be sampled beyond its end.
+  const targetDurationSeconds = Math.min(
+    calculationDurationSeconds * intensityPercent / 100,
+    availableDurationSeconds
+  );
+  const requestedRequestCount = targetDurationSeconds > 0
+    ? Math.ceil(targetDurationSeconds / ACRCLOUD_SAMPLE_MAX_SECONDS)
+    : 0;
+  // A short track can still use one bounded sample; otherwise every additional
+  // sample needs a fully non-overlapping 12-second interval.
+  const maxNonOverlappingRequests = availableDurationSeconds > 0 && availableDurationSeconds < ACRCLOUD_SAMPLE_MAX_SECONDS
+    ? 1
+    : Math.floor(availableDurationSeconds / ACRCLOUD_SAMPLE_MAX_SECONDS);
+  const actualRequestCount = Math.min(requestedRequestCount, maxNonOverlappingRequests, ACRCLOUD_MAX_REQUESTS);
+  // When the requested count fits, the final sample is shortened so that the
+  // planned unique duration remains proportional to the requested target. If
+  // a non-overlap/cap boundary removes requests, all remaining slots are full
+  // twelve-second samples and the reduced maximum is reported honestly.
+  const maxUniqueDurationSeconds = actualRequestCount === requestedRequestCount
+    ? targetDurationSeconds
+    : Math.min(
+      availableDurationSeconds,
+      actualRequestCount * ACRCLOUD_SAMPLE_MAX_SECONDS,
+      ACRCLOUD_MAX_UNIQUE_SECONDS
+    );
+  return {
+    calculationDurationSeconds,
+    targetDurationSeconds,
+    requestedRequestCount,
+    actualRequestCount,
+    maxUniqueDurationSeconds,
+    capped: actualRequestCount < requestedRequestCount
+  };
+}
+
+export function audioScreeningIntensityBand(requestCount: number): "low" | "normal" | "elevated" | "high" | "very_high" {
+  if (requestCount <= 5) return "low";
+  if (requestCount <= 10) return "normal";
+  if (requestCount <= 15) return "elevated";
+  if (requestCount <= 20) return "high";
+  return "very_high";
+}
+
+function formatScreeningSeconds(seconds: number, language: AppLanguage = "de"): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return language === "de" ? "0 Sekunden" : "0 seconds";
+  const rounded = Math.round(seconds);
+  return language === "de" ? `${rounded} Sekunden` : `${rounded} seconds`;
+}
+
 /** A local fingerprint is current only when it remains bound to the exact authoritative release evidence. */
 export function localAudioScreeningIsCurrent(
   local: Pick<AudioScreeningLocalSummary, "status" | "sourceEvidenceId" | "sourceRelativePath" | "sourceSha256" | "sourceSizeBytes">,
@@ -1329,6 +1416,11 @@ export class SunoDocumentationApp {
         externalTimestamps: track.externalTimestamps,
         deviations: track.blockingDeviations?.map(({ title, description }) => ({ title, description })),
         audioMatches: track.audioScreening.external.matches,
+        audioSampleMatches: track.audioScreening.external.samples.map(({ matches, responseRelativePath, responseSha256 }) => ({
+          matches,
+          responseRelativePath,
+          responseSha256
+        })),
         audioSourcePaths: {
           local: track.audioScreening.local.sourceRelativePath,
           external: track.audioScreening.external.sourceRelativePath
@@ -2475,6 +2567,67 @@ export class SunoDocumentationApp {
     return `<div class="field-grid two-col generation-text-field-facts"><div class="read-only-field"><span>Generierungstextfeld verwendet</span><strong>${fieldValue}</strong></div><div class="read-only-field"><span>Vocal Lyrics vorhanden</span><strong>${vocalLyricsValue}</strong></div><div class="read-only-field"><span>Strukturanweisungen vorhanden</span><strong>${structureValue}</strong></div><div class="read-only-field"><span>Vokale Intention</span><strong>${escapeHtml(fields.vocalIntent ?? "NOT DOCUMENTED")}</strong></div></div>`;
   }
 
+  private renderAudioScreeningRunSummary(
+    external: AudioScreeningExternalSummary,
+    current: boolean
+  ): string {
+    if (!current) return "";
+    const samples = external.samples;
+    const hasRecordedPlan = external.plannedRequestCount > 0
+      || external.executedRequestCount > 0
+      || samples.length > 0
+      || Boolean(external.checkedAt)
+      || (external.status !== "not_run" && external.status !== "skipped_not_configured");
+    if (!hasRecordedPlan) return "";
+    const isGerman = this.language === "de";
+    const executedRequestCount = external.executedRequestCount;
+    const uniqueSampleCount = external.uniqueSampleCount;
+    const duplicateSampleCount = external.duplicateSampleCount;
+    const overlappingSampleCount = external.overlappingSampleCount;
+    const mode = external.screeningMode === "multi_sample" ? "MULTI-SAMPLE" : "SINGLE-SAMPLE";
+    const calculationMode = external.dynamicByTrackDuration
+      ? (isGerman ? "Dynamisch nach Tracklänge" : "Dynamic by track duration")
+      : (isGerman ? "Feste Referenzlänge" : "Fixed reference length");
+    const coverage = Number.isFinite(external.trackCoveragePercent)
+      ? `${external.trackCoveragePercent.toLocaleString(this.language === "de" ? "de-DE" : "en-US", { maximumFractionDigits: 2 })} %`
+      : this.t("Nicht dokumentiert");
+    const value = (number: number | undefined, unit = "ms"): string => Number.isFinite(number)
+      ? `${Math.round(number!)} ${unit}`
+      : this.t("Nicht dokumentiert");
+    const sampleRows = samples.length
+      ? `<ol class="screening-sample-list">${samples.map((sample) => {
+        const result = this.t(audioScreeningStatusLabel(sample.status));
+        const sampleMatch = sample.status === "match_detected" || sample.matches.length > 0;
+        const archive = sample.responseRelativePath || sample.responseSha256
+          ? `<small>${escapeHtml(sample.responseRelativePath || this.t("Antwortarchiv nicht dokumentiert"))}${sample.responseSha256 ? ` · <code>${escapeHtml(sample.responseSha256)}</code>` : ""}</small>`
+          : "";
+        const matchTitles = sample.matches.length
+          ? `<small>${isGerman ? "Treffer" : "Matches"}: ${escapeHtml(sample.matches.map((match) => match.title || (isGerman ? "Titel nicht dokumentiert" : "Title not documented")).join(", "))}</small>`
+          : "";
+        return `<li class="${sampleMatch ? "is-match" : ""}"><strong>${isGerman ? "Sample" : "Sample"} ${String(sample.sequence).padStart(2, "0")}</strong><span>${isGerman ? "Offset" : "Offset"} ${escapeHtml(value(sample.offsetMilliseconds))} · ${isGerman ? "Ende" : "End"} ${escapeHtml(value(sample.endOffsetMilliseconds))} · ${isGerman ? "Dauer" : "Duration"} ${escapeHtml(value(sample.durationMilliseconds))} · ${escapeHtml(result)}</span>${sample.message ? `<small>${escapeHtml(this.systemText(sample.message))}</small>` : ""}${matchTitles}${archive}</li>`;
+      }).join("")}</ol>`
+      : `<p class="screening-run-summary__empty">${isGerman ? "Für diesen Lauf wurden keine eindeutigen Samples ausgeführt." : "No unique samples were executed for this run."}</p>`;
+    return `<section class="screening-run-summary">
+      <div class="screening-run-summary__heading"><div><small>${isGerman ? "Dokumentierter Screening-Lauf" : "Recorded screening run"}</small><h5>${mode}</h5></div><strong>${executedRequestCount} ${isGerman ? "ausgeführt" : "executed"}</strong></div>
+      <dl>
+        <div><dt>${isGerman ? "Gewünschte Intensität" : "Requested intensity"}</dt><dd>${external.requestedIntensityPercent} %</dd></div>
+        <div><dt>${isGerman ? "Berechnungsmodus" : "Calculation mode"}</dt><dd>${escapeHtml(calculationMode)}${!external.dynamicByTrackDuration ? ` · ${escapeHtml(formatScreeningSeconds(external.referenceDurationSeconds, this.language))}` : ""}</dd></div>
+        <div><dt>${isGerman ? "Tatsächliche Trackdauer" : "Actual track duration"}</dt><dd>${escapeHtml(value(external.sourceDurationMilliseconds))}</dd></div>
+        <div><dt>${isGerman ? "Zielprüfzeit" : "Target screening time"}</dt><dd>${escapeHtml(value(external.targetDurationMilliseconds))}</dd></div>
+        <div><dt>${isGerman ? "Geplante Requests" : "Planned requests"}</dt><dd>${external.plannedRequestCount}</dd></div>
+        <div><dt>${isGerman ? "Ausgeführte Requests" : "Executed requests"}</dt><dd>${executedRequestCount}</dd></div>
+        <div><dt>${isGerman ? "Eindeutige Samples" : "Unique samples"}</dt><dd>${uniqueSampleCount}</dd></div>
+        <div><dt>${isGerman ? "Doppelte Samples" : "Duplicate samples"}</dt><dd>${duplicateSampleCount}</dd></div>
+        <div><dt>${isGerman ? "Überlappende Samples" : "Overlapping samples"}</dt><dd>${overlappingSampleCount}</dd></div>
+        <div><dt>${isGerman ? "Eindeutig geprüfte Audiodauer" : "Unique sampled duration"}</dt><dd>${escapeHtml(value(external.uniqueSampleDurationMilliseconds))}</dd></div>
+        <div><dt>${isGerman ? "Track-Abdeckung" : "Track coverage"}</dt><dd>${escapeHtml(coverage)}</dd></div>
+        <div><dt>${isGerman ? "Providerstatus" : "Provider status"}</dt><dd>${escapeHtml(this.t(audioScreeningProviderStatusLabel(external.providerStatus)))}</dd></div>
+      </dl>
+      ${external.sourceSha256 ? `<p class="screening-run-summary__source">${isGerman ? "Release SHA-256" : "Release SHA-256"}: <code>${escapeHtml(external.sourceSha256)}</code></p>` : ""}
+      ${sampleRows}
+    </section>`;
+  }
+
   private renderPreReleaseAudioScreening(track: TrackDetail): string {
     const local = visibleLocalAudioScreening(track.audioScreening.local, track.evidence);
     const external = track.audioScreening.external;
@@ -2520,10 +2673,11 @@ export class SunoDocumentationApp {
           <p>${escapeHtml(this.systemText(visibleExternal.message))}</p>
           ${externalCurrent && external.checkedAt ? `<small class="screening-checked-at">Zuletzt geprüft: ${formatDate(external.checkedAt, true, this.language)}</small>` : ""}
           ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="screening-match-warning">${icon("alert")} Ein externer Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</div>` : ""}
+          ${this.renderAudioScreeningRunSummary(external, externalCurrent)}
           <div class="screening-summary-actions">${externalAction}</div>
         </article>
       </div>
-      <p class="screening-disclaimer">${icon("info")} Die Prüfung ist eine technische Audio-Erkennung. Sie stellt keine Urheberrechts-, Lizenz- oder Nichtverletzungsprüfung dar.</p>
+      <p class="screening-disclaimer">${icon("info")} Das Audio-Screening ist ausschließlich ein technischer Vergleichsdatensatz und begründet keine Aussage zu Urheberschaft, Rechteinhaberschaft, Erlaubnis, Nichtverletzung, Rechtmäßigkeit oder Release-Freigabe.</p>
     </section>`;
   }
 
@@ -2649,8 +2803,9 @@ export class SunoDocumentationApp {
         <article class="audio-screening-card ${audioScreeningStatusClass(visibleExternal.status)}"><span>${icon("tracks")}</span><div><small>ACRCloud · extern</small><h4>${escapeHtml(this.t(audioScreeningStatusLabel(visibleExternal.status)))}</h4><p>${escapeHtml(this.systemText(visibleExternal.message))}</p>${externalCurrent && external.checkedAt ? `<small>Geprüft: ${formatDate(external.checkedAt, true, this.language)} · Sample: ${sample}</small>` : ""}</div></article>
       </div>
       ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="audio-screening-alert">${icon("alert")}<div><strong>ACRCloud meldet eine Audio-Übereinstimmung</strong><span>Der externe Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</span></div></div>${matches}` : ""}
+      ${this.renderAudioScreeningRunSummary(external, externalCurrent)}
       ${!settings.enabled || !settings.credentialsConfigured ? `<p class="audio-screening-configuration">Extern: ÜBERSPRUNGEN – kein ACRCloud-Zugang eingerichtet. Die lokale Chromaprint-Prüfung bleibt davon unabhängig.</p>` : ""}
-      <p class="screening-disclaimer">${icon("info")} Die Audio-Erkennung ist keine Urheberrechts-, Lizenz- oder Nichtverletzungsprüfung.</p>
+      <p class="screening-disclaimer">${icon("info")} Das Audio-Screening ist ausschließlich ein technischer Vergleichsdatensatz und begründet keine Aussage zu Urheberschaft, Rechteinhaberschaft, Erlaubnis, Nichtverletzung, Rechtmäßigkeit oder Release-Freigabe.</p>
     </section>`;
   }
 
@@ -2900,6 +3055,7 @@ export class SunoDocumentationApp {
     return `<div class="settings-section audio-screening-settings-section"><div class="settings-section-copy"><span>06</span><div><h3>Pre-Release Audio Screening</h3><p>Lokaler Chromaprint-Fingerprint plus eine bewusst gestartete, optionale ACRCloud-Katalogprüfung.</p><a class="text-button audio-screening-doc-link" href="https://github.com/kleiveist/Suno-Documentation-Manager/blob/main/docs/def/pre-release-audio-screening.md" target="_blank" rel="noopener noreferrer">${icon("arrow")} Dokumentation zum Audio-Screening öffnen</a></div></div><div>
       <div class="audio-screening-local-engine"><span>${icon("hash")}</span><div><strong>${this.t("Lokale Prüfung: Chromaprint verfügbar:")} <span>${engineStatus}${escapeHtml(engineVersion)}</span></strong><small>Die lokale Fingerprint-Erzeugung benötigt keine Netzwerkverbindung.</small></div></div>
       <label class="toggle-row"><span><strong>ACRCloud aktiviert</strong><small>Die externe Prüfung wird nie beim App-Start, Import, Hashing oder Finalisieren ausgelöst.</small></span><input type="checkbox" name="audioScreeningEnabled" aria-label="ACRCloud-Audio-Screening aktivieren" ${settings.enabled ? "checked" : ""}><i aria-hidden="true"></i></label>
+      ${this.renderAudioScreeningIntensitySettings(settings)}
       <div class="field-grid two-col timestamp-settings-grid">
         ${this.textField("audioScreeningHost", "ACRCloud Host", "z. B. identify-eu-west-1.acrcloud.com", settings.host)}
         ${this.textField("audioScreeningTimeoutSeconds", "Timeout (Sekunden, max. 120)", "30", String(settings.timeoutSeconds), false, "number")}
@@ -2909,6 +3065,64 @@ export class SunoDocumentationApp {
       <div class="timestamp-provider-status ${statusClass}"><div><strong>${escapeHtml(this.t(`Status: ${this.t(audioScreeningProviderStatusLabel(status))}`))}</strong><span>${escapeHtml(this.systemText(message || "Noch nicht getestet."))}</span><small>${settings.credentialsConfigured ? "Access Key und Access Secret sind lokal konfiguriert; Werte werden nie angezeigt." : "Noch keine vollständigen lokalen Zugangsdaten hinterlegt."}</small>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true, this.language)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-audio-screening-provider" ${settings.enabled ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>
       <p class="timestamp-settings-note">${icon("shield")} SunoDM zeigt kein ACRCloud-Loginfenster. Lege das Projekt bei ACRCloud an und hinterlege hier nur Host, Access Key und Access Secret. Die Zugangsdaten bleiben getrennt von Trackdaten, Evidenz, PDFs, Manifesten und Revisionen.</p>
     </div></div>`;
+  }
+
+  private audioScreeningPreviewTrackDurationSeconds(): number | undefined {
+    const track = this.state.track;
+    if (!track) return undefined;
+    const release = track.evidence.find((item) => item.role === "release_wav" && item.verified);
+    const localIsCurrent = localAudioScreeningIsCurrent(track.audioScreening.local, track.evidence);
+    const externalIsCurrent = externalAudioScreeningIsCurrent(track.audioScreening.external, track.evidence);
+    const milliseconds = release?.metadata?.audioDurationMilliseconds
+      ?? (localIsCurrent ? track.audioScreening.local.durationMilliseconds : undefined)
+      ?? (externalIsCurrent ? track.audioScreening.external.sourceDurationMilliseconds : undefined);
+    return Number.isFinite(milliseconds) && milliseconds! > 0 ? milliseconds! / 1_000 : undefined;
+  }
+
+  private renderAudioScreeningIntensitySettings(settings: AudioScreeningSettings): string {
+    const intensityPercent = Math.min(Math.max(Math.trunc(settings.intensityPercent || 5), 1), 100);
+    const referenceDurationMinutes = Math.min(Math.max(Math.round(settings.referenceDurationSeconds / 60), 1), 60);
+    return `<section class="audio-screening-intensity" aria-labelledby="audio-screening-intensity-title">
+      <div class="audio-screening-intensity__heading"><h4 id="audio-screening-intensity-title">ACRCloud-Prüfintensität</h4><p>Lege fest, wie viel eines Tracks bei einer bewusst gestarteten externen Prüfung repräsentativ und ohne überlappende Samples geprüft wird.</p></div>
+      <label class="field audio-screening-intensity__slider"><span class="field-label">Gewünschte Prüfintensität <strong data-audio-screening-intensity-value>${intensityPercent} %</strong></span><input type="range" name="audioScreeningIntensityPercent" min="1" max="100" step="1" value="${intensityPercent}" list="audio-screening-intensity-stops" aria-label="Gewünschte ACRCloud-Prüfintensität" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${intensityPercent}"><datalist id="audio-screening-intensity-stops"><option value="5" label="5 %"></option><option value="10" label="10 %"></option><option value="25" label="25 %"></option><option value="50" label="50 %"></option><option value="75" label="75 %"></option><option value="100" label="100 %"></option></datalist><span class="audio-screening-intensity__stops" aria-hidden="true"><span>5 %</span><span>10 %</span><span>25 %</span><span>50 %</span><span>75 %</span><span>100 %</span></span></label>
+      <div data-audio-screening-intensity-presentation aria-live="polite">${this.renderAudioScreeningIntensityPresentation(settings)}</div>
+      <label class="toggle-row audio-screening-intensity__mode"><span><strong>Dynamische Berechnung nach tatsächlicher Tracklänge</strong><small>Ist der Schalter aktiv, wird die Zielprüfzeit beim Lauf aus der verifizierten Dauer der aktuellen Release-Datei bestimmt.</small></span><input type="checkbox" name="audioScreeningDynamicByTrackDuration" aria-label="Dynamische Berechnung nach tatsächlicher Tracklänge" ${settings.dynamicByTrackDuration ? "checked" : ""}><i aria-hidden="true"></i></label>
+      <div class="audio-screening-intensity__reference" data-audio-screening-reference ${settings.dynamicByTrackDuration ? "hidden" : ""}><label class="field"><span class="field-label">Referenzlänge (Minuten)</span><input type="number" name="audioScreeningReferenceDurationMinutes" min="1" max="60" step="1" value="${escapeHtml(String(referenceDurationMinutes))}" inputmode="numeric" aria-label="Referenzlänge in Minuten"><small class="field-help">Die tatsächliche Trackdauer wird beim Lauf nie überschritten.</small></label></div>
+    </section>`;
+  }
+
+  private renderAudioScreeningIntensityPresentation(settings: AudioScreeningSettings): string {
+    const trackDurationSeconds = this.audioScreeningPreviewTrackDurationSeconds();
+    const estimate = audioScreeningIntensityEstimate(settings, trackDurationSeconds);
+    const intensityPercent = Math.min(Math.max(Math.trunc(settings.intensityPercent || 5), 1), 100);
+    const band = audioScreeningIntensityBand(estimate.actualRequestCount);
+    const isGerman = this.language === "de";
+    const summary = isGerman
+      ? `${intensityPercent} % · Ziel: ca. ${formatScreeningSeconds(estimate.targetDurationSeconds, this.language)} · ${estimate.actualRequestCount} ACRCloud-Requests`
+      : `${intensityPercent}% · target: approx. ${formatScreeningSeconds(estimate.targetDurationSeconds, this.language)} · ${estimate.actualRequestCount} ACRCloud requests`;
+    const durationBasis = settings.dynamicByTrackDuration
+      ? trackDurationSeconds
+        ? (isGerman ? `Aktueller Track: ${formatScreeningSeconds(trackDurationSeconds, this.language)}` : `Current track: ${formatScreeningSeconds(trackDurationSeconds, this.language)}`)
+        : (isGerman ? `Dynamisch · Vorschau mit Referenzlänge ${formatScreeningSeconds(estimate.calculationDurationSeconds, this.language)}` : `Dynamic · preview with ${formatScreeningSeconds(estimate.calculationDurationSeconds, this.language)} reference length`)
+      : isGerman
+        ? `Feste Referenzlänge: ${formatScreeningSeconds(estimate.calculationDurationSeconds, this.language)}`
+        : `Fixed reference length: ${formatScreeningSeconds(estimate.calculationDurationSeconds, this.language)}`;
+    const requestBand = isGerman
+      ? ({ low: "niedrig", normal: "normal", elevated: "erhöht", high: "hoch", very_high: "sehr hoch" } as const)[band]
+      : ({ low: "low", normal: "normal", elevated: "elevated", high: "high", very_high: "very high" } as const)[band];
+    const requestCaption = isGerman
+      ? `${estimate.actualRequestCount} erwartete Requests · ${requestBand}`
+      : `${estimate.actualRequestCount} expected requests · ${requestBand}`;
+    const capNotice = estimate.capped
+      ? `<small class="audio-screening-intensity__cap">${isGerman ? "Die verfügbare Trackdauer oder die feste Höchstgrenze reduziert die Request-Anzahl automatisch." : "The available track duration or fixed cap automatically reduces the request count."}</small>`
+      : "";
+    const hardLimit = isGerman
+      ? "Feste Obergrenze: maximal 25 ACRCloud-Requests bzw. 300 Sekunden eindeutiges Audio pro Track; jeder Request enthält höchstens 12 Sekunden."
+      : "Hard limit: at most 25 ACRCloud requests and 300 seconds of unique audio per track; each request contains at most 12 seconds.";
+    const warning = band === "high" || band === "very_high"
+      ? `<div class="audio-screening-intensity__warning ${band === "very_high" ? "is-maximum" : ""}">${icon("alert")}<div><strong>${isGerman ? "Hohe Prüfintensität" : "High screening intensity"}</strong><span>${isGerman ? "Diese Einstellung erzeugt viele externe ACRCloud-Anfragen und kann Prüfzeit sowie API-Verbrauch deutlich erhöhen." : "This setting creates many external ACRCloud requests and can significantly increase screening time and API usage."}</span>${estimate.actualRequestCount === ACRCLOUD_MAX_REQUESTS ? `<small>${isGerman ? "Maximale Prüfintensität: Bis zu 25 eindeutige ACRCloud-Samples bzw. maximal 300 Sekunden Audio pro Track." : "Maximum screening intensity: up to 25 unique ACRCloud samples and at most 300 seconds of audio per track."}</small>` : ""}</div></div>`
+      : "";
+    return `<div class="audio-screening-intensity__preview"><strong>${escapeHtml(summary)}</strong><span>${escapeHtml(durationBasis)}</span><dl><div><dt>${isGerman ? "Berechnete Zielprüfzeit" : "Calculated target screening time"}</dt><dd>${escapeHtml(formatScreeningSeconds(estimate.targetDurationSeconds, this.language))}</dd></div><div><dt>${isGerman ? "Erwartete Request-Anzahl" : "Expected request count"}</dt><dd>${escapeHtml(requestCaption)}</dd></div><div><dt>${isGerman ? "Max. eindeutige Audiodauer" : "Max. unique audio duration"}</dt><dd>${escapeHtml(formatScreeningSeconds(estimate.maxUniqueDurationSeconds, this.language))}</dd></div></dl><small class="audio-screening-intensity__cap">${escapeHtml(hardLimit)}</small>${capNotice}${warning}</div>`;
   }
 
   private renderTimestampProviderConfiguration(settings: TimestampSettings): string {
@@ -2998,11 +3212,25 @@ export class SunoDocumentationApp {
     const timeoutSeconds = Number.isFinite(timeoutCandidate) && timeoutCandidate > 0
       ? Math.min(Math.trunc(timeoutCandidate), 120)
       : previous.timeoutSeconds;
+    const intensityCandidate = Number(read("audioScreeningIntensityPercent", String(previous.intensityPercent)));
+    const intensityPercent = Number.isFinite(intensityCandidate)
+      ? Math.min(Math.max(Math.trunc(intensityCandidate), 1), 100)
+      : previous.intensityPercent;
+    const referenceMinutesCandidate = Number(read(
+      "audioScreeningReferenceDurationMinutes",
+      String(previous.referenceDurationSeconds / 60)
+    ));
+    const referenceDurationSeconds = Number.isFinite(referenceMinutesCandidate) && referenceMinutesCandidate > 0
+      ? Math.min(Math.max(Math.round(referenceMinutesCandidate * 60), 1), 3_600)
+      : previous.referenceDurationSeconds;
     return {
       ...previous,
       enabled: data.get("audioScreeningEnabled") === "on",
       host: read("audioScreeningHost", previous.host).trim(),
-      timeoutSeconds
+      timeoutSeconds,
+      intensityPercent,
+      dynamicByTrackDuration: data.get("audioScreeningDynamicByTrackDuration") === "on",
+      referenceDurationSeconds
     };
   }
 
@@ -3053,6 +3281,20 @@ export class SunoDocumentationApp {
     const target = form.querySelector<HTMLElement>("[data-timestamp-provider-configuration]");
     if (!target) return;
     target.innerHTML = this.renderTimestampProviderConfiguration(this.readTimestampSettings(form));
+    translateRenderedUi(target, this.language, this.protectedRenderedValues());
+  }
+
+  private syncAudioScreeningIntensityPresentation(form: HTMLFormElement): void {
+    const target = form.querySelector<HTMLElement>("[data-audio-screening-intensity-presentation]");
+    if (!target) return;
+    const settings = this.readAudioScreeningSettings(form);
+    const range = form.elements.namedItem("audioScreeningIntensityPercent") as HTMLInputElement | null;
+    const value = form.querySelector<HTMLElement>("[data-audio-screening-intensity-value]");
+    const reference = form.querySelector<HTMLElement>("[data-audio-screening-reference]");
+    if (range) range.setAttribute("aria-valuenow", String(settings.intensityPercent));
+    if (value) value.textContent = `${settings.intensityPercent} %`;
+    if (reference) reference.hidden = settings.dynamicByTrackDuration;
+    target.innerHTML = this.renderAudioScreeningIntensityPresentation(settings);
     translateRenderedUi(target, this.language, this.protectedRenderedValues());
   }
 
@@ -3769,6 +4011,15 @@ export class SunoDocumentationApp {
       this.syncTimestampProviderConfiguration(timestampForm);
       return;
     }
+    const audioScreeningForm = input.closest<HTMLFormElement>("#profile-form");
+    if (audioScreeningForm && [
+      "audioScreeningIntensityPercent",
+      "audioScreeningDynamicByTrackDuration",
+      "audioScreeningReferenceDurationMinutes"
+    ].includes(input.name)) {
+      this.syncAudioScreeningIntensityPresentation(audioScreeningForm);
+      return;
+    }
     const libraryForm = input.closest<HTMLFormElement>("#new-track-form, #track-library-form");
     if (libraryForm && input.name === "librarySection") {
       this.syncTrackLibraryFields(libraryForm);
@@ -3814,6 +4065,14 @@ export class SunoDocumentationApp {
     const input = event.target as HTMLInputElement | HTMLTextAreaElement;
     if (input.name === "albumTitle" && input.closest("#new-track-form, #track-library-form")) {
       input.setCustomValidity("");
+      return;
+    }
+    const audioScreeningForm = input.closest<HTMLFormElement>("#profile-form");
+    if (audioScreeningForm && [
+      "audioScreeningIntensityPercent",
+      "audioScreeningReferenceDurationMinutes"
+    ].includes(input.name)) {
+      this.syncAudioScreeningIntensityPresentation(audioScreeningForm);
       return;
     }
     const subscriptionForm = input.closest<HTMLFormElement>("#subscription-evidence-form");

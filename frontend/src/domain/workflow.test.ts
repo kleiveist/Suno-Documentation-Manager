@@ -105,7 +105,7 @@ function completeTrack(): TrackDetail {
     fields,
     steps: [],
     evidence: [evidence("suno_final_export"), evidence("release_wav")],
-    documents: { generated: true, current: true, templateVersion: "1.10", files: ["README.md"] },
+    documents: { generated: true, current: true, templateVersion: "1.11", files: ["README.md"] },
     integrity: { generated: true, verified: true, fileCount: 3, verifiedCount: 3, mismatchFiles: [] },
     certificate: { valid: false },
     externalTimestamps: [],

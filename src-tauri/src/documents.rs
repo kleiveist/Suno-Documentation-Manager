@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::model::{
+    AudioScreeningExternalRecord, AudioScreeningMode, AudioScreeningProviderStatus,
     AudioScreeningState, AudioScreeningStatus, DocumentPreview, DocumentationAnswer, EvidenceItem,
     EvidenceRole, OperationProgress, Profile, StepState, SunoContentClassification,
     SunoLyricsContentSource, TrackFields, TrackRecord,
@@ -12,7 +13,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-pub const TEMPLATE_VERSION: &str = "1.10";
+pub const TEMPLATE_VERSION: &str = "1.11";
 pub const MANAGED_MARKER: &str = "suno-documentation-manager:template-v1";
 pub const ARTWORK_IMPORT_TIMESTAMP_NOTICE: &str = "Import timestamps document only the import into SunoDM and do not establish the actual creation or editing sequence of the artwork files.";
 const MARKDOWN_MARKER_HEADER: &str = "<!-- suno-documentation-manager:template-v1 -->\n";
@@ -741,6 +742,7 @@ fn evidence_list(evidence: &[EvidenceItem]) -> String {
 fn audio_screening_documentation_summary(state: &AudioScreeningState) -> String {
     let local = &state.local;
     let external = &state.external;
+    let multi_sample = has_multi_sample_data(external);
     let matches = if external.matches.is_empty() {
         "NONE RECORDED".to_owned()
     } else {
@@ -790,8 +792,25 @@ fn audio_screening_documentation_summary(state: &AudioScreeningState) -> String 
         matches
     };
 
+    let legacy_sample_block = if multi_sample {
+        String::new()
+    } else {
+        format!(
+            "- External sample offset (ms) [System value]: {}\n- External sample duration (ms) [System value]: {}\n",
+            external
+                .sample_offset_milliseconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+            external
+                .sample_duration_milliseconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        )
+    };
+    let multi_sample_block = multi_sample_documentation_block(external);
+
     format!(
-        "## Pre-release audio screening\n\n- Local screening status [System verification]: {}\n- Local engine [System verification]: {}\n- Local engine version [System verification]: {}\n- Fingerprint algorithm [System verification]: {}\n- Local source Evidence ID [System verification]: {}\n- Local source path [System verification]: {}\n- Local source SHA-256 [System verification]: {}\n- Local source size (bytes) [System verification]: {}\n- Local measured duration (ms) [System verification]: {}\n- Local record path [System verification]: {}\n- Local record SHA-256 [System verification]: {}\n- Local generated at [System value]: {}\n\n- External screening provider [System value]: {}\n- External screening status [System verification]: {}\n- External provider configured at snapshot [System value]: {}\n- External source Evidence ID [System verification]: {}\n- External source path [System verification]: {}\n- External source SHA-256 [System verification]: {}\n- External checked at [System value]: {}\n- External sample offset (ms) [System value]: {}\n- External sample duration (ms) [System value]: {}\n- External source duration (ms) [System value]: {}\n- External request count [System value]: {}\n- External response archive [System verification]: {}\n- External response SHA-256 [System verification]: {}\n{match_block}\nAudio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion.\n",
+        "## Pre-release audio screening\n\n- Local screening status [System verification]: {}\n- Local engine [System verification]: {}\n- Local engine version [System verification]: {}\n- Fingerprint algorithm [System verification]: {}\n- Local source Evidence ID [System verification]: {}\n- Local source path [System verification]: {}\n- Local source SHA-256 [System verification]: {}\n- Local source size (bytes) [System verification]: {}\n- Local measured duration (ms) [System verification]: {}\n- Local record path [System verification]: {}\n- Local record SHA-256 [System verification]: {}\n- Local generated at [System value]: {}\n\n- External screening provider [System value]: {}\n- External screening status [System verification]: {}\n- External provider configured at snapshot [System value]: {}\n- External source Evidence ID [System verification]: {}\n- External source path [System verification]: {}\n- External source SHA-256 [System verification]: {}\n- External checked at [System value]: {}\n{legacy_sample_block}- External source duration (ms) [System value]: {}\n- External request count [System value]: {}\n- External response archive [System verification]: {}\n- External response SHA-256 [System verification]: {}\n{multi_sample_block}{match_block}\nAudio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion.\n",
         audio_screening_status_label(local.status),
         value_or_missing(&local.engine),
         value_or_missing(&local.engine_version),
@@ -815,14 +834,6 @@ fn audio_screening_documentation_summary(state: &AudioScreeningState) -> String 
         value_or_missing(&external.source_sha256),
         external.checked_at.as_deref().unwrap_or("NOT DOCUMENTED"),
         external
-            .sample_offset_milliseconds
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
-        external
-            .sample_duration_milliseconds
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
-        external
             .source_duration_milliseconds
             .map(|value| value.to_string())
             .unwrap_or_else(|| "NOT DOCUMENTED".into()),
@@ -838,6 +849,137 @@ fn audio_screening_documentation_summary(state: &AudioScreeningState) -> String 
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("NOT RECORDED"),
     )
+}
+
+/// Multi-sample screening records need enough context to make the planned
+/// coverage and the individual, offset-bound provider outcomes reviewable.
+/// Raw provider messages and responses deliberately remain in their archived
+/// artifacts rather than being copied into managed documentation.
+fn multi_sample_documentation_block(external: &AudioScreeningExternalRecord) -> String {
+    if !has_multi_sample_data(external) {
+        return String::new();
+    }
+
+    let calculation_mode = if external.dynamic_by_track_duration {
+        "DYNAMIC BY TRACK DURATION"
+    } else {
+        "FIXED REFERENCE DURATION"
+    };
+    let reference_duration = if external.dynamic_by_track_duration {
+        "N/A".to_owned()
+    } else {
+        external.reference_duration_seconds.to_string()
+    };
+    let mut output = format!(
+        "\n- External screening mode [System value]: {}\n- Requested coverage [System value]: {} %\n- Calculation mode [System value]: {}\n- Reference duration (seconds) [System value]: {}\n- Target screening duration (ms) [System value]: {}\n- Planned requests [System value]: {}\n- Executed requests [System verification]: {}\n- Unique samples [System verification]: {}\n- Duplicate samples [System verification]: {}\n- Overlapping samples [System verification]: {}\n- Unique sampled duration (ms) [System verification]: {}\n- Track coverage (%) [System verification]: {:.2}\n- ACRCloud provider status [System verification]: {}\n- Overall result [System verification]: {}\n",
+        external.screening_mode.as_str(),
+        external.requested_intensity_percent,
+        calculation_mode,
+        reference_duration,
+        external.target_duration_milliseconds,
+        external.planned_request_count,
+        external.executed_request_count,
+        external.unique_sample_count,
+        external.duplicate_sample_count,
+        external.overlapping_sample_count,
+        external.unique_sample_duration_milliseconds,
+        external.track_coverage_percent,
+        audio_screening_provider_status_label(external.provider_status),
+        audio_screening_status_label(external.status),
+    );
+
+    if external.samples.is_empty() {
+        output.push_str("- Sample results [System verification]: NONE RECORDED\n");
+        return output;
+    }
+
+    for sample in &external.samples {
+        let response_archive = sample
+            .response_relative_path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED");
+        let response_sha256 = sample
+            .response_sha256
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED");
+        output.push_str(&format!(
+            "- Sample {:02} [System verification]: Offset {} ms · End offset {} ms · Duration {} ms · Result {} · Response archive {} · Response SHA-256 {}\n",
+            sample.sequence,
+            sample.offset_milliseconds,
+            sample.end_offset_milliseconds,
+            sample.duration_milliseconds,
+            sample_result_label(sample.status),
+            response_archive,
+            response_sha256,
+        ));
+        for (index, item) in sample.matches.iter().take(5).enumerate() {
+            output.push_str(&format!(
+                "- Sample {:02} Provider match {} [Provider-derived metadata]: {}\n",
+                sample.sequence,
+                index + 1,
+                audio_screening_match_summary(item),
+            ));
+        }
+    }
+    output
+}
+
+fn has_multi_sample_data(external: &AudioScreeningExternalRecord) -> bool {
+    external.screening_mode == AudioScreeningMode::MultiSample || !external.samples.is_empty()
+}
+
+fn audio_screening_match_summary(item: &crate::model::AudioScreeningMatch) -> String {
+    let artists = if item.artists.is_empty() {
+        "NOT DOCUMENTED".to_owned()
+    } else {
+        item.artists.join(", ")
+    };
+    let mut value = format!("{} — {artists}", value_or_missing(&item.title));
+    if let Some(album) = item
+        .album
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        value.push_str(&format!("; album {album}"));
+    }
+    if let Some(isrc) = item
+        .isrc
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        value.push_str(&format!("; ISRC {isrc}"));
+    }
+    if let Some(acrid) = item
+        .acrid
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        value.push_str(&format!("; ACRID {acrid}"));
+    }
+    if let Some(score) = item.score {
+        value.push_str(&format!("; score {score}"));
+    }
+    value
+}
+
+fn sample_result_label(status: AudioScreeningStatus) -> &'static str {
+    match status {
+        AudioScreeningStatus::NoMatchDetected => "NO MATCH",
+        _ => audio_screening_status_label(status),
+    }
+}
+
+fn audio_screening_provider_status_label(status: AudioScreeningProviderStatus) -> &'static str {
+    match status {
+        AudioScreeningProviderStatus::Disabled => "DISABLED",
+        AudioScreeningProviderStatus::NotConfigured => "NOT CONFIGURED",
+        AudioScreeningProviderStatus::Ready => "READY",
+        AudioScreeningProviderStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        AudioScreeningProviderStatus::ProviderUnavailable => "PROVIDER UNAVAILABLE",
+        AudioScreeningProviderStatus::ConfigurationInvalid => "CONFIGURATION INVALID",
+    }
 }
 
 fn audio_screening_status_label(status: AudioScreeningStatus) -> &'static str {
@@ -1527,8 +1669,8 @@ mod tests {
             first_generation.insert(relative, actual);
         }
         assert!(
-            combined.contains("Template version: `1.10`")
-                || combined.contains("Template version: 1.10")
+            combined.contains(&format!("Template version: `{TEMPLATE_VERSION}`"))
+                || combined.contains(&format!("Template version: {TEMPLATE_VERSION}"))
         );
         assert!(combined.contains("Suno Generation Text Field"));
         assert!(combined.contains("Vocal Lyrics Present [Classification-derived presentation]: NO"));
@@ -1994,6 +2136,88 @@ mod tests {
         assert!(readme.contains("LOCAL_FINGERPRINT.json"));
         assert!(!readme.contains("RAW_FINGERPRINT_MUST_NOT_RENDER"));
         assert!(!readme.contains("ACCESS_SECRET_MUST_NOT_RENDER"));
+    }
+
+    #[test]
+    fn readme_documents_multi_sample_screening_plan_and_each_sample_without_messages() {
+        let (mut track, profile, evidence) = fixture_input();
+        let external = &mut track.audio_screening.external;
+        external.screening_mode = AudioScreeningMode::MultiSample;
+        external.status = AudioScreeningStatus::NoMatchDetected;
+        external.provider_status = AudioScreeningProviderStatus::Ready;
+        external.requested_intensity_percent = 25;
+        external.dynamic_by_track_duration = false;
+        external.reference_duration_seconds = 300;
+        external.source_duration_milliseconds = Some(646_000);
+        external.target_duration_milliseconds = 75_000;
+        external.planned_request_count = 7;
+        external.executed_request_count = 2;
+        external.request_count = 2;
+        external.unique_sample_count = 2;
+        external.duplicate_sample_count = 0;
+        external.overlapping_sample_count = 0;
+        external.unique_sample_duration_milliseconds = 24_000;
+        external.track_coverage_percent = 3.72;
+        external.samples = vec![
+            crate::model::AudioScreeningSampleRecord {
+                sequence: 1,
+                offset_milliseconds: 30_000,
+                end_offset_milliseconds: 42_000,
+                duration_milliseconds: 12_000,
+                status: AudioScreeningStatus::NoMatchDetected,
+                message: "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                matches: Vec::new(),
+                response_relative_path: Some(
+                    "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_01.json".into(),
+                ),
+                response_sha256: Some("a".repeat(64)),
+            },
+            crate::model::AudioScreeningSampleRecord {
+                sequence: 2,
+                offset_milliseconds: 95_000,
+                end_offset_milliseconds: 107_000,
+                duration_milliseconds: 12_000,
+                status: AudioScreeningStatus::MatchDetected,
+                message: "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                matches: vec![crate::model::AudioScreeningMatch {
+                    title: "Sample match title".into(),
+                    artists: vec!["Sample match artist".into()],
+                    ..Default::default()
+                }],
+                response_relative_path: Some(
+                    "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_02.json".into(),
+                ),
+                response_sha256: Some("b".repeat(64)),
+            },
+        ];
+
+        let rendered = render(&track, &profile, &evidence, &[]);
+        let readme = &rendered["03_DOCUMENTATION/README.md"];
+        for expected in [
+            "External screening mode [System value]: MULTI-SAMPLE",
+            "Requested coverage [System value]: 25 %",
+            "Calculation mode [System value]: FIXED REFERENCE DURATION",
+            "Planned requests [System value]: 7",
+            "Executed requests [System verification]: 2",
+            "Unique samples [System verification]: 2",
+            "Duplicate samples [System verification]: 0",
+            "Overlapping samples [System verification]: 0",
+            "Unique sampled duration (ms) [System verification]: 24000",
+            "Track coverage (%) [System verification]: 3.72",
+            "Overall result [System verification]: NO MATCH DETECTED",
+            "Sample 01 [System verification]: Offset 30000 ms · End offset 42000 ms · Duration 12000 ms · Result NO MATCH",
+            "Sample 02 [System verification]: Offset 95000 ms · End offset 107000 ms · Duration 12000 ms · Result MATCH DETECTED",
+            "Sample match title — Sample match artist",
+            "Audio-screening results are technical comparison records only.",
+        ] {
+            assert!(readme.contains(expected), "README omitted {expected}");
+        }
+        for forbidden in [
+            "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",
+            "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",
+        ] {
+            assert!(!readme.contains(forbidden), "README leaked {forbidden}");
+        }
     }
 
     #[test]

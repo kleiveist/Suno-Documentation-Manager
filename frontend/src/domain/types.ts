@@ -182,6 +182,20 @@ export interface AudioScreeningMatch {
   score?: number;
 }
 
+/** One bounded, deterministic ACRCloud sample within a multi-sample run. */
+export interface AudioScreeningSample {
+  /** One-based, stable sequence number in the recorded screening run. */
+  sequence: number;
+  offsetMilliseconds: number;
+  endOffsetMilliseconds: number;
+  durationMilliseconds: number;
+  status: AudioScreeningStatus;
+  message: string;
+  matches: AudioScreeningMatch[];
+  responseRelativePath?: string;
+  responseSha256?: string;
+}
+
 export interface AudioScreeningLocalSummary {
   status: AudioScreeningStatus;
   message: string;
@@ -214,6 +228,21 @@ export interface AudioScreeningExternalSummary {
   responseRelativePath?: string;
   responseSha256?: string;
   matches: AudioScreeningMatch[];
+  /** `single_sample` for a single request; `multi_sample` for distributed checks. */
+  screeningMode: "single_sample" | "multi_sample";
+  requestedIntensityPercent: number;
+  dynamicByTrackDuration: boolean;
+  referenceDurationSeconds: number;
+  targetDurationMilliseconds: number;
+  plannedRequestCount: number;
+  executedRequestCount: number;
+  uniqueSampleCount: number;
+  overlappingSampleCount: number;
+  duplicateSampleCount: number;
+  uniqueSampleDurationMilliseconds: number;
+  trackCoveragePercent: number;
+  providerStatus: AudioScreeningProviderStatus;
+  samples: AudioScreeningSample[];
 }
 
 export interface AudioScreeningSummary {
@@ -225,6 +254,12 @@ export interface AudioScreeningSettings {
   enabled: boolean;
   host: string;
   timeoutSeconds: number;
+  /** Requested ACRCloud coverage before the 25-request / 300-second cap. */
+  intensityPercent: number;
+  /** Calculate coverage from each release's actual duration instead of the reference length. */
+  dynamicByTrackDuration: boolean;
+  /** Fallback / fixed calculation basis, stored in seconds. */
+  referenceDurationSeconds: number;
   status: AudioScreeningProviderStatus;
   statusMessage: string;
   credentialsConfigured: boolean;
@@ -795,6 +830,20 @@ export const emptyAudioScreeningSummary: AudioScreeningSummary = {
     provider: "ACRCloud",
     status: "not_run",
     message: "The optional ACRCloud check has not been requested.",
+    screeningMode: "single_sample",
+    requestedIntensityPercent: 5,
+    dynamicByTrackDuration: true,
+    referenceDurationSeconds: 300,
+    targetDurationMilliseconds: 0,
+    plannedRequestCount: 0,
+    executedRequestCount: 0,
+    uniqueSampleCount: 0,
+    overlappingSampleCount: 0,
+    duplicateSampleCount: 0,
+    uniqueSampleDurationMilliseconds: 0,
+    trackCoveragePercent: 0,
+    providerStatus: "disabled",
+    samples: [],
     matches: []
   }
 };
@@ -803,6 +852,9 @@ export const emptyAudioScreeningSettings: AudioScreeningSettings = {
   enabled: false,
   host: "",
   timeoutSeconds: 30,
+  intensityPercent: 5,
+  dynamicByTrackDuration: true,
+  referenceDurationSeconds: 300,
   status: "disabled",
   statusMessage: "Optional ACRCloud screening is not configured.",
   credentialsConfigured: false,

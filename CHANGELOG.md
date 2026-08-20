@@ -5,6 +5,7 @@
 
 ## 2026-08-20
 
+- Added configurable deterministic ACRCloud multi-sample screening: dynamic or fixed-reference intensity planning, evenly distributed non-overlapping samples, a hard 25-request / 300-second cap, structured response archives, and K.2/manifest coverage reporting. Advanced document templates to `1.11`, evidence-manifest schema to `8`, and Markdown/PDF certificate format to `6.1`; historical artifacts remain unchanged.
 - Accepted the exact alternate Suno WAV metadata marker `made with suno` alongside `made with suno studio`, while retaining the single-marker, single-`created`, single-`id`, RFC 3339, UUID, ambiguity, and bounded-text checks. This is structural evidence extraction, not provider authentication; existing finalized snapshots remain byte-identical and are analyzed only in an explicit new revision.
 - Raised the current Suno workflow to `1.9`, document templates to `1.10`, evidence-manifest schema to `7`, and Markdown/PDF certificate format to `6.0`; existing finalized and archived bytes remain unchanged.
 - Added an optional post-commit automatic timestamp phase fixed to the exact SHA-256 of finalized `EVIDENCE_MANIFEST.json`. RFC-3161 `VERIFIED` now requires a matching SHA-256 message imprint, fresh request/response nonce, returned policy OID and requested-policy match when configured, CMS signature, a critical sole `id-kp-timeStamping` EKU, signer validity at `genTime`, and a chain to explicitly configured TSA trust anchors. Provider failure never rolls back the phase-one certificate.

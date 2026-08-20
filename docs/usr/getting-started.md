@@ -102,7 +102,11 @@ Automatic RFC-3161 attachment always timestamps the exact SHA-256 of finalized `
 
 The local release fingerprint does not need an account or a separate installation: SunoDM uses its bundled Chromaprint engine when you import or replace the authoritative release audio. The external ACRCloud comparison is separate and remains disabled until you choose to configure it.
 
-Under `Einstellungen` → `Externe Dienste` → `Pre-release audio screening`, enter the ACRCloud host, enable the provider, and save the access key and access secret. The fields are write-only: after saving, the UI can report only whether a complete credential pair exists. Use `Provider testen` to check the configured endpoint; this does not upload track audio. Then open Step 07 and choose the external screening action for one specific track. It sends a bounded release-audio sample only after that click, never the local Chromaprint fingerprint. It is optional and cannot block finalization.
+Under `Einstellungen` → `Externe Dienste` → `Pre-release audio screening`, enter the ACRCloud host, enable the provider, and save the access key and access secret. The fields are write-only: after saving, the UI can report only whether a complete credential pair exists. Use `Provider testen` to check the configured endpoint; this does not upload track audio.
+
+The **ACRCloud screening intensity** area below the documentation link controls the requested sampling coverage. Choose the percentage, then choose either dynamic calculation from the actual track duration or a fixed reference duration. The preview shows the requested sample time, expected request count, and the maximum unique audio duration that can actually be sampled. ACRCloud samples are at most 12 seconds each; SunoDM never sends more than 25 requests or 300 seconds of unique audio for one track. High and very-high levels show an API-usage warning.
+
+Then open Step 07 and choose the external screening action for one specific track. It sends a deterministic set of distinct, evenly distributed bounded release-audio samples only after that click, never the local Chromaprint fingerprint. If the track is too short for another non-overlapping interval, SunoDM reduces the request count. The action is optional and cannot block finalization.
 
 ## Register subscription evidence
 

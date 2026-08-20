@@ -421,6 +421,19 @@ export const SYSTEM_TRANSLATIONS: readonly SystemTranslation[] = [
   ["Das autoritative Release-Audio hat sich geändert; der lokale Fingerprint ist veraltet.", "The authoritative release audio changed; the local fingerprint is stale."],
   ["Das autoritative Release-Audio hat sich geändert; das externe Katalogergebnis ist veraltet.", "The authoritative release audio changed; the external catalog result is stale."],
 
+  // Configurable ACRCloud coverage UI and archived multi-sample summary
+  ["ACRCloud-Prüfintensität", "ACRCloud screening intensity"],
+  ["Lege fest, wie viel eines Tracks bei einer bewusst gestarteten externen Prüfung repräsentativ und ohne überlappende Samples geprüft wird.", "Choose how much of a track is checked representatively and without overlapping samples during an explicitly started external screening."],
+  ["Gewünschte Prüfintensität", "Requested screening intensity"],
+  ["Gewünschte ACRCloud-Prüfintensität", "Requested ACRCloud screening intensity"],
+  ["Dynamische Berechnung nach tatsächlicher Tracklänge", "Dynamic calculation by actual track duration"],
+  ["Ist der Schalter aktiv, wird die Zielprüfzeit beim Lauf aus der verifizierten Dauer der aktuellen Release-Datei bestimmt.", "When enabled, the target screening time is calculated from the verified duration of the current release file at run time."],
+  ["Referenzlänge (Minuten)", "Reference length (minutes)"],
+  ["Referenzlänge in Minuten", "Reference length in minutes"],
+  ["Die tatsächliche Trackdauer wird beim Lauf nie überschritten.", "The actual track duration is never exceeded at run time."],
+  ["Das Audio-Screening ist ausschließlich ein technischer Vergleichsdatensatz und begründet keine Aussage zu Urheberschaft, Rechteinhaberschaft, Erlaubnis, Nichtverletzung, Rechtmäßigkeit oder Release-Freigabe.", "Audio screening is solely a technical comparison record and makes no statement about authorship, ownership, permission, non-infringement, lawfulness, or release approval."],
+  ["Antwortarchiv nicht dokumentiert", "Response archive not documented"],
+
   // Native external timestamp provider and attachment messages
   ["Zeitstempel-Provider konnte nicht erreicht werden.", "Timestamp provider could not be reached."],
   ["Die Antwort des Zeitstempel-Providers konnte nicht gelesen werden.", "Timestamp provider response could not be read."],

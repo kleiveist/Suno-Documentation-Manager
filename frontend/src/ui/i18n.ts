@@ -1436,6 +1436,22 @@ function replaceTrimmed(value: string, replacement: string): string {
 
 function translateDynamicUiText(value: string, language: AppLanguage): string | null {
   if (language === "en") {
+    const screeningSummary = value.match(/^(\d+) % · Ziel: ca\. (\d+) Sekunden · (\d+) ACRCloud-Requests$/);
+    if (screeningSummary) {
+      return `${screeningSummary[1]}% · target: approx. ${screeningSummary[2]} seconds · ${screeningSummary[3]} ACRCloud requests`;
+    }
+    const screeningReferencePreview = value.match(/^Dynamisch · Vorschau mit Referenzlänge (.+)$/);
+    if (screeningReferencePreview) return `Dynamic · preview with ${screeningReferencePreview[1]} reference length`;
+    const screeningFixedPreview = value.match(/^Feste Referenzlänge: (.+)$/);
+    if (screeningFixedPreview) return `Fixed reference length: ${screeningFixedPreview[1]}`;
+    const screeningRequestBand = value.match(/^(\d+) erwartete Requests · (niedrig|normal|erhöht|hoch|sehr hoch)$/);
+    if (screeningRequestBand) {
+      const band = ({ niedrig: "low", normal: "normal", erhöht: "elevated", hoch: "high", "sehr hoch": "very high" } as Record<string, string>)[screeningRequestBand[2]];
+      return `${screeningRequestBand[1]} expected requests · ${band}`;
+    }
+    if (value === "Feste Obergrenze: maximal 25 ACRCloud-Requests bzw. 300 Sekunden eindeutiges Audio pro Track; jeder Request enthält höchstens 12 Sekunden.") {
+      return "Hard limit: at most 25 ACRCloud requests and 300 seconds of unique audio per track; each request contains at most 12 seconds.";
+    }
     const greeting = value.match(/^Guten Tag, (.+)\.$/);
     if (greeting) return `Good day, ${greeting[1]}.`;
     const missing = value.match(/^Bei (.+) sind noch (\d+) Pflichtpunkte offen\.$/);
@@ -1465,6 +1481,22 @@ function translateDynamicUiText(value: string, language: AppLanguage): string | 
     return null;
   }
 
+  const screeningSummary = value.match(/^(\d+)% · target: approx\. (\d+) seconds · (\d+) ACRCloud requests$/);
+  if (screeningSummary) {
+    return `${screeningSummary[1]} % · Ziel: ca. ${screeningSummary[2]} Sekunden · ${screeningSummary[3]} ACRCloud-Requests`;
+  }
+  const screeningReferencePreview = value.match(/^Dynamic · preview with (.+) reference length$/);
+  if (screeningReferencePreview) return `Dynamisch · Vorschau mit Referenzlänge ${screeningReferencePreview[1]}`;
+  const screeningFixedPreview = value.match(/^Fixed reference length: (.+)$/);
+  if (screeningFixedPreview) return `Feste Referenzlänge: ${screeningFixedPreview[1]}`;
+  const screeningRequestBand = value.match(/^(\d+) expected requests · (low|normal|elevated|high|very high)$/);
+  if (screeningRequestBand) {
+    const band = ({ low: "niedrig", normal: "normal", elevated: "erhöht", high: "hoch", "very high": "sehr hoch" } as Record<string, string>)[screeningRequestBand[2]];
+    return `${screeningRequestBand[1]} erwartete Requests · ${band}`;
+  }
+  if (value === "Hard limit: at most 25 ACRCloud requests and 300 seconds of unique audio per track; each request contains at most 12 seconds.") {
+    return "Feste Obergrenze: maximal 25 ACRCloud-Requests bzw. 300 Sekunden eindeutiges Audio pro Track; jeder Request enthält höchstens 12 Sekunden.";
+  }
   const greeting = value.match(/^Good day, (.+)\.$/);
   if (greeting) return `Guten Tag, ${greeting[1]}.`;
   const missing = value.match(/^There are still (\d+) required items open for (.+)\.$/);
@@ -1500,9 +1532,14 @@ export function translateUiText(value: string, language: AppLanguage): string {
   if (!trimmed) return value;
   const exact = (language === "en" ? germanToEnglish : englishToGerman).get(trimmed);
   if (exact) return replaceTrimmed(value, exact);
+  // Dynamic UI summaries use punctuation such as `:` and must be recognized
+  // before generic `{field}: {error}` templates, otherwise their numeric
+  // values are mistaken for an unknown native diagnostic.
+  const dynamic = translateDynamicUiText(trimmed, language);
+  if (dynamic) return replaceTrimmed(value, dynamic);
   const templated = translateTemplateUiText(trimmed, language);
   if (templated) return replaceTrimmed(value, templated);
-  return translateDynamicUiText(trimmed, language) ?? value;
+  return value;
 }
 
 /** Allows focused tests and future UI code to distinguish catalogued copy from user-provided data. */

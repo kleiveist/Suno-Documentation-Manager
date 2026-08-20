@@ -2,6 +2,7 @@ use crate::certificate_pdf::{self, CertificatePdfSnapshot};
 use crate::error::{AppError, Result};
 use crate::integrity::HASH_FILE;
 use crate::model::{
+    AudioScreeningExternalRecord, AudioScreeningMode, AudioScreeningProviderStatus,
     AudioScreeningState, AudioScreeningStatus, BlockingDeviation, CertificateLanguage,
     CertificateRenderOptions, DocumentationAnswer, EvidenceItem, EvidenceMetadata,
     EvidenceProvenance, EvidenceRole, FactOrigin, Profile, StepState, StepStatus,
@@ -26,8 +27,8 @@ pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
 pub const PDF_FILE_EN: &str = PDF_FILE;
 pub const PDF_FILE_DE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "6.0";
-pub const EVIDENCE_MANIFEST_SCHEMA_VERSION: u32 = 7;
+pub const CERTIFICATE_FORMAT_VERSION: &str = "6.1";
+pub const EVIDENCE_MANIFEST_SCHEMA_VERSION: u32 = 8;
 
 /// Return a certificate label in the configured output language. The
 /// compatibility bilingual mode is used only for the Markdown presentation;
@@ -293,6 +294,27 @@ fn german_certificate_label(english: &str) -> String {
         ("External request count", "Anzahl externer Anfragen"),
         ("External response archive", "Archiv der externen Antwort"),
         ("External response SHA-256", "SHA-256 der externen Antwort"),
+        ("External screening mode", "Modus des externen Screenings"),
+        ("Requested coverage", "Angeforderte Abdeckung"),
+        ("Calculation mode", "Berechnungsmodus"),
+        ("Reference duration (seconds)", "Referenzdauer (Sekunden)"),
+        ("Target screening duration (ms)", "Ziel-Prüfdauer (ms)"),
+        ("Planned requests", "Geplante Anfragen"),
+        ("Executed requests", "Ausgeführte Anfragen"),
+        ("Unique samples", "Eindeutige Proben"),
+        ("Duplicate samples", "Doppelte Proben"),
+        ("Overlapping samples", "Überlappende Proben"),
+        (
+            "Unique sampled duration (ms)",
+            "Eindeutig geprüfte Audiodauer (ms)",
+        ),
+        ("Track coverage (%)", "Track-Abdeckung (%)"),
+        ("ACRCloud provider status", "ACRCloud-Anbieterstatus"),
+        ("Overall result", "Gesamtergebnis"),
+        ("Sample results", "Probenergebnisse"),
+        ("Response archive", "Antwortarchiv"),
+        ("Response SHA-256", "Antwort-SHA-256"),
+        ("Sample", "Probe"),
         ("Provider matches", "Anbietertreffer"),
         ("Provider match", "Anbietertreffer"),
         (
@@ -665,6 +687,22 @@ fn audio_screening_manifest(state: &AudioScreeningState) -> serde_json::Value {
     let local = &state.local;
     let external = &state.external;
     let matches = external.matches.iter().take(5).collect::<Vec<_>>();
+    let samples = external
+        .samples
+        .iter()
+        .map(|sample| {
+            json!({
+                "sequence": sample.sequence,
+                "offsetMilliseconds": sample.offset_milliseconds,
+                "endOffsetMilliseconds": sample.end_offset_milliseconds,
+                "durationMilliseconds": sample.duration_milliseconds,
+                "status": sample.status,
+                "responseRelativePath": sample.response_relative_path,
+                "responseSha256": sample.response_sha256,
+                "matches": sample.matches.iter().take(5).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
         "local": {
             "schemaVersion": local.schema_version,
@@ -694,6 +732,20 @@ fn audio_screening_manifest(state: &AudioScreeningState) -> serde_json::Value {
             "sampleDurationMilliseconds": external.sample_duration_milliseconds,
             "sourceDurationMilliseconds": external.source_duration_milliseconds,
             "requestCount": external.request_count,
+            "screeningMode": external.screening_mode,
+            "requestedIntensityPercent": external.requested_intensity_percent,
+            "dynamicByTrackDuration": external.dynamic_by_track_duration,
+            "referenceDurationSeconds": external.reference_duration_seconds,
+            "targetDurationMilliseconds": external.target_duration_milliseconds,
+            "plannedRequestCount": external.planned_request_count,
+            "executedRequestCount": external.executed_request_count,
+            "uniqueSampleCount": external.unique_sample_count,
+            "overlappingSampleCount": external.overlapping_sample_count,
+            "duplicateSampleCount": external.duplicate_sample_count,
+            "uniqueSampleDurationMilliseconds": external.unique_sample_duration_milliseconds,
+            "trackCoveragePercent": external.track_coverage_percent,
+            "providerStatus": external.provider_status,
+            "samples": samples,
             "responseRelativePath": external.response_relative_path,
             "responseSha256": external.response_sha256,
             "configuredAtSnapshot": external.configured_at_snapshot,
@@ -709,8 +761,24 @@ fn audio_screening_manifest(state: &AudioScreeningState) -> serde_json::Value {
 fn audio_screening_markdown(state: &AudioScreeningState) -> String {
     let local = &state.local;
     let external = &state.external;
+    let multi_sample = has_multi_sample_data(external);
+    let legacy_sample_block = if multi_sample {
+        String::new()
+    } else {
+        format!(
+            "- External sample offset (ms) [System value]: {}\n- External sample duration (ms) [System value]: {}\n",
+            external
+                .sample_offset_milliseconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+            external
+                .sample_duration_milliseconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "NOT DOCUMENTED".into()),
+        )
+    };
     let mut output = format!(
-        "- Local screening status [System verification]: **{}**\n- Local engine [System verification]: {}\n- Local engine version [System verification]: {}\n- Fingerprint algorithm [System verification]: {}\n- Local source Evidence ID [System verification]: {}\n- Local source path [System verification]: `{}`\n- Local source SHA-256 [System verification]: `{}`\n- Local source size (bytes) [System verification]: {}\n- Local measured duration (ms) [System verification]: {}\n- Local record path [System verification]: `{}`\n- Local record SHA-256 [System verification]: `{}`\n- Local generated at [System value]: {}\n\n- External screening provider [System value]: {}\n- External screening status [System verification]: **{}**\n- External provider configured at snapshot [System value]: {}\n- External source Evidence ID [System verification]: {}\n- External source path [System verification]: `{}`\n- External source SHA-256 [System verification]: `{}`\n- External checked at [System value]: {}\n- External sample offset (ms) [System value]: {}\n- External sample duration (ms) [System value]: {}\n- External source duration (ms) [System value]: {}\n- External request count [System value]: {}\n- External response archive [System verification]: `{}`\n- External response SHA-256 [System verification]: `{}`\n",
+        "- Local screening status [System verification]: **{}**\n- Local engine [System verification]: {}\n- Local engine version [System verification]: {}\n- Fingerprint algorithm [System verification]: {}\n- Local source Evidence ID [System verification]: {}\n- Local source path [System verification]: `{}`\n- Local source SHA-256 [System verification]: `{}`\n- Local source size (bytes) [System verification]: {}\n- Local measured duration (ms) [System verification]: {}\n- Local record path [System verification]: `{}`\n- Local record SHA-256 [System verification]: `{}`\n- Local generated at [System value]: {}\n\n- External screening provider [System value]: {}\n- External screening status [System verification]: **{}**\n- External provider configured at snapshot [System value]: {}\n- External source Evidence ID [System verification]: {}\n- External source path [System verification]: `{}`\n- External source SHA-256 [System verification]: `{}`\n- External checked at [System value]: {}\n{legacy_sample_block}- External source duration (ms) [System value]: {}\n- External request count [System value]: {}\n- External response archive [System verification]: `{}`\n- External response SHA-256 [System verification]: `{}`\n",
         audio_screening_status_label(local.status),
         documented(&local.engine),
         documented(&local.engine_version),
@@ -734,14 +802,6 @@ fn audio_screening_markdown(state: &AudioScreeningState) -> String {
         documented(&external.source_sha256),
         external.checked_at.as_deref().unwrap_or("NOT DOCUMENTED"),
         external
-            .sample_offset_milliseconds
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
-        external
-            .sample_duration_milliseconds
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "NOT DOCUMENTED".into()),
-        external
             .source_duration_milliseconds
             .map(|value| value.to_string())
             .unwrap_or_else(|| "NOT DOCUMENTED".into()),
@@ -757,6 +817,8 @@ fn audio_screening_markdown(state: &AudioScreeningState) -> String {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("NOT RECORDED"),
     );
+
+    output.push_str(&multi_sample_markdown_block(external));
 
     if external.matches.is_empty() {
         output.push_str("- Provider matches [Provider-derived metadata]: NONE RECORDED\n");
@@ -800,6 +862,133 @@ fn audio_screening_markdown(state: &AudioScreeningState) -> String {
     }
     output.push_str("\nAudio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion.\n");
     output
+}
+
+fn multi_sample_markdown_block(external: &AudioScreeningExternalRecord) -> String {
+    if !has_multi_sample_data(external) {
+        return String::new();
+    }
+
+    let calculation_mode = if external.dynamic_by_track_duration {
+        "DYNAMIC BY TRACK DURATION"
+    } else {
+        "FIXED REFERENCE DURATION"
+    };
+    let reference_duration = if external.dynamic_by_track_duration {
+        "N/A".to_owned()
+    } else {
+        external.reference_duration_seconds.to_string()
+    };
+    let mut output = format!(
+        "\n- External screening mode [System value]: **{}**\n- Requested coverage [System value]: {} %\n- Calculation mode [System value]: {}\n- Reference duration (seconds) [System value]: {}\n- Target screening duration (ms) [System value]: {}\n- Planned requests [System value]: {}\n- Executed requests [System verification]: {}\n- Unique samples [System verification]: {}\n- Duplicate samples [System verification]: {}\n- Overlapping samples [System verification]: {}\n- Unique sampled duration (ms) [System verification]: {}\n- Track coverage (%) [System verification]: {:.2}\n- ACRCloud provider status [System verification]: {}\n- Overall result [System verification]: **{}**\n",
+        external.screening_mode.as_str(),
+        external.requested_intensity_percent,
+        calculation_mode,
+        reference_duration,
+        external.target_duration_milliseconds,
+        external.planned_request_count,
+        external.executed_request_count,
+        external.unique_sample_count,
+        external.duplicate_sample_count,
+        external.overlapping_sample_count,
+        external.unique_sample_duration_milliseconds,
+        external.track_coverage_percent,
+        audio_screening_provider_status_label(external.provider_status),
+        audio_screening_status_label(external.status),
+    );
+
+    if external.samples.is_empty() {
+        output.push_str("- Sample results [System verification]: NONE RECORDED\n");
+        return output;
+    }
+
+    for sample in &external.samples {
+        let response_archive = sample
+            .response_relative_path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED");
+        let response_sha256 = sample
+            .response_sha256
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NOT RECORDED");
+        output.push_str(&format!(
+            "- Sample {:02} [System verification]: Offset {} ms · End offset {} ms · Duration {} ms · Result {} · Response archive `{}` · Response SHA-256 `{}`\n",
+            sample.sequence,
+            sample.offset_milliseconds,
+            sample.end_offset_milliseconds,
+            sample.duration_milliseconds,
+            sample_result_label(sample.status),
+            response_archive,
+            response_sha256,
+        ));
+        for (index, item) in sample.matches.iter().take(5).enumerate() {
+            output.push_str(&format!(
+                "- Sample {:02} Provider match {} [Provider-derived metadata]: {}\n",
+                sample.sequence,
+                index + 1,
+                audio_screening_match_summary(item),
+            ));
+        }
+    }
+    output
+}
+
+fn has_multi_sample_data(external: &AudioScreeningExternalRecord) -> bool {
+    external.screening_mode == AudioScreeningMode::MultiSample || !external.samples.is_empty()
+}
+
+fn audio_screening_match_summary(item: &crate::model::AudioScreeningMatch) -> String {
+    let artists = if item.artists.is_empty() {
+        "NOT DOCUMENTED".to_owned()
+    } else {
+        item.artists.join(", ")
+    };
+    let mut value = format!("{} — {artists}", documented(&item.title));
+    if let Some(album) = item
+        .album
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        value.push_str(&format!("; album {album}"));
+    }
+    if let Some(isrc) = item
+        .isrc
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        value.push_str(&format!("; ISRC {isrc}"));
+    }
+    if let Some(acrid) = item
+        .acrid
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        value.push_str(&format!("; ACRID {acrid}"));
+    }
+    if let Some(score) = item.score {
+        value.push_str(&format!("; score {score}"));
+    }
+    value
+}
+
+fn sample_result_label(status: AudioScreeningStatus) -> &'static str {
+    match status {
+        AudioScreeningStatus::NoMatchDetected => "NO MATCH",
+        _ => audio_screening_status_label(status),
+    }
+}
+
+fn audio_screening_provider_status_label(status: AudioScreeningProviderStatus) -> &'static str {
+    match status {
+        AudioScreeningProviderStatus::Disabled => "DISABLED",
+        AudioScreeningProviderStatus::NotConfigured => "NOT CONFIGURED",
+        AudioScreeningProviderStatus::Ready => "READY",
+        AudioScreeningProviderStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        AudioScreeningProviderStatus::ProviderUnavailable => "PROVIDER UNAVAILABLE",
+        AudioScreeningProviderStatus::ConfigurationInvalid => "CONFIGURATION INVALID",
+    }
 }
 
 fn audio_screening_status_label(status: AudioScreeningStatus) -> &'static str {
@@ -2427,11 +2616,14 @@ fn certificate_format_requires_pdf(
 fn certificate_format_requires_pdfa_2b(manifest_path: &Path) -> Result<bool> {
     let bytes = fs::read(manifest_path).map_err(|error| AppError::io(manifest_path, error))?;
     let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
-    Ok(manifest
+    let format_version = manifest
         .get("certificate")
         .and_then(|certificate| certificate.get("format_version"))
-        .and_then(serde_json::Value::as_str)
-        == Some(CERTIFICATE_FORMAT_VERSION))
+        .and_then(serde_json::Value::as_str);
+    Ok(matches!(
+        format_version,
+        Some(version) if version == CERTIFICATE_FORMAT_VERSION || version == "6.0"
+    ))
 }
 
 fn required_certificate_pdf_paths(
@@ -2445,7 +2637,7 @@ fn required_certificate_pdf_paths(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(CERTIFICATE_FORMAT_VERSION) => {
+        Some(version) if version == CERTIFICATE_FORMAT_VERSION || version == "6.0" => {
             if !hashes.contains_key(PDF_FILE) || !hashes.contains_key(PDF_FILE_DE) {
                 return Err(AppError::Validation(
                     format!(
@@ -2630,6 +2822,125 @@ mod tests {
         }
         assert!(manifest.contains("Provider title"));
         assert!(markdown.contains("Provider artist"));
+    }
+
+    #[test]
+    fn multi_sample_k2_and_manifest_capture_the_same_sanitized_screening_snapshot() {
+        let mut state = AudioScreeningState::default();
+        let external = &mut state.external;
+        external.screening_mode = AudioScreeningMode::MultiSample;
+        external.status = AudioScreeningStatus::NoMatchDetected;
+        external.provider_status = AudioScreeningProviderStatus::Ready;
+        external.requested_intensity_percent = 25;
+        external.dynamic_by_track_duration = true;
+        external.reference_duration_seconds = 300;
+        external.source_duration_milliseconds = Some(646_000);
+        external.target_duration_milliseconds = 161_500;
+        external.planned_request_count = 14;
+        external.executed_request_count = 2;
+        external.request_count = 2;
+        external.unique_sample_count = 2;
+        external.duplicate_sample_count = 0;
+        external.overlapping_sample_count = 0;
+        external.unique_sample_duration_milliseconds = 24_000;
+        external.track_coverage_percent = 3.72;
+        external.message = "RAW_EXTERNAL_MESSAGE_MUST_NOT_RENDER".into();
+        external.samples = vec![
+            crate::model::AudioScreeningSampleRecord {
+                sequence: 1,
+                offset_milliseconds: 30_000,
+                end_offset_milliseconds: 42_000,
+                duration_milliseconds: 12_000,
+                status: AudioScreeningStatus::NoMatchDetected,
+                message: "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                matches: Vec::new(),
+                response_relative_path: Some(
+                    "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_01.json".into(),
+                ),
+                response_sha256: Some(DIGEST.into()),
+            },
+            crate::model::AudioScreeningSampleRecord {
+                sequence: 2,
+                offset_milliseconds: 95_000,
+                end_offset_milliseconds: 107_000,
+                duration_milliseconds: 12_000,
+                status: AudioScreeningStatus::MatchDetected,
+                message: "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                matches: vec![crate::model::AudioScreeningMatch {
+                    title: "Sample match title".into(),
+                    artists: vec!["Sample match artist".into()],
+                    ..Default::default()
+                }],
+                response_relative_path: Some(
+                    "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_02.json".into(),
+                ),
+                response_sha256: Some("b".repeat(64)),
+            },
+        ];
+
+        let manifest = audio_screening_manifest(&state);
+        let markdown = audio_screening_markdown(&state);
+        assert_eq!(
+            manifest["external"]["screeningMode"],
+            serde_json::Value::String("multi_sample".into())
+        );
+        assert_eq!(manifest["external"]["plannedRequestCount"], 14);
+        assert_eq!(
+            manifest["external"]["samples"][0]["offsetMilliseconds"],
+            30_000
+        );
+        assert_eq!(
+            manifest["external"]["samples"][1]["endOffsetMilliseconds"],
+            107_000
+        );
+        assert_eq!(
+            manifest["external"]["samples"][1]["matches"][0]["title"],
+            "Sample match title"
+        );
+        for expected in [
+            "External screening mode [System value]: **MULTI-SAMPLE**",
+            "Requested coverage [System value]: 25 %",
+            "Planned requests [System value]: 14",
+            "Executed requests [System verification]: 2",
+            "Unique samples [System verification]: 2",
+            "Duplicate samples [System verification]: 0",
+            "Overlapping samples [System verification]: 0",
+            "Unique sampled duration (ms) [System verification]: 24000",
+            "Track coverage (%) [System verification]: 3.72",
+            "Overall result [System verification]: **NO MATCH DETECTED**",
+            "Sample 01 [System verification]: Offset 30000 ms · End offset 42000 ms · Duration 12000 ms · Result NO MATCH",
+            "Sample 02 [System verification]: Offset 95000 ms · End offset 107000 ms · Duration 12000 ms · Result MATCH DETECTED",
+            "Sample match title — Sample match artist",
+            "Audio-screening results are technical comparison records only.",
+        ] {
+            assert!(markdown.contains(expected), "K.2 omitted {expected}");
+        }
+        let german = localized_markdown_certificate(
+            &format!("## K.2 Pre-release audio screening\n\n{markdown}"),
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: false,
+            },
+        );
+        for expected in [
+            "## K.2 Audio-Screening vor Veröffentlichung",
+            "Modus des externen Screenings",
+            "Angeforderte Abdeckung",
+            "Doppelte Proben [Systemprüfung]: 0",
+            "Überlappende Proben [Systemprüfung]: 0",
+            "Probe 01",
+            "Gesamtergebnis",
+        ] {
+            assert!(german.contains(expected), "German K.2 omitted {expected}");
+        }
+        for forbidden in [
+            "RAW_EXTERNAL_MESSAGE_MUST_NOT_RENDER",
+            "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",
+            "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",
+        ] {
+            assert!(!manifest.to_string().contains(forbidden));
+            assert!(!markdown.contains(forbidden));
+        }
     }
 
     #[test]
@@ -3172,19 +3483,26 @@ mod tests {
             assert!(certificate_format_requires_pdf(&manifest_path, &hashes)
                 .expect("supported certificate format"));
         }
-        fs::write(
-            &manifest_path,
-            "{\"certificate\":{\"format_version\":\"5.2\"}}\n",
-        )
-        .expect("historical bilingual certificate manifest fixture");
         let historical_bilingual_hashes = BTreeMap::from([
             (PDF_FILE.into(), DIGEST.into()),
             (PDF_FILE_DE.into(), DIGEST.into()),
         ]);
-        assert!(
-            certificate_format_requires_pdf(&manifest_path, &historical_bilingual_hashes)
-                .expect("historical bilingual certificate format")
-        );
+        for version in ["5.2", "6.0"] {
+            fs::write(
+                &manifest_path,
+                format!("{{\"certificate\":{{\"format_version\":\"{version}\"}}}}\n"),
+            )
+            .expect("historical bilingual certificate manifest fixture");
+            assert!(
+                certificate_format_requires_pdf(&manifest_path, &historical_bilingual_hashes)
+                    .expect("historical bilingual certificate format")
+            );
+            assert_eq!(
+                certificate_format_requires_pdfa_2b(&manifest_path)
+                    .expect("historical archive profile requirement"),
+                version == "6.0"
+            );
+        }
         fs::write(
             &manifest_path,
             format!(

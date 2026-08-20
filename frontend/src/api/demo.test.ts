@@ -232,6 +232,26 @@ describe("demo pre-release audio screening", () => {
     }));
   });
 
+  it("normalizes configurable intensity values to the same safe UI bounds", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const settings = await settle(api.getAudioScreeningSettings());
+
+    const normalized = await settle(api.updateAudioScreeningSettings({
+      ...settings,
+      intensityPercent: 125.9,
+      dynamicByTrackDuration: false,
+      referenceDurationSeconds: 9_999
+    }));
+
+    expect(normalized).toEqual(expect.objectContaining({
+      intensityPercent: 100,
+      dynamicByTrackDuration: false,
+      referenceDurationSeconds: 3_600
+    }));
+  });
+
   it("labels local demo presentation and never fabricates an external provider match", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -244,6 +264,33 @@ describe("demo pre-release audio screening", () => {
     expect(external.status).toBe("provider_unavailable");
     expect(external.matches).toEqual([]);
     expect(external.message).toContain("Browser demo");
+  });
+
+  it("records a bounded multi-sample plan without pretending the browser sent requests", async () => {
+    vi.useFakeTimers();
+    const api = createDemoApi();
+    await settle(api.openWorkspace());
+    const settings = await settle(api.getAudioScreeningSettings());
+    await settle(api.updateAudioScreeningSettings({
+      ...settings,
+      enabled: true,
+      host: "identify-eu-west-1.acrcloud.com",
+      intensityPercent: 100,
+      dynamicByTrackDuration: true
+    }));
+    await settle(api.updateAudioScreeningSecret({ accessKey: "demo-key", accessSecret: "demo-secret" }));
+
+    const result = await settle(api.runExternalAudioScreening("gravity"));
+    expect(result.track!.audioScreening.external).toEqual(expect.objectContaining({
+      screeningMode: "multi_sample",
+      requestedIntensityPercent: 100,
+      executedRequestCount: 0,
+      uniqueSampleCount: 0,
+      duplicateSampleCount: 0,
+      overlappingSampleCount: 0,
+      samples: []
+    }));
+    expect(result.track!.audioScreening.external.plannedRequestCount).toBeGreaterThan(1);
   });
 
   it("marks a previously current local screening stale when the release evidence changes", async () => {

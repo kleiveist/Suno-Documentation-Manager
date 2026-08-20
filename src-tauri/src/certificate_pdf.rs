@@ -3,6 +3,7 @@ use crate::error::{AppError, Result};
 #[cfg(test)]
 use crate::model::SunoLyricsContentSource;
 use crate::model::{
+    AudioScreeningExternalRecord, AudioScreeningMode, AudioScreeningProviderStatus,
     AudioScreeningStatus, BlockingDeviation, CertificateLanguage, CertificateRenderOptions,
     DocumentationAnswer, EvidenceItem, EvidenceRole, ExternalTimestampStatus, FactOrigin, Profile,
     StepState, StepStatus, SunoContentClassification, TimestampProviderMetadata, TrackAutomation,
@@ -2778,7 +2779,8 @@ fn render_audio_screening(layout: &mut PdfLayout, snapshot: &CertificatePdfSnaps
     layout.section_title("K.2 Pre-release audio screening");
     let local = &snapshot.track.audio_screening.local;
     let external = &snapshot.track.audio_screening.external;
-    let rows = vec![
+    let multi_sample = has_multi_sample_data(external);
+    let mut rows = vec![
         TableRow::plain(
             "Local screening status [System verification]",
             audio_screening_status_label(local.status),
@@ -2856,14 +2858,6 @@ fn render_audio_screening(layout: &mut PdfLayout, snapshot: &CertificatePdfSnaps
             external_or_missing(external.checked_at.as_deref()),
         ),
         TableRow::plain(
-            "External sample offset (ms) [System value]",
-            milliseconds_label(external.sample_offset_milliseconds),
-        ),
-        TableRow::plain(
-            "External sample duration (ms) [System value]",
-            milliseconds_label(external.sample_duration_milliseconds),
-        ),
-        TableRow::plain(
             "External source duration (ms) [System value]",
             milliseconds_label(external.source_duration_milliseconds),
         ),
@@ -2880,7 +2874,31 @@ fn render_audio_screening(layout: &mut PdfLayout, snapshot: &CertificatePdfSnaps
             external_or_missing(external.response_sha256.as_deref()),
         ),
     ];
+    if !multi_sample {
+        // Keep the historical one-sample labels in their original position;
+        // multi-sample records render the per-sample offset and duration rows
+        // below instead of showing a misleading legacy placeholder.
+        rows.insert(
+            19,
+            TableRow::plain(
+                "External sample offset (ms) [System value]",
+                milliseconds_label(external.sample_offset_milliseconds),
+            ),
+        );
+        rows.insert(
+            20,
+            TableRow::plain(
+                "External sample duration (ms) [System value]",
+                milliseconds_label(external.sample_duration_milliseconds),
+            ),
+        );
+    }
     layout.table_rows(&rows, 78.0);
+
+    let multi_sample_rows = multi_sample_pdf_rows(external);
+    if !multi_sample_rows.is_empty() {
+        layout.table_rows(&multi_sample_rows, 78.0);
+    }
 
     if external.matches.is_empty() {
         layout.table_row(
@@ -2909,6 +2927,137 @@ fn render_audio_screening(layout: &mut PdfLayout, snapshot: &CertificatePdfSnaps
         BuiltinFont::Helvetica,
         1.3,
     );
+}
+
+/// K.2 reports the configuration-derived target separately from what was
+/// actually executed. This makes a capped or shortened run reviewable without
+/// claiming it is a complete rights assessment.
+fn multi_sample_pdf_rows(external: &AudioScreeningExternalRecord) -> Vec<TableRow> {
+    if !has_multi_sample_data(external) {
+        return Vec::new();
+    }
+
+    let calculation_mode = if external.dynamic_by_track_duration {
+        "DYNAMIC BY TRACK DURATION"
+    } else {
+        "FIXED REFERENCE DURATION"
+    };
+    let reference_duration = if external.dynamic_by_track_duration {
+        "N/A".to_owned()
+    } else {
+        external.reference_duration_seconds.to_string()
+    };
+    let mut rows = vec![
+        TableRow::plain(
+            "External screening mode [System value]",
+            external.screening_mode.as_str(),
+        ),
+        TableRow::plain(
+            "Requested coverage [System value]",
+            format!("{} %", external.requested_intensity_percent),
+        ),
+        TableRow::plain("Calculation mode [System value]", calculation_mode),
+        TableRow::plain(
+            "Reference duration (seconds) [System value]",
+            reference_duration,
+        ),
+        TableRow::plain(
+            "Target screening duration (ms) [System value]",
+            external.target_duration_milliseconds.to_string(),
+        ),
+        TableRow::plain(
+            "Planned requests [System value]",
+            external.planned_request_count.to_string(),
+        ),
+        TableRow::plain(
+            "Executed requests [System verification]",
+            external.executed_request_count.to_string(),
+        ),
+        TableRow::plain(
+            "Unique samples [System verification]",
+            external.unique_sample_count.to_string(),
+        ),
+        TableRow::plain(
+            "Duplicate samples [System verification]",
+            external.duplicate_sample_count.to_string(),
+        ),
+        TableRow::plain(
+            "Overlapping samples [System verification]",
+            external.overlapping_sample_count.to_string(),
+        ),
+        TableRow::plain(
+            "Unique sampled duration (ms) [System verification]",
+            external.unique_sample_duration_milliseconds.to_string(),
+        ),
+        TableRow::plain(
+            "Track coverage (%) [System verification]",
+            format!("{:.2}", external.track_coverage_percent),
+        ),
+        TableRow::plain(
+            "ACRCloud provider status [System verification]",
+            audio_screening_provider_status_label(external.provider_status),
+        ),
+        TableRow::plain(
+            "Overall result [System verification]",
+            audio_screening_status_label(external.status),
+        ),
+    ];
+
+    if external.samples.is_empty() {
+        rows.push(TableRow::plain(
+            "Sample results [System verification]",
+            "NONE RECORDED",
+        ));
+        return rows;
+    }
+
+    for sample in &external.samples {
+        rows.push(TableRow::plain(
+            format!("Sample {:02} [System verification]", sample.sequence),
+            format!(
+                "Offset {} ms · End offset {} ms · Duration {} ms · Result {} · Response archive {} · Response SHA-256 {}",
+                sample.offset_milliseconds,
+                sample.end_offset_milliseconds,
+                sample.duration_milliseconds,
+                sample_result_label(sample.status),
+                external_or_missing(sample.response_relative_path.as_deref()),
+                external_or_missing(sample.response_sha256.as_deref()),
+            ),
+        ));
+        for (index, item) in sample.matches.iter().take(5).enumerate() {
+            rows.push(TableRow::plain(
+                format!(
+                    "Sample {:02} Provider match {} [Provider-derived metadata]",
+                    sample.sequence,
+                    index + 1
+                ),
+                audio_screening_match_value(item),
+            ));
+        }
+    }
+    rows
+}
+
+fn has_multi_sample_data(external: &AudioScreeningExternalRecord) -> bool {
+    external.screening_mode == AudioScreeningMode::MultiSample || !external.samples.is_empty()
+}
+
+fn sample_result_label(status: AudioScreeningStatus) -> &'static str {
+    match status {
+        AudioScreeningStatus::NoMatchDetected => "NO MATCH",
+        _ => audio_screening_status_label(status),
+    }
+}
+
+fn audio_screening_provider_status_label(status: AudioScreeningProviderStatus) -> &'static str {
+    match status {
+        AudioScreeningProviderStatus::Disabled => "DISABLED",
+        AudioScreeningProviderStatus::NotConfigured => "NOT CONFIGURED",
+        AudioScreeningProviderStatus::Ready => "READY",
+        AudioScreeningProviderStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        AudioScreeningProviderStatus::ProviderUnavailable => "PROVIDER UNAVAILABLE",
+        AudioScreeningProviderStatus::ConfigurationInvalid => "CONFIGURATION INVALID",
+    }
 }
 
 fn audio_screening_match_value(item: &crate::model::AudioScreeningMatch) -> String {
@@ -4474,6 +4623,145 @@ mod tests {
         ));
         assert!(bilingual_normalized
             .contains("Audio-screening results are technical comparison records only."));
+    }
+
+    #[test]
+    fn renders_multi_sample_screening_facts_for_english_and_german_k2() {
+        let mut fixture = Fixture::new(1);
+        let external = &mut fixture.track.audio_screening.external;
+        external.screening_mode = AudioScreeningMode::MultiSample;
+        external.status = AudioScreeningStatus::NoMatchDetected;
+        external.provider_status = AudioScreeningProviderStatus::Ready;
+        external.requested_intensity_percent = 25;
+        external.dynamic_by_track_duration = false;
+        external.reference_duration_seconds = 300;
+        external.target_duration_milliseconds = 75_000;
+        external.planned_request_count = 7;
+        external.executed_request_count = 2;
+        external.request_count = 2;
+        external.unique_sample_count = 2;
+        external.duplicate_sample_count = 0;
+        external.overlapping_sample_count = 0;
+        external.unique_sample_duration_milliseconds = 24_000;
+        external.track_coverage_percent = 3.72;
+        external.message = "RAW_EXTERNAL_MESSAGE_MUST_NOT_RENDER".into();
+        external.samples = vec![
+            crate::model::AudioScreeningSampleRecord {
+                sequence: 1,
+                offset_milliseconds: 30_000,
+                end_offset_milliseconds: 42_000,
+                duration_milliseconds: 12_000,
+                status: AudioScreeningStatus::NoMatchDetected,
+                message: "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                matches: Vec::new(),
+                response_relative_path: Some(
+                    "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_01.json".into(),
+                ),
+                response_sha256: Some(DIGEST_A.into()),
+            },
+            crate::model::AudioScreeningSampleRecord {
+                sequence: 2,
+                offset_milliseconds: 95_000,
+                end_offset_milliseconds: 107_000,
+                duration_milliseconds: 12_000,
+                status: AudioScreeningStatus::MatchDetected,
+                message: "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                matches: vec![crate::model::AudioScreeningMatch {
+                    title: "Sample match title".into(),
+                    artists: vec!["Sample match artist".into()],
+                    ..Default::default()
+                }],
+                response_relative_path: Some(
+                    "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_02.json".into(),
+                ),
+                response_sha256: Some(DIGEST_B.into()),
+            },
+        ];
+
+        let rows = multi_sample_pdf_rows(external);
+        let row_value = |label: &str| {
+            rows.iter()
+                .find(|row| row.label.starts_with(label))
+                .map(|row| row.value.as_str())
+        };
+        assert_eq!(row_value("Duplicate samples"), Some("0"));
+        assert_eq!(row_value("Overlapping samples"), Some("0"));
+        let sample_one = row_value("Sample 01").expect("first sample PDF row");
+        for expected in [
+            "Offset 30000 ms",
+            "End offset 42000 ms",
+            "Duration 12000 ms",
+            "Result NO MATCH",
+            "ACRCLOUD_RESPONSE_01.json",
+            DIGEST_A,
+        ] {
+            assert!(
+                sample_one.contains(expected),
+                "sample row omitted {expected}"
+            );
+        }
+
+        let (_, english_text) = parse_text(&fixture.generate());
+        let english = normalized_text(&english_text);
+        for expected in [
+            "External screening mode",
+            "MULTI-SAMPLE",
+            "Requested coverage",
+            "25 %",
+            "Planned requests",
+            "Executed requests",
+            "Unique samples",
+            "Duplicate samples",
+            "Overlapping samples",
+            "Unique sampled duration (ms)",
+            "Track coverage (%)",
+            "Overall result",
+            "NO MATCH DETECTED",
+            "Sample 01",
+            "Offset 30000 ms",
+            "End offset 42000 ms",
+            "Sample 02",
+            "Offset 95000 ms",
+            "Sample match title",
+            "ACRCLOUD_RESPONSE_02.json",
+            "Audio-screening results are technical comparison records only.",
+        ] {
+            assert!(english.contains(expected), "English PDF omitted {expected}");
+        }
+
+        fixture.render_options = CertificateRenderOptions {
+            language: CertificateLanguage::De,
+            bilingual: false,
+        };
+        let (_, german_text) = parse_text(&fixture.generate());
+        let german = normalized_text(&german_text);
+        for expected in [
+            "K.2 Audio-Screening vor Veröffentlichung",
+            "Modus des externen Screenings",
+            "Angeforderte Abdeckung",
+            "Geplante Anfragen",
+            "Ausgeführte Anfragen",
+            "Eindeutige Proben",
+            "Doppelte Proben",
+            "Überlappende Proben",
+            "Probe 01",
+            "Probe 02",
+            "Gesamtergebnis",
+            "MULTI-SAMPLE",
+        ] {
+            assert!(german.contains(expected), "German PDF omitted {expected}");
+        }
+        for forbidden in [
+            "RAW_EXTERNAL_MESSAGE_MUST_NOT_RENDER",
+            "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",
+            "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",
+        ] {
+            assert!(
+                !english.contains(forbidden),
+                "English PDF leaked {forbidden}"
+            );
+            assert!(!german.contains(forbidden), "German PDF leaked {forbidden}");
+        }
     }
 
     #[test]

@@ -243,7 +243,7 @@ function makeTrack(
       artifactSha256: "d".repeat(64)
     };
     audioScreening.external = {
-      provider: "ACRCloud",
+      ...emptyAudioScreeningSummary.external,
       status: "skipped_not_configured",
       message: "Browser demo: optional ACRCloud screening is not configured and no provider was contacted.",
       sourceEvidenceId: release.id,
@@ -273,7 +273,7 @@ function makeTrack(
       generated: complete,
       current: complete,
       generatedAt: complete ? now() : undefined,
-      templateVersion: "1.10",
+      templateVersion: "1.11",
       files: complete ? ["02_SUNO/Lyrics.md", "02_SUNO/Style.md", "03_DOCUMENTATION/README.md", "03_DOCUMENTATION/AI_USAGE.md"] : []
     },
     integrity: {
@@ -460,16 +460,65 @@ function normalizeAudioScreeningSettings(
   const timeoutSeconds = Number.isFinite(timeoutCandidate) && timeoutCandidate > 0
     ? Math.min(Math.trunc(timeoutCandidate), 120)
     : emptyAudioScreeningSettings.timeoutSeconds;
+  const intensityCandidate = Number(next.intensityPercent);
+  const intensityPercent = Number.isFinite(intensityCandidate)
+    ? Math.min(Math.max(Math.trunc(intensityCandidate), 1), 100)
+    : emptyAudioScreeningSettings.intensityPercent;
+  const referenceCandidate = Number(next.referenceDurationSeconds);
+  const referenceDurationSeconds = Number.isFinite(referenceCandidate)
+    ? Math.min(Math.max(Math.trunc(referenceCandidate), 1), 3_600)
+    : emptyAudioScreeningSettings.referenceDurationSeconds;
   const normalized: AudioScreeningSettings = {
     ...emptyAudioScreeningSettings,
     ...clone(next),
     host: next.host.trim(),
     timeoutSeconds,
+    intensityPercent,
+    dynamicByTrackDuration: Boolean(next.dynamicByTrackDuration),
+    referenceDurationSeconds,
     credentialsConfigured,
     localEngineAvailable: false,
     localEngineVersion: undefined
   };
   return { ...normalized, ...configuredAudioScreeningStatus(normalized, credentialsConfigured) };
+}
+
+/**
+ * The browser demo never contacts ACRCloud, but it records the same bounded
+ * plan metadata that the desktop presentation will receive. This keeps the
+ * UI honest: planned requests are not presented as executed samples.
+ */
+function demoExternalScreeningPlan(settings: AudioScreeningSettings, sourceDurationMilliseconds?: number) {
+  const sourceDurationSeconds = Math.max(0, (sourceDurationMilliseconds ?? 0) / 1_000);
+  const calculationDurationSeconds = settings.dynamicByTrackDuration && sourceDurationSeconds > 0
+    ? sourceDurationSeconds
+    : settings.referenceDurationSeconds;
+  const targetDurationMilliseconds = Math.ceil(Math.min(
+    calculationDurationSeconds * settings.intensityPercent / 100,
+    sourceDurationSeconds || calculationDurationSeconds
+  ) * 1_000);
+  const requestedRequestCount = targetDurationMilliseconds > 0
+    ? Math.ceil(targetDurationMilliseconds / 12_000)
+    : 0;
+  const maxNonOverlappingRequests = sourceDurationSeconds > 0 && sourceDurationSeconds < 12
+    ? 1
+    : Math.floor(sourceDurationSeconds / 12);
+  const plannedRequestCount = Math.min(requestedRequestCount, maxNonOverlappingRequests, 25);
+  return {
+    screeningMode: plannedRequestCount > 1 ? ("multi_sample" as const) : ("single_sample" as const),
+    requestedIntensityPercent: settings.intensityPercent,
+    dynamicByTrackDuration: settings.dynamicByTrackDuration,
+    referenceDurationSeconds: settings.referenceDurationSeconds,
+    targetDurationMilliseconds,
+    plannedRequestCount,
+    executedRequestCount: 0,
+    uniqueSampleCount: 0,
+    overlappingSampleCount: 0,
+    duplicateSampleCount: 0,
+    uniqueSampleDurationMilliseconds: 0,
+    trackCoveragePercent: 0,
+    samples: []
+  };
 }
 
 export function normalizeCanonicalSunoSemantics(fields: TrackDetail["fields"]): void {
@@ -1302,7 +1351,7 @@ export function createDemoApi(): DesktopApi {
         generated: true,
         current: true,
         generatedAt: now(),
-        templateVersion: "1.10",
+        templateVersion: "1.11",
         files: documentFiles
       };
       track.integrity.generated = false;
@@ -1406,6 +1455,10 @@ export function createDemoApi(): DesktopApi {
         audioScreeningSettings,
         audioAccessKeyConfigured && audioAccessSecretConfigured
       );
+      const plan = demoExternalScreeningPlan(
+        audioScreeningSettings,
+        source.metadata?.audioDurationMilliseconds ?? undefined
+      );
       if (configured.status !== "ready") {
         const externalStatus = configured.status === "configuration_invalid"
           ? "configuration_invalid"
@@ -1422,6 +1475,9 @@ export function createDemoApi(): DesktopApi {
           sourceRelativePath: source.relativePath,
           sourceSha256: source.sha256,
           sourceSizeBytes: source.sizeBytes,
+          sourceDurationMilliseconds: source.metadata?.audioDurationMilliseconds ?? undefined,
+          ...plan,
+          providerStatus: configured.status,
           matches: []
         };
         track.documents.current = false;
@@ -1446,7 +1502,10 @@ export function createDemoApi(): DesktopApi {
         sourceRelativePath: source.relativePath,
         sourceSha256: source.sha256,
         sourceSizeBytes: source.sizeBytes,
+        sourceDurationMilliseconds: source.metadata?.audioDurationMilliseconds ?? undefined,
         checkedAt: now(),
+        ...plan,
+        providerStatus: "provider_unavailable",
         matches: []
       };
       track.documents.current = false;

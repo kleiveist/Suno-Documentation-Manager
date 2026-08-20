@@ -11,8 +11,9 @@
 use crate::error::{AppError, Result};
 use crate::model::{
     AudioScreeningExternalRecord, AudioScreeningLocalRecord, AudioScreeningMatch,
-    AudioScreeningProviderStatus, AudioScreeningProviderTestResult, AudioScreeningSettings,
-    AudioScreeningState, AudioScreeningStatus, EvidenceItem,
+    AudioScreeningMode, AudioScreeningProviderStatus, AudioScreeningProviderTestResult,
+    AudioScreeningSampleRecord, AudioScreeningSettings, AudioScreeningState, AudioScreeningStatus,
+    EvidenceItem,
 };
 use crate::security::{
     atomic_write, contained_path, ensure_contained_directory, sha256_bytes, sha256_file,
@@ -21,6 +22,7 @@ use crate::security::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use serde::Serialize;
 use serde_json::Value;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -56,7 +58,13 @@ const FPCALC_STDOUT_LIMIT: usize = 1024 * 1024;
 const FPCALC_STDERR_LIMIT: usize = 64 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_SAMPLE_AUDIO_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_SAMPLE_SECONDS: u64 = 12;
+/// ACRCloud accepts at most twelve seconds in one identification request.
+pub const MAX_ACRCLOUD_SAMPLE_SECONDS: u64 = 12;
+/// No release can cause more than this many provider requests.
+pub const MAX_ACRCLOUD_REQUESTS: u32 = 25;
+pub const MAX_ACRCLOUD_UNIQUE_SAMPLE_SECONDS: u64 =
+    MAX_ACRCLOUD_SAMPLE_SECONDS * MAX_ACRCLOUD_REQUESTS as u64;
+const MAX_SAMPLE_SECONDS: u64 = MAX_ACRCLOUD_SAMPLE_SECONDS;
 const MAX_RIFF_CHUNKS: usize = 4_096;
 const MAX_PROVIDER_MATCHES: usize = 20;
 const MAX_PROVIDER_TEXT_BYTES: usize = 512;
@@ -77,6 +85,37 @@ pub struct ExtractedWavSample {
     pub offset_milliseconds: u64,
     pub duration_milliseconds: u64,
     pub source_duration_milliseconds: u64,
+}
+
+/// A deterministic, track-relative range selected for one ACRCloud request.
+/// The public millisecond variant is useful for previews and tests; the WAV
+/// adapter plans the same ranges in PCM frames before it reads audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcrCloudSampleRange {
+    pub offset_milliseconds: u64,
+    pub end_offset_milliseconds: u64,
+    pub duration_milliseconds: u64,
+}
+
+/// Explanation of deterministic sample planning. `planned_request_count` is
+/// already constrained by the hard 25-request limit and by the number of
+/// non-overlapping twelve-second portions in the track. A short non-empty
+/// track is the sole exception and receives one correspondingly short range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcrCloudSamplingPlan {
+    pub target_duration_milliseconds: u64,
+    pub requested_request_count: u32,
+    pub planned_request_count: u32,
+    pub maximum_unique_duration_milliseconds: u64,
+    pub samples: Vec<AcrCloudSampleRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameSampleRange {
+    start_frame: u64,
+    frame_count: u64,
 }
 
 /// Error categories deliberately stay non-diagnostic: callers turn them into
@@ -259,6 +298,232 @@ pub fn audio_screening_status_label(status: AudioScreeningStatus) -> &'static st
         AudioScreeningStatus::ProcessingFailed => "PROCESSING FAILED",
         AudioScreeningStatus::Stale => "STALE",
     }
+}
+
+const MIN_ACRCLOUD_INTENSITY_PERCENT: u8 = 1;
+const MAX_ACRCLOUD_INTENSITY_PERCENT: u8 = 100;
+const MAX_ACRCLOUD_REFERENCE_DURATION_SECONDS: u64 = 86_400;
+
+/// Validates the non-secret coverage controls before they are persisted. The
+/// execution planner repeats its hard request and range limits independently,
+/// so a stale or hand-edited settings row can never increase provider usage.
+pub fn validate_acrcloud_sampling_settings(settings: &AudioScreeningSettings) -> Result<()> {
+    if !(MIN_ACRCLOUD_INTENSITY_PERCENT..=MAX_ACRCLOUD_INTENSITY_PERCENT)
+        .contains(&settings.intensity_percent)
+    {
+        return Err(AppError::Validation(
+            "ACRCloud screening intensity must be between 1 and 100 percent.".into(),
+        ));
+    }
+    if settings.reference_duration_seconds == 0
+        || settings.reference_duration_seconds > MAX_ACRCLOUD_REFERENCE_DURATION_SECONDS
+    {
+        return Err(AppError::Validation(
+            "The ACRCloud reference duration must be between 1 second and 24 hours.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Plans deterministic, non-overlapping millisecond ranges for a release.
+/// This has no file-system or network side effects and is shared conceptually
+/// by the PCM-frame planner used at upload time. Ranges are anchored at the
+/// middle for a single request and at both ends (with equal spacing) for two
+/// or more requests.
+pub fn plan_acrcloud_sample_ranges(
+    track_duration_milliseconds: u64,
+    settings: &AudioScreeningSettings,
+) -> AcrCloudSamplingPlan {
+    let intensity = settings.intensity_percent.clamp(
+        MIN_ACRCLOUD_INTENSITY_PERCENT,
+        MAX_ACRCLOUD_INTENSITY_PERCENT,
+    );
+    let target_duration_milliseconds = requested_target_duration(
+        track_duration_milliseconds,
+        u64::from(intensity),
+        settings.dynamic_by_track_duration,
+        settings.reference_duration_seconds.saturating_mul(1_000),
+    );
+    let full_sample_milliseconds = MAX_ACRCLOUD_SAMPLE_SECONDS.saturating_mul(1_000);
+    let (requested_request_count, planned_request_count) = planned_request_counts(
+        track_duration_milliseconds,
+        target_duration_milliseconds,
+        full_sample_milliseconds,
+    );
+    let sample_lengths = planned_sample_unit_lengths(
+        track_duration_milliseconds,
+        target_duration_milliseconds,
+        full_sample_milliseconds,
+        requested_request_count,
+        planned_request_count,
+    );
+    let samples =
+        evenly_distributed_millisecond_ranges(track_duration_milliseconds, &sample_lengths);
+    AcrCloudSamplingPlan {
+        target_duration_milliseconds,
+        requested_request_count,
+        planned_request_count,
+        maximum_unique_duration_milliseconds: sample_lengths
+            .iter()
+            .copied()
+            .sum::<u64>()
+            .min(MAX_ACRCLOUD_UNIQUE_SAMPLE_SECONDS.saturating_mul(1_000)),
+        samples,
+    }
+}
+
+fn requested_target_duration(
+    track_duration: u64,
+    intensity_percent: u64,
+    dynamic_by_track_duration: bool,
+    reference_duration: u64,
+) -> u64 {
+    if track_duration == 0 || intensity_percent == 0 {
+        return 0;
+    }
+    let basis = if dynamic_by_track_duration {
+        track_duration
+    } else {
+        reference_duration
+    };
+    ceil_percentage(basis, intensity_percent).min(track_duration)
+}
+
+fn ceil_percentage(value: u64, percentage: u64) -> u64 {
+    let product = u128::from(value).saturating_mul(u128::from(percentage));
+    let rounded = product.saturating_add(99) / 100;
+    u64::try_from(rounded).unwrap_or(u64::MAX)
+}
+
+fn planned_request_counts(
+    track_duration: u64,
+    target_duration: u64,
+    full_sample_duration: u64,
+) -> (u32, u32) {
+    if track_duration == 0 || target_duration == 0 || full_sample_duration == 0 {
+        return (0, 0);
+    }
+    let requested = ceil_div_u64(target_duration, full_sample_duration);
+    let requested = u32::try_from(requested).unwrap_or(u32::MAX);
+    // The explicit short-track exception is intentionally evaluated before
+    // floor(track/12s), which is zero for every non-empty sub-12s release.
+    let capacity = if track_duration < full_sample_duration {
+        1
+    } else {
+        u32::try_from(track_duration / full_sample_duration).unwrap_or(u32::MAX)
+    };
+    (
+        requested,
+        requested.min(capacity).min(MAX_ACRCLOUD_REQUESTS),
+    )
+}
+
+/// Builds exact requested coverage where possible: every range is a full
+/// twelve seconds except the final target remainder. If the non-overlap slot
+/// cap reduces the number of requests, all available slots remain full and
+/// the recorded unique duration truthfully shows the reduced coverage.
+fn planned_sample_unit_lengths(
+    track_duration: u64,
+    target_duration: u64,
+    full_sample_duration: u64,
+    requested_count: u32,
+    planned_count: u32,
+) -> Vec<u64> {
+    if planned_count == 0 || track_duration == 0 || full_sample_duration == 0 {
+        return Vec::new();
+    }
+    if track_duration < full_sample_duration {
+        // Preserve the useful legacy short-track behaviour: one request can
+        // safely carry the whole (sub-12-second) release. The requested
+        // target remains recorded separately, while actual coverage reports
+        // the intentional full short-track sample.
+        return vec![track_duration];
+    }
+    let mut lengths = vec![full_sample_duration; planned_count as usize];
+    if planned_count == requested_count {
+        let preceding = full_sample_duration.saturating_mul(u64::from(planned_count - 1));
+        let final_length = target_duration.saturating_sub(preceding);
+        if final_length > 0 && final_length <= full_sample_duration {
+            if let Some(last) = lengths.last_mut() {
+                *last = final_length;
+            }
+        }
+    }
+    lengths
+}
+
+fn ceil_div_u64(numerator: u64, denominator: u64) -> u64 {
+    numerator / denominator + u64::from(numerator % denominator != 0)
+}
+
+fn evenly_distributed_millisecond_ranges(
+    track_duration: u64,
+    sample_lengths: &[u64],
+) -> Vec<AcrCloudSampleRange> {
+    evenly_distributed_unit_ranges(track_duration, sample_lengths)
+        .into_iter()
+        .map(|range| AcrCloudSampleRange {
+            offset_milliseconds: range.start_frame,
+            end_offset_milliseconds: range.start_frame.saturating_add(range.frame_count),
+            duration_milliseconds: range.frame_count,
+        })
+        .collect()
+}
+
+fn evenly_distributed_unit_ranges(
+    total_units: u64,
+    sample_lengths: &[u64],
+) -> Vec<FrameSampleRange> {
+    if sample_lengths.is_empty()
+        || total_units == 0
+        || sample_lengths.iter().any(|length| *length == 0)
+    {
+        return Vec::new();
+    }
+    let sample_total = sample_lengths
+        .iter()
+        .try_fold(0_u64, |total, length| total.checked_add(*length));
+    let Some(sample_total) = sample_total else {
+        return Vec::new();
+    };
+    if sample_total > total_units {
+        return Vec::new();
+    }
+    if sample_lengths.len() == 1 {
+        let sample_units = sample_lengths[0];
+        return vec![FrameSampleRange {
+            start_frame: (total_units - sample_units) / 2,
+            frame_count: sample_units,
+        }];
+    }
+    // Start at the beginning and finish at the end. Distribute the remaining
+    // space only between samples with integer Bresenham-style gaps, so every
+    // run is deterministic, range-safe, and as evenly spread as possible.
+    let gap_total = total_units - sample_total;
+    let gap_count = u64::try_from(sample_lengths.len() - 1).unwrap_or(u64::MAX);
+    let mut start = 0_u64;
+    sample_lengths
+        .iter()
+        .enumerate()
+        .map(|(index, &length)| {
+            let range = FrameSampleRange {
+                start_frame: start,
+                frame_count: length,
+            };
+            if index + 1 < sample_lengths.len() {
+                let before = u64::try_from(index).unwrap_or(u64::MAX);
+                let after = before.saturating_add(1);
+                let gap = ((u128::from(after) * u128::from(gap_total)) / u128::from(gap_count))
+                    .saturating_sub(
+                        (u128::from(before) * u128::from(gap_total)) / u128::from(gap_count),
+                    );
+                start = start
+                    .saturating_add(length)
+                    .saturating_add(u64::try_from(gap).unwrap_or(u64::MAX));
+            }
+            range
+        })
+        .collect()
 }
 
 /// Returns an app-controlled `fpcalc` sidecar if it is present and has the
@@ -890,10 +1155,15 @@ fn run_external_audio_screening_with_transport(
         "Preparing external catalog screening",
     );
     let mut record = external_record_base(track_id, evidence);
+    record.screening_mode = AudioScreeningMode::MultiSample;
+    record.requested_intensity_percent = settings.intensity_percent;
+    record.dynamic_by_track_duration = settings.dynamic_by_track_duration;
+    record.reference_duration_seconds = settings.reference_duration_seconds;
     let credentials_available = credentials
         .is_some_and(|(key, secret)| !key.trim().is_empty() && !secret.trim().is_empty());
     let (provider_status, provider_message) =
         provider_configuration_status(settings, credentials_available);
+    record.provider_status = provider_status;
     if provider_status != AudioScreeningProviderStatus::Ready {
         record.status = match provider_status {
             AudioScreeningProviderStatus::Disabled
@@ -912,7 +1182,7 @@ fn run_external_audio_screening_with_transport(
             AudioScreeningProviderStatus::Ready => AudioScreeningStatus::NotRun,
         };
         record.message = provider_message;
-        return finish_external_record(track_root, record, local, None, &mut progress);
+        return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
     }
     // The application performs this check before reaching the adapter, but
     // the adapter is also callable from internal code and tests.  Keep the
@@ -927,13 +1197,13 @@ fn run_external_audio_screening_with_transport(
         record.status = AudioScreeningStatus::ProcessingFailed;
         record.message =
             "A current local Chromaprint fingerprint is required before external screening.".into();
-        return finish_external_record(track_root, record, local, None, &mut progress);
+        return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
     }
     let Some((access_key, access_secret)) = credentials else {
         // Defensive only: the configuration branch above must have returned.
         record.status = AudioScreeningStatus::SkippedNotConfigured;
         record.message = "ACRCloud access key and access secret are not configured.".into();
-        return finish_external_record(track_root, record, local, None, &mut progress);
+        return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
     };
     // The external sample is extracted only from a private byte-verified
     // snapshot. No bytes are uploaded until their SHA-256 and size have been
@@ -945,92 +1215,415 @@ fn run_external_audio_screening_with_transport(
             record.message =
                 "The authoritative release audio could not be verified for external screening."
                     .into();
-            return finish_external_record(track_root, record, local, None, &mut progress);
+            return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
         }
     };
-    let sample = match extract_bounded_pcm_wav_sample(&snapshot.path) {
-        Ok(sample) => sample,
+    let parsed_wav = match parse_pcm_wav(&snapshot.path) {
+        Ok(parsed) => parsed,
         Err(WavSampleError::UnsupportedFormat) => {
             record.status = AudioScreeningStatus::UnsupportedFormat;
             record.message =
                 "External ACRCloud screening currently supports PCM WAV release audio.".into();
-            return finish_external_record(track_root, record, local, None, &mut progress);
+            return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
         }
         Err(_) => {
             record.status = AudioScreeningStatus::ProcessingFailed;
             record.message = "A bounded WAV sample could not be prepared for ACRCloud.".into();
-            return finish_external_record(track_root, record, local, None, &mut progress);
+            return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
         }
     };
-    record.sample_offset_milliseconds = Some(sample.offset_milliseconds);
-    record.sample_duration_milliseconds = Some(sample.duration_milliseconds);
-    record.source_duration_milliseconds = Some(sample.source_duration_milliseconds);
-    progress(
-        "sending_provider_request",
-        "Sending bounded audio sample to ACRCloud",
-    );
-    let timestamp = Utc::now().timestamp().to_string();
-    let (request, signature) = match build_acrcloud_request(
-        settings,
-        access_key,
-        access_secret,
-        &timestamp,
-        &sample.bytes,
-    ) {
-        Ok(request) => request,
-        Err(failure) => {
-            record.status = failure.status;
-            record.message = failure.message.into();
-            return finish_external_record(track_root, record, local, None, &mut progress);
+    let source_duration_milliseconds =
+        frames_to_milliseconds(parsed_wav.total_frames, parsed_wav.format.sample_rate);
+    record.source_duration_milliseconds = Some(source_duration_milliseconds);
+    let planned_ranges = match plan_pcm_wav_sample_ranges(&parsed_wav, settings) {
+        Ok(plan) => plan,
+        Err(_) => {
+            record.status = AudioScreeningStatus::ProcessingFailed;
+            record.message = "A bounded WAV sample could not be prepared for ACRCloud.".into();
+            return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
         }
     };
-    record.request_count = 1;
-    record.checked_at = Some(Utc::now().to_rfc3339());
-    progress("waiting_provider_response", "Waiting for ACRCloud response");
-    let response = match transport.post(request) {
-        Ok(response) => response,
-        Err(failure) => {
-            record.status = failure.status;
-            record.message = failure.message.into();
-            return finish_external_record(track_root, record, local, None, &mut progress);
+    record.target_duration_milliseconds = planned_ranges.target_duration_milliseconds;
+    record.planned_request_count = planned_ranges.planned_request_count;
+    if planned_ranges.ranges.is_empty() {
+        record.status = AudioScreeningStatus::ProcessingFailed;
+        record.message =
+            "No non-overlapping ACRCloud sample could be planned for this release.".into();
+        return finish_external_record(track_root, record, local, Vec::new(), &mut progress);
+    }
+
+    let mut used_ranges = Vec::<FrameSampleRange>::new();
+    let mut archived_responses = Vec::<PendingProviderResponse>::new();
+    for (index, range) in planned_ranges.ranges.iter().copied().enumerate() {
+        // This is deliberately immediately before request construction and
+        // POST: a future planner change cannot accidentally make the network
+        // path upload a duplicate, overlapping, or out-of-track range.
+        if !frame_range_is_available(&used_ranges, range, parsed_wav.total_frames) {
+            if used_ranges.iter().any(|used| {
+                used.start_frame == range.start_frame && used.frame_count == range.frame_count
+            }) {
+                record.duplicate_sample_count = record.duplicate_sample_count.saturating_add(1);
+            } else {
+                record.overlapping_sample_count = record.overlapping_sample_count.saturating_add(1);
+            }
+            record.status = AudioScreeningStatus::ProcessingFailed;
+            record.message =
+                "An overlapping or duplicate ACRCloud sample was rejected before upload.".into();
+            break;
         }
-    };
-    progress(
-        "processing_provider_response",
-        "Processing ACRCloud response",
-    );
-    let request_sensitive_values =
-        RequestSensitiveValues::new(access_key, access_secret, &signature);
-    match parse_acrcloud_response(response.status, &response.body, &request_sensitive_values) {
-        Ok(parsed) => {
-            record.status = parsed.status;
-            record.message = parsed.message.into();
-            record.matches = parsed.matches;
-            finish_external_record(
-                track_root,
-                record,
-                local,
-                parsed.raw_response.as_ref(),
-                &mut progress,
-            )
+        let sample = match extract_pcm_wav_sample_at(
+            &snapshot.path,
+            &parsed_wav,
+            range.start_frame,
+            range.frame_count,
+        ) {
+            Ok(sample) => sample,
+            Err(WavSampleError::UnsupportedFormat) => {
+                record.status = AudioScreeningStatus::UnsupportedFormat;
+                record.message =
+                    "External ACRCloud screening currently supports PCM WAV release audio.".into();
+                break;
+            }
+            Err(_) => {
+                record.status = AudioScreeningStatus::ProcessingFailed;
+                record.message = "A bounded WAV sample could not be prepared for ACRCloud.".into();
+                break;
+            }
+        };
+        let end_offset_milliseconds = frames_to_milliseconds(
+            range.start_frame.saturating_add(range.frame_count),
+            parsed_wav.format.sample_rate,
+        );
+        let sample_record = AudioScreeningSampleRecord {
+            sequence: u32::try_from(index + 1).unwrap_or(MAX_ACRCLOUD_REQUESTS),
+            offset_milliseconds: sample.offset_milliseconds,
+            end_offset_milliseconds,
+            duration_milliseconds: end_offset_milliseconds
+                .saturating_sub(sample.offset_milliseconds),
+            status: AudioScreeningStatus::ProcessingFailed,
+            message: "ACRCloud request was not completed.".into(),
+            matches: Vec::new(),
+            response_relative_path: None,
+            response_sha256: None,
+        };
+        progress(
+            "sending_provider_request",
+            "Sending bounded audio sample to ACRCloud",
+        );
+        let timestamp = Utc::now().timestamp().to_string();
+        let (request, signature) = match build_acrcloud_request(
+            settings,
+            access_key,
+            access_secret,
+            &timestamp,
+            &sample.bytes,
+        ) {
+            Ok(request) => request,
+            Err(failure) => {
+                record.status = failure.status;
+                record.message = failure.message.into();
+                break;
+            }
+        };
+        if record.sample_offset_milliseconds.is_none() {
+            // Legacy fields remain a compatibility view of the first submitted
+            // range; new consumers must use `samples` for the full run.
+            record.sample_offset_milliseconds = Some(sample_record.offset_milliseconds);
+            record.sample_duration_milliseconds = Some(sample_record.duration_milliseconds);
         }
-        Err(failure) => {
-            record.status = failure.status;
-            record.message = failure.message.into();
-            finish_external_record(track_root, record, local, None, &mut progress)
+        used_ranges.push(range);
+        record.samples.push(sample_record);
+        record.executed_request_count =
+            u32::try_from(record.samples.len()).unwrap_or(MAX_ACRCLOUD_REQUESTS);
+        record.request_count = record.executed_request_count;
+        record
+            .checked_at
+            .get_or_insert_with(|| Utc::now().to_rfc3339());
+        progress("waiting_provider_response", "Waiting for ACRCloud response");
+        let response = match transport.post(request) {
+            Ok(response) => response,
+            Err(failure) => {
+                update_last_sample_failure(&mut record, failure.status, failure.message);
+                record.status = failure.status;
+                record.message = failure.message.into();
+                if should_stop_after_sample(failure.status) {
+                    break;
+                }
+                continue;
+            }
+        };
+        progress(
+            "processing_provider_response",
+            "Processing ACRCloud response",
+        );
+        let request_sensitive_values =
+            RequestSensitiveValues::new(access_key, access_secret, &signature);
+        match parse_acrcloud_response(response.status, &response.body, &request_sensitive_values) {
+            Ok(parsed) => {
+                let status = parsed.status;
+                let message = parsed.message;
+                let matches = parsed.matches;
+                if let Some(sample_record) = record.samples.last_mut() {
+                    sample_record.status = status;
+                    sample_record.message = message.into();
+                    sample_record.matches = matches;
+                }
+                if let Some(raw_response) = parsed.raw_response {
+                    if let Some(sample_record) = record.samples.last() {
+                        archived_responses.push(PendingProviderResponse {
+                            sequence: sample_record.sequence,
+                            offset_milliseconds: sample_record.offset_milliseconds,
+                            end_offset_milliseconds: sample_record.end_offset_milliseconds,
+                            duration_milliseconds: sample_record.duration_milliseconds,
+                            status,
+                            raw_response,
+                        });
+                    }
+                }
+                if should_stop_after_sample(status) {
+                    break;
+                }
+            }
+            Err(failure) => {
+                update_last_sample_failure(&mut record, failure.status, failure.message);
+                record.status = failure.status;
+                record.message = failure.message.into();
+                if should_stop_after_sample(failure.status) {
+                    break;
+                }
+            }
         }
     }
+    finalize_external_sample_statistics(&mut record);
+    finish_external_record(track_root, record, local, archived_responses, &mut progress)
+}
+
+#[derive(Debug)]
+struct PcmWavSamplingPlan {
+    target_duration_milliseconds: u64,
+    planned_request_count: u32,
+    ranges: Vec<FrameSampleRange>,
+}
+
+fn plan_pcm_wav_sample_ranges(
+    parsed: &ParsedPcmWav,
+    settings: &AudioScreeningSettings,
+) -> std::result::Result<PcmWavSamplingPlan, WavSampleError> {
+    let full_sample_frames = u64::from(parsed.format.sample_rate)
+        .checked_mul(MAX_ACRCLOUD_SAMPLE_SECONDS)
+        .ok_or(WavSampleError::InvalidAudio)?;
+    let intensity = u64::from(settings.intensity_percent.clamp(
+        MIN_ACRCLOUD_INTENSITY_PERCENT,
+        MAX_ACRCLOUD_INTENSITY_PERCENT,
+    ));
+    let reference_frames = u64::try_from(
+        u128::from(settings.reference_duration_seconds)
+            .saturating_mul(u128::from(parsed.format.sample_rate)),
+    )
+    .unwrap_or(u64::MAX);
+    let target_frames = requested_target_duration(
+        parsed.total_frames,
+        intensity,
+        settings.dynamic_by_track_duration,
+        reference_frames,
+    );
+    let (requested_count, planned_count) =
+        planned_request_counts(parsed.total_frames, target_frames, full_sample_frames);
+    let max_frames = max_pcm_sample_frames(parsed)?;
+    if max_frames == 0 {
+        return Err(WavSampleError::InvalidAudio);
+    }
+    let desired_lengths = planned_sample_unit_lengths(
+        parsed.total_frames,
+        target_frames,
+        full_sample_frames,
+        requested_count,
+        planned_count,
+    );
+    let actual_lengths = desired_lengths
+        .into_iter()
+        .map(|length| length.min(max_frames))
+        .collect::<Vec<_>>();
+    let ranges = evenly_distributed_unit_ranges(parsed.total_frames, &actual_lengths);
+    if ranges.len() != planned_count as usize
+        || !frame_ranges_are_non_overlapping(&ranges, parsed.total_frames)
+    {
+        return Err(WavSampleError::InvalidAudio);
+    }
+    Ok(PcmWavSamplingPlan {
+        target_duration_milliseconds: frames_to_milliseconds(
+            target_frames,
+            parsed.format.sample_rate,
+        ),
+        planned_request_count: planned_count,
+        ranges,
+    })
+}
+
+fn frame_range_is_available(
+    used: &[FrameSampleRange],
+    candidate: FrameSampleRange,
+    total_frames: u64,
+) -> bool {
+    candidate.frame_count > 0
+        && candidate
+            .start_frame
+            .checked_add(candidate.frame_count)
+            .is_some_and(|end| end <= total_frames)
+        && !used
+            .iter()
+            .any(|range| frame_ranges_overlap_or_duplicate(*range, candidate))
+}
+
+fn frame_ranges_overlap_or_duplicate(left: FrameSampleRange, right: FrameSampleRange) -> bool {
+    let left_end = left.start_frame.saturating_add(left.frame_count);
+    let right_end = right.start_frame.saturating_add(right.frame_count);
+    left.start_frame == right.start_frame
+        || (left.start_frame < right_end && right.start_frame < left_end)
+}
+
+fn frame_ranges_are_non_overlapping(ranges: &[FrameSampleRange], total_frames: u64) -> bool {
+    ranges.iter().enumerate().all(|(index, range)| {
+        range.frame_count > 0
+            && range
+                .start_frame
+                .checked_add(range.frame_count)
+                .is_some_and(|end| end <= total_frames)
+            && ranges[..index]
+                .iter()
+                .all(|previous| !frame_ranges_overlap_or_duplicate(*previous, *range))
+    })
+}
+
+fn update_last_sample_failure(
+    record: &mut AudioScreeningExternalRecord,
+    status: AudioScreeningStatus,
+    message: &str,
+) {
+    if let Some(sample) = record.samples.last_mut() {
+        sample.status = status;
+        sample.message = message.into();
+        sample.matches.clear();
+    }
+}
+
+fn should_stop_after_sample(status: AudioScreeningStatus) -> bool {
+    matches!(
+        status,
+        AudioScreeningStatus::AuthenticationFailed
+            | AudioScreeningStatus::ConfigurationInvalid
+            | AudioScreeningStatus::ProviderUnavailable
+    )
+}
+
+fn finalize_external_sample_statistics(record: &mut AudioScreeningExternalRecord) {
+    record.executed_request_count =
+        u32::try_from(record.samples.len()).unwrap_or(MAX_ACRCLOUD_REQUESTS);
+    record.request_count = record.executed_request_count;
+    record.unique_sample_count = record.executed_request_count;
+    record.unique_sample_duration_milliseconds =
+        record.samples.iter().fold(0_u64, |total, sample| {
+            total.saturating_add(sample.duration_milliseconds)
+        });
+    let source_duration = record.source_duration_milliseconds.unwrap_or_default();
+    record.track_coverage_percent = if source_duration == 0 {
+        0.0
+    } else {
+        (record.unique_sample_duration_milliseconds as f64 * 100.0) / source_duration as f64
+    };
+    record.matches = record
+        .samples
+        .iter()
+        .flat_map(|sample| sample.matches.iter().cloned())
+        .collect();
+    if record.samples.is_empty() {
+        if record.status == AudioScreeningStatus::NotRun {
+            record.status = AudioScreeningStatus::ProcessingFailed;
+            record.message = "No ACRCloud request was executed for this release.".into();
+        }
+        record.provider_status = provider_status_for_result(record.provider_status, record.status);
+        return;
+    }
+    let has_match = record
+        .samples
+        .iter()
+        .any(|sample| sample.status == AudioScreeningStatus::MatchDetected);
+    let all_no_match = record
+        .samples
+        .iter()
+        .all(|sample| sample.status == AudioScreeningStatus::NoMatchDetected);
+    if has_match {
+        record.status = AudioScreeningStatus::MatchDetected;
+        record.message = if all_samples_completed(record) {
+            "ACRCloud returned one or more catalog matches for the submitted audio samples.".into()
+        } else {
+            "ACRCloud returned one or more catalog matches; not every planned sample completed."
+                .into()
+        };
+    } else if all_no_match {
+        record.status = AudioScreeningStatus::NoMatchDetected;
+        record.message =
+            "ACRCloud returned no catalog match for the submitted audio samples.".into();
+    } else {
+        let failure = record
+            .samples
+            .iter()
+            .find(|sample| sample.status != AudioScreeningStatus::NoMatchDetected)
+            .map(|sample| sample.status)
+            .unwrap_or(AudioScreeningStatus::ProcessingFailed);
+        record.status = failure;
+        record.message =
+            "ACRCloud screening did not complete successfully for every submitted sample.".into();
+    }
+    record.provider_status = provider_status_for_result(record.provider_status, record.status);
+}
+
+fn all_samples_completed(record: &AudioScreeningExternalRecord) -> bool {
+    record.executed_request_count == record.planned_request_count
+        && record.samples.iter().all(|sample| {
+            matches!(
+                sample.status,
+                AudioScreeningStatus::NoMatchDetected | AudioScreeningStatus::MatchDetected
+            )
+        })
+}
+
+fn provider_status_for_result(
+    current: AudioScreeningProviderStatus,
+    status: AudioScreeningStatus,
+) -> AudioScreeningProviderStatus {
+    match status {
+        AudioScreeningStatus::AuthenticationFailed => {
+            AudioScreeningProviderStatus::AuthenticationFailed
+        }
+        AudioScreeningStatus::ProviderUnavailable => {
+            AudioScreeningProviderStatus::ProviderUnavailable
+        }
+        AudioScreeningStatus::ConfigurationInvalid => {
+            AudioScreeningProviderStatus::ConfigurationInvalid
+        }
+        _ => current,
+    }
+}
+
+struct PendingProviderResponse {
+    sequence: u32,
+    offset_milliseconds: u64,
+    end_offset_milliseconds: u64,
+    duration_milliseconds: u64,
+    status: AudioScreeningStatus,
+    raw_response: SanitizedProviderResponse,
 }
 
 fn finish_external_record(
     track_root: &Path,
     mut record: AudioScreeningExternalRecord,
     local: Option<&AudioScreeningLocalRecord>,
-    response: Option<&SanitizedProviderResponse>,
+    responses: Vec<PendingProviderResponse>,
     progress: &mut impl FnMut(&str, &str),
 ) -> Result<AudioScreeningExternalRecord> {
-    let response = if external_matches_have_finite_scores(&record) {
-        response
+    let responses = if external_matches_have_finite_scores(&record) {
+        responses
     } else {
         // This is a second, pre-publication barrier in addition to the parser.
         // It keeps a future parser change or direct in-module call from
@@ -1038,17 +1631,23 @@ fn finish_external_record(
         record.status = AudioScreeningStatus::ProcessingFailed;
         record.message = "ACRCloud returned a non-finite provider score.".into();
         record.matches.clear();
-        None
+        for sample in &mut record.samples {
+            sample.matches.clear();
+            sample.status = AudioScreeningStatus::ProcessingFailed;
+            sample.message = "ACRCloud returned a non-finite provider score.".into();
+        }
+        finalize_external_sample_statistics(&mut record);
+        Vec::new()
     };
     progress("saving_screening_result", "Saving audio-screening result");
-    publish_external_screening_artifacts(track_root, local, &mut record, response)?;
+    publish_external_screening_artifacts(track_root, local, &mut record, responses)?;
     progress("complete", "Audio screening completed");
     Ok(record)
 }
 
 fn external_record_base(track_id: &str, evidence: &EvidenceItem) -> AudioScreeningExternalRecord {
     AudioScreeningExternalRecord {
-        schema_version: 1,
+        schema_version: 2,
         provider: ACRCLOUD_PROVIDER.into(),
         status: AudioScreeningStatus::NotRun,
         message: "No external catalog screening has been run.".into(),
@@ -1058,6 +1657,20 @@ fn external_record_base(track_id: &str, evidence: &EvidenceItem) -> AudioScreeni
         source_sha256: evidence.sha256.clone().unwrap_or_default(),
         source_size_bytes: evidence.size_bytes,
         checked_at: None,
+        screening_mode: AudioScreeningMode::MultiSample,
+        requested_intensity_percent: 5,
+        dynamic_by_track_duration: true,
+        reference_duration_seconds: 300,
+        target_duration_milliseconds: 0,
+        planned_request_count: 0,
+        executed_request_count: 0,
+        unique_sample_count: 0,
+        overlapping_sample_count: 0,
+        duplicate_sample_count: 0,
+        unique_sample_duration_milliseconds: 0,
+        track_coverage_percent: 0.0,
+        provider_status: AudioScreeningProviderStatus::Disabled,
+        samples: Vec::new(),
         sample_offset_milliseconds: None,
         sample_duration_milliseconds: None,
         source_duration_milliseconds: None,
@@ -1587,7 +2200,7 @@ fn publish_external_screening_artifacts(
     track_root: &Path,
     local: Option<&AudioScreeningLocalRecord>,
     record: &mut AudioScreeningExternalRecord,
-    response: Option<&SanitizedProviderResponse>,
+    responses: Vec<PendingProviderResponse>,
 ) -> Result<()> {
     // Do this before `archive_managed_artifacts`: a malformed in-memory
     // record must leave the currently published directory untouched.
@@ -1595,6 +2208,13 @@ fn publish_external_screening_artifacts(
         return Err(AppError::Validation(
             "The external audio-screening record contains a non-finite provider score.".into(),
         ));
+    }
+    let response_archive = build_provider_response_archive(record, responses)?;
+    if !record.samples.is_empty() {
+        // Defensive archive validation can turn a formerly successful sample
+        // into a controlled failure. Recompute the aggregate so `NO MATCH`
+        // is never reported if a different submitted sample did not finish.
+        finalize_external_sample_statistics(record);
     }
     ensure_screening_directory(track_root)?;
     archive_managed_artifacts(
@@ -1605,36 +2225,26 @@ fn publish_external_screening_artifacts(
             AUDIO_SCREENING_MARKDOWN_FILE,
         ],
     )?;
-    let safe_response = if let Some(response) = response {
-        let response = response.as_bytes();
-        if response.len() > MAX_PROVIDER_RESPONSE_BYTES {
-            return Err(AppError::Validation(
-                "The ACRCloud response exceeds the supported size limit.".into(),
-            ));
-        }
-        let value: Value = serde_json::from_slice(response)
-            .map_err(|_| AppError::Validation("The ACRCloud response is not valid JSON.".into()))?;
-        if response_contains_credential_like_field(&value) {
-            record.status = AudioScreeningStatus::ProcessingFailed;
-            record.message =
-                "The provider response contained unsafe credential-like fields and was not documented."
-                    .into();
-            None
-        } else {
-            Some(response)
-        }
-    } else {
-        None
-    };
-    if let Some(response) = safe_response {
-        write_managed(track_root, ACRCLOUD_RESPONSE_FILE, response)?;
+    if let Some((response, sequences)) = response_archive {
+        write_managed(track_root, ACRCLOUD_RESPONSE_FILE, &response)?;
+        let digest = sha256_bytes(&response);
         record.response_relative_path = Some(ACRCLOUD_RESPONSE_FILE.into());
-        record.response_sha256 = Some(sha256_bytes(response));
+        record.response_sha256 = Some(digest.clone());
+        for sample in &mut record.samples {
+            if sequences.contains(&sample.sequence) {
+                sample.response_relative_path = Some(ACRCLOUD_RESPONSE_FILE.into());
+                sample.response_sha256 = Some(digest.clone());
+            }
+        }
     } else {
         // A current result without a provider response must not accidentally
         // present an older response as current documentation.
         record.response_relative_path = None;
         record.response_sha256 = None;
+        for sample in &mut record.samples {
+            sample.response_relative_path = None;
+            sample.response_sha256 = None;
+        }
     }
     write_managed(
         track_root,
@@ -1644,11 +2254,114 @@ fn publish_external_screening_artifacts(
     publish_screening_markdown(track_root, local, Some(record))
 }
 
+const MAX_ARCHIVED_PROVIDER_RESPONSES_BYTES: usize =
+    // Pretty-printing a valid JSON response can add structural whitespace,
+    // so reserve headroom above the sum of the independently bounded raw
+    // responses. The 25-request cap still keeps this archive finite.
+    MAX_PROVIDER_RESPONSE_BYTES * MAX_ACRCLOUD_REQUESTS as usize * 2 + 1024 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchivedAcrCloudResponses<'a> {
+    schema_version: u32,
+    provider: &'a str,
+    source_sha256: &'a str,
+    checked_at: Option<&'a str>,
+    samples: Vec<ArchivedAcrCloudResponse>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchivedAcrCloudResponse {
+    sequence: u32,
+    offset_milliseconds: u64,
+    end_offset_milliseconds: u64,
+    duration_milliseconds: u64,
+    status: AudioScreeningStatus,
+    response: Value,
+}
+
+/// Archives all safe provider payloads in one structured JSON document. Each
+/// entry repeats its deterministic sample coordinates, so a response is never
+/// ambiguous even though the document itself has one detached SHA-256 anchor.
+fn build_provider_response_archive(
+    record: &mut AudioScreeningExternalRecord,
+    responses: Vec<PendingProviderResponse>,
+) -> Result<Option<(Vec<u8>, Vec<u32>)>> {
+    let mut archived = Vec::new();
+    let mut sequences = Vec::new();
+    let mut raw_bytes = 0_usize;
+    for pending in responses {
+        let response = pending.raw_response.as_bytes();
+        raw_bytes = raw_bytes.saturating_add(response.len());
+        if response.len() > MAX_PROVIDER_RESPONSE_BYTES
+            || raw_bytes > MAX_ARCHIVED_PROVIDER_RESPONSES_BYTES
+        {
+            mark_response_archive_unsafe(record, pending.sequence);
+            continue;
+        }
+        let value: Value = match serde_json::from_slice(response) {
+            Ok(value) if !response_contains_credential_like_field(&value) => value,
+            _ => {
+                mark_response_archive_unsafe(record, pending.sequence);
+                continue;
+            }
+        };
+        sequences.push(pending.sequence);
+        archived.push(ArchivedAcrCloudResponse {
+            sequence: pending.sequence,
+            offset_milliseconds: pending.offset_milliseconds,
+            end_offset_milliseconds: pending.end_offset_milliseconds,
+            duration_milliseconds: pending.duration_milliseconds,
+            status: pending.status,
+            response: value,
+        });
+    }
+    if archived.is_empty() {
+        return Ok(None);
+    }
+    let archive = ArchivedAcrCloudResponses {
+        schema_version: 1,
+        provider: &record.provider,
+        source_sha256: &record.source_sha256,
+        checked_at: record.checked_at.as_deref(),
+        samples: archived,
+    };
+    let bytes = serde_json::to_vec_pretty(&archive)?;
+    if bytes.len() > MAX_ARCHIVED_PROVIDER_RESPONSES_BYTES {
+        return Err(AppError::Validation(
+            "The combined ACRCloud response archive exceeds the supported size limit.".into(),
+        ));
+    }
+    Ok(Some((bytes, sequences)))
+}
+
+fn mark_response_archive_unsafe(record: &mut AudioScreeningExternalRecord, sequence: u32) {
+    if let Some(sample) = record
+        .samples
+        .iter_mut()
+        .find(|sample| sample.sequence == sequence)
+    {
+        sample.status = AudioScreeningStatus::ProcessingFailed;
+        sample.message =
+            "The provider response contained unsafe data and was not documented.".into();
+        sample.matches.clear();
+        sample.response_relative_path = None;
+        sample.response_sha256 = None;
+    }
+}
+
 fn external_matches_have_finite_scores(record: &AudioScreeningExternalRecord) -> bool {
     record
         .matches
         .iter()
         .all(|item| item.score.map_or(true, f64::is_finite))
+        && record.samples.iter().all(|sample| {
+            sample
+                .matches
+                .iter()
+                .all(|item| item.score.map_or(true, f64::is_finite))
+        })
 }
 
 /// Refreshes only the derived Markdown summary after the application has
@@ -1716,6 +2429,26 @@ fn publish_screening_markdown(
             external.source_size_bytes,
             external.request_count,
         ));
+        if external.screening_mode == AudioScreeningMode::MultiSample
+            || !external.samples.is_empty()
+        {
+            markdown.push_str(&format!(
+                "- Screening mode: {}\n- Requested intensity: {} %\n- Calculation mode: {}\n- Reference duration: {} seconds\n- Target duration: {} ms\n- Planned requests: {}\n- Executed requests: {}\n- Unique samples: {}\n- Duplicate samples: {}\n- Overlapping samples: {}\n- Unique sampled duration: {} ms\n- Track coverage: {:.2} %\n- Provider status: {:?}\n",
+                external.screening_mode.as_str(),
+                external.requested_intensity_percent,
+                if external.dynamic_by_track_duration { "DYNAMIC_TRACK_DURATION" } else { "FIXED_REFERENCE_DURATION" },
+                external.reference_duration_seconds,
+                external.target_duration_milliseconds,
+                external.planned_request_count,
+                external.executed_request_count,
+                external.unique_sample_count,
+                external.duplicate_sample_count,
+                external.overlapping_sample_count,
+                external.unique_sample_duration_milliseconds,
+                external.track_coverage_percent,
+                external.provider_status,
+            ));
+        }
         if let Some(checked_at) = &external.checked_at {
             markdown.push_str(&format!("- Checked at: {}\n", markdown_text(checked_at)));
         }
@@ -1738,6 +2471,48 @@ fn publish_screening_markdown(
             ));
         }
         markdown.push_str(&format!("- Note: {}\n", markdown_text(&external.message)));
+        if !external.samples.is_empty() {
+            markdown.push_str("\n### Submitted samples\n\n");
+            for sample in &external.samples {
+                markdown.push_str(&format!(
+                    "- Sample {:02}: Offset {} ms · End {} ms · Duration {} ms · {}\n  - Note: {}\n",
+                    sample.sequence,
+                    sample.offset_milliseconds,
+                    sample.end_offset_milliseconds,
+                    sample.duration_milliseconds,
+                    audio_screening_status_label(sample.status),
+                    markdown_text(&sample.message),
+                ));
+                if let Some(path) = &sample.response_relative_path {
+                    markdown.push_str(&format!(
+                        "  - Provider response archive: {}\n",
+                        markdown_text(path)
+                    ));
+                }
+                if let Some(hash) = &sample.response_sha256 {
+                    markdown.push_str(&format!(
+                        "  - Provider response SHA-256: {}\n",
+                        markdown_text(hash)
+                    ));
+                }
+                for item in sample.matches.iter().take(MAX_PROVIDER_MATCHES) {
+                    markdown.push_str(&format!(
+                        "  - Match title: {}\n",
+                        markdown_text(&item.title)
+                    ));
+                    if !item.artists.is_empty() {
+                        markdown.push_str(&format!(
+                            "    - Match artists: {}\n",
+                            item.artists
+                                .iter()
+                                .map(|artist| markdown_text(artist))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        ));
+                    }
+                }
+            }
+        }
         if !external.matches.is_empty() {
             markdown.push_str("\n### Provider-reported matches\n\n");
             for item in external.matches.iter().take(MAX_PROVIDER_MATCHES) {
@@ -1974,17 +2749,72 @@ pub fn external_response_artifact_is_current(
     track_root: &Path,
     record: &AudioScreeningExternalRecord,
 ) -> Result<bool> {
-    let (Some(relative), Some(expected)) = (
+    let record_archive = match (
         record.response_relative_path.as_deref(),
         record.response_sha256.as_deref(),
-    ) else {
-        return Ok(record.response_relative_path.is_none() && record.response_sha256.is_none());
+    ) {
+        (None, None) => None,
+        (Some(relative), Some(expected))
+            if relative == ACRCLOUD_RESPONSE_FILE && is_sha256(expected) =>
+        {
+            Some((relative, expected))
+        }
+        _ => return Ok(false),
     };
-    if relative != ACRCLOUD_RESPONSE_FILE || !is_sha256(expected) {
-        return Ok(false);
+    let mut archive_bytes = None;
+    if let Some((relative, expected)) = record_archive {
+        let path = contained_path(track_root, Path::new(relative), true)?;
+        let bytes = fs::read(&path).map_err(|error| AppError::io(&path, error))?;
+        if sha256_bytes(&bytes) != expected {
+            return Ok(false);
+        }
+        archive_bytes = Some(bytes);
     }
-    let path = contained_path(track_root, Path::new(relative), true)?;
-    Ok(sha256_file(&path)? == expected)
+    // Multi-sample records may contain successful requests with no safe raw
+    // response (for example a transport failure). Every retained response
+    // must nevertheless point to the same verified aggregate archive.
+    for sample in &record.samples {
+        match (
+            sample.response_relative_path.as_deref(),
+            sample.response_sha256.as_deref(),
+        ) {
+            (None, None) => {}
+            (Some(relative), Some(expected))
+                if record_archive.is_some_and(|(record_relative, record_expected)| {
+                    relative == record_relative && expected == record_expected
+                }) => {}
+            _ => return Ok(false),
+        }
+    }
+    if !record.samples.is_empty() && record_archive.is_some() {
+        let Some(bytes) = archive_bytes else {
+            return Ok(false);
+        };
+        let archive: Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        let Some(entries) = archive.get("samples").and_then(Value::as_array) else {
+            return Ok(false);
+        };
+        for sample in record.samples.iter().filter(|sample| {
+            sample.response_relative_path.is_some() || sample.response_sha256.is_some()
+        }) {
+            let matches_coordinates = entries.iter().any(|entry| {
+                entry.get("sequence").and_then(Value::as_u64) == Some(u64::from(sample.sequence))
+                    && entry.get("offsetMilliseconds").and_then(Value::as_u64)
+                        == Some(sample.offset_milliseconds)
+                    && entry.get("endOffsetMilliseconds").and_then(Value::as_u64)
+                        == Some(sample.end_offset_milliseconds)
+                    && entry.get("durationMilliseconds").and_then(Value::as_u64)
+                        == Some(sample.duration_milliseconds)
+            });
+            if !matches_coordinates {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 pub fn mark_screening_stale(state: &mut AudioScreeningState) {
@@ -2002,6 +2832,10 @@ pub fn mark_screening_stale(state: &mut AudioScreeningState) {
         // stale current-track record while that archival happens.
         state.external.response_relative_path = None;
         state.external.response_sha256 = None;
+        for sample in &mut state.external.samples {
+            sample.response_relative_path = None;
+            sample.response_sha256 = None;
+        }
     }
 }
 
@@ -2128,12 +2962,29 @@ struct DataSegment {
     bytes: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ParsedPcmWav {
+    format: PcmFormat,
+    data_segments: Vec<DataSegment>,
+    total_frames: u64,
+}
+
 /// Supports ordinary RIFF PCM WAV only.  Other accepted release formats still
 /// get local Chromaprint analysis through bundled `fpcalc`; external sampling
 /// refuses them explicitly instead of silently converting or uploading them.
 pub fn extract_bounded_pcm_wav_sample(
     source: &Path,
 ) -> std::result::Result<ExtractedWavSample, WavSampleError> {
+    let parsed = parse_pcm_wav(source)?;
+    let sample_frames = parsed.total_frames.min(max_pcm_sample_frames(&parsed)?);
+    if sample_frames == 0 {
+        return Err(WavSampleError::InvalidAudio);
+    }
+    let start_frame = (parsed.total_frames - sample_frames) / 2;
+    extract_pcm_wav_sample_at(source, &parsed, start_frame, sample_frames)
+}
+
+fn parse_pcm_wav(source: &Path) -> std::result::Result<ParsedPcmWav, WavSampleError> {
     let metadata = fs::symlink_metadata(source).map_err(|_| WavSampleError::Io)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(WavSampleError::Io);
@@ -2214,7 +3065,15 @@ pub fn extract_bounded_pcm_wav_sample(
         return Err(WavSampleError::InvalidAudio);
     }
     let total_frames = total_data_bytes / u64::from(format.block_align);
-    let duration_limit_frames = u64::from(format.sample_rate)
+    Ok(ParsedPcmWav {
+        format,
+        data_segments,
+        total_frames,
+    })
+}
+
+fn max_pcm_sample_frames(parsed: &ParsedPcmWav) -> std::result::Result<u64, WavSampleError> {
+    let duration_limit_frames = u64::from(parsed.format.sample_rate)
         .checked_mul(MAX_SAMPLE_SECONDS)
         .ok_or(WavSampleError::InvalidAudio)?;
     // The provider's upload cap applies to the complete RIFF document, not
@@ -2223,34 +3082,48 @@ pub fn extract_bounded_pcm_wav_sample(
     let max_pcm_payload_bytes = MAX_SAMPLE_AUDIO_BYTES
         .checked_sub(PCM_WAV_HEADER_BYTES + PCM_WAV_MAX_PADDING_BYTES)
         .ok_or(WavSampleError::InvalidAudio)?;
-    let upload_limit_frames = max_pcm_payload_bytes / u64::from(format.block_align);
-    let sample_frames = total_frames
-        .min(duration_limit_frames)
-        .min(upload_limit_frames);
-    if sample_frames == 0 {
+    let upload_limit_frames = max_pcm_payload_bytes / u64::from(parsed.format.block_align);
+    Ok(duration_limit_frames.min(upload_limit_frames))
+}
+
+fn extract_pcm_wav_sample_at(
+    source: &Path,
+    parsed: &ParsedPcmWav,
+    start_frame: u64,
+    sample_frames: u64,
+) -> std::result::Result<ExtractedWavSample, WavSampleError> {
+    if sample_frames == 0
+        || sample_frames > max_pcm_sample_frames(parsed)?
+        || start_frame
+            .checked_add(sample_frames)
+            .map_or(true, |end| end > parsed.total_frames)
+    {
         return Err(WavSampleError::InvalidAudio);
     }
-    let start_frame = (total_frames - sample_frames) / 2;
     let sample_bytes_len = sample_frames
-        .checked_mul(u64::from(format.block_align))
+        .checked_mul(u64::from(parsed.format.block_align))
         .ok_or(WavSampleError::InvalidAudio)?;
     let sample_bytes_len =
         usize::try_from(sample_bytes_len).map_err(|_| WavSampleError::InvalidAudio)?;
+    let mut file = File::open(source).map_err(|_| WavSampleError::Io)?;
     let samples = copy_pcm_range(
         &mut file,
-        &data_segments,
-        start_frame * u64::from(format.block_align),
+        &parsed.data_segments,
+        start_frame * u64::from(parsed.format.block_align),
         sample_bytes_len,
     )?;
-    let bytes = build_pcm_wav(format, &samples)?;
+    let bytes = build_pcm_wav(parsed.format, &samples)?;
     if bytes.len() > MAX_SAMPLE_AUDIO_BYTES as usize {
         return Err(WavSampleError::InvalidAudio);
     }
     Ok(ExtractedWavSample {
         bytes,
-        offset_milliseconds: frames_to_milliseconds(start_frame, format.sample_rate),
-        duration_milliseconds: frames_to_milliseconds(sample_frames, format.sample_rate),
-        source_duration_milliseconds: frames_to_milliseconds(total_frames, format.sample_rate),
+        offset_milliseconds: frames_to_milliseconds(start_frame, parsed.format.sample_rate),
+        duration_milliseconds: frames_to_milliseconds(sample_frames, parsed.format.sample_rate),
+        source_duration_milliseconds: frames_to_milliseconds(
+            parsed.total_frames,
+            parsed.format.sample_rate,
+        ),
     })
 }
 
@@ -2384,6 +3257,7 @@ fn frames_to_milliseconds(frames: u64, sample_rate: u32) -> u64 {
 mod tests {
     use super::*;
     use crate::model::{EvidenceMetadata, EvidenceRole};
+    use std::cell::RefCell;
     use std::fs;
     use tempfile::tempdir;
 
@@ -2425,6 +3299,51 @@ mod tests {
             _request: AcrCloudRequest,
         ) -> std::result::Result<AcrCloudResponse, ProviderFailure> {
             panic!("external screening must not run a connection test")
+        }
+    }
+
+    struct RecordingTransport {
+        posts: RefCell<Vec<AcrCloudRequest>>,
+        responses: RefCell<Vec<AcrCloudResponse>>,
+    }
+
+    impl RecordingTransport {
+        fn no_match(count: usize) -> Self {
+            Self {
+                posts: RefCell::new(Vec::new()),
+                responses: RefCell::new(
+                    (0..count)
+                        .map(|_| AcrCloudResponse {
+                            status: 200,
+                            body: br#"{"status":{"code":1001,"msg":"No result"}}"#.to_vec(),
+                        })
+                        .collect(),
+                ),
+            }
+        }
+    }
+
+    impl AcrCloudHttpTransport for RecordingTransport {
+        fn post(
+            &self,
+            request: AcrCloudRequest,
+        ) -> std::result::Result<AcrCloudResponse, ProviderFailure> {
+            self.posts.borrow_mut().push(request);
+            self.responses
+                .borrow_mut()
+                .drain(..1)
+                .next()
+                .ok_or(ProviderFailure {
+                    status: AudioScreeningStatus::ProviderUnavailable,
+                    message: "ACRCloud could not be reached.",
+                })
+        }
+
+        fn get(
+            &self,
+            _request: AcrCloudRequest,
+        ) -> std::result::Result<AcrCloudResponse, ProviderFailure> {
+            panic!("screening run must not issue a GET request")
         }
     }
 
@@ -2533,14 +3452,8 @@ mod tests {
         record.status = parsed.status;
         record.message = parsed.message.into();
         record.matches = parsed.matches;
-        let persisted = finish_external_record(
-            &root,
-            record,
-            None,
-            parsed.raw_response.as_ref(),
-            &mut |_, _| {},
-        )
-        .expect("persist controlled response");
+        let persisted = finish_external_record(&root, record, None, Vec::new(), &mut |_, _| {})
+            .expect("persist controlled response");
         assert_eq!(persisted.status, AudioScreeningStatus::ProcessingFailed);
         assert!(persisted.matches.is_empty());
         assert!(persisted.response_relative_path.is_none());
@@ -2622,7 +3535,9 @@ mod tests {
             acrid: None,
             score: Some(f64::NAN),
         });
-        assert!(publish_external_screening_artifacts(&root, None, &mut record, None).is_err());
+        assert!(
+            publish_external_screening_artifacts(&root, None, &mut record, Vec::new()).is_err()
+        );
         assert_eq!(
             fs::read(root.join(EXTERNAL_SCREENING_FILE)).expect("unchanged previous result"),
             b"previous result"
@@ -2652,6 +3567,22 @@ mod tests {
             provider_configuration_status(&settings, true).0,
             AudioScreeningProviderStatus::ConfigurationInvalid
         );
+    }
+
+    #[test]
+    fn coverage_settings_reject_out_of_range_values() {
+        let mut settings = AudioScreeningSettings::default();
+        settings.intensity_percent = 0;
+        assert!(validate_acrcloud_sampling_settings(&settings).is_err());
+        settings.intensity_percent = 101;
+        assert!(validate_acrcloud_sampling_settings(&settings).is_err());
+        settings.intensity_percent = 25;
+        settings.reference_duration_seconds = 0;
+        assert!(validate_acrcloud_sampling_settings(&settings).is_err());
+        settings.reference_duration_seconds = 86_401;
+        assert!(validate_acrcloud_sampling_settings(&settings).is_err());
+        settings.reference_duration_seconds = 300;
+        assert!(validate_acrcloud_sampling_settings(&settings).is_ok());
     }
 
     #[test]
@@ -2744,6 +3675,167 @@ mod tests {
         let extracted = extract_bounded_pcm_wav_sample(&source).expect("extract bounded sample");
         assert!(extracted.bytes.len() <= MAX_SAMPLE_AUDIO_BYTES as usize);
         assert_eq!(extracted.bytes.len(), MAX_SAMPLE_AUDIO_BYTES as usize);
+    }
+
+    #[test]
+    fn sampling_plan_is_deterministic_evenly_distributed_and_hard_capped() {
+        let settings = AudioScreeningSettings {
+            intensity_percent: 25,
+            dynamic_by_track_duration: true,
+            ..AudioScreeningSettings::default()
+        };
+        let first = plan_acrcloud_sample_ranges(600_000, &settings);
+        let second = plan_acrcloud_sample_ranges(600_000, &settings);
+        assert_eq!(first, second);
+        assert_eq!(first.target_duration_milliseconds, 150_000);
+        assert_eq!(first.requested_request_count, 13);
+        assert_eq!(first.planned_request_count, 13);
+        assert_eq!(first.maximum_unique_duration_milliseconds, 150_000);
+        assert_eq!(
+            first
+                .samples
+                .first()
+                .map(|sample| sample.offset_milliseconds),
+            Some(0)
+        );
+        assert_eq!(
+            first
+                .samples
+                .last()
+                .map(|sample| sample.end_offset_milliseconds),
+            Some(600_000)
+        );
+        assert_eq!(
+            first
+                .samples
+                .last()
+                .map(|sample| sample.duration_milliseconds),
+            Some(6_000)
+        );
+        assert_non_overlapping_millisecond_ranges(&first.samples, 600_000);
+
+        let maximum = plan_acrcloud_sample_ranges(
+            7_200_000,
+            &AudioScreeningSettings {
+                intensity_percent: 100,
+                ..AudioScreeningSettings::default()
+            },
+        );
+        assert_eq!(maximum.planned_request_count, MAX_ACRCLOUD_REQUESTS);
+        assert_eq!(
+            maximum.maximum_unique_duration_milliseconds,
+            MAX_ACRCLOUD_UNIQUE_SAMPLE_SECONDS * 1_000
+        );
+        assert_non_overlapping_millisecond_ranges(&maximum.samples, 7_200_000);
+    }
+
+    #[test]
+    fn sampling_plan_caps_fixed_reference_at_track_and_handles_short_tracks() {
+        let fixed = AudioScreeningSettings {
+            intensity_percent: 25,
+            dynamic_by_track_duration: false,
+            reference_duration_seconds: 300,
+            ..AudioScreeningSettings::default()
+        };
+        let capped = plan_acrcloud_sample_ranges(60_000, &fixed);
+        assert_eq!(capped.target_duration_milliseconds, 60_000);
+        assert_eq!(capped.planned_request_count, 5);
+        assert_eq!(capped.maximum_unique_duration_milliseconds, 60_000);
+        assert_non_overlapping_millisecond_ranges(&capped.samples, 60_000);
+
+        let short = plan_acrcloud_sample_ranges(9_000, &AudioScreeningSettings::default());
+        assert_eq!(short.planned_request_count, 1);
+        assert_eq!(short.samples[0].offset_milliseconds, 0);
+        assert_eq!(short.samples[0].duration_milliseconds, 9_000);
+        assert_eq!(short.samples[0].end_offset_milliseconds, 9_000);
+    }
+
+    #[test]
+    fn external_run_archives_every_non_overlapping_multi_sample_response() {
+        let directory = tempdir().expect("temporary directory");
+        let root = fs::canonicalize(directory.path()).expect("canonical root");
+        let release_directory = root.join("01_RELEASE");
+        fs::create_dir_all(&release_directory).expect("release directory");
+        let source = release_directory.join("release.wav");
+        fs::write(&source, pcm_wave(1_000, 1, 8, 600)).expect("release WAV");
+        let mut evidence = evidence_item();
+        evidence.sha256 = Some(sha256_file(&source).expect("release hash"));
+        evidence.size_bytes = fs::metadata(&source).expect("release metadata").len();
+        let mut local = local_record_base("track-1", &evidence);
+        local.status = AudioScreeningStatus::FingerprintGenerated;
+        local.fingerprint = "1,2,3".into();
+        local.duration_milliseconds = Some(600_000);
+        publish_local_screening_artifacts(&root, &mut local, None).expect("local record");
+        let settings = AudioScreeningSettings {
+            enabled: true,
+            host: "identify-eu-west-1.acrcloud.com".into(),
+            intensity_percent: 25,
+            dynamic_by_track_duration: true,
+            ..AudioScreeningSettings::default()
+        };
+        let transport = RecordingTransport::no_match(13);
+        let record = run_external_audio_screening_with_transport(
+            &settings,
+            Some(("access-key", "access-secret")),
+            &source,
+            "track-1",
+            &evidence,
+            &root,
+            Some(&local),
+            no_progress,
+            &transport,
+        )
+        .expect("multi-sample external screening");
+
+        assert_eq!(record.screening_mode, AudioScreeningMode::MultiSample);
+        assert_eq!(record.status, AudioScreeningStatus::NoMatchDetected);
+        assert_eq!(record.planned_request_count, 13);
+        assert_eq!(record.executed_request_count, 13);
+        assert_eq!(record.request_count, 13);
+        assert_eq!(record.unique_sample_count, 13);
+        assert_eq!(record.duplicate_sample_count, 0);
+        assert_eq!(record.overlapping_sample_count, 0);
+        assert_eq!(record.unique_sample_duration_milliseconds, 150_000);
+        assert!((record.track_coverage_percent - 25.0).abs() < f64::EPSILON);
+        assert_eq!(record.samples.len(), 13);
+        assert_eq!(transport.posts.borrow().len(), 13);
+        assert_non_overlapping_sample_records(&record.samples, 600_000);
+        assert!(record
+            .samples
+            .iter()
+            .all(|sample| sample.status == AudioScreeningStatus::NoMatchDetected));
+        assert!(record
+            .samples
+            .iter()
+            .all(|sample| sample.duration_milliseconds <= 12_000));
+        assert!(external_response_artifact_is_current(&root, &record).expect("response hash"));
+        let archive: Value = serde_json::from_slice(
+            &fs::read(root.join(ACRCLOUD_RESPONSE_FILE)).expect("response archive"),
+        )
+        .expect("structured response archive");
+        let archived_samples = archive
+            .get("samples")
+            .and_then(Value::as_array)
+            .expect("archived samples");
+        assert_eq!(archived_samples.len(), 13);
+        for (sample, archived) in record.samples.iter().zip(archived_samples) {
+            assert_eq!(
+                archived.get("offsetMilliseconds").and_then(Value::as_u64),
+                Some(sample.offset_milliseconds)
+            );
+            assert_eq!(
+                archived
+                    .get("endOffsetMilliseconds")
+                    .and_then(Value::as_u64),
+                Some(sample.end_offset_milliseconds)
+            );
+        }
+        let mut mismatched_record = record.clone();
+        mismatched_record.samples[0].offset_milliseconds += 1;
+        assert!(
+            !external_response_artifact_is_current(&root, &mismatched_record)
+                .expect("mismatched archive is rejected")
+        );
     }
 
     #[test]
@@ -2861,6 +3953,42 @@ mod tests {
         assert!(fs::read_to_string(hash_file)
             .expect("hash file")
             .contains(&record.artifact_sha256));
+    }
+
+    fn assert_non_overlapping_millisecond_ranges(
+        ranges: &[AcrCloudSampleRange],
+        track_duration_milliseconds: u64,
+    ) {
+        let mut previous_end = 0_u64;
+        for range in ranges {
+            assert!(range.duration_milliseconds > 0);
+            assert!(range.duration_milliseconds <= 12_000);
+            assert!(range.offset_milliseconds >= previous_end);
+            assert_eq!(
+                range.end_offset_milliseconds,
+                range.offset_milliseconds + range.duration_milliseconds
+            );
+            assert!(range.end_offset_milliseconds <= track_duration_milliseconds);
+            previous_end = range.end_offset_milliseconds;
+        }
+    }
+
+    fn assert_non_overlapping_sample_records(
+        samples: &[AudioScreeningSampleRecord],
+        track_duration_milliseconds: u64,
+    ) {
+        let mut previous_end = 0_u64;
+        for sample in samples {
+            assert!(sample.duration_milliseconds > 0);
+            assert!(sample.duration_milliseconds <= 12_000);
+            assert!(sample.offset_milliseconds >= previous_end);
+            assert_eq!(
+                sample.end_offset_milliseconds,
+                sample.offset_milliseconds + sample.duration_milliseconds
+            );
+            assert!(sample.end_offset_milliseconds <= track_duration_milliseconds);
+            previous_end = sample.end_offset_milliseconds;
+        }
     }
 
     fn evidence_item() -> EvidenceItem {
