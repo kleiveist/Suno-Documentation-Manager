@@ -2478,8 +2478,9 @@ export class SunoDocumentationApp {
   private renderPreReleaseAudioScreening(track: TrackDetail): string {
     const local = visibleLocalAudioScreening(track.audioScreening.local, track.evidence);
     const external = track.audioScreening.external;
+    const settings = this.state.audioScreeningSettings;
     const externalCurrent = externalAudioScreeningIsCurrent(external, track.evidence);
-    const visibleExternal = visibleExternalAudioScreening(external, this.state.audioScreeningSettings, track.evidence);
+    const visibleExternal = visibleExternalAudioScreening(external, settings, track.evidence);
     const locked = isTrackContentLocked(track.status);
     const release = track.evidence.find((item) => item.id === local.sourceEvidenceId)
       ?? track.evidence.find((item) => item.role === "release_wav" && item.verified && Boolean(item.sha256));
@@ -2488,6 +2489,17 @@ export class SunoDocumentationApp {
     const localCurrent = localAudioScreeningIsCurrent(track.audioScreening.local, track.evidence);
     const localClass = audioScreeningStatusClass(local.status);
     const externalClass = audioScreeningStatusClass(visibleExternal.status);
+    const providerReady = audioScreeningProviderIsReady(settings);
+    const canRetryProvider = settings.enabled
+      && settings.credentialsConfigured
+      && settings.status !== "configuration_invalid";
+    const externalAction = locked
+      ? `<button class="button button--secondary" disabled>${icon("lock")} Snapshot geschützt</button>`
+      : !localCurrent
+        ? `<button type="button" class="button button--secondary" data-action="run-local-audio-screening" ${!canRunLocal ? "disabled" : ""}>${icon("scan")} Zuerst lokale Prüfung</button>`
+        : providerReady || canRetryProvider
+          ? `<button type="button" class="button button--primary" data-action="run-external-audio-screening">${icon("upload")} ${external.status === "provider_unavailable" || external.status === "authentication_failed" ? "Erneut versuchen" : "ACRCloud-Prüfung starten"}</button>`
+          : `<button type="button" class="button button--secondary" data-action="open-audio-screening-settings">${icon("settings")} Zu Einstellungen</button>`;
     return `<section class="pre-release-screening">
       <header><div><p class="overline">Pre-Release Audio Screening</p><h4>Technische Audio-Erkennung</h4><p>Die lokale Prüfung gehört zur aktuellen finalen Release-Datei. Die optionale externe Katalogprüfung ist kein Finalisierungsblocker.</p></div></header>
       <div class="screening-summary-grid">
@@ -2508,6 +2520,7 @@ export class SunoDocumentationApp {
           <p>${escapeHtml(this.systemText(visibleExternal.message))}</p>
           ${externalCurrent && external.checkedAt ? `<small class="screening-checked-at">Zuletzt geprüft: ${formatDate(external.checkedAt, true, this.language)}</small>` : ""}
           ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="screening-match-warning">${icon("alert")} Ein externer Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</div>` : ""}
+          <div class="screening-summary-actions">${externalAction}</div>
         </article>
       </div>
       <p class="screening-disclaimer">${icon("info")} Die Prüfung ist eine technische Audio-Erkennung. Sie stellt keine Urheberrechts-, Lizenz- oder Nichtverletzungsprüfung dar.</p>
@@ -2623,19 +2636,6 @@ export class SunoDocumentationApp {
     const settings = this.state.audioScreeningSettings;
     const externalCurrent = externalAudioScreeningIsCurrent(external, track.evidence);
     const visibleExternal = visibleExternalAudioScreening(external, settings, track.evidence);
-    const locked = isTrackContentLocked(track.status);
-    const localReady = localAudioScreeningIsCurrent(track.audioScreening.local, track.evidence);
-    const providerReady = audioScreeningProviderIsReady(settings);
-    const canRetryProvider = settings.enabled
-      && settings.credentialsConfigured
-      && settings.status !== "configuration_invalid";
-    const externalAction = locked
-      ? `<button class="button button--secondary" disabled>${icon("lock")} Snapshot geschützt</button>`
-      : !localReady
-        ? `<button class="button button--secondary" data-action="run-local-audio-screening">${icon("scan")} Zuerst lokale Prüfung</button>`
-        : providerReady || canRetryProvider
-          ? `<button class="button button--primary" data-action="run-external-audio-screening">${icon("upload")} ${external.status === "provider_unavailable" || external.status === "authentication_failed" ? "Erneut versuchen" : "ACRCloud-Prüfung starten"}</button>`
-          : `<button class="button button--secondary" data-action="open-audio-screening-settings">${icon("settings")} Zu Einstellungen</button>`;
     const sample = externalCurrent && external.sampleOffsetMilliseconds !== undefined && external.sampleDurationMilliseconds !== undefined
       ? `${formatAudioTimestamp(external.sampleOffsetMilliseconds, this.language)}–${formatAudioTimestamp(external.sampleOffsetMilliseconds + external.sampleDurationMilliseconds, this.language)}`
       : this.t("Nicht dokumentiert");
@@ -2650,7 +2650,6 @@ export class SunoDocumentationApp {
       </div>
       ${externalCurrent && visibleExternal.status === "match_detected" ? `<div class="audio-screening-alert">${icon("alert")}<div><strong>ACRCloud meldet eine Audio-Übereinstimmung</strong><span>Der externe Anbieter hat eine Audio-Übereinstimmung gemeldet. Prüfe den Treffer vor Veröffentlichung.</span></div></div>${matches}` : ""}
       ${!settings.enabled || !settings.credentialsConfigured ? `<p class="audio-screening-configuration">Extern: ÜBERSPRUNGEN – kein ACRCloud-Zugang eingerichtet. Die lokale Chromaprint-Prüfung bleibt davon unabhängig.</p>` : ""}
-      <div class="audio-screening-actions">${externalAction}</div>
       <p class="screening-disclaimer">${icon("info")} Die Audio-Erkennung ist keine Urheberrechts-, Lizenz- oder Nichtverletzungsprüfung.</p>
     </section>`;
   }

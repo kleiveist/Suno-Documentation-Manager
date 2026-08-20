@@ -102,7 +102,7 @@ Automatic RFC-3161 attachment always timestamps the exact SHA-256 of finalized `
 
 The local release fingerprint does not need an account or a separate installation: SunoDM uses its bundled Chromaprint engine when you import or replace the authoritative release audio. The external ACRCloud comparison is separate and remains disabled until you choose to configure it.
 
-Under `Einstellungen` → `Externe Dienste` → `Pre-release audio screening`, enter the ACRCloud host, enable the provider, and save the access key and access secret. The fields are write-only: after saving, the UI can report only whether a complete credential pair exists. Use `Provider testen` to check the configured endpoint; this does not upload track audio. Then open Step 09 and choose the external screening action for one specific track. It sends a bounded release-audio sample only after that click, never the local Chromaprint fingerprint. It is optional and cannot block finalization.
+Under `Einstellungen` → `Externe Dienste` → `Pre-release audio screening`, enter the ACRCloud host, enable the provider, and save the access key and access secret. The fields are write-only: after saving, the UI can report only whether a complete credential pair exists. Use `Provider testen` to check the configured endpoint; this does not upload track audio. Then open Step 07 and choose the external screening action for one specific track. It sends a bounded release-audio sample only after that click, never the local Chromaprint fingerprint. It is optional and cannot block finalization.
 
 ## Register subscription evidence
 
@@ -206,7 +206,7 @@ Known service values are displayed consistently in new suggestions, for example 
 
 In `07 Release`, choose any applicable release-note labels and import the final audio. The managed authoritative copy keeps its real audio extension and is named from the safe track title, for example `01_RELEASE/Neon Universe.wav` or `01_RELEASE/Neon Universe.mp3`. A collision is reported instead of overwritten. The local Chromaprint screening starts against that managed source and Step 07 shows its technical status/source binding; it does not upload audio or make a legal conclusion. Renaming an editable track updates managed release evidence through the native operation; finalized tracks require the existing revision workflow first.
 
-In `09 Integrity`, generate and verify the normal SHA-256 set. The local screening files under `03_DOCUMENTATION/AUDIO_SCREENING/` are included automatically. If you configured ACRCloud and deliberately want the optional comparison, use its explicit action here. A provider response, unavailable provider, authentication failure, or no-match does not change whether the normal integrity operation passes.
+In `09 Integrity`, generate and verify the normal SHA-256 set. The local screening files under `03_DOCUMENTATION/AUDIO_SCREENING/` are included automatically. If you configured ACRCloud and deliberately want the optional comparison, use its explicit action in `07 Release`. A provider response, unavailable provider, authentication failure, or no-match does not change whether the normal integrity operation passes.
 
 ## Import evidence
 
@@ -305,7 +305,7 @@ Executed results and outstanding manual checks are recorded in [ATP-0001](../atp
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-08-20 | Added external timestamp configuration guidance for the post-commit fixed-manifest RFC-3161 path, explicit TSA trust anchors, provider tests, and distinct OpenTimestamps status; noted PDF/A-2b/full DejaVu certificate output. | Project team |
-| 2026-08-18 | Added the bundled local fingerprint and explicit optional ACRCloud Settings/Step-09 guidance. | Project team |
+| 2026-08-18 | Added the bundled local fingerprint and explicit optional ACRCloud Settings/Step-07 guidance. | Project team |
 | 2026-08-17 | Clarified that verified local Terms evidence cannot coexist with an unavailable claim. | Project team |
 | 2026-08-17 | Documented workflow 1.7 Terms metadata, complete Final Suno Generation, separated instrumental/vocal/Suno-field facts, distinct Audio/Artwork AI assessments, provider suggestions, and exact `NO`/`N/A`/`NOT DOCUMENTED` semantics. | Project team |
 | 2026-08-16 | Explained conditional code-audio post-processing, free model/plan suggestions, artwork process selections and factual checks, and safe title-based release filenames. | Project team |

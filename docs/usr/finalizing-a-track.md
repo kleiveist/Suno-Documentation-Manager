@@ -58,7 +58,7 @@ Register an archived Suno Terms PDF once under `Einstellungen` → `Globale Date
 
 An external timestamp is not part of this gate because its stable referenced hash exists only after technical finalization. `FAIL`, `BLOCKED`, `NOT VERIFIED`, or an N/A item without a reason prevents finalization.
 
-The optional ACRCloud comparison is also not a gate. It is available only from Step 09 after `Einstellungen` → `Externe Dienste` configuration and an explicit user action. A disabled/unconfigured provider, an unavailable provider, an unsupported format, or an authentication failure is a visible non-positive technical state, not a finalization blocker and not a match result.
+The optional ACRCloud comparison is also not a gate. It is available only from Step 07 after `Einstellungen` → `Externe Dienste` configuration and an explicit user action. A disabled/unconfigured provider, an unavailable provider, an unsupported format, or an authentication failure is a visible non-positive technical state, not a finalization blocker and not a match result.
 
 ## Resolve missing items
 
@@ -108,7 +108,7 @@ When the authoritative release evidence is imported or replaced in an editable t
 
 The generated `03_DOCUMENTATION/AUDIO_SCREENING/AUDIO_SCREENING.md` provides the portable concise summary. The local JSON, its detached SHA-256 file, and any explicitly created external result/response artifacts are included in the normal phase-one SHA-256 list. If the release evidence changes, prior screening state is stale and a local run must bind the new bytes before finalization. An unavailable bundled engine or unsupported input remains a controlled non-positive state; SunoDM does not fall back to a system-installed tool or invent a fingerprint from the file hash.
 
-ACRCloud is optional. Under `Einstellungen` → `Externe Dienste`, enable the provider, enter the host and write-only credentials, save, and use the provider test to check reachability. In Step 09, choose the explicit external screening action only when you intend to send a bounded release-audio sample to that configured provider. The app does not upload the Chromaprint fingerprint and does not send credentials or request signatures into portable documentation. When a response is received, the structured `ACRCLOUD_SCREENING.json` and a credential-safe `ACRCLOUD_RESPONSE.json` are archived under `03_DOCUMENTATION/AUDIO_SCREENING/` and integrity-protected. A provider match or no-match is a technical response fact only; it does not establish authorship, rights, permission, infringement, legality, or release clearance.
+ACRCloud is optional. Under `Einstellungen` → `Externe Dienste`, enable the provider, enter the host and write-only credentials, save, and use the provider test to check reachability. In Step 07, choose the explicit external screening action only when you intend to send a bounded release-audio sample to that configured provider. The app does not upload the Chromaprint fingerprint and does not send credentials or request signatures into portable documentation. When a response is received, the structured `ACRCLOUD_SCREENING.json` and a credential-safe `ACRCLOUD_RESPONSE.json` are archived under `03_DOCUMENTATION/AUDIO_SCREENING/` and integrity-protected. A provider match or no-match is a technical response fact only; it does not establish authorship, rights, permission, infringement, legality, or release clearance.
 
 ## Review AI transparency
 

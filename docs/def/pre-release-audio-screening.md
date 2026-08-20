@@ -28,7 +28,7 @@ Stage 1 runs locally when the authoritative `release_wav` evidence is imported o
 
 The local record binds the engine and version, algorithm, source Evidence ID, track-relative source path, source SHA-256 and size, measured duration, generation time, and the full technical fingerprint. `LOCAL_FINGERPRINT.sha256` is its detached digest: the JSON cannot safely contain a hash of its own final bytes. The full fingerprint remains in that local record only; summaries, the certificate, PDF, manifest, and frontend view never render it. These files are ordinary phase-one documentation files and are included by `03_DOCUMENTATION/SHA256SUMS.txt`.
 
-Stage 2 is never automatic. It may run only when the user explicitly chooses the external screening action in Step 09, after the workspace owner has enabled and configured ACRCloud under Settings. It uses a bounded audio sample made from the release evidence, stores the selected offset and duration, and creates a structured result plus, when a safe JSON response exists, the provider response archive:
+Stage 2 is never automatic. It may run only when the user explicitly chooses the external screening action in Step 07, after the workspace owner has enabled and configured ACRCloud under Settings. It uses a bounded audio sample made from the release evidence, stores the selected offset and duration, and creates a structured result plus, when a safe JSON response exists, the provider response archive:
 
 ```text
 03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_SCREENING.json

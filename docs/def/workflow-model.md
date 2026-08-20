@@ -104,9 +104,9 @@ Answer values are not interchangeable with step statuses:
 | 04 | `human-work` | Human Work | Separate Suno Instrumental Mode, scalar Content Classification, explicit Vocal Intent, and final-audio outcome; complete style prompt; and guided human or post-export edits that actually occurred |
 | 05 | `artwork` | Artwork | Artwork origin, process stages, evidence roles, and conditional content check |
 | 06 | `ai-transparency` | AI Transparency | Separate factual Audio and Artwork assessments, including tri-state audio indicators and disclosure status; no legal AI assessment |
-| 07 | `release` | Release | Final release audio, guided release-note choices, export facts, and the current automatic local Chromaprint screening summary |
+| 07 | `release` | Release | Final release audio, guided release-note choices, export facts, and the current local Chromaprint/optional ACRCloud screening summary |
 | 08 | `evidence-licenses` | Evidence & Licenses | Technical subscription-date coverage plus a portable Terms copy with required descriptive metadata for commercial intent |
-| 09 | `integrity` | Integrity | Current generated documents, SHA-256 list, complete native re-verification, no mismatch, and an optional explicitly started ACRCloud screening card |
+| 09 | `integrity` | Integrity | Current generated documents, SHA-256 list, complete native re-verification, and no mismatch |
 | 10 | `finalize` | Finalize | Blocking-deviation check and native certificate transaction |
 
 All ten steps exist exactly once. The UI shows one task-oriented step at a time and a dashboard summary rather than presenting every possible field in one form.
@@ -214,7 +214,7 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 
 External timestamp evidence is deliberately absent from this gate. It can be attached only after a successful technical finalization commit, when the phase-one anchors are stable. A configured automatic RFC-3161 action then uses only the exact finalized Evidence Manifest; manual/legacy attachment can use another permitted stable anchor. Every timestamp outcome remains separate from the gate, never rolls back `DOCUMENTATION COMPLETE`, and does not turn it into a legal or evidentiary-strength conclusion.
 
-The optional ACRCloud result is also absent from the gate. It can be requested only from Step 09 after explicit workspace configuration, and it never runs automatically during import, document generation, hash operations, opening a workspace, validation, or finalization. Its provider statuses are technical comparison facts, not copyright, ownership, permission, infringement, legality, or release-clearance determinations.
+The optional ACRCloud result is also absent from the gate. It can be requested only from Step 07 after explicit workspace configuration, and it never runs automatically during import, document generation, hash operations, opening a workspace, validation, or finalization. Its provider statuses are technical comparison facts, not copyright, ownership, permission, infringement, legality, or release-clearance determinations.
 
 The Finalize button remains disabled before readiness, or the interface exposes an action that explains every blocking item. A TypeScript state change cannot bypass the native gate.
 
@@ -288,7 +288,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 | Date | Change | Author |
 | --- | --- | --- |
 | 2026-08-20 | Raised the workflow to 1.9 for scalar Content Classification, explicit independent Vocal Intent, explicit AI-artwork disclosure decisions, artwork identity/chronology/filename semantics, and the post-commit fixed-manifest RFC-3161 boundary. | Project team |
-| 2026-08-18 | Raised the workflow to 1.8 for current local Chromaprint screening of authoritative release evidence and optional non-blocking explicit ACRCloud screening in Step 09. | Project team |
+| 2026-08-18 | Raised the workflow to 1.8 for current local Chromaprint screening of authoritative release evidence and optional non-blocking explicit ACRCloud screening in Step 07. | Project team |
 | 2026-08-17 | Defined verified local Terms evidence plus an unavailable claim as a native-update rejection and blocking consistency/rendering contradiction without changing workflow version 1.7. | Project team |
 | 2026-08-17 | Raised the workflow to 1.7 for separated instrumental/vocal/Suno-field facts, complete Final Suno Generation and commercial Terms metadata, separate Audio/Artwork AI assessments, precise answer/status semantics, and post-finalization timestamp boundaries. | Project team |
 | 2026-08-17 | Raised the workflow to 1.6 for derived download/last-editing dates, the Step-07 desktop-editing decision, and joint subscription-period coverage. | Project team |

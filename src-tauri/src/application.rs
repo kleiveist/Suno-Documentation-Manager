@@ -2374,7 +2374,7 @@ impl WorkspaceApp {
     }
 
     /// The sole call path that can upload an audio sample. The Tauri command is
-    /// reached only from the explicit Step-09 user action; it is never invoked
+    /// reached only from the explicit Step-07 user action; it is never invoked
     /// by opening a workspace, importing evidence, generating hashes, or
     /// finalizing a track.
     pub fn run_external_audio_screening_with_progress(

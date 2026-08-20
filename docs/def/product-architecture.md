@@ -62,7 +62,7 @@ flowchart LR
     Services -.->|explicit optional HTTPS request only| Provider
 ```
 
-There is no backend service, remote database, telemetry endpoint, cloud dependency, or required runtime network edge. The only runtime network edges are optional and user-started: a configured external timestamp provider after the phase-one finalization commit and an ACRCloud identification request in Step 09. Neither is contacted during startup, import, replacement, document/hash generation, verification, workflow evaluation, or the immutable phase-one certificate transaction. When explicitly enabled, automatic timestamping is a separate phase two reached by the user's finalization action; its failure cannot roll back phase one.
+There is no backend service, remote database, telemetry endpoint, cloud dependency, or required runtime network edge. The only runtime network edges are optional and user-started: a configured external timestamp provider after the phase-one finalization commit and an ACRCloud identification request in Step 07. Neither is contacted during startup, import, replacement, document/hash generation, verification, workflow evaluation, or the immutable phase-one certificate transaction. When explicitly enabled, automatic timestamping is a separate phase two reached by the user's finalization action; its failure cannot roll back phase one.
 
 ## Runtime responsibilities
 
