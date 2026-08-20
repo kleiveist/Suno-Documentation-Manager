@@ -416,6 +416,41 @@ code { padding: .15rem .35rem; border-radius: 4px; background: #ece9e1; font-fam
 @keyframes spin { to { transform: rotate(360deg); } } @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 @keyframes operation-spin { to { transform: rotate(360deg); } } @keyframes operation-pulse { 50% { opacity: .55; transform: scale(.88); } } @keyframes operation-scan { 0%, 100% { top: 4%; opacity: 0; } 15%, 85% { opacity: .8; } 50% { top: 96%; opacity: .35; } } @keyframes operation-data-fall { 0% { opacity: 0; transform: translateY(-10px); } 15%, 80% { opacity: .75; } 100% { opacity: 0; transform: translateY(230px); } } @keyframes operation-gleam { 55%, 100% { transform: translateX(120%); } } @keyframes certificate-ring { 0% { opacity: .75; transform: scale(.72); } 75%, 100% { opacity: 0; transform: scale(1.12); } } @keyframes certificate-arrive { from { opacity: 0; transform: scale(.62) rotate(-12deg); } to { opacity: 1; transform: scale(1) rotate(0); } } @keyframes track-cover-in { from { opacity: 0; transform: scale(1.06); } to { opacity: 1; transform: scale(1); } }
 
+/* Audio screening is a full-width release section; its copy must stay as readable as the rest of the editor. */
+.pre-release-screening { width: 100%; clear: both; margin-top: 30px; padding: 24px; }
+.pre-release-screening header p:last-child { font-size: 10px; line-height: 1.5; }
+.screening-summary-head small { font-size: 9px; }
+.screening-summary-head strong { font-size: 12px; }
+.screening-summary-head b { font-size: 10px; }
+.screening-summary > p { font-size: 10px; line-height: 1.5; }
+.screening-summary dt { font-size: 8px; }
+.screening-summary dd { font-size: 10px; }
+.screening-summary dd code { font-size: 9px; }
+.screening-checked-at { font-size: 9px; }
+.screening-match-warning, .screening-disclaimer { font-size: 10px; line-height: 1.5; }
+
+.audio-screening-settings-section p,
+.audio-screening-settings-section .audio-screening-doc-link,
+.audio-screening-settings-section .timestamp-settings-note { font-size: 10px; line-height: 1.5; }
+.audio-screening-settings-section .audio-screening-local-engine strong,
+.audio-screening-settings-section .toggle-row strong,
+.audio-screening-settings-section .timestamp-provider-status strong { font-size: 11px; }
+.audio-screening-settings-section .audio-screening-local-engine small,
+.audio-screening-settings-section .toggle-row small,
+.audio-screening-settings-section .timestamp-provider-status span,
+.audio-screening-settings-section .timestamp-provider-status small { font-size: 10px; line-height: 1.45; }
+.audio-screening-settings-section .audio-screening-intensity__heading h4 { font-size: 15px; }
+.audio-screening-settings-section .audio-screening-intensity__heading p,
+.audio-screening-settings-section .audio-screening-intensity__preview > span,
+.audio-screening-settings-section .audio-screening-intensity__cap { font-size: 10px; }
+.audio-screening-settings-section .audio-screening-intensity__stops { font-size: 9px; }
+.audio-screening-settings-section .audio-screening-intensity__preview > strong { font-size: 11px; }
+.audio-screening-settings-section .audio-screening-intensity__preview dt { font-size: 8px; }
+.audio-screening-settings-section .audio-screening-intensity__preview dd { font-size: 10px; }
+.audio-screening-settings-section .audio-screening-intensity__warning strong { font-size: 10px; }
+.audio-screening-settings-section .audio-screening-intensity__warning span,
+.audio-screening-settings-section .audio-screening-intensity__warning small { font-size: 9px; }
+
 @media (max-width: 1100px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .track-table-head { display: none; }.track-row--detailed { grid-template-columns: 42px minmax(150px, 1fr) auto minmax(100px, 140px) 18px; }.track-row--detailed time { display: none; }

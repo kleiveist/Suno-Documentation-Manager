@@ -2445,6 +2445,7 @@ export class SunoDocumentationApp {
     if (stepId === "finalize") return this.renderFinalization(track);
 
     let body = "";
+    let bottomSection = "";
     switch (stepId) {
       case "track":
         body = `<div class="field-grid two-col">${this.textField("title", "Track-Titel", "Name des Tracks", draft.title, true)}${this.dateField("productionStartDate", "Produktionsstart", draft.productionStartDate, true)}${this.automatedDateField("productionEndDate", "Produktionsende", draft.productionEndDate, track.automation.productionEndOrigin)}</div>
@@ -2541,12 +2542,12 @@ export class SunoDocumentationApp {
             : `<div class="field-grid two-col">${this.automatedDateField("finalExportDate", "Datum der letzten Bearbeitung", finalDateValue, finalDateOrigin, true, "Kein gültiges WAV-Metadatum erkannt – bitte Datum manuell dokumentieren.")}${this.multiChoiceField("releaseNotes", "Release-Notizen", draft.releaseNotes, releaseNoteChoices)}</div>`}
           <div class="form-section"><p class="field-label">Finale Release-Dateien</p><p class="field-help">Der ursprüngliche Quelldateiname wird getrennt vom verwalteten Pfad dokumentiert. Das finale Artwork wird einmalig in Schritt 05 verwaltet.</p>${this.inlineEvidenceActions(track, [["release_wav", "Finale Release-Audiodatei importieren"], ["release_mp3", "Zusätzliche MP3 importieren"], ["release_mp4", "MP4 importieren"]])}</div>`;
           body += this.filenameConfirmation(track, "release_wav", "releaseFilenameDifferenceConfirmed", draft.releaseFilenameDifferenceConfirmed, "Release-Datei");
-          body += this.renderPreReleaseAudioScreening(track);
+          bottomSection = this.renderPreReleaseAudioScreening(track);
         }
         break;
     }
     const locked = isTrackContentLocked(track.status);
-    return `<form id="track-step-form" class="workflow-form ${locked ? "is-read-only" : ""}" data-step="${stepId}" ${locked ? `aria-label="Historischer Snapshot – schreibgeschützt"` : ""}><fieldset class="workflow-form-fields" ${locked ? "disabled" : ""}>${this.renderStepConsistencyIssues(track, stepId)}${body}</fieldset>${locked ? "" : `<div class="form-save"><span>${icon("shield")} Änderungen bleiben lokal im Workspace.</span><button class="button button--primary" type="submit">${icon("check")} Schritt speichern</button></div>`}</form>`;
+    return `<form id="track-step-form" class="workflow-form ${locked ? "is-read-only" : ""}" data-step="${stepId}" ${locked ? `aria-label="Historischer Snapshot – schreibgeschützt"` : ""}><fieldset class="workflow-form-fields" ${locked ? "disabled" : ""}>${this.renderStepConsistencyIssues(track, stepId)}${body}</fieldset>${locked ? "" : `<div class="form-save"><span>${icon("shield")} Änderungen bleiben lokal im Workspace.</span><button class="button button--primary" type="submit">${icon("check")} Schritt speichern</button></div>`}</form>${bottomSection}`;
   }
 
   private renderGenerationTextFieldFacts(fields: TrackFields): string {
