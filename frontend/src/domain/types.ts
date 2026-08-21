@@ -191,6 +191,10 @@ export interface AudioScreeningSample {
   durationMilliseconds: number;
   status: AudioScreeningStatus;
   message: string;
+  /** Original ACRCloud status fields, when the provider returned them. */
+  providerStatusCode?: number;
+  providerStatusMessage?: string;
+  providerApiVersion?: string;
   matches: AudioScreeningMatch[];
   responseRelativePath?: string;
   responseSha256?: string;
@@ -232,7 +236,8 @@ export interface AudioScreeningExternalSummary {
   screeningMode: "single_sample" | "multi_sample";
   requestedIntensityPercent: number;
   dynamicByTrackDuration: boolean;
-  referenceDurationSeconds: number;
+  /** `null` for historical records that did not capture this setting. */
+  referenceDurationSeconds: number | null;
   targetDurationMilliseconds: number;
   plannedRequestCount: number;
   executedRequestCount: number;
@@ -833,7 +838,7 @@ export const emptyAudioScreeningSummary: AudioScreeningSummary = {
     screeningMode: "single_sample",
     requestedIntensityPercent: 5,
     dynamicByTrackDuration: true,
-    referenceDurationSeconds: 300,
+    referenceDurationSeconds: null,
     targetDurationMilliseconds: 0,
     plannedRequestCount: 0,
     executedRequestCount: 0,

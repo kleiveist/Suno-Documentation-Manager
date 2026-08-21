@@ -749,7 +749,6 @@ fn audio_screening_documentation_summary(state: &AudioScreeningState) -> String 
         external
             .matches
             .iter()
-            .take(5)
             .enumerate()
             .map(|(index, item)| {
                 let artists = if item.artists.is_empty() {
@@ -853,8 +852,9 @@ fn audio_screening_documentation_summary(state: &AudioScreeningState) -> String 
 
 /// Multi-sample screening records need enough context to make the planned
 /// coverage and the individual, offset-bound provider outcomes reviewable.
-/// Raw provider messages and responses deliberately remain in their archived
-/// artifacts rather than being copied into managed documentation.
+/// Raw provider payloads remain in their archived artifact; the normalized
+/// provider status fields are copied into the managed documentation so the
+/// technical result can be compared without opening the raw response.
 fn multi_sample_documentation_block(external: &AudioScreeningExternalRecord) -> String {
     if !has_multi_sample_data(external) {
         return String::new();
@@ -865,11 +865,10 @@ fn multi_sample_documentation_block(external: &AudioScreeningExternalRecord) -> 
     } else {
         "FIXED REFERENCE DURATION"
     };
-    let reference_duration = if external.dynamic_by_track_duration {
-        "N/A".to_owned()
-    } else {
-        external.reference_duration_seconds.to_string()
-    };
+    let reference_duration = external
+        .reference_duration_seconds
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "N/A".into());
     let mut output = format!(
         "\n- External screening mode [System value]: {}\n- Requested coverage [System value]: {} %\n- Calculation mode [System value]: {}\n- Reference duration (seconds) [System value]: {}\n- Target screening duration (ms) [System value]: {}\n- Planned requests [System value]: {}\n- Executed requests [System verification]: {}\n- Unique samples [System verification]: {}\n- Duplicate samples [System verification]: {}\n- Overlapping samples [System verification]: {}\n- Unique sampled duration (ms) [System verification]: {}\n- Track coverage (%) [System verification]: {:.2}\n- ACRCloud provider status [System verification]: {}\n- Overall result [System verification]: {}\n",
         external.screening_mode.as_str(),
@@ -905,16 +904,20 @@ fn multi_sample_documentation_block(external: &AudioScreeningExternalRecord) -> 
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("NOT RECORDED");
         output.push_str(&format!(
-            "- Sample {:02} [System verification]: Offset {} ms · End offset {} ms · Duration {} ms · Result {} · Response archive {} · Response SHA-256 {}\n",
+            "- Sample {:02} [System verification]: Offset {} ms · End offset {} ms · Duration {} ms · Result {}{} · Response archive {} · Response SHA-256 {}\n",
             sample.sequence,
             sample.offset_milliseconds,
             sample.end_offset_milliseconds,
             sample.duration_milliseconds,
             sample_result_label(sample.status),
+            sample
+                .provider_status_details()
+                .map(|details| format!(" · {details}"))
+                .unwrap_or_default(),
             response_archive,
             response_sha256,
         ));
-        for (index, item) in sample.matches.iter().take(5).enumerate() {
+        for (index, item) in sample.matches.iter().enumerate() {
             output.push_str(&format!(
                 "- Sample {:02} Provider match {} [Provider-derived metadata]: {}\n",
                 sample.sequence,
@@ -2147,7 +2150,7 @@ mod tests {
         external.provider_status = AudioScreeningProviderStatus::Ready;
         external.requested_intensity_percent = 25;
         external.dynamic_by_track_duration = false;
-        external.reference_duration_seconds = 300;
+        external.reference_duration_seconds = Some(300);
         external.source_duration_milliseconds = Some(646_000);
         external.target_duration_milliseconds = 75_000;
         external.planned_request_count = 7;
@@ -2166,6 +2169,9 @@ mod tests {
                 duration_milliseconds: 12_000,
                 status: AudioScreeningStatus::NoMatchDetected,
                 message: "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                provider_status_code: Some(1001),
+                provider_status_message: Some("No result".into()),
+                provider_api_version: Some("1.0".into()),
                 matches: Vec::new(),
                 response_relative_path: Some(
                     "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_01.json".into(),
@@ -2179,11 +2185,16 @@ mod tests {
                 duration_milliseconds: 12_000,
                 status: AudioScreeningStatus::MatchDetected,
                 message: "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
-                matches: vec![crate::model::AudioScreeningMatch {
-                    title: "Sample match title".into(),
-                    artists: vec!["Sample match artist".into()],
-                    ..Default::default()
-                }],
+                provider_status_code: Some(0),
+                provider_status_message: Some("Success".into()),
+                provider_api_version: Some("1.0".into()),
+                matches: (0..6)
+                    .map(|index| crate::model::AudioScreeningMatch {
+                        title: format!("Sample match title {index}"),
+                        artists: vec![format!("Sample match artist {index}")],
+                        ..Default::default()
+                    })
+                    .collect(),
                 response_relative_path: Some(
                     "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_02.json".into(),
                 ),
@@ -2197,6 +2208,7 @@ mod tests {
             "External screening mode [System value]: MULTI-SAMPLE",
             "Requested coverage [System value]: 25 %",
             "Calculation mode [System value]: FIXED REFERENCE DURATION",
+            "Reference duration (seconds) [System value]: 300",
             "Planned requests [System value]: 7",
             "Executed requests [System verification]: 2",
             "Unique samples [System verification]: 2",
@@ -2206,12 +2218,14 @@ mod tests {
             "Track coverage (%) [System verification]: 3.72",
             "Overall result [System verification]: NO MATCH DETECTED",
             "Sample 01 [System verification]: Offset 30000 ms · End offset 42000 ms · Duration 12000 ms · Result NO MATCH",
+            "Provider Code: 1001 · Provider Message: No result · Provider Version: 1.0",
             "Sample 02 [System verification]: Offset 95000 ms · End offset 107000 ms · Duration 12000 ms · Result MATCH DETECTED",
-            "Sample match title — Sample match artist",
+            "Sample match title 5 — Sample match artist 5",
             "Audio-screening results are technical comparison records only.",
         ] {
             assert!(readme.contains(expected), "README omitted {expected}");
         }
+        assert!(!readme.contains("Reference duration (seconds) [System value]: N/A"));
         for forbidden in [
             "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",
             "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER",

@@ -2612,7 +2612,7 @@ export class SunoDocumentationApp {
       <div class="screening-run-summary__heading"><div><small>${isGerman ? "Dokumentierter Screening-Lauf" : "Recorded screening run"}</small><h5>${mode}</h5></div><strong>${executedRequestCount} ${isGerman ? "ausgeführt" : "executed"}</strong></div>
       <dl>
         <div><dt>${isGerman ? "Gewünschte Intensität" : "Requested intensity"}</dt><dd>${external.requestedIntensityPercent} %</dd></div>
-        <div><dt>${isGerman ? "Berechnungsmodus" : "Calculation mode"}</dt><dd>${escapeHtml(calculationMode)}${!external.dynamicByTrackDuration ? ` · ${escapeHtml(formatScreeningSeconds(external.referenceDurationSeconds, this.language))}` : ""}</dd></div>
+        <div><dt>${isGerman ? "Berechnungsmodus" : "Calculation mode"}</dt><dd>${escapeHtml(calculationMode)}${!external.dynamicByTrackDuration ? ` · ${external.referenceDurationSeconds === null ? "N/A" : escapeHtml(formatScreeningSeconds(external.referenceDurationSeconds, this.language))}` : ""}</dd></div>
         <div><dt>${isGerman ? "Tatsächliche Trackdauer" : "Actual track duration"}</dt><dd>${escapeHtml(value(external.sourceDurationMilliseconds))}</dd></div>
         <div><dt>${isGerman ? "Zielprüfzeit" : "Target screening time"}</dt><dd>${escapeHtml(value(external.targetDurationMilliseconds))}</dd></div>
         <div><dt>${isGerman ? "Geplante Requests" : "Planned requests"}</dt><dd>${external.plannedRequestCount}</dd></div>

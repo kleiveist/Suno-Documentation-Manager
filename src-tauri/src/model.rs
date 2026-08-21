@@ -670,11 +670,69 @@ pub struct AudioScreeningSampleRecord {
     pub duration_milliseconds: u64,
     pub status: AudioScreeningStatus,
     pub message: String,
+    /// Original provider status fields copied from the safe ACRCloud response
+    /// archive. They are optional so older screening records remain readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_status_code: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_status_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_api_version: Option<String>,
     pub matches: Vec<AudioScreeningMatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_relative_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_sha256: Option<String>,
+}
+
+impl AudioScreeningSampleRecord {
+    /// Formats only provider status metadata copied from the response. This is
+    /// deliberately separate from `status`/`message`, which are SunoDM's
+    /// internal technical interpretation of the sample.
+    pub fn provider_status_details(&self) -> Option<String> {
+        let mut details = Vec::new();
+        if let Some(code) = self.provider_status_code {
+            details.push(format!("Provider Code: {code}"));
+        }
+        if let Some(message) = self
+            .provider_status_message
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            details.push(format!("Provider Message: {message}"));
+        }
+        if let Some(version) = self
+            .provider_api_version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            details.push(format!("Provider Version: {version}"));
+        }
+        (!details.is_empty()).then(|| details.join(" · "))
+    }
+
+    /// Compact provider presentation used by the PDF sample rows.
+    pub fn provider_status_compact(&self) -> Option<String> {
+        let mut details = Vec::new();
+        if let Some(code) = self.provider_status_code {
+            details.push(code.to_string());
+        }
+        if let Some(message) = self
+            .provider_status_message
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            details.push(message.to_owned());
+        }
+        if let Some(version) = self
+            .provider_api_version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            details.push(format!("API {version}"));
+        }
+        (!details.is_empty()).then(|| format!("ACRCloud: {}", details.join(" · ")))
+    }
 }
 
 /// Durable state for the local Chromaprint run. The fingerprint itself is
@@ -747,7 +805,11 @@ pub struct AudioScreeningExternalRecord {
     pub screening_mode: AudioScreeningMode,
     pub requested_intensity_percent: u8,
     pub dynamic_by_track_duration: bool,
-    pub reference_duration_seconds: u64,
+    /// Fixed-duration calculation basis captured when the screening was run.
+    /// Historical records that predate this field remain distinguishable from
+    /// records that explicitly captured a configured value.
+    #[serde(default)]
+    pub reference_duration_seconds: Option<u64>,
     pub target_duration_milliseconds: u64,
     pub planned_request_count: u32,
     pub executed_request_count: u32,
@@ -792,7 +854,7 @@ impl Default for AudioScreeningExternalRecord {
             screening_mode: AudioScreeningMode::SingleSample,
             requested_intensity_percent: 5,
             dynamic_by_track_duration: true,
-            reference_duration_seconds: 300,
+            reference_duration_seconds: None,
             target_duration_milliseconds: 0,
             planned_request_count: 0,
             executed_request_count: 0,
@@ -883,7 +945,8 @@ pub struct AudioScreeningExternalSummary {
     pub screening_mode: AudioScreeningMode,
     pub requested_intensity_percent: u8,
     pub dynamic_by_track_duration: bool,
-    pub reference_duration_seconds: u64,
+    #[serde(default)]
+    pub reference_duration_seconds: Option<u64>,
     pub target_duration_milliseconds: u64,
     pub planned_request_count: u32,
     pub executed_request_count: u32,
@@ -2365,6 +2428,11 @@ mod tests {
 
     #[test]
     fn audio_screening_coverage_fields_default_for_legacy_settings_and_records() {
+        assert_eq!(
+            AudioScreeningExternalRecord::default().reference_duration_seconds,
+            None
+        );
+
         let settings: AudioScreeningSettings = serde_json::from_value(serde_json::json!({
             "enabled": true,
             "host": "identify-eu-west-1.acrcloud.com",
@@ -2392,9 +2460,43 @@ mod tests {
         assert_eq!(record.screening_mode, AudioScreeningMode::SingleSample);
         assert_eq!(record.requested_intensity_percent, 5);
         assert!(record.dynamic_by_track_duration);
-        assert_eq!(record.reference_duration_seconds, 300);
+        assert_eq!(record.reference_duration_seconds, None);
         assert!(record.samples.is_empty());
         assert_eq!(record.executed_request_count, 0);
+
+        let serialized = serde_json::to_value(&record).expect("serialize legacy record");
+        assert!(serialized["referenceDurationSeconds"].is_null());
+
+        let current: AudioScreeningExternalRecord = serde_json::from_value(serde_json::json!({
+            "referenceDurationSeconds": 300
+        }))
+        .expect("current external record");
+        assert_eq!(current.reference_duration_seconds, Some(300));
+
+        let summary = AudioScreeningExternalSummary::from(&record);
+        assert_eq!(summary.reference_duration_seconds, None);
+        let summary_json = serde_json::to_value(summary).expect("serialize external summary");
+        assert!(summary_json["referenceDurationSeconds"].is_null());
+    }
+
+    #[test]
+    fn legacy_acrcloud_samples_default_provider_status_fields() {
+        let sample: AudioScreeningSampleRecord = serde_json::from_value(serde_json::json!({
+            "sequence": 1,
+            "offsetMilliseconds": 0,
+            "endOffsetMilliseconds": 12000,
+            "durationMilliseconds": 12000,
+            "status": "no_match_detected",
+            "message": "Legacy sample",
+            "matches": []
+        }))
+        .expect("legacy sample");
+
+        assert!(sample.provider_status_code.is_none());
+        assert!(sample.provider_status_message.is_none());
+        assert!(sample.provider_api_version.is_none());
+        assert!(sample.provider_status_details().is_none());
+        assert!(sample.provider_status_compact().is_none());
     }
 
     #[test]

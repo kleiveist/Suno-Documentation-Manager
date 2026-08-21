@@ -36,6 +36,7 @@ import {
   shouldDiscardLockedDraft,
   shouldIgnoreModalBackdropClick,
   singleChoiceFieldMarkup,
+  SunoDocumentationApp,
   termsMetadataComplete,
   timestampArtifactLabel,
   timestampProviderIsReady,
@@ -418,6 +419,31 @@ describe("navigation", () => {
       message: "ACRCloud-Zugangsdaten fehlen; es wurde keine externe Katalogprüfung gestartet."
     });
     expect(visibleExternalAudioScreening(external, { status: "ready" })).toEqual(external);
+  });
+
+  it("renders fixed-reference screening summaries with nullable historical durations", () => {
+    const app = new SunoDocumentationApp({} as HTMLElement, {} as never);
+    const renderSummary = (referenceDurationSeconds: number | null): string => (
+      app as unknown as {
+        renderAudioScreeningRunSummary(
+          external: typeof emptyAudioScreeningSummary.external,
+          current: boolean
+        ): string;
+      }
+    ).renderAudioScreeningRunSummary({
+      ...emptyAudioScreeningSummary.external,
+      status: "no_match_detected",
+      dynamicByTrackDuration: false,
+      referenceDurationSeconds,
+      plannedRequestCount: 1
+    }, true);
+
+    expect(renderSummary(null)).toContain(
+      "<dt>Calculation mode</dt><dd>Fixed reference length · N/A</dd>"
+    );
+    expect(renderSummary(300)).toContain(
+      "<dt>Calculation mode</dt><dd>Fixed reference length · 300 seconds</dd>"
+    );
   });
 
   it("never presents a renamed release file as covered by its earlier local fingerprint", () => {

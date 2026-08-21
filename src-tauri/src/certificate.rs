@@ -30,6 +30,14 @@ pub const PDF_FILE_DE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf";
 pub const CERTIFICATE_FORMAT_VERSION: &str = "6.1";
 pub const EVIDENCE_MANIFEST_SCHEMA_VERSION: u32 = 8;
 
+// These sentinels exist only while the Markdown template is localized. Input
+// validation rejects them, and they are removed before either language is
+// published. They let the localizer distinguish historical values from
+// certificate-owned text even when a multiline value begins with Markdown
+// syntax or is literally named like a system status.
+const MARKDOWN_VALUE_START: char = '\u{1e}';
+const MARKDOWN_VALUE_END: char = '\u{1f}';
+
 /// Return a certificate label in the configured output language. The
 /// compatibility bilingual mode is used only for the Markdown presentation;
 /// PDF generation passes one language per file.
@@ -52,32 +60,102 @@ pub(crate) fn localized_certificate_paragraph(
 }
 
 /// Translate only certificate-owned Markdown labels and prose. Values supplied
-/// by the user or captured from evidence remain byte-for-byte unchanged.
+/// by the user or captured from evidence retain their original characters and
+/// language; multiline continuations are indented so their Markdown syntax
+/// cannot become certificate structure.
 fn localized_markdown_certificate(
     english_certificate: &str,
     options: CertificateRenderOptions,
 ) -> String {
+    let clean_english = materialize_markdown_values(english_certificate);
     if !matches!(options.language, CertificateLanguage::De) && !options.bilingual {
-        return english_certificate.to_owned();
+        return clean_english;
     }
 
+    let mut fence_length = None;
+    let mut protected_value = false;
     let german = english_certificate
-        .lines()
-        .map(german_markdown_line)
+        .split('\n')
+        .map(|line| {
+            // Protected historical content must never open/close a template
+            // code fence. Scan the transient origin markers before looking at
+            // Markdown syntax, including when a protected line is literally
+            // made only of backticks.
+            let protected_at_line_start = protected_value || line.starts_with(MARKDOWN_VALUE_START);
+            let contains_value_start = line.contains(MARKDOWN_VALUE_START);
+            for character in line.chars() {
+                if character == MARKDOWN_VALUE_START {
+                    protected_value = true;
+                } else if character == MARKDOWN_VALUE_END {
+                    protected_value = false;
+                }
+            }
+            if protected_at_line_start {
+                return line.to_owned();
+            }
+            if contains_value_start {
+                // A normal certificate label may precede a protected first
+                // value line. Translate that label while the sentinel keeps
+                // the field value outside the system-value allowlist.
+                return german_markdown_line(line);
+            }
+
+            let trimmed = line.trim();
+            if let Some(required) = fence_length {
+                if trimmed.len() >= required && trimmed.chars().all(|character| character == '`') {
+                    fence_length = None;
+                }
+                return line.to_owned();
+            }
+            let opening_length = trimmed
+                .chars()
+                .take_while(|character| *character == '`')
+                .count();
+            if opening_length >= 3 {
+                fence_length = Some(opening_length);
+                return line.to_owned();
+            }
+            german_markdown_line(line)
+        })
         .collect::<Vec<_>>()
         .join("\n");
+    let german = materialize_markdown_values(&german);
     if !options.bilingual {
         return german;
     }
 
     match options.language {
         CertificateLanguage::De => {
-            format!("{german}\n\n---\n\n# English certificate\n\n{english_certificate}")
+            format!("{german}\n\n---\n\n# English certificate\n\n{clean_english}")
         }
         CertificateLanguage::En => {
-            format!("{english_certificate}\n\n---\n\n# Deutsche Fassung\n\n{german}")
+            format!("{clean_english}\n\n---\n\n# Deutsche Fassung\n\n{german}")
         }
     }
+}
+
+fn materialize_markdown_values(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut protected = false;
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            MARKDOWN_VALUE_START => protected = true,
+            MARKDOWN_VALUE_END => protected = false,
+            '\r' if protected && characters.peek() == Some(&'\n') => {
+                output.push('\r');
+                output.push('\n');
+                characters.next();
+                output.push_str("    ");
+            }
+            '\r' | '\n' if protected => {
+                output.push(character);
+                output.push_str("    ");
+            }
+            _ => output.push(character),
+        }
+    }
+    output
 }
 
 fn german_markdown_line(line: &str) -> String {
@@ -88,11 +166,74 @@ fn german_markdown_line(line: &str) -> String {
     }
     if let Some(value) = line.strip_prefix("- ") {
         if let Some((label, field_value)) = value.split_once(": ") {
-            return format!("- {}: {field_value}", german_certificate_label(label));
+            return format!(
+                "- {}: {}",
+                german_certificate_label(label),
+                german_markdown_system_value(field_value)
+            );
         }
-        return format!("- {}", german_certificate_label(value));
+        if is_certificate_owned_markdown_prose(value) {
+            return format!("- {}", german_certificate_paragraph(value));
+        }
+        return line.to_owned();
     }
-    german_certificate_paragraph(line)
+    if is_certificate_owned_markdown_prose(line) {
+        return german_certificate_paragraph(line);
+    }
+    // Unprefixed lines can be multiline continuations of user-entered prompts,
+    // notes, or evidence metadata. Preserve them byte-for-byte instead of
+    // applying template substring replacements to historical values.
+    german_markdown_system_value(line)
+}
+
+fn german_markdown_system_value(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut segment = String::new();
+    let mut protected = false;
+    for character in value.chars() {
+        match character {
+            MARKDOWN_VALUE_START => {
+                if !segment.is_empty() {
+                    output.push_str(&german_certificate_label(&segment));
+                    segment.clear();
+                }
+                output.push(character);
+                protected = true;
+            }
+            MARKDOWN_VALUE_END => {
+                output.push_str(&segment);
+                segment.clear();
+                output.push(character);
+                protected = false;
+            }
+            _ => segment.push(character),
+        }
+    }
+    if protected {
+        output.push_str(&segment);
+    } else {
+        output.push_str(&german_certificate_label(&segment));
+    }
+    output
+}
+
+fn is_certificate_owned_markdown_prose(line: &str) -> bool {
+    matches!(
+        line,
+        "This retained historical data is unclassified legacy data and is not a Vocal Lyrics claim."
+            | "No AI Act compliance, legal necessity, or legal safety determination is made."
+            | "No AI Act compliance, legal necessity, legal safety, or other legal determination is made."
+            | "No archived terms evidence recorded."
+            | "No external timestamp evidence recorded."
+            | "Factual archive and coverage status only. No rights ownership, license validity, legality, or non-infringement conclusion is made."
+            | "This is a factual coverage and archive status only; it is not a rights determination."
+            | "Post-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot."
+            | "For long-term evidentiary preservation, an external timestamp can be added after technical finalization."
+            | "Audio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion."
+            | "This certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks."
+            | "It does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification."
+            | "Origin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**."
+    ) || line == crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE
 }
 
 fn localized_certificate_variant(
@@ -123,6 +264,41 @@ fn german_certificate_paragraph(english: &str) -> String {
         }
         "Finalized technical documentation, evidence, and integrity snapshot" => {
             "Finalisierter technischer Snapshot für Dokumentation, Evidence und Integrität"
+        }
+        "Technical evidence report — not a legal or governmental certification" => {
+            "Technischer Evidenzbericht — keine rechtliche oder behördliche Zertifizierung"
+        }
+        "Configured documentation requirements completed" => {
+            "Konfigurierte Dokumentationsanforderungen abgeschlossen"
+        }
+        "Status values describe documentation and technical checks only; they are not a rights clearance or legal approval." => {
+            "Statuswerte beschreiben ausschließlich Dokumentation und technische Prüfungen; sie stellen keine Rechtefreigabe oder rechtliche Genehmigung dar."
+        }
+        "All sections are part of the same immutable technical certificate rendition." => {
+            "Alle Abschnitte sind Bestandteil derselben unveränderlichen technischen Zertifikatsfassung."
+        }
+        "Timeline not available — no documented dates" => {
+            "Timeline nicht verfügbar — keine dokumentierten Datumswerte"
+        }
+        "Artwork preview not available" => "Artwork-Vorschau nicht verfügbar",
+        "Artwork images are visual previews only. Evidence ID, registered path, and full SHA-256 remain authoritative in the Evidence Register." => {
+            "Artwork-Bilder sind ausschließlich visuelle Vorschauen. Evidence-ID, registrierter Pfad und vollständiger SHA-256 bleiben im Evidenzregister maßgeblich."
+        }
+        "External screening: NOT RUN" => "Externes Screening: NICHT AUSGEFÜHRT",
+        "Proportional visualization unavailable — source duration not documented." => {
+            "Proportionale Visualisierung nicht verfügbar — Quelldauer nicht dokumentiert."
+        }
+        "The following A–L sections retain the complete technical certificate detail for audit and verification." => {
+            "Die folgenden Abschnitte A–L enthalten weiterhin sämtliche technischen Zertifikatsdetails für Audit und Verifikation."
+        }
+        "Full millisecond-bound ACRCloud sample records are retained in the Technical Appendix." => {
+            "Vollständige, millisekundengenau gebundene ACRCloud-Probendatensätze sind im technischen Anhang enthalten."
+        }
+        "This appendix retains long technical records that are summarized in the preceding certificate sections." => {
+            "Dieser Anhang enthält lange technische Datensätze, die in den vorangehenden Zertifikatsabschnitten zusammengefasst sind."
+        }
+        "No separate appendix records were required for this snapshot." => {
+            "Für diesen Snapshot waren keine separaten Anhangsdatensätze erforderlich."
         }
         "This is a factual coverage and archive status only; it is not a rights determination." => {
             "Dies ist ausschließlich ein sachlicher Abdeckungs- und Archivstatus; er stellt keine Rechtefeststellung dar."
@@ -157,6 +333,9 @@ fn german_certificate_paragraph(english: &str) -> String {
         "No AI Act compliance, legal necessity, legal safety, or other legal determination is made." => {
             "Es wird keine Feststellung zur AI-Act-Konformität, rechtlichen Erforderlichkeit, rechtlichen Sicherheit oder einer sonstigen rechtlichen Bewertung getroffen."
         }
+        "Documented input – this field records the submitted prompt and does not describe or verify the resulting audio content." => {
+            "Dokumentierte Eingabe – dieses Feld dokumentiert den eingegebenen Prompt und stellt keine Feststellung über den tatsächlichen finalen Audioinhalt dar."
+        }
         "External timestamp evidence at technical finalization: NOT RECORDED" => {
             "Externer Zeitstempelnachweis bei technischer Finalisierung: NICHT ERFASST"
         }
@@ -188,7 +367,7 @@ fn german_certificate_paragraph(english: &str) -> String {
 
 fn german_certificate_label(english: &str) -> String {
     let mut translated = english.to_owned();
-    for (source, target) in [
+    let mut replacements = [
         (
             "SunoDM – Technical Documentation and Evidence Certificate",
             "SunoDM – Technisches Dokumentations- und Evidenzzertifikat",
@@ -197,6 +376,169 @@ fn german_certificate_label(english: &str) -> String {
             "SunoDM Technical Documentation and Evidence Certificate",
             "SunoDM Technisches Dokumentations- und Evidenzzertifikat",
         ),
+        ("Summary", "Zusammenfassung"),
+        ("Evidence Overview", "Evidenzübersicht"),
+        ("Contents", "Inhaltsverzeichnis"),
+        (
+            "Full Technical Certificate",
+            "Vollständiges technisches Zertifikat",
+        ),
+        (
+            "Technical Evidence Certificate",
+            "Technisches Evidenzzertifikat",
+        ),
+        ("Technical Appendix", "Technischer Anhang"),
+        (
+            "Appendix A — ACRCloud sample records",
+            "Anhang A — ACRCloud-Probendatensätze",
+        ),
+        (
+            "Appendix B — Previous revision references",
+            "Anhang B — Referenzen früherer Revisionen",
+        ),
+        ("TRACK", "TRACK"),
+        ("Human Work", "Menschliche Arbeit"),
+        ("AI Transparency", "KI-Transparenz"),
+        ("Evidence & Licenses", "Evidenz & Lizenzen"),
+        ("Integrity", "Integrität"),
+        ("Finalize", "Finalisierung"),
+        ("Source", "Quelle"),
+        ("INTEGRITY", "INTEGRITÄT"),
+        ("RIGHTS EVIDENCE", "RECHTE-EVIDENCE"),
+        ("AI TRANSPARENCY", "KI-TRANSPARENZ"),
+        ("AUDIO SCREENING", "AUDIO-SCREENING"),
+        ("EXTERNAL TIMESTAMP", "EXTERNER ZEITSTEMPEL"),
+        ("Final artwork preview", "Vorschau des finalen Artworks"),
+        ("Final generation", "Finale Erzeugung"),
+        ("Suno plan", "Suno-Tarif"),
+        (
+            "Release = Suno final export",
+            "Release = finaler Suno-Export",
+        ),
+        ("Evidence files", "Evidence-Dateien"),
+        ("Production period covered", "Produktionszeitraum abgedeckt"),
+        ("Final generation covered", "Finale Erzeugung abgedeckt"),
+        ("Terms archived", "Nutzungsbedingungen archiviert"),
+        ("Generative AI documented", "Generative KI dokumentiert"),
+        ("Disclosure documented", "Hinweis dokumentiert"),
+        ("Artwork documented", "Artwork dokumentiert"),
+        ("Status", "Status"),
+        ("SHA-256 MATCH", "SHA-256-ÜBEREINSTIMMUNG"),
+        ("SHA-256 MISMATCH", "SHA-256-ABWEICHUNG"),
+        ("NOT AVAILABLE", "NICHT VERFÜGBAR"),
+        ("NOT COVERED", "NICHT ABGEDECKT"),
+        ("NOTICE", "HINWEIS"),
+        ("ERROR", "FEHLER"),
+        ("PASS", "PASS"),
+        (
+            "Track / production timeline",
+            "Track- / Produktions-Timeline",
+        ),
+        ("Technical finalization", "Technische Finalisierung"),
+        (
+            "Artwork process overview",
+            "Übersicht des Artwork-Prozesses",
+        ),
+        ("Suno original", "Suno-Original"),
+        ("AI original", "KI-Original"),
+        ("AI edited", "KI-bearbeitet"),
+        ("Human edited", "Menschlich bearbeitet"),
+        ("Final", "Final"),
+        ("Release artwork", "Release-Artwork"),
+        ("Preview N/A", "Vorschau N/A"),
+        (
+            "Audio sampling visualization",
+            "Visualisierung der Audio-Proben",
+        ),
+        ("External screening", "Externes Screening"),
+        ("Sample summary", "Probenzusammenfassung"),
+        ("Sampled duration", "Geprüfte Dauer"),
+        ("Coverage", "Abdeckung"),
+        (
+            "Screening and workflow snapshot",
+            "Screening- und Workflow-Snapshot",
+        ),
+        ("Provider response", "Providerantwort"),
+        ("API version", "API-Version"),
+        ("Workflow checks", "Workflow-Prüfungen"),
+        (
+            "Provider configuration status",
+            "Status der Providerkonfiguration",
+        ),
+        ("Step", "Schritt"),
+        (
+            "Authoritative status / N/A reason",
+            "Autoritativer Status / N/A-Grund",
+        ),
+        ("N/A reason", "N/A-Grund"),
+        (
+            "Evidence Register (continued)",
+            "Evidenzregister (Fortsetzung)",
+        ),
+        ("Provider response archive", "Provider-Antwortarchiv"),
+        (
+            "Consolidated response archive",
+            "Konsolidiertes Antwortarchiv",
+        ),
+        ("ACRCloud sample responses", "ACRCloud-Probenantworten"),
+        (
+            "Single ACRCloud response archive",
+            "Archiv einer einzelnen ACRCloud-Antwort",
+        ),
+        (
+            "Multiple response archives retained in the sample records",
+            "Mehrere Antwortarchive sind in den Probendatensätzen erhalten",
+        ),
+        (
+            "Shared response archive referenced by all sample records",
+            "Gemeinsames Antwortarchiv wird von allen Probendatensätzen referenziert",
+        ),
+        (
+            "Partial consolidated response archive",
+            "Teilweise konsolidiertes Antwortarchiv",
+        ),
+        (" of ", " von "),
+        ("sample records", "Probendatensätze"),
+        (
+            "Top-level response archive recorded; per-sample bindings not documented",
+            "Übergeordnetes Antwortarchiv erfasst; Bindungen je Probe nicht dokumentiert",
+        ),
+        (
+            "Conflicting top-level and per-sample response archive references retained",
+            "Widersprüchliche übergeordnete und probenspezifische Antwortarchiv-Referenzen erhalten",
+        ),
+        ("No response archive recorded", "Kein Antwortarchiv erfasst"),
+        (
+            "Human contribution documented",
+            "Menschlicher Beitrag dokumentiert",
+        ),
+        (
+            "Documented human contribution",
+            "Dokumentierter menschlicher Beitrag",
+        ),
+        (
+            "External desktop/post-export editing documented",
+            "Externe Desktop-/Post-Export-Bearbeitung dokumentiert",
+        ),
+        (
+            "Documented desktop/post-export editing",
+            "Dokumentierte Desktop-/Post-Export-Bearbeitung",
+        ),
+        (
+            "Documented Suno style prompt",
+            "Dokumentierter Suno-Style-Prompt",
+        ),
+        ("Source Evidence ID", "Quell-Evidence-ID"),
+        ("Source SHA-256", "Quell-SHA-256"),
+        ("Previous revisions", "Frühere Revisionen"),
+        (
+            "Full numbered list in Technical Appendix",
+            "Vollständige nummerierte Liste im technischen Anhang",
+        ),
+        ("Position", "Position"),
+        ("Duration", "Dauer"),
+        ("Result", "Ergebnis"),
+        ("Provider", "Provider"),
         (
             "A. Certificate / Snapshot Identity",
             "A. Zertifikats- / Snapshot-Identität",
@@ -311,12 +653,17 @@ fn german_certificate_label(english: &str) -> String {
         ("Track coverage (%)", "Track-Abdeckung (%)"),
         ("ACRCloud provider status", "ACRCloud-Anbieterstatus"),
         ("Overall result", "Gesamtergebnis"),
+        ("track coverage", "Track-Abdeckung"),
         ("Sample results", "Probenergebnisse"),
         ("Response archive", "Antwortarchiv"),
         ("Response SHA-256", "Antwort-SHA-256"),
         ("Sample", "Probe"),
         ("Provider matches", "Anbietertreffer"),
         ("Provider match", "Anbietertreffer"),
+        (
+            "recorded; complete per-sample records in Technical Appendix",
+            "erfasst; vollständige probenspezifische Datensätze im technischen Anhang",
+        ),
         (
             "Provider-derived metadata",
             "Vom Anbieter abgeleitete Metadaten",
@@ -336,6 +683,10 @@ fn german_certificate_label(english: &str) -> String {
         (
             "Historical user data; not a plan-at-generation claim",
             "Historische Nutzerdaten; keine Aussage zum Tarif bei der Erzeugung",
+        ),
+        (
+            "Legacy plan-at-creation value",
+            "Historischer Tarifwert bei der Erstellung",
         ),
         ("Evidence-derived metadata", "Aus Evidenzmetadaten"),
         ("User-confirmed fact", "Vom Nutzer bestätigte Angabe"),
@@ -407,6 +758,22 @@ fn german_certificate_label(english: &str) -> String {
         (
             "Archived service-terms evidence",
             "Archivierte Evidence zu Nutzungsbedingungen",
+        ),
+        (
+            "Terms applicable to documented production period",
+            "Für den dokumentierten Produktionszeitraum geltende Nutzungsbedingungen",
+        ),
+        ("Future archived Terms", "Künftig geltende archivierte Nutzungsbedingungen"),
+        ("Other archived Terms", "Weitere archivierte Nutzungsbedingungen"),
+        (
+            "Not applicable to production before",
+            "Nicht auf Produktionen vor diesem Datum anwendbar:",
+        ),
+        ("Terms version", "Nutzungsbedingungen-Fassung"),
+        ("effective date", "Gültigkeitsdatum"),
+        (
+            "documented production period",
+            "dokumentierter Produktionszeitraum",
         ),
         (
             "External timestamp evidence at technical finalization",
@@ -596,6 +963,19 @@ fn german_certificate_label(english: &str) -> String {
         ("Subscription evidence", "Abo-Evidence"),
         ("Terms document", "Dokument zu Nutzungsbedingungen"),
         ("Evidence ID", "Evidence-ID"),
+        ("evidence ID", "Evidence-ID"),
+        (" title", " Titel"),
+        (" provider/source", " Anbieter/Quelle"),
+        (" source URL", " Quell-URL"),
+        (" retrieval date", " Abrufdatum"),
+        (" applicable production period", " anwendbarer Produktionszeitraum"),
+        (" factual note", " sachliche Anmerkung"),
+        (" path", " Pfad"),
+        (" original filename", " ursprünglicher Dateiname"),
+        (" imported at", " importiert am"),
+        (" provenance", " Herkunft"),
+        (" coverage start", " Abdeckungsbeginn"),
+        (" coverage end", " Abdeckungsende"),
         ("Original filename", "Ursprünglicher Dateiname"),
         ("Original file name", "Ursprünglicher Dateiname"),
         ("Managed filename", "Verwalteter Dateiname"),
@@ -620,6 +1000,20 @@ fn german_certificate_label(english: &str) -> String {
         ("Derived from evidence ID", "Abgeleitet von Evidence-ID"),
         ("Generator version", "Generatorversion"),
         ("Generated disclosure text", "Generierter Hinweistext"),
+        ("File extension", "Dateiendung"),
+        ("MIME type", "MIME-Typ"),
+        ("Audio format", "Audioformat"),
+        ("Audio channels", "Audiokanäle"),
+        ("Audio sample rate (Hz)", "Audio-Abtastrate (Hz)"),
+        ("Audio duration (ms)", "Audiodauer (ms)"),
+        ("Audio bit depth", "Audio-Bittiefe"),
+        ("Suno created timestamp", "Suno-Erstellungszeitstempel"),
+        ("Suno created date", "Suno-Erstellungsdatum"),
+        ("Suno ID", "Suno-ID"),
+        ("Raw Suno metadata", "Suno-Rohmetadaten"),
+        ("Embedded metadata", "Eingebettete Metadaten"),
+        (" key", " Schlüssel"),
+        (" value", " Wert"),
         ("Coverage start", "Abdeckungsbeginn"),
         ("Coverage end", "Abdeckungsende"),
         (
@@ -646,11 +1040,74 @@ fn german_certificate_label(english: &str) -> String {
             "Evidenzregister (Fortsetzung)",
         ),
         ("(continuation)", "(Fortsetzung)"),
-        ("NOT RECORDED", "NICHT ERFASST"),
-        ("NOT DOCUMENTED", "NICHT DOKUMENTIERT"),
-        ("NOT VERIFIED", "NICHT VERIFIZIERT"),
         ("DOCUMENTATION COMPLETE", "DOKUMENTATION ABGESCHLOSSEN"),
-    ] {
+        (
+            "MULTIPLE — see Technical Appendix",
+            "MEHRERE — siehe Technischer Anhang",
+        ),
+        ("FINGERPRINT GENERATED", "FINGERPRINT ERZEUGT"),
+        ("NO MATCH DETECTED", "KEIN TREFFER ERKANNT"),
+        ("MATCH DETECTED", "ÜBEREINSTIMMUNG ERKANNT"),
+        ("NO MATCH", "KEINE ÜBEREINSTIMMUNG"),
+        ("NOT RUN", "NICHT AUSGEFÜHRT"),
+        ("NONE RECORDED", "KEINE ERFASST"),
+        ("DYNAMIC BY TRACK DURATION", "DYNAMISCH NACH TRACKDAUER"),
+        ("FIXED REFERENCE DURATION", "FESTE REFERENZDAUER"),
+        ("READY", "BEREIT"),
+        ("DISABLED", "DEAKTIVIERT"),
+        ("NOT CONFIGURED", "NICHT KONFIGURIERT"),
+        ("AUTHENTICATION FAILED", "AUTHENTIFIZIERUNG FEHLGESCHLAGEN"),
+        ("PROVIDER UNAVAILABLE", "ANBIETER NICHT VERFÜGBAR"),
+        ("CONFIGURATION INVALID", "KONFIGURATION UNGÜLTIG"),
+        ("SKIPPED NOT CONFIGURED", "ÜBERSPRUNGEN — NICHT KONFIGURIERT"),
+        ("ENGINE UNAVAILABLE", "ENGINE NICHT VERFÜGBAR"),
+        ("UNSUPPORTED FORMAT", "NICHT UNTERSTÜTZTES FORMAT"),
+        ("PROCESSING FAILED", "VERARBEITUNG FEHLGESCHLAGEN"),
+        ("STALE", "VERALTET"),
+        ("NOT_RUN", "NICHT_AUSGEFÜHRT"),
+        ("FAIL", "FEHLGESCHLAGEN"),
+        ("BLOCKED", "BLOCKIERT"),
+        ("NOT_VERIFIED", "NICHT_VERIFIZIERT"),
+        ("MULTI-SAMPLE", "MEHRFACH-PROBE"),
+        (
+            "INCOMPLETE – generative AI use NOT DOCUMENTED",
+            "UNVOLLSTÄNDIG – Nutzung generativer KI NICHT DOKUMENTIERT",
+        ),
+        (
+            "Potential deepfake-related indicator recorded",
+            "Potenzieller Deepfake-bezogener Indikator erfasst",
+        ),
+        (
+            "Documented deepfake-related indicators: none recorded",
+            "Dokumentierte Deepfake-bezogene Indikatoren: keine erfasst",
+        ),
+        (
+            "Deepfake-related indicator documentation: INCOMPLETE",
+            "Dokumentation Deepfake-bezogener Indikatoren: UNVOLLSTÄNDIG",
+        ),
+        ("BYTE-IDENTICAL / SHA-256 MATCH", "BYTE-IDENTISCH / SHA-256-ÜBEREINSTIMMUNG"),
+        ("NO SHA-256 MATCH", "KEINE SHA-256-ÜBEREINSTIMMUNG"),
+        ("VOCAL_LYRICS_ONLY", "NUR_VOCAL_LYRICS"),
+        ("STRUCTURE_ONLY", "NUR_STRUKTUR"),
+        ("MIXED", "GEMISCHT"),
+        ("OTHER", "SONSTIGES"),
+        ("EMPTY", "LEER"),
+        ("VOCAL", "MIT_GESANG"),
+        ("INSTRUMENTAL", "INSTRUMENTAL"),
+        ("UNSPECIFIED", "NICHT_SPEZIFIZIERT"),
+        ("YES", "JA"),
+        ("NO", "NEIN"),
+        ("NOT DOCUMENTED", "NICHT DOKUMENTIERT"),
+        ("NOT RECORDED", "NICHT ERFASST"),
+        ("NOT VERIFIED", "NICHT VERIFIZIERT"),
+        ("DOCUMENTED", "DOKUMENTIERT"),
+        ("COMPLETE", "VOLLSTÄNDIG"),
+    ];
+    // Translate the most specific phrase first. This prevents a short summary
+    // label such as "Final generation" or "DOCUMENTED" from consuming the
+    // prefix of a longer technical label/status before it can be localized.
+    replacements.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+    for (source, target) in replacements {
         translated = translated.replace(source, target);
     }
     translated
@@ -686,7 +1143,7 @@ struct ManifestEvidence<'a> {
 fn audio_screening_manifest(state: &AudioScreeningState) -> serde_json::Value {
     let local = &state.local;
     let external = &state.external;
-    let matches = external.matches.iter().take(5).collect::<Vec<_>>();
+    let matches = &external.matches;
     let samples = external
         .samples
         .iter()
@@ -697,9 +1154,12 @@ fn audio_screening_manifest(state: &AudioScreeningState) -> serde_json::Value {
                 "endOffsetMilliseconds": sample.end_offset_milliseconds,
                 "durationMilliseconds": sample.duration_milliseconds,
                 "status": sample.status,
+                "providerStatusCode": sample.provider_status_code,
+                "providerStatusMessage": sample.provider_status_message,
+                "providerApiVersion": sample.provider_api_version,
                 "responseRelativePath": sample.response_relative_path,
                 "responseSha256": sample.response_sha256,
-                "matches": sample.matches.iter().take(5).collect::<Vec<_>>(),
+                "matches": &sample.matches,
             })
         })
         .collect::<Vec<_>>();
@@ -780,42 +1240,34 @@ fn audio_screening_markdown(state: &AudioScreeningState) -> String {
     let mut output = format!(
         "- Local screening status [System verification]: **{}**\n- Local engine [System verification]: {}\n- Local engine version [System verification]: {}\n- Fingerprint algorithm [System verification]: {}\n- Local source Evidence ID [System verification]: {}\n- Local source path [System verification]: `{}`\n- Local source SHA-256 [System verification]: `{}`\n- Local source size (bytes) [System verification]: {}\n- Local measured duration (ms) [System verification]: {}\n- Local record path [System verification]: `{}`\n- Local record SHA-256 [System verification]: `{}`\n- Local generated at [System value]: {}\n\n- External screening provider [System value]: {}\n- External screening status [System verification]: **{}**\n- External provider configured at snapshot [System value]: {}\n- External source Evidence ID [System verification]: {}\n- External source path [System verification]: `{}`\n- External source SHA-256 [System verification]: `{}`\n- External checked at [System value]: {}\n{legacy_sample_block}- External source duration (ms) [System value]: {}\n- External request count [System value]: {}\n- External response archive [System verification]: `{}`\n- External response SHA-256 [System verification]: `{}`\n",
         audio_screening_status_label(local.status),
-        documented(&local.engine),
-        documented(&local.engine_version),
-        documented(&local.fingerprint_algorithm),
-        documented(&local.source_evidence_id),
-        documented(&local.source_relative_path),
-        documented(&local.source_sha256),
+        markdown_documented(&local.engine),
+        markdown_documented(&local.engine_version),
+        markdown_documented(&local.fingerprint_algorithm),
+        markdown_documented(&local.source_evidence_id),
+        markdown_documented(&local.source_relative_path),
+        markdown_documented(&local.source_sha256),
         local.source_size_bytes,
         local
             .duration_milliseconds
             .map(|value| value.to_string())
             .unwrap_or_else(|| "NOT DOCUMENTED".into()),
-        documented(&local.artifact_relative_path),
-        documented(&local.artifact_sha256),
-        local.generated_at.as_deref().unwrap_or("NOT DOCUMENTED"),
-        documented(&external.provider),
+        markdown_documented(&local.artifact_relative_path),
+        markdown_documented(&local.artifact_sha256),
+        markdown_optional_value(local.generated_at.as_deref(), "NOT DOCUMENTED"),
+        markdown_documented(&external.provider),
         audio_screening_status_label(external.status),
         recorded_bool(external.configured_at_snapshot),
-        documented(&external.source_evidence_id),
-        documented(&external.source_relative_path),
-        documented(&external.source_sha256),
-        external.checked_at.as_deref().unwrap_or("NOT DOCUMENTED"),
+        markdown_documented(&external.source_evidence_id),
+        markdown_documented(&external.source_relative_path),
+        markdown_documented(&external.source_sha256),
+        markdown_optional_value(external.checked_at.as_deref(), "NOT DOCUMENTED"),
         external
             .source_duration_milliseconds
             .map(|value| value.to_string())
             .unwrap_or_else(|| "NOT DOCUMENTED".into()),
         external.request_count,
-        external
-            .response_relative_path
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("NOT RECORDED"),
-        external
-            .response_sha256
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("NOT RECORDED"),
+        markdown_optional_value(external.response_relative_path.as_deref(), "NOT RECORDED"),
+        markdown_optional_value(external.response_sha256.as_deref(), "NOT RECORDED"),
     );
 
     output.push_str(&multi_sample_markdown_block(external));
@@ -823,7 +1275,7 @@ fn audio_screening_markdown(state: &AudioScreeningState) -> String {
     if external.matches.is_empty() {
         output.push_str("- Provider matches [Provider-derived metadata]: NONE RECORDED\n");
     } else {
-        for (index, item) in external.matches.iter().take(5).enumerate() {
+        for (index, item) in external.matches.iter().enumerate() {
             let artists = if item.artists.is_empty() {
                 "NOT DOCUMENTED".to_owned()
             } else {
@@ -855,8 +1307,9 @@ fn audio_screening_markdown(state: &AudioScreeningState) -> String {
                 value.push_str(&format!("; score {score}"));
             }
             output.push_str(&format!(
-                "- Provider match {} [Provider-derived metadata]: {value}\n",
-                index + 1
+                "- Provider match {} [Provider-derived metadata]: {}\n",
+                index + 1,
+                markdown_raw_value(&value),
             ));
         }
     }
@@ -874,11 +1327,10 @@ fn multi_sample_markdown_block(external: &AudioScreeningExternalRecord) -> Strin
     } else {
         "FIXED REFERENCE DURATION"
     };
-    let reference_duration = if external.dynamic_by_track_duration {
-        "N/A".to_owned()
-    } else {
-        external.reference_duration_seconds.to_string()
-    };
+    let reference_duration = external
+        .reference_duration_seconds
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "N/A".into());
     let mut output = format!(
         "\n- External screening mode [System value]: **{}**\n- Requested coverage [System value]: {} %\n- Calculation mode [System value]: {}\n- Reference duration (seconds) [System value]: {}\n- Target screening duration (ms) [System value]: {}\n- Planned requests [System value]: {}\n- Executed requests [System verification]: {}\n- Unique samples [System verification]: {}\n- Duplicate samples [System verification]: {}\n- Overlapping samples [System verification]: {}\n- Unique sampled duration (ms) [System verification]: {}\n- Track coverage (%) [System verification]: {:.2}\n- ACRCloud provider status [System verification]: {}\n- Overall result [System verification]: **{}**\n",
         external.screening_mode.as_str(),
@@ -903,36 +1355,57 @@ fn multi_sample_markdown_block(external: &AudioScreeningExternalRecord) -> Strin
     }
 
     for sample in &external.samples {
-        let response_archive = sample
-            .response_relative_path
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("NOT RECORDED");
-        let response_sha256 = sample
-            .response_sha256
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("NOT RECORDED");
+        let response_archive =
+            markdown_optional_value(sample.response_relative_path.as_deref(), "NOT RECORDED");
+        let response_sha256 =
+            markdown_optional_value(sample.response_sha256.as_deref(), "NOT RECORDED");
         output.push_str(&format!(
-            "- Sample {:02} [System verification]: Offset {} ms · End offset {} ms · Duration {} ms · Result {} · Response archive `{}` · Response SHA-256 `{}`\n",
+            "- Sample {:02} [System verification]: Offset {} ms · End offset {} ms · Duration {} ms · Result {}{} · Response archive `{}` · Response SHA-256 `{}`\n",
             sample.sequence,
             sample.offset_milliseconds,
             sample.end_offset_milliseconds,
             sample.duration_milliseconds,
             sample_result_label(sample.status),
+            markdown_provider_status_details(sample)
+                .map(|details| format!(" · {details}"))
+                .unwrap_or_default(),
             response_archive,
             response_sha256,
         ));
-        for (index, item) in sample.matches.iter().take(5).enumerate() {
+        for (index, item) in sample.matches.iter().enumerate() {
             output.push_str(&format!(
                 "- Sample {:02} Provider match {} [Provider-derived metadata]: {}\n",
                 sample.sequence,
                 index + 1,
-                audio_screening_match_summary(item),
+                markdown_raw_value(&audio_screening_match_summary(item)),
             ));
         }
     }
     output
+}
+
+fn markdown_provider_status_details(
+    sample: &crate::model::AudioScreeningSampleRecord,
+) -> Option<String> {
+    let mut details = Vec::new();
+    if let Some(code) = sample.provider_status_code {
+        details.push(format!("Provider Code: {code}"));
+    }
+    if let Some(message) = sample
+        .provider_status_message
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        details.push(format!("Provider Message: {}", markdown_raw_value(message)));
+    }
+    if let Some(version) = sample
+        .provider_api_version
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        details.push(format!("Provider Version: {}", markdown_raw_value(version)));
+    }
+    (!details.is_empty()).then(|| details.join(" · "))
 }
 
 fn has_multi_sample_data(external: &AudioScreeningExternalRecord) -> bool {
@@ -1477,7 +1950,10 @@ fn generate_impl(
             format!(
                 "- {} — {}\n",
                 step.id,
-                step.na_reason.as_deref().unwrap_or("NOT DOCUMENTED")
+                step.na_reason
+                    .as_deref()
+                    .map(markdown_documented)
+                    .unwrap_or_else(|| "NOT DOCUMENTED".into())
             )
         })
         .collect::<String>();
@@ -1492,10 +1968,12 @@ fn generate_impl(
         .count();
     let release_file_name =
         crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav)
-            .unwrap_or("NOT RECORDED");
+            .map(markdown_raw_value)
+            .unwrap_or_else(|| "NOT RECORDED".into());
     let suno_export_file_name =
         crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport)
-            .unwrap_or("NOT RECORDED");
+            .map(markdown_raw_value)
+            .unwrap_or_else(|| "NOT RECORDED".into());
     let generation_coverage =
         match crate::workflow::subscription_generation_coverage(track, evidence) {
             crate::workflow::CoverageStatus::Yes => "YES",
@@ -1512,7 +1990,7 @@ fn generate_impl(
     let final_generation_id_origin = fact_origin_label(automation.final_generation_id_origin);
     let download_export_origin = fact_origin_label(automation.download_export_origin);
     let last_editing_origin = fact_origin_label(automation.final_export_origin);
-    let last_editing_date = documented(&track.fields.final_export_date);
+    let last_editing_date = markdown_documented(&track.fields.final_export_date);
     let suno_metadata_detected = yes_no(automation.suno_metadata_detected);
     let release_identical_to_suno_export = yes_no(automation.release_identical_to_suno_export);
     let evidence_register_md = evidence_register_markdown(&evidence_values);
@@ -1526,7 +2004,7 @@ fn generate_impl(
     } else {
         terms
             .iter()
-            .map(|item| format!("`{}`", item.id))
+            .map(|item| format!("`{}`", markdown_raw_value(&item.id)))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -1541,26 +2019,26 @@ fn generate_impl(
     let revision_archives = if archived_revisions.is_empty() {
         "NONE RECORDED".to_owned()
     } else {
-        archived_revisions.join(", ")
+        markdown_raw_value(&archived_revisions.join(", "))
     };
     let english_certificate = format!(
         "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- Final generation ID [{final_generation_id_origin}]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: **NOT RECORDED**\n- No external timestamp evidence recorded.\n{}\nPost-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot.\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### K.1 Configured workflow checks\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n### K.2 Pre-release audio screening\n\n{audio_screening_md}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
         env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
-        track.fields.title,
-        profile.artist_name,
-        documented(&track.fields.suno_final_generation_date),
-        documented(&track.fields.suno_final_generation_id),
-        documented(&track.fields.suno_project_url),
-        documented(&track.fields.suno_download_export_date),
+        markdown_documented(&track.fields.title),
+        markdown_documented(&profile.artist_name),
+        markdown_documented(&track.fields.suno_final_generation_date),
+        markdown_documented(&track.fields.suno_final_generation_id),
+        markdown_documented(&track.fields.suno_project_url),
+        markdown_documented(&track.fields.suno_download_export_date),
         if automation.suno_metadata_detected {
             "Evidence-derived metadata"
         } else {
             "NOT DOCUMENTED"
         },
-        documented(&track.fields.suno_model),
-        documented(&track.fields.suno_plan_at_generation),
+        markdown_documented(&track.fields.suno_model),
+        markdown_documented(&track.fields.suno_plan_at_generation),
         if terms.is_empty() { "NO" } else { "YES" },
         recorded_bool(track.fields.suno_terms_evidence_not_available),
         if track.fields.commercial_use_intended {
@@ -1578,7 +2056,7 @@ fn generate_impl(
     let english_certificate = english_certificate.replacen(
         &format!(
             "- Suno plan at generation [User-confirmed fact]: {}\n",
-            documented(&track.fields.suno_plan_at_generation)
+            markdown_documented(&track.fields.suno_plan_at_generation)
         ),
         &suno_plan_md,
         1,
@@ -1592,6 +2070,7 @@ fn generate_impl(
             "Injected technical PDF generation failure.".into(),
         ));
     }
+    let artwork_previews = certificate_pdf::prepare_artwork_previews(track_root, &evidence_values);
     let pdf_en = certificate_pdf::generate_pdf(&CertificatePdfSnapshot {
         track,
         automation: &automation,
@@ -1606,6 +2085,7 @@ fn generate_impl(
         sha256sums_sha256: &hash_manifest_sha,
         evidence_manifest_sha256: &manifest_sha,
         markdown_certificate_sha256: &certificate_sha,
+        artwork_previews: &artwork_previews,
         render_options: CertificateRenderOptions {
             language: CertificateLanguage::En,
             bilingual: false,
@@ -1625,6 +2105,7 @@ fn generate_impl(
         sha256sums_sha256: &hash_manifest_sha,
         evidence_manifest_sha256: &manifest_sha,
         markdown_certificate_sha256: &certificate_sha,
+        artwork_previews: &artwork_previews,
         render_options: CertificateRenderOptions {
             language: CertificateLanguage::De,
             bilingual: false,
@@ -2095,29 +2576,29 @@ fn evidence_register_markdown(evidence: &[&EvidenceItem]) -> String {
                 "### {}. {}\n\n- Evidence ID [System value]: `{}`\n- Original filename [Evidence-derived metadata]: `{}`\n- Managed filename [System value]: `{}`\n- Role [System value]: `{}`\n- Provenance [System value]: `{}`\n- Relative path [System value]: `{}`\n- Size [System value]: {} bytes\n- SHA-256 [System verification]: `{}`\n- Imported at [System value]: `{}`\n- Document title [User-confirmed fact]: {}\n- Provider/source [User-confirmed fact]: {}\n- Source URL [User-confirmed fact]: {}\n- Retrieval date [User-confirmed fact]: {}\n- Effective date [User-confirmed fact]: {}\n- Applicable production period [User-confirmed fact]: {}\n- Factual note [User-confirmed fact]: {}\n- Source global evidence ID [System value]: `{}`\n- Derived from evidence ID [System value]: `{}`\n- Generator version [System value]: `{}`\n- Generated disclosure text [System value]: {}\n\n",
                 index + 1,
                 item.role.as_str(),
-                item.id,
-                documented(&item.metadata.original_file_name),
-                item.file_name,
+                markdown_raw_value(&item.id),
+                markdown_documented(&item.metadata.original_file_name),
+                markdown_raw_value(&item.file_name),
                 item.role.as_str(),
                 item.provenance.as_str(),
-                item.relative_path,
+                markdown_raw_value(&item.relative_path),
                 item.size_bytes,
-                item.sha256.as_deref().unwrap_or("NOT RECORDED"),
-                item.imported_at,
-                documented(&item.metadata.document_title),
-                documented(&item.metadata.provider),
-                documented(&item.metadata.source_url),
-                documented(&item.metadata.retrieval_date),
-                documented(&item.metadata.effective_date),
-                documented(&item.metadata.applicable_production_period),
-                documented(&item.metadata.factual_note),
-                item.source_global_evidence_id.as_deref().unwrap_or("N/A"),
-                item.derived_from_evidence_id.as_deref().unwrap_or("N/A"),
-                item.generator_version.as_deref().unwrap_or("N/A"),
+                markdown_optional_value(item.sha256.as_deref(), "NOT RECORDED"),
+                markdown_documented(&item.imported_at),
+                markdown_documented(&item.metadata.document_title),
+                markdown_documented(&item.metadata.provider),
+                markdown_documented(&item.metadata.source_url),
+                markdown_documented(&item.metadata.retrieval_date),
+                markdown_documented(&item.metadata.effective_date),
+                markdown_documented(&item.metadata.applicable_production_period),
+                markdown_documented(&item.metadata.factual_note),
+                markdown_optional_value(item.source_global_evidence_id.as_deref(), "N/A"),
+                markdown_optional_value(item.derived_from_evidence_id.as_deref(), "N/A"),
+                markdown_optional_value(item.generator_version.as_deref(), "N/A"),
                 item.generated_disclosure_text
                     .as_deref()
-                    .map(documented)
-                    .unwrap_or("N/A"),
+                    .map(markdown_documented)
+                    .unwrap_or_else(|| "N/A".into()),
             )
         })
         .collect()
@@ -2134,19 +2615,19 @@ fn terms_evidence_markdown(terms: &[&EvidenceItem]) -> String {
             format!(
                 "#### Terms evidence {} — `{}`\n\n- Evidence ID [System value]: `{}`\n- Document title [User-confirmed fact]: {}\n- Provider/source [User-confirmed fact]: {}\n- Source URL [User-confirmed fact]: {}\n- Retrieval date [User-confirmed fact]: {}\n- Effective date [User-confirmed fact]: {}\n- Applicable production period [User-confirmed fact]: {}\n- Factual note [User-confirmed fact]: {}\n- Relative path [System value]: `{}`\n- Original filename [Evidence-derived metadata]: `{}`\n- SHA-256 [System verification]: `{}`\n- Imported at [System value]: `{}`\n- Provenance [System value]: `{}`\n\n",
                 index + 1,
-                item.id,
-                item.id,
-                documented(&item.metadata.document_title),
-                documented(&item.metadata.provider),
-                documented(&item.metadata.source_url),
-                documented(&item.metadata.retrieval_date),
-                documented(&item.metadata.effective_date),
-                documented(&item.metadata.applicable_production_period),
-                documented(&item.metadata.factual_note),
-                item.relative_path,
-                documented(&item.metadata.original_file_name),
-                item.sha256.as_deref().unwrap_or("NOT RECORDED"),
-                item.imported_at,
+                markdown_raw_value(&item.id),
+                markdown_raw_value(&item.id),
+                markdown_documented(&item.metadata.document_title),
+                markdown_documented(&item.metadata.provider),
+                markdown_documented(&item.metadata.source_url),
+                markdown_documented(&item.metadata.retrieval_date),
+                markdown_documented(&item.metadata.effective_date),
+                markdown_documented(&item.metadata.applicable_production_period),
+                markdown_documented(&item.metadata.factual_note),
+                markdown_raw_value(&item.relative_path),
+                markdown_documented(&item.metadata.original_file_name),
+                markdown_optional_value(item.sha256.as_deref(), "NOT RECORDED"),
+                markdown_documented(&item.imported_at),
                 item.provenance.as_str(),
             )
         })
@@ -2156,8 +2637,8 @@ fn terms_evidence_markdown(terms: &[&EvidenceItem]) -> String {
 fn suno_plan_context_markdown(fields: &TrackFields) -> String {
     format!(
         "- Suno plan at generation [User-confirmed fact]: {}\n- Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: {}\n",
-        documented(&fields.suno_plan_at_generation),
-        documented(&fields.legacy_suno_plan_at_creation),
+        markdown_documented(&fields.suno_plan_at_generation),
+        markdown_documented(&fields.legacy_suno_plan_at_creation),
     )
 }
 
@@ -2168,29 +2649,37 @@ fn source_provenance_markdown(fields: &TrackFields, evidence: &[&EvidenceItem]) 
     let mut output = format!(
         "- External audio uploaded [User-confirmed fact]: {}\n- External audio source [User-confirmed fact]: {}\n- External audio provenance statement [User-confirmed fact]: {}\n- Own audio uploaded [User-confirmed fact]: {}\n- Own audio source [User-confirmed fact]: {}\n- Own audio provenance statement [User-confirmed fact]: {}\n- Third-party samples uploaded [User-confirmed fact]: {}\n- Third-party sample source [User-confirmed fact]: {}\n- Third-party sample provenance statement [User-confirmed fact]: {}\n- Code-based generation [User-confirmed fact]: {}\n- Source-code evidence [System value]: `{}`\n- Code-generated audio evidence [System value]: `{}`\n- Code-audio post-processing [User-confirmed fact]: {}\n- Code-audio post-processing operations [User-confirmed fact]: {}\n",
         recorded_bool(fields.external_audio_uploaded),
-        conditional_text(
+        markdown_conditional_text(
             fields.external_audio_uploaded,
             &fields.external_audio_source
         ),
-        conditional_text(
+        markdown_conditional_text(
             fields.external_audio_uploaded,
             &fields.external_audio_ownership
         ),
         recorded_bool(fields.own_audio_uploaded),
-        conditional_text(fields.own_audio_uploaded, &fields.own_audio_source),
-        conditional_text(fields.own_audio_uploaded, &fields.own_audio_ownership),
+        markdown_conditional_text(fields.own_audio_uploaded, &fields.own_audio_source),
+        markdown_conditional_text(fields.own_audio_uploaded, &fields.own_audio_ownership),
         recorded_bool(fields.third_party_samples_uploaded),
-        conditional_text(
+        markdown_conditional_text(
             fields.third_party_samples_uploaded,
             &fields.third_party_sample_source,
         ),
-        conditional_text(
+        markdown_conditional_text(
             fields.third_party_samples_uploaded,
             &fields.third_party_sample_ownership,
         ),
         recorded_bool(fields.code_based_generation),
-        conditional_text(fields.code_based_generation, source_code),
-        conditional_text(fields.code_based_generation, code_audio),
+        markdown_conditional_recorded_value(
+            fields.code_based_generation,
+            source_code,
+            "NOT RECORDED",
+        ),
+        markdown_conditional_recorded_value(
+            fields.code_based_generation,
+            code_audio,
+            "NOT RECORDED",
+        ),
         conditional_answer(
             fields.code_based_generation,
             recorded_bool(fields.code_audio_post_processed),
@@ -2198,7 +2687,7 @@ fn source_provenance_markdown(fields: &TrackFields, evidence: &[&EvidenceItem]) 
         if fields.code_based_generation == Some(true)
             && fields.code_audio_post_processed == Some(true)
         {
-            documented_string_list(&fields.code_audio_post_processing_operations)
+            markdown_documented_string_list(&fields.code_audio_post_processing_operations)
         } else {
             "N/A".into()
         },
@@ -2207,7 +2696,7 @@ fn source_provenance_markdown(fields: &TrackFields, evidence: &[&EvidenceItem]) 
     {
         output.push_str(&format!(
             "- Other code-audio post-processing note [User-confirmed fact]: {}\n",
-            documented(&fields.code_audio_post_processing_note)
+            markdown_documented(&fields.code_audio_post_processing_note)
         ));
     }
     output
@@ -2227,12 +2716,12 @@ fn human_contribution_markdown(fields: &TrackFields) -> String {
     let mut output = format!(
         "- Human editing performed [User-confirmed fact]: {}\n- Confirmed human editing [User-confirmed fact]: {}\n- Desktop-PC editing after the Suno WAV [User-confirmed fact]: {}\n- Confirmed desktop-PC editing [User-confirmed fact]: {}\n",
         recorded_bool(fields.human_editing_performed),
-        conditional_text(
+        markdown_conditional_text(
             fields.human_editing_performed,
             &fields.human_editing_details
         ),
         recorded_bool(fields.post_export_editing_performed),
-        conditional_text(
+        markdown_conditional_text(
             fields.post_export_editing_performed,
             &fields.post_export_editing_details,
         ),
@@ -2240,14 +2729,14 @@ fn human_contribution_markdown(fields: &TrackFields) -> String {
     if fields.artwork_origin == "human" {
         output.push_str(&format!(
             "- Confirmed human artwork process [User-confirmed fact]: {}\n- Human artwork process notes [User-confirmed fact]: {}\n",
-            documented_string_list(&fields.human_artwork_process_operations),
-            documented(&fields.human_artwork_process_notes),
+            markdown_documented_string_list(&fields.human_artwork_process_operations),
+            markdown_documented(&fields.human_artwork_process_notes),
         ));
     } else if fields.artwork_origin == "ai_assisted" {
         output.push_str(&format!(
             "- Confirmed human artwork modifications [User-confirmed fact]: {}\n- Other human artwork change [User-confirmed fact]: {}\n",
-            documented_string_list(&fields.human_artwork_modifications),
-            documented(&fields.custom_artwork_change),
+            markdown_documented_string_list(&fields.human_artwork_modifications),
+            markdown_documented(&fields.custom_artwork_change),
         ));
     }
     output
@@ -2266,23 +2755,35 @@ fn suno_field_markdown(fields: &TrackFields) -> String {
         final_audio_contains_vocals(&fields),
     );
     output.push_str("\n### Exact Generation Text Field Content\n\n");
-    output.push_str(match fields.suno_content_classification {
-        Some(SunoContentClassification::Empty) => "N/A",
-        Some(_) => documented(&fields.suno_lyrics_field_text),
-        None => "NOT DOCUMENTED",
-    });
-    output.push_str("\n\n");
+    match fields.suno_content_classification {
+        Some(SunoContentClassification::Empty) => output.push_str("N/A\n\n"),
+        Some(_) if fields.suno_lyrics_field_text.trim().is_empty() => {
+            output.push_str("NOT DOCUMENTED\n\n");
+        }
+        Some(_) => output.push_str(&markdown_fenced_text(&fields.suno_lyrics_field_text)),
+        None => output.push_str("NOT DOCUMENTED\n\n"),
+    }
     if !fields.lyrics_source.trim().is_empty() || !fields.lyrics_text.trim().is_empty() {
         output.push_str(
             "### F.1 Unclassified legacy lyrics data\n\n- Classification: **NOT DOCUMENTED**\n",
         );
         output.push_str(&format!(
             "- Legacy source value: {}\n- Legacy text: {}\n\nThis retained historical data is unclassified legacy data and is not a Vocal Lyrics claim.\n\n",
-            documented(&fields.lyrics_source),
-            documented(&fields.lyrics_text),
+            markdown_documented(&fields.lyrics_source),
+            markdown_documented(&fields.lyrics_text),
         ));
     }
     output
+}
+
+fn markdown_fenced_text(value: &str) -> String {
+    let maximum_backtick_run = value
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat((maximum_backtick_run + 1).max(3));
+    format!("{fence}text\n{value}\n{fence}\n\n")
 }
 
 fn ai_audio_markdown(fields: &TrackFields) -> String {
@@ -2291,7 +2792,7 @@ fn ai_audio_markdown(fields: &TrackFields) -> String {
     format!(
         "- Generative AI used [User-confirmed fact]: {}\n- AI system [User-confirmed fact]: {}\n- AI-assisted audio elements [User-confirmed fact]: {}\n- AI-generated audio elements [User-confirmed fact]: {}\n- Real person voice intentionally imitated [User-confirmed fact]: {}\n- Real person's identity intentionally represented [User-confirmed fact]: {}\n- Real event represented as authentic recording [User-confirmed fact]: {}\n- Real location / institution / event presented as authentic AI recording [User-confirmed fact]: {}\n- Disclosure applied [User-confirmed fact]: {}\n- Disclosure locations [User-confirmed fact]: {}\n- Disclosure text [User-confirmed fact]: {}\n- Disclosure reason / note [User-confirmed fact]: {}\n- Deepfake-related indicator summary: {}\n- Suno style prompt [User-confirmed fact]: {}\n\nNo AI Act compliance, legal necessity, or legal safety determination is made.\n",
         recorded_bool(active),
-        conditional_text(active, &fields.audio_ai_system),
+        markdown_conditional_text(active, &fields.audio_ai_system),
         conditional_documentation_answer(active, fields.ai_assisted_audio_elements),
         conditional_documentation_answer(active, fields.ai_generated_audio_elements),
         conditional_documentation_answer(active, fields.real_person_voice_intentionally_imitated,),
@@ -2310,27 +2811,27 @@ fn ai_audio_markdown(fields: &TrackFields) -> String {
         conditional_documentation_answer(active, fields.audio_disclosure_applied),
         match (active, fields.audio_disclosure_applied) {
             (Some(true), Some(DocumentationAnswer::Yes)) => {
-                documented_string_list(&fields.audio_disclosure_locations)
+                markdown_documented_string_list(&fields.audio_disclosure_locations)
             }
             (Some(true), _) | (Some(false), _) => "N/A".into(),
             (None, _) => "NOT DOCUMENTED".into(),
         },
         match (active, fields.audio_disclosure_applied) {
             (Some(true), Some(DocumentationAnswer::Yes)) => {
-                documented(&fields.audio_disclosure_text)
+                markdown_documented(&fields.audio_disclosure_text)
             }
-            (Some(true), _) | (Some(false), _) => "N/A",
-            (None, _) => "NOT DOCUMENTED",
+            (Some(true), _) | (Some(false), _) => "N/A".into(),
+            (None, _) => "NOT DOCUMENTED".into(),
         },
         match (active, fields.audio_disclosure_applied) {
             (Some(true), Some(DocumentationAnswer::No)) => {
-                documented(&fields.audio_disclosure_reason)
+                markdown_documented(&fields.audio_disclosure_reason)
             }
-            (Some(true), _) | (Some(false), _) => "N/A",
-            (None, _) => "NOT DOCUMENTED",
+            (Some(true), _) | (Some(false), _) => "N/A".into(),
+            (None, _) => "NOT DOCUMENTED".into(),
         },
         deepfake_indicator_summary(&fields),
-        documented(&fields.suno_style_prompt),
+        markdown_documented(&fields.suno_style_prompt),
     )
 }
 
@@ -2343,14 +2844,14 @@ fn ai_artwork_markdown(fields: &TrackFields, evidence: &[EvidenceItem]) -> Strin
     );
     format!(
         "- Artwork origin [User-confirmed fact]: {}\n- AI image service [User-confirmed fact]: {}\n- Human artwork process [User-confirmed fact]: {}\n- Human artwork modifications [User-confirmed fact]: {}\n- Depicts real person [User-confirmed fact]: {}\n- Real-person note [User-confirmed fact]: {}\n- Depicts real event [User-confirmed fact]: {}\n- Real-event note [User-confirmed fact]: {}\n- Trademark/logo [User-confirmed fact]: {}\n- Trademark/logo note [User-confirmed fact]: {}\n- Artwork disclosure applied [User-confirmed fact]: {}\n- Artwork disclosure deliberately not applied [User-confirmed fact]: {}\n- Artwork disclosure text [User-confirmed fact]: {}\n- Human-edited/final artwork comparison [System verification]: {}\n\n{}\n",
-        documented(&fields.artwork_origin),
+        markdown_documented(&fields.artwork_origin),
         if ai_artwork {
-            documented(&fields.ai_image_service)
+            markdown_documented(&fields.ai_image_service)
         } else {
-            "N/A"
+            "N/A".into()
         },
         if fields.artwork_origin == "human" {
-            documented_string_list(&fields.human_artwork_process_operations)
+            markdown_documented_string_list(&fields.human_artwork_process_operations)
         } else if fields.artwork_origin == "ai_assisted" {
             if fields
                 .human_artwork_modifications
@@ -2366,7 +2867,7 @@ fn ai_artwork_markdown(fields: &TrackFields, evidence: &[EvidenceItem]) -> Strin
             "N/A".into()
         },
         if fields.artwork_origin == "ai_assisted" {
-            documented_string_list(&fields.human_artwork_modifications)
+            markdown_documented_string_list(&fields.human_artwork_modifications)
         } else {
             "N/A".into()
         },
@@ -2376,9 +2877,9 @@ fn ai_artwork_markdown(fields: &TrackFields, evidence: &[EvidenceItem]) -> Strin
             "N/A"
         },
         if artwork_present {
-            applicable_note(fields.depicts_real_person, &fields.real_person_notes)
+            markdown_applicable_note(fields.depicts_real_person, &fields.real_person_notes)
         } else {
-            "N/A"
+            "N/A".into()
         },
         if artwork_present {
             recorded_bool(fields.depicts_real_event)
@@ -2386,9 +2887,9 @@ fn ai_artwork_markdown(fields: &TrackFields, evidence: &[EvidenceItem]) -> Strin
             "N/A"
         },
         if artwork_present {
-            applicable_note(fields.depicts_real_event, &fields.real_event_notes)
+            markdown_applicable_note(fields.depicts_real_event, &fields.real_event_notes)
         } else {
-            "N/A"
+            "N/A".into()
         },
         if artwork_present {
             recorded_bool(fields.contains_trademark)
@@ -2396,9 +2897,9 @@ fn ai_artwork_markdown(fields: &TrackFields, evidence: &[EvidenceItem]) -> Strin
             "N/A"
         },
         if artwork_present {
-            applicable_note(fields.contains_trademark, &fields.trademark_notes)
+            markdown_applicable_note(fields.contains_trademark, &fields.trademark_notes)
         } else {
-            "N/A"
+            "N/A".into()
         },
         if ai_artwork {
             recorded_bool(fields.disclosure_applied)
@@ -2411,9 +2912,9 @@ fn ai_artwork_markdown(fields: &TrackFields, evidence: &[EvidenceItem]) -> Strin
             (true, None) => "NOT DOCUMENTED",
         },
         if ai_artwork && fields.disclosure_applied == Some(true) {
-            documented(&fields.disclosure_text)
+            markdown_documented(&fields.disclosure_text)
         } else {
-            "N/A"
+            "N/A".into()
         },
         crate::workflow::human_edited_final_artwork_status(evidence),
         crate::documents::ARTWORK_IMPORT_TIMESTAMP_NOTICE,
@@ -2539,25 +3040,9 @@ fn documented_string_list(values: &[String]) -> String {
     }
 }
 
-fn conditional_text<'a>(controlling: Option<bool>, value: &'a str) -> &'a str {
-    match controlling {
-        Some(true) => documented(value),
-        Some(false) => "N/A",
-        None => "NOT DOCUMENTED",
-    }
-}
-
 fn conditional_answer<'a>(controlling: Option<bool>, value: &'a str) -> &'a str {
     match controlling {
         Some(true) => value,
-        Some(false) => "N/A",
-        None => "NOT DOCUMENTED",
-    }
-}
-
-fn applicable_note<'a>(answer: Option<bool>, value: &'a str) -> &'a str {
-    match answer {
-        Some(true) => documented(value),
         Some(false) => "N/A",
         None => "NOT DOCUMENTED",
     }
@@ -2580,6 +3065,62 @@ fn documented(value: &str) -> &str {
     } else {
         value
     }
+}
+
+fn markdown_raw_value(value: &str) -> String {
+    format!("{MARKDOWN_VALUE_START}{value}{MARKDOWN_VALUE_END}")
+}
+
+fn markdown_documented(value: &str) -> String {
+    if value.trim().is_empty() {
+        "NOT DOCUMENTED".into()
+    } else {
+        markdown_raw_value(value)
+    }
+}
+
+fn markdown_documented_string_list(values: &[String]) -> String {
+    if values.iter().all(|value| value.trim().is_empty()) {
+        "NOT DOCUMENTED".into()
+    } else {
+        markdown_raw_value(&documented_string_list(values))
+    }
+}
+
+fn markdown_conditional_text(controlling: Option<bool>, value: &str) -> String {
+    match controlling {
+        Some(true) => markdown_documented(value),
+        Some(false) => "N/A".into(),
+        None => "NOT DOCUMENTED".into(),
+    }
+}
+
+fn markdown_conditional_recorded_value(
+    controlling: Option<bool>,
+    value: &str,
+    missing: &str,
+) -> String {
+    match controlling {
+        Some(true) if value == missing || value.trim().is_empty() => missing.into(),
+        Some(true) => markdown_raw_value(value),
+        Some(false) => "N/A".into(),
+        None => "NOT DOCUMENTED".into(),
+    }
+}
+
+fn markdown_applicable_note(answer: Option<bool>, value: &str) -> String {
+    match answer {
+        Some(true) => markdown_documented(value),
+        Some(false) => "N/A".into(),
+        None => "NOT DOCUMENTED".into(),
+    }
+}
+
+fn markdown_optional_value(value: Option<&str>, fallback: &str) -> String {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(markdown_raw_value)
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
 fn fact_origin_label(origin: FactOrigin) -> &'static str {
@@ -2791,6 +3332,35 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_pdf_labels_localize_numbered_terms_and_subscription_suffixes() {
+        let german = CertificateRenderOptions {
+            language: CertificateLanguage::De,
+            bilingual: false,
+        };
+        for (english, expected) in [
+            ("Coverage", "Abdeckung"),
+            (
+                "Subscription evidence 1 path [System value]",
+                "Abo-Evidence 1 Pfad [Systemwert]",
+            ),
+            (
+                "Subscription evidence 1 coverage start",
+                "Abo-Evidence 1 Abdeckungsbeginn",
+            ),
+            (
+                "Terms document 1 provider/source [User-confirmed fact]",
+                "Dokument zu Nutzungsbedingungen 1 Anbieter/Quelle [Vom Nutzer bestätigte Angabe]",
+            ),
+            (
+                "Terms document 1 provenance [System value]",
+                "Dokument zu Nutzungsbedingungen 1 Herkunft [Systemwert]",
+            ),
+        ] {
+            assert_eq!(localized_certificate_label(german, english), expected);
+        }
+    }
+
+    #[test]
     fn audio_screening_manifest_and_markdown_omit_sensitive_raw_values() {
         let mut state = AudioScreeningState::default();
         state.local.status = AudioScreeningStatus::FingerprintGenerated;
@@ -2804,14 +3374,14 @@ mod tests {
         state
             .external
             .matches
-            .push(crate::model::AudioScreeningMatch {
-                title: "Provider title".into(),
-                artists: vec!["Provider artist".into()],
+            .extend((0..6).map(|index| crate::model::AudioScreeningMatch {
+                title: format!("Provider title {index}"),
+                artists: vec![format!("Provider artist {index}")],
                 ..Default::default()
-            });
+            }));
 
         let manifest = audio_screening_manifest(&state).to_string();
-        let markdown = audio_screening_markdown(&state);
+        let markdown = materialize_markdown_values(&audio_screening_markdown(&state));
         for forbidden in [
             "RAW_CHROMAPRINT_MUST_NOT_APPEAR",
             "ACCESS_SECRET_MUST_NOT_APPEAR",
@@ -2820,8 +3390,8 @@ mod tests {
             assert!(!manifest.contains(forbidden), "manifest leaked {forbidden}");
             assert!(!markdown.contains(forbidden), "markdown leaked {forbidden}");
         }
-        assert!(manifest.contains("Provider title"));
-        assert!(markdown.contains("Provider artist"));
+        assert!(manifest.contains("Provider title 5"));
+        assert!(markdown.contains("Provider artist 5"));
     }
 
     #[test]
@@ -2833,7 +3403,7 @@ mod tests {
         external.provider_status = AudioScreeningProviderStatus::Ready;
         external.requested_intensity_percent = 25;
         external.dynamic_by_track_duration = true;
-        external.reference_duration_seconds = 300;
+        external.reference_duration_seconds = Some(300);
         external.source_duration_milliseconds = Some(646_000);
         external.target_duration_milliseconds = 161_500;
         external.planned_request_count = 14;
@@ -2853,6 +3423,9 @@ mod tests {
                 duration_milliseconds: 12_000,
                 status: AudioScreeningStatus::NoMatchDetected,
                 message: "RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                provider_status_code: Some(1001),
+                provider_status_message: Some("No result".into()),
+                provider_api_version: Some("1.0".into()),
                 matches: Vec::new(),
                 response_relative_path: Some(
                     "03_DOCUMENTATION/AUDIO_SCREENING/ACRCLOUD_RESPONSE_01.json".into(),
@@ -2866,6 +3439,9 @@ mod tests {
                 duration_milliseconds: 12_000,
                 status: AudioScreeningStatus::MatchDetected,
                 message: "SECOND_RAW_SAMPLE_MESSAGE_MUST_NOT_RENDER".into(),
+                provider_status_code: Some(0),
+                provider_status_message: Some("Success".into()),
+                provider_api_version: Some("1.0".into()),
                 matches: vec![crate::model::AudioScreeningMatch {
                     title: "Sample match title".into(),
                     artists: vec!["Sample match artist".into()],
@@ -2879,7 +3455,7 @@ mod tests {
         ];
 
         let manifest = audio_screening_manifest(&state);
-        let markdown = audio_screening_markdown(&state);
+        let markdown = materialize_markdown_values(&audio_screening_markdown(&state));
         assert_eq!(
             manifest["external"]["screeningMode"],
             serde_json::Value::String("multi_sample".into())
@@ -2897,10 +3473,20 @@ mod tests {
             manifest["external"]["samples"][1]["matches"][0]["title"],
             "Sample match title"
         );
+        assert_eq!(manifest["external"]["referenceDurationSeconds"], 300);
+        assert_eq!(
+            manifest["external"]["samples"][0]["providerStatusCode"],
+            1001
+        );
+        assert_eq!(
+            manifest["external"]["samples"][0]["providerStatusMessage"],
+            "No result"
+        );
         for expected in [
             "External screening mode [System value]: **MULTI-SAMPLE**",
             "Requested coverage [System value]: 25 %",
             "Planned requests [System value]: 14",
+            "Reference duration (seconds) [System value]: 300",
             "Executed requests [System verification]: 2",
             "Unique samples [System verification]: 2",
             "Duplicate samples [System verification]: 0",
@@ -2909,12 +3495,14 @@ mod tests {
             "Track coverage (%) [System verification]: 3.72",
             "Overall result [System verification]: **NO MATCH DETECTED**",
             "Sample 01 [System verification]: Offset 30000 ms · End offset 42000 ms · Duration 12000 ms · Result NO MATCH",
+            "Provider Code: 1001 · Provider Message: No result · Provider Version: 1.0",
             "Sample 02 [System verification]: Offset 95000 ms · End offset 107000 ms · Duration 12000 ms · Result MATCH DETECTED",
             "Sample match title — Sample match artist",
             "Audio-screening results are technical comparison records only.",
         ] {
             assert!(markdown.contains(expected), "K.2 omitted {expected}");
         }
+        assert!(!markdown.contains("Reference duration (seconds) [System value]: N/A"));
         let german = localized_markdown_certificate(
             &format!("## K.2 Pre-release audio screening\n\n{markdown}"),
             CertificateRenderOptions {
@@ -2926,9 +3514,11 @@ mod tests {
             "## K.2 Audio-Screening vor Veröffentlichung",
             "Modus des externen Screenings",
             "Angeforderte Abdeckung",
+            "Referenzdauer (Sekunden) [Systemwert]: 300",
             "Doppelte Proben [Systemprüfung]: 0",
             "Überlappende Proben [Systemprüfung]: 0",
             "Probe 01",
+            "Provider Code: 1001 · Provider Message: No result · Provider Version: 1.0",
             "Gesamtergebnis",
         ] {
             assert!(german.contains(expected), "German K.2 omitted {expected}");
@@ -2973,6 +3563,102 @@ mod tests {
     }
 
     #[test]
+    fn markdown_localization_preserves_multiline_historical_values_with_template_words() {
+        let english = format!(
+            "## F. Suno Generation Text Field\n\n### Exact Generation Text Field Content\n\n{}\n",
+            markdown_raw_value(
+                "Final generation\nProvider response\nConfigured documentation requirements completed"
+            )
+        );
+        let german = localized_markdown_certificate(
+            &english,
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: false,
+            },
+        );
+
+        assert!(german.contains("## F. Suno Generierungs-Textfeld"));
+        assert!(german.contains("### Exakter Text des Suno-Textfelds"));
+        for historical_line in [
+            "Final generation",
+            "Provider response",
+            "Configured documentation requirements completed",
+        ] {
+            assert!(
+                german
+                    .lines()
+                    .any(|line| line.trim_start() == historical_line),
+                "historical line was translated: {historical_line}"
+            );
+        }
+
+        let mut fields = TrackFields::default();
+        fields.suno_content_classification = Some(SunoContentClassification::StructureOnly);
+        fields.suno_lyrics_field_text =
+            "# Final generation\n- Provider response\n> Evidence Overview".into();
+        let german = localized_markdown_certificate(
+            &suno_field_markdown(&fields),
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: false,
+            },
+        );
+        for historical_line in [
+            "# Final generation",
+            "- Provider response",
+            "> Evidence Overview",
+        ] {
+            assert!(german.lines().any(|line| line == historical_line));
+        }
+
+        let mut fields = TrackFields::default();
+        fields.generative_ai_used = Some(true);
+        fields.audio_ai_system = "NO".into();
+        fields.suno_style_prompt =
+            "first\r\n```\r# Final generation\n> Provider response\n- Provider response: NO\n```\nlast"
+                .into();
+        let marked = format!(
+            "{}\n## C. Final Suno Generation\n",
+            ai_audio_markdown(&fields)
+        );
+        let german = localized_markdown_certificate(
+            &marked,
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: false,
+            },
+        );
+        assert!(german.contains("KI-System [Vom Nutzer bestätigte Angabe]: NO"));
+        assert!(german.contains("\r\n    ```\r    # Final generation"));
+        assert!(german.contains("    > Provider response"));
+        assert!(german.contains("    - Provider response: NO"));
+        assert!(german.contains("## C. Finale Suno-Erzeugung"));
+        assert!(!german.contains(MARKDOWN_VALUE_START));
+        assert!(!german.contains(MARKDOWN_VALUE_END));
+
+        let bilingual = localized_markdown_certificate(
+            &marked,
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: true,
+            },
+        );
+        assert!(bilingual.contains("# English certificate"));
+        assert!(!bilingual.contains(MARKDOWN_VALUE_START));
+        assert!(!bilingual.contains(MARKDOWN_VALUE_END));
+
+        let missing = localized_markdown_certificate(
+            &suno_field_markdown(&TrackFields::default()),
+            CertificateRenderOptions {
+                language: CertificateLanguage::De,
+                bilingual: false,
+            },
+        );
+        assert!(missing.contains("Exakter Text des Suno-Textfelds\n\nNICHT DOKUMENTIERT"));
+    }
+
+    #[test]
     fn artwork_markdown_records_explicit_no_hash_match_and_timestamp_scope() {
         let mut fields = TrackFields::default();
         fields.artwork_origin = "ai_assisted".into();
@@ -2994,7 +3680,7 @@ mod tests {
             },
         );
         assert!(german.contains("Artwork-Hinweis bewusst nicht angewendet"));
-        assert!(german.contains("BYTE-IDENTICAL / SHA-256 MATCH"));
+        assert!(german.contains("BYTE-IDENTISCH / SHA-256-ÜBEREINSTIMMUNG"));
         assert!(german.contains("Import-Zeitstempel dokumentieren nur den Import in SunoDM"));
     }
 
@@ -3234,7 +3920,7 @@ mod tests {
         }))
         .expect("legacy plan fixture");
 
-        let markdown = suno_plan_context_markdown(&fields);
+        let markdown = materialize_markdown_values(&suno_plan_context_markdown(&fields));
         assert!(markdown.contains("Suno plan at generation [User-confirmed fact]: NOT DOCUMENTED"));
         assert!(markdown.contains(
             "Legacy plan-at-creation value [Historical user data; not a plan-at-generation claim]: Pro"

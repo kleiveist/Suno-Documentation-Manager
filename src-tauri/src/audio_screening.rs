@@ -1158,7 +1158,7 @@ fn run_external_audio_screening_with_transport(
     record.screening_mode = AudioScreeningMode::MultiSample;
     record.requested_intensity_percent = settings.intensity_percent;
     record.dynamic_by_track_duration = settings.dynamic_by_track_duration;
-    record.reference_duration_seconds = settings.reference_duration_seconds;
+    record.reference_duration_seconds = Some(settings.reference_duration_seconds);
     let credentials_available = credentials
         .is_some_and(|(key, secret)| !key.trim().is_empty() && !secret.trim().is_empty());
     let (provider_status, provider_message) =
@@ -1302,6 +1302,9 @@ fn run_external_audio_screening_with_transport(
                 .saturating_sub(sample.offset_milliseconds),
             status: AudioScreeningStatus::ProcessingFailed,
             message: "ACRCloud request was not completed.".into(),
+            provider_status_code: None,
+            provider_status_message: None,
+            provider_api_version: None,
             matches: Vec::new(),
             response_relative_path: None,
             response_sha256: None,
@@ -1362,10 +1365,16 @@ fn run_external_audio_screening_with_transport(
             Ok(parsed) => {
                 let status = parsed.status;
                 let message = parsed.message;
+                let provider_status_code = parsed.provider_status_code;
+                let provider_status_message = parsed.provider_status_message;
+                let provider_api_version = parsed.provider_api_version;
                 let matches = parsed.matches;
                 if let Some(sample_record) = record.samples.last_mut() {
                     sample_record.status = status;
                     sample_record.message = message.into();
+                    sample_record.provider_status_code = provider_status_code;
+                    sample_record.provider_status_message = provider_status_message;
+                    sample_record.provider_api_version = provider_api_version;
                     sample_record.matches = matches;
                 }
                 if let Some(raw_response) = parsed.raw_response {
@@ -1660,7 +1669,7 @@ fn external_record_base(track_id: &str, evidence: &EvidenceItem) -> AudioScreeni
         screening_mode: AudioScreeningMode::MultiSample,
         requested_intensity_percent: 5,
         dynamic_by_track_duration: true,
-        reference_duration_seconds: 300,
+        reference_duration_seconds: None,
         target_duration_milliseconds: 0,
         planned_request_count: 0,
         executed_request_count: 0,
@@ -1783,6 +1792,9 @@ fn multipart_text_part(body: &mut Vec<u8>, boundary: &str, name: &str, value: &s
 struct ParsedAcrCloudResponse {
     status: AudioScreeningStatus,
     message: &'static str,
+    provider_status_code: Option<i64>,
+    provider_status_message: Option<String>,
+    provider_api_version: Option<String>,
     matches: Vec<AudioScreeningMatch>,
     raw_response: Option<SanitizedProviderResponse>,
 }
@@ -1811,31 +1823,41 @@ fn parse_acrcloud_response(
         return Ok(ParsedAcrCloudResponse {
             status: AudioScreeningStatus::ProcessingFailed,
             message: "The provider response contained unsafe credential-like fields and was not documented.",
+            provider_status_code: None,
+            provider_status_message: None,
+            provider_api_version: None,
             matches: Vec::new(),
             raw_response: None,
         });
     }
     let raw_response = SanitizedProviderResponse(body.to_vec());
 
+    let status_value = value.get("status").and_then(Value::as_object);
+    let provider_code = status_value.and_then(|status| json_integer(status.get("code")));
+    let provider_status_message = status_value
+        .and_then(|status| status.get("msg"))
+        .and_then(provider_text);
+    let provider_api_version = status_value
+        .and_then(|status| status.get("version"))
+        .and_then(provider_text);
+
     if !(200..300).contains(&http_status) {
         return Ok(ParsedAcrCloudResponse {
             status: status_for_http_error(http_status),
             message: message_for_http_error(http_status),
+            provider_status_code: provider_code,
+            provider_status_message,
+            provider_api_version,
             matches: Vec::new(),
             raw_response: Some(raw_response),
         });
     }
-    let status_value = value
-        .get("status")
-        .and_then(Value::as_object)
-        .ok_or(ProviderFailure {
-            status: AudioScreeningStatus::ProcessingFailed,
-            message: "ACRCloud returned an unexpected response.",
-        })?;
-    let provider_code = json_integer(status_value.get("code"));
-    let provider_message = status_value
-        .get("msg")
-        .and_then(Value::as_str)
+    status_value.ok_or(ProviderFailure {
+        status: AudioScreeningStatus::ProcessingFailed,
+        message: "ACRCloud returned an unexpected response.",
+    })?;
+    let provider_message = provider_status_message
+        .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
 
@@ -1846,6 +1868,9 @@ fn parse_acrcloud_response(
                 return Ok(ParsedAcrCloudResponse {
                     status: failure.status,
                     message: failure.message,
+                    provider_status_code: provider_code,
+                    provider_status_message: provider_status_message.clone(),
+                    provider_api_version: provider_api_version.clone(),
                     matches: Vec::new(),
                     raw_response: None,
                 });
@@ -1862,6 +1887,9 @@ fn parse_acrcloud_response(
             } else {
                 "ACRCloud returned one or more catalog matches for the submitted audio sample."
             },
+            provider_status_code: provider_code,
+            provider_status_message,
+            provider_api_version,
             matches,
             raw_response: Some(raw_response),
         });
@@ -1870,6 +1898,9 @@ fn parse_acrcloud_response(
         return Ok(ParsedAcrCloudResponse {
             status: AudioScreeningStatus::NoMatchDetected,
             message: "ACRCloud returned no catalog match for the submitted audio sample.",
+            provider_status_code: provider_code,
+            provider_status_message,
+            provider_api_version,
             matches: Vec::new(),
             raw_response: Some(raw_response),
         });
@@ -1900,6 +1931,9 @@ fn parse_acrcloud_response(
             }
             _ => "ACRCloud returned an unexpected response.",
         },
+        provider_status_code: provider_code,
+        provider_status_message,
+        provider_api_version,
         matches: Vec::new(),
         raw_response: Some(raw_response),
     })
@@ -2005,7 +2039,18 @@ fn provider_text(value: &Value) -> Option<String> {
     if text.is_empty() {
         return None;
     }
-    Some(truncate_utf8(text, MAX_PROVIDER_TEXT_BYTES))
+    let sanitized = text
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim();
+    (!sanitized.is_empty()).then(|| truncate_utf8(sanitized, MAX_PROVIDER_TEXT_BYTES))
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
@@ -2432,12 +2477,16 @@ fn publish_screening_markdown(
         if external.screening_mode == AudioScreeningMode::MultiSample
             || !external.samples.is_empty()
         {
+            let reference_duration = external
+                .reference_duration_seconds
+                .map(|seconds| format!("{seconds} seconds"))
+                .unwrap_or_else(|| "N/A".into());
             markdown.push_str(&format!(
-                "- Screening mode: {}\n- Requested intensity: {} %\n- Calculation mode: {}\n- Reference duration: {} seconds\n- Target duration: {} ms\n- Planned requests: {}\n- Executed requests: {}\n- Unique samples: {}\n- Duplicate samples: {}\n- Overlapping samples: {}\n- Unique sampled duration: {} ms\n- Track coverage: {:.2} %\n- Provider status: {:?}\n",
+                "- Screening mode: {}\n- Requested intensity: {} %\n- Calculation mode: {}\n- Reference duration: {}\n- Target duration: {} ms\n- Planned requests: {}\n- Executed requests: {}\n- Unique samples: {}\n- Duplicate samples: {}\n- Overlapping samples: {}\n- Unique sampled duration: {} ms\n- Track coverage: {:.2} %\n- Provider status: {:?}\n",
                 external.screening_mode.as_str(),
                 external.requested_intensity_percent,
                 if external.dynamic_by_track_duration { "DYNAMIC_TRACK_DURATION" } else { "FIXED_REFERENCE_DURATION" },
-                external.reference_duration_seconds,
+                reference_duration,
                 external.target_duration_milliseconds,
                 external.planned_request_count,
                 external.executed_request_count,
@@ -2483,6 +2532,9 @@ fn publish_screening_markdown(
                     audio_screening_status_label(sample.status),
                     markdown_text(&sample.message),
                 ));
+                if let Some(details) = sample.provider_status_details() {
+                    markdown.push_str(&format!("  - {}\n", markdown_text(&details)));
+                }
                 if let Some(path) = &sample.response_relative_path {
                     markdown.push_str(&format!(
                         "  - Provider response archive: {}\n",
@@ -3315,7 +3367,8 @@ mod tests {
                     (0..count)
                         .map(|_| AcrCloudResponse {
                             status: 200,
-                            body: br#"{"status":{"code":1001,"msg":"No result"}}"#.to_vec(),
+                            body: br#"{"status":{"code":1001,"msg":"No result","version":"1.0"}}"#
+                                .to_vec(),
                         })
                         .collect(),
                 ),
@@ -3378,14 +3431,17 @@ mod tests {
     fn provider_response_maps_no_match_and_match_without_legal_statuses() {
         let request_sensitive_values =
             RequestSensitiveValues::new("request-key", "request-secret", "request-signature");
-        let no_match = br#"{"status":{"code":1001,"msg":"No result"}}"#;
+        let no_match = br#"{"status":{"code":1001,"msg":"No result","version":"1.0"}}"#;
         let parsed = parse_acrcloud_response(200, no_match, &request_sensitive_values)
             .expect("no match parse");
         assert_eq!(parsed.status, AudioScreeningStatus::NoMatchDetected);
+        assert_eq!(parsed.provider_status_code, Some(1001));
+        assert_eq!(parsed.provider_status_message.as_deref(), Some("No result"));
+        assert_eq!(parsed.provider_api_version.as_deref(), Some("1.0"));
         assert!(parsed.matches.is_empty());
 
         let matched = br#"{
-          "status":{"code":0,"msg":"Success"},
+          "status":{"code":0,"msg":"Success","version":"1.0"},
           "metadata":{"music":[{
              "title":"Track", "artists":[{"name":"Artist"}],
              "album":{"name":"Album"}, "external_ids":{"isrc":"ISRC"},
@@ -3395,9 +3451,56 @@ mod tests {
         let parsed =
             parse_acrcloud_response(200, matched, &request_sensitive_values).expect("match parse");
         assert_eq!(parsed.status, AudioScreeningStatus::MatchDetected);
+        assert_eq!(parsed.provider_status_code, Some(0));
+        assert_eq!(parsed.provider_status_message.as_deref(), Some("Success"));
+        assert_eq!(parsed.provider_api_version.as_deref(), Some("1.0"));
         assert_eq!(parsed.matches.len(), 1);
         assert_eq!(parsed.matches[0].title, "Track");
         assert_eq!(parsed.matches[0].score, Some(88.0));
+    }
+
+    #[test]
+    fn provider_status_text_is_bounded_and_control_safe_at_the_parse_boundary() {
+        let request_sensitive_values =
+            RequestSensitiveValues::new("request-key", "request-secret", "request-signature");
+        let body = serde_json::to_vec(&serde_json::json!({
+            "status": {
+                "code": 1001,
+                "msg": format!("No\nresult\u{0} {}", "x".repeat(MAX_PROVIDER_TEXT_BYTES * 2)),
+                "version": format!("1.0\t{}", "v".repeat(MAX_PROVIDER_TEXT_BYTES * 2)),
+            }
+        }))
+        .expect("provider response JSON");
+
+        let parsed = parse_acrcloud_response(200, &body, &request_sensitive_values)
+            .expect("bounded provider status parse");
+        let message = parsed.provider_status_message.expect("provider message");
+        let version = parsed.provider_api_version.expect("provider API version");
+        assert!(message.len() <= MAX_PROVIDER_TEXT_BYTES);
+        assert!(version.len() <= MAX_PROVIDER_TEXT_BYTES);
+        assert!(message.starts_with("No result "));
+        assert!(version.starts_with("1.0 "));
+        assert!(!message.chars().any(char::is_control));
+        assert!(!version.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn non_success_http_response_retains_safe_bounded_provider_status_metadata() {
+        let request_sensitive_values =
+            RequestSensitiveValues::new("request-key", "request-secret", "request-signature");
+        let body = br#"{"status":{"code":3003,"msg":"Request limit exceeded","version":"1.0"}}"#;
+        let parsed = parse_acrcloud_response(429, body, &request_sensitive_values)
+            .expect("non-success provider response");
+
+        assert_eq!(parsed.status, status_for_http_error(429));
+        assert_eq!(parsed.provider_status_code, Some(3003));
+        assert_eq!(
+            parsed.provider_status_message.as_deref(),
+            Some("Request limit exceeded")
+        );
+        assert_eq!(parsed.provider_api_version.as_deref(), Some("1.0"));
+        assert!(parsed.raw_response.is_some());
+        assert!(parsed.matches.is_empty());
     }
 
     #[test]
@@ -3583,6 +3686,27 @@ mod tests {
         assert!(validate_acrcloud_sampling_settings(&settings).is_err());
         settings.reference_duration_seconds = 300;
         assert!(validate_acrcloud_sampling_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn missing_historical_reference_duration_is_documented_as_not_available() {
+        let directory = tempdir().expect("temporary directory");
+        let root = fs::canonicalize(directory.path()).expect("canonical root");
+        ensure_screening_directory(&root).expect("screening directory");
+        let evidence = evidence_item();
+        let mut external = external_record_base("track-1", &evidence);
+
+        assert_eq!(external.reference_duration_seconds, None);
+        publish_screening_markdown(&root, None, Some(&external)).expect("legacy markdown");
+        let legacy = fs::read_to_string(root.join(AUDIO_SCREENING_MARKDOWN_FILE))
+            .expect("legacy screening markdown");
+        assert!(legacy.contains("- Reference duration: N/A"));
+
+        external.reference_duration_seconds = Some(300);
+        publish_screening_markdown(&root, None, Some(&external)).expect("current markdown");
+        let current = fs::read_to_string(root.join(AUDIO_SCREENING_MARKDOWN_FILE))
+            .expect("current screening markdown");
+        assert!(current.contains("- Reference duration: 300 seconds"));
     }
 
     #[test]
@@ -3788,6 +3912,7 @@ mod tests {
         .expect("multi-sample external screening");
 
         assert_eq!(record.screening_mode, AudioScreeningMode::MultiSample);
+        assert_eq!(record.reference_duration_seconds, Some(300));
         assert_eq!(record.status, AudioScreeningStatus::NoMatchDetected);
         assert_eq!(record.planned_request_count, 13);
         assert_eq!(record.executed_request_count, 13);
@@ -3804,6 +3929,11 @@ mod tests {
             .samples
             .iter()
             .all(|sample| sample.status == AudioScreeningStatus::NoMatchDetected));
+        assert!(record.samples.iter().all(|sample| {
+            sample.provider_status_code == Some(1001)
+                && sample.provider_status_message.as_deref() == Some("No result")
+                && sample.provider_api_version.as_deref() == Some("1.0")
+        }));
         assert!(record
             .samples
             .iter()
@@ -3818,6 +3948,12 @@ mod tests {
             .and_then(Value::as_array)
             .expect("archived samples");
         assert_eq!(archived_samples.len(), 13);
+        assert_eq!(archived_samples[0]["response"]["status"]["code"], 1001);
+        assert_eq!(
+            archived_samples[0]["response"]["status"]["msg"],
+            "No result"
+        );
+        assert_eq!(archived_samples[0]["response"]["status"]["version"], "1.0");
         for (sample, archived) in record.samples.iter().zip(archived_samples) {
             assert_eq!(
                 archived.get("offsetMilliseconds").and_then(Value::as_u64),
@@ -3830,6 +3966,22 @@ mod tests {
                 Some(sample.end_offset_milliseconds)
             );
         }
+        let screening: Value = serde_json::from_slice(
+            &fs::read(root.join(EXTERNAL_SCREENING_FILE)).expect("screening record"),
+        )
+        .expect("structured screening record");
+        assert_eq!(screening["referenceDurationSeconds"], 300);
+        assert_eq!(screening["samples"][0]["providerStatusCode"], 1001);
+        assert_eq!(
+            screening["samples"][0]["providerStatusMessage"],
+            "No result"
+        );
+        assert_eq!(screening["samples"][0]["providerApiVersion"], "1.0");
+        let screening_markdown = fs::read_to_string(root.join(AUDIO_SCREENING_MARKDOWN_FILE))
+            .expect("screening markdown");
+        assert!(screening_markdown.contains("Provider Code: 1001"));
+        assert!(screening_markdown.contains("Provider Message: No result"));
+        assert!(screening_markdown.contains("Provider Version: 1.0"));
         let mut mismatched_record = record.clone();
         mismatched_record.samples[0].offset_milliseconds += 1;
         assert!(

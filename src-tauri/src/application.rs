@@ -10672,6 +10672,26 @@ mod tests {
             reproduction_root.join(integrity::HASH_FILE),
         )
         .expect("reproduction SHA256SUMS");
+        // Artwork thumbnails are derived from the verified evidence bytes, not
+        // from mutable database fields. Reproducing the same rendered snapshot
+        // therefore requires the same artwork bytes in the independent root.
+        for item in persisted_evidence.iter().filter(|item| {
+            matches!(
+                item.role,
+                EvidenceRole::ArtworkSunoOriginal
+                    | EvidenceRole::AiArtworkOriginal
+                    | EvidenceRole::AiArtworkEdited
+                    | EvidenceRole::HumanEditedArtwork
+                    | EvidenceRole::FinalArtwork
+                    | EvidenceRole::ReleaseArtwork
+            )
+        }) {
+            let target = reproduction_root.join(&item.relative_path);
+            fs::create_dir_all(target.parent().expect("artwork reproduction parent"))
+                .expect("artwork reproduction directory");
+            fs::copy(track_root.join(&item.relative_path), target)
+                .expect("reproduction artwork evidence");
+        }
         certificate::generate(
             &reproduction_root,
             &persisted_snapshot,
