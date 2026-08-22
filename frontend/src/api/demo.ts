@@ -363,7 +363,7 @@ function timestampProviderCapabilities(provider: TimestampProviderKind): Timesta
     supportsOfflineVerification: provider === "open_timestamps" || rfc3161,
     returnsSignedTimestamp: rfc3161,
     externalTrustRootAvailable: false,
-    qualificationStatus: "unknown"
+    qualificationStatus: "not_checked"
   };
 }
 
@@ -391,7 +391,7 @@ function configuredTimestampProviderStatus(
   }
   if (!settings.custom.providerName.trim() || !settings.custom.endpoint.trim()) {
     return {
-      status: "configuration_incomplete",
+      status: "not_configured",
       statusMessage: "Enter a provider name and TSA endpoint for Custom RFC 3161."
     };
   }

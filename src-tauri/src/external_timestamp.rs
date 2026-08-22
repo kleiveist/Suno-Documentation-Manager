@@ -5,15 +5,18 @@ use crate::evidence;
 use crate::integrity;
 use crate::model::{
     CustomRfc3161Settings, ExternalTimestampInput, ExternalTimestampRecord,
-    ExternalTimestampStatus, FinalizationAnchor, TimestampAuthenticationMode,
-    TimestampProviderCapabilities, TimestampProviderKind, TimestampProviderMetadata,
-    TimestampProviderTestResult, TimestampReferencedArtifact, TimestampSettings, TimestampType,
+    ExternalTimestampStatus, FinalizationAnchor, FinalizationTimestampSnapshot,
+    TimestampAuthenticationMode, TimestampProviderCapabilities,
+    TimestampProviderConfigurationStatus, TimestampProviderKind, TimestampProviderMetadata,
+    TimestampProviderTestResult, TimestampQualificationRecord, TimestampQualificationStatus,
+    TimestampReferencedArtifact, TimestampServiceIdentity, TimestampSettings, TimestampType,
+    TrustedListEvidence, TrustedListValidationStatus,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new_hashed, ensure_contained_directory,
     portable_relative, sha256_file, validate_relative,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rustls_pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,9 +34,12 @@ const MARKDOWN_FILE: &str = "EXTERNAL_TIMESTAMP_ADDENDUM.md";
 const PDF_FILE: &str = "EXTERNAL_TIMESTAMP_ADDENDUM.pdf";
 const HASH_LIST_FILE: &str = "TIMESTAMP_RECORD_SHA256.txt";
 const PROVIDER_RESPONSE_FILE_PREFIX: &str = "PROVIDER_RESPONSE";
-const SIDECAR_FORMAT_VERSION: u32 = 1;
+const LEGACY_SIDECAR_FORMAT_VERSION: u32 = 1;
+const SIDECAR_FORMAT_VERSION: u32 = 2;
 const HASH_LIST_V1_HEADER: &str = "# SunoDM external timestamp sidecar SHA-256 v1\n";
-const DISCLAIMER: &str = "The application records the external timestamp evidence and its referenced hash. It does not determine any legal qualification of the timestamp.";
+const HASH_LIST_V2_HEADER: &str =
+    "# SunoDM external timestamp sidecar SHA-256 v2 (provider qualification audit)\n";
+const DISCLAIMER: &str = "The application records technical timestamp evidence separately from provider qualification. It does not infer legal effect; a regulatory qualification is reported only when independently verified.";
 
 /// Centrally defined public presets. They intentionally live only here, so
 /// UI components and archive records cannot drift into provider-specific
@@ -96,6 +102,15 @@ pub struct ProviderTimestampResponse {
     pub metadata: TimestampProviderMetadata,
     pub status: ExternalTimestampStatus,
     pub message: String,
+}
+
+/// Outcome captured before the final certificate is rendered. A successful
+/// provider response remains in memory so the caller can archive the exact
+/// same bytes without issuing a second request.
+#[derive(Debug, Clone)]
+pub struct FinalizationTimestampAttempt {
+    pub snapshot: FinalizationTimestampSnapshot,
+    pub response: Option<ProviderTimestampResponse>,
 }
 
 #[derive(Debug, Clone)]
@@ -222,16 +237,16 @@ pub fn provider_display_name(settings: &TimestampSettings) -> String {
 pub fn settings_status(
     settings: &TimestampSettings,
     secret_available: bool,
-) -> (ExternalTimestampStatus, String) {
+) -> (TimestampProviderConfigurationStatus, String) {
     if !settings.enabled || settings.provider == TimestampProviderKind::Disabled {
         return (
-            ExternalTimestampStatus::Disabled,
+            TimestampProviderConfigurationStatus::Disabled,
             "External timestamp service is disabled.".into(),
         );
     }
     if settings.provider == TimestampProviderKind::OpenTimestamps {
         return (
-            ExternalTimestampStatus::Ready,
+            TimestampProviderConfigurationStatus::Ready,
             "OpenTimestamps calendar service is ready. This is not RFC 3161; an initial detached proof remains ATTACHED until OpenTimestamps verification or upgrade confirms its Bitcoin anchoring."
                 .into(),
         );
@@ -239,28 +254,80 @@ pub fn settings_status(
     if settings.provider != TimestampProviderKind::CustomRfc3161 {
         if settings.custom.ca_certificate_path.trim().is_empty() {
             return (
-                ExternalTimestampStatus::VerificationConfigurationIncomplete,
+                TimestampProviderConfigurationStatus::VerificationConfigurationIncomplete,
                 "An explicit TSA CA trust-anchor file is required before RFC 3161 responses can be marked VERIFIED."
                     .into(),
             );
         }
         return (
-            ExternalTimestampStatus::Ready,
+            TimestampProviderConfigurationStatus::Ready,
             "RFC 3161 timestamp service and explicit TSA trust anchor are ready.".into(),
         );
     }
     match validate_custom_settings(&settings.custom, secret_available) {
         Ok(()) if settings.custom.ca_certificate_path.trim().is_empty() => (
-            ExternalTimestampStatus::VerificationConfigurationIncomplete,
+            TimestampProviderConfigurationStatus::VerificationConfigurationIncomplete,
             "An explicit TSA CA trust-anchor file is required before RFC 3161 responses can be marked VERIFIED."
                 .into(),
         ),
         Ok(()) => (
-            ExternalTimestampStatus::Ready,
+            TimestampProviderConfigurationStatus::Ready,
             "Custom RFC 3161 timestamp service and explicit TSA trust anchor are configured."
                 .into(),
         ),
-        Err(failure) => (failure.status, failure.message),
+        Err(failure) => (provider_configuration_status(failure.status), failure.message),
+    }
+}
+
+fn provider_configuration_status(
+    status: ExternalTimestampStatus,
+) -> TimestampProviderConfigurationStatus {
+    match status {
+        ExternalTimestampStatus::Disabled => TimestampProviderConfigurationStatus::Disabled,
+        ExternalTimestampStatus::ConfigurationIncomplete => {
+            TimestampProviderConfigurationStatus::NotConfigured
+        }
+        ExternalTimestampStatus::AuthenticationRequired => {
+            TimestampProviderConfigurationStatus::AuthenticationRequired
+        }
+        ExternalTimestampStatus::AuthenticationFailed => {
+            TimestampProviderConfigurationStatus::AuthenticationFailed
+        }
+        ExternalTimestampStatus::ConnectionFailed
+        | ExternalTimestampStatus::ProviderUnavailable => {
+            TimestampProviderConfigurationStatus::ConnectionFailed
+        }
+        ExternalTimestampStatus::VerificationConfigurationIncomplete => {
+            TimestampProviderConfigurationStatus::VerificationConfigurationIncomplete
+        }
+        _ => TimestampProviderConfigurationStatus::ProviderError,
+    }
+}
+
+pub(crate) fn timestamp_status_for_configuration(
+    status: TimestampProviderConfigurationStatus,
+) -> ExternalTimestampStatus {
+    match status {
+        TimestampProviderConfigurationStatus::Disabled => ExternalTimestampStatus::Disabled,
+        TimestampProviderConfigurationStatus::NotConfigured => {
+            ExternalTimestampStatus::ConfigurationIncomplete
+        }
+        TimestampProviderConfigurationStatus::Ready => ExternalTimestampStatus::Ready,
+        TimestampProviderConfigurationStatus::AuthenticationRequired => {
+            ExternalTimestampStatus::AuthenticationRequired
+        }
+        TimestampProviderConfigurationStatus::AuthenticationFailed => {
+            ExternalTimestampStatus::AuthenticationFailed
+        }
+        TimestampProviderConfigurationStatus::ConnectionFailed => {
+            ExternalTimestampStatus::ConnectionFailed
+        }
+        TimestampProviderConfigurationStatus::VerificationConfigurationIncomplete => {
+            ExternalTimestampStatus::VerificationConfigurationIncomplete
+        }
+        TimestampProviderConfigurationStatus::ProviderError => {
+            ExternalTimestampStatus::ProviderUnavailable
+        }
     }
 }
 
@@ -366,7 +433,7 @@ fn test_provider_with_transport(
     let secret_available = secret.is_some_and(|value| !value.trim().is_empty());
     let (configuration_status, configuration_message) = settings_status(settings, secret_available);
     let capabilities = provider_capabilities(settings.provider);
-    if configuration_status != ExternalTimestampStatus::Ready {
+    if configuration_status != TimestampProviderConfigurationStatus::Ready {
         return TimestampProviderTestResult {
             provider: settings.provider,
             status: configuration_status,
@@ -381,19 +448,19 @@ fn test_provider_with_transport(
                 == ExternalTimestampStatus::VerificationFailed
             {
                 (
-                    ExternalTimestampStatus::UnsupportedResponse,
+                    TimestampProviderConfigurationStatus::ProviderError,
                     "Provider responded, but its test response could not be technically verified."
                         .into(),
                 )
             } else if settings.provider == TimestampProviderKind::OpenTimestamps {
                 (
-                        ExternalTimestampStatus::Ready,
+                        TimestampProviderConfigurationStatus::Ready,
                         "OpenTimestamps calendar service reachable. This is not RFC 3161; an initial proof remains ATTACHED pending OpenTimestamps verification or upgrade."
                             .into(),
                     )
             } else {
                 (
-                    ExternalTimestampStatus::Ready,
+                    TimestampProviderConfigurationStatus::Ready,
                     "RFC 3161 timestamp service ready.".into(),
                 )
             };
@@ -407,12 +474,7 @@ fn test_provider_with_transport(
         }
         Err(failure) => TimestampProviderTestResult {
             provider: settings.provider,
-            status: match failure.status {
-                ExternalTimestampStatus::ProviderUnavailable => {
-                    ExternalTimestampStatus::ConnectionFailed
-                }
-                other => other,
-            },
+            status: provider_configuration_status(failure.status),
             message: failure.message,
             tested_at,
             capabilities,
@@ -438,6 +500,110 @@ pub fn request_timestamp_for_artifact(
     )
 }
 
+/// Capture all four independent finalization layers after the manifest anchor
+/// exists and before the certificate PDF is rendered. Provider and trust
+/// lookup failures are represented as data and never returned as a
+/// finalization error.
+pub fn attempt_finalization_timestamp(
+    settings: &TimestampSettings,
+    secret: Option<&str>,
+    digest: &str,
+    artifact_bytes: &[u8],
+) -> FinalizationTimestampAttempt {
+    attempt_finalization_timestamp_with_transport(
+        settings,
+        secret,
+        digest,
+        artifact_bytes,
+        &UreqTimestampHttpTransport,
+    )
+}
+
+fn attempt_finalization_timestamp_with_transport(
+    settings: &TimestampSettings,
+    secret: Option<&str>,
+    digest: &str,
+    artifact_bytes: &[u8],
+    transport: &dyn TimestampHttpTransport,
+) -> FinalizationTimestampAttempt {
+    let provider = provider_display_name(settings);
+    let secret_available = secret.is_some_and(|value| !value.trim().is_empty());
+    let (configuration_status, configuration_message) = settings_status(settings, secret_available);
+    let automatic_request_enabled = settings.enabled
+        && settings.auto_after_finalization
+        && settings.provider != TimestampProviderKind::Disabled;
+
+    if !automatic_request_enabled {
+        return FinalizationTimestampAttempt {
+            snapshot: FinalizationTimestampSnapshot {
+                provider,
+                provider_configuration_status: configuration_status,
+                provider_configuration_message: configuration_message,
+                automatic_request_enabled: false,
+                technical_status: ExternalTimestampStatus::NotRecorded,
+                technical_message:
+                    "No automatic external timestamp was requested for this finalization.".into(),
+                ..Default::default()
+            },
+            response: None,
+        };
+    }
+
+    if configuration_status != TimestampProviderConfigurationStatus::Ready {
+        return FinalizationTimestampAttempt {
+            snapshot: FinalizationTimestampSnapshot {
+                provider,
+                provider_configuration_status: configuration_status,
+                provider_configuration_message: configuration_message,
+                automatic_request_enabled: true,
+                technical_status: ExternalTimestampStatus::NotRecorded,
+                technical_message: "No timestamp evidence was created because the provider configuration was not ready.".into(),
+                ..Default::default()
+            },
+            response: None,
+        };
+    }
+
+    match request_timestamp_with_transport(
+        settings,
+        secret,
+        digest,
+        Some(artifact_bytes),
+        transport,
+    ) {
+        Ok(response) => {
+            let snapshot = FinalizationTimestampSnapshot {
+                provider: response.provider.clone(),
+                provider_configuration_status: TimestampProviderConfigurationStatus::Ready,
+                provider_configuration_message: configuration_message,
+                automatic_request_enabled: true,
+                technical_status: response.status,
+                technical_message: response.message.clone(),
+                timestamp_value: response.timestamp_value.clone(),
+                external_reference_id: response.external_reference_id.clone(),
+                provider_verification_url: response.provider_verification_url.clone(),
+                provider_metadata: Some(response.metadata.clone()),
+            };
+            FinalizationTimestampAttempt {
+                snapshot,
+                response: Some(response),
+            }
+        }
+        Err(failure) => FinalizationTimestampAttempt {
+            snapshot: FinalizationTimestampSnapshot {
+                provider,
+                provider_configuration_status: provider_configuration_status(failure.status),
+                provider_configuration_message: failure.message.clone(),
+                automatic_request_enabled: true,
+                technical_status: ExternalTimestampStatus::VerificationFailed,
+                technical_message: failure.message,
+                ..Default::default()
+            },
+            response: None,
+        },
+    }
+}
+
 fn request_timestamp_with_transport(
     settings: &TimestampSettings,
     secret: Option<&str>,
@@ -453,8 +619,11 @@ fn request_timestamp_with_transport(
     }
     let secret_available = secret.is_some_and(|value| !value.trim().is_empty());
     let (status, message) = settings_status(settings, secret_available);
-    if status != ExternalTimestampStatus::Ready {
-        return Err(ProviderFailure { status, message });
+    if status != TimestampProviderConfigurationStatus::Ready {
+        return Err(ProviderFailure {
+            status: timestamp_status_for_configuration(status),
+            message,
+        });
     }
     let adapter = provider_adapter(settings.provider).ok_or_else(|| ProviderFailure {
         status: ExternalTimestampStatus::Disabled,
@@ -477,7 +646,7 @@ impl TimestampProviderAdapter for Rfc3161TimestampAdapter {
             supports_offline_verification: true,
             returns_signed_timestamp: true,
             external_trust_root_available: self.trust_root_available,
-            qualification_status: "unknown_not_qualified".into(),
+            qualification_status: "not_checked".into(),
         }
     }
 
@@ -522,7 +691,7 @@ impl TimestampProviderAdapter for CustomRfc3161Adapter {
             supports_offline_verification: true,
             returns_signed_timestamp: true,
             external_trust_root_available: false,
-            qualification_status: "unknown_not_qualified".into(),
+            qualification_status: "not_checked".into(),
         }
     }
 
@@ -563,7 +732,7 @@ impl TimestampProviderAdapter for OpenTimestampsAdapter {
             supports_offline_verification: true,
             returns_signed_timestamp: false,
             external_trust_root_available: false,
-            qualification_status: "unknown_not_qualified".into(),
+            qualification_status: "not_checked".into(),
         }
     }
 
@@ -711,12 +880,17 @@ fn request_rfc3161(
             trust_chain_verified: None,
             cryptographic_verifier: String::new(),
             trust_anchor_sha256: Vec::new(),
+            identity: None,
             message: format!(
                 "Timestamp response was archived, but RFC 3161 response verification failed: {reason}."
             ),
         }
     };
     let status = verification.status;
+    let verified_identity = verification.identity.clone();
+    let qualification = verified_identity
+        .as_ref()
+        .map(|identity| provider_identity_qualification(identity, &parsed.policy_oid));
     let message = verification.message;
     Ok(ProviderTimestampResponse {
         provider: provider.into(),
@@ -735,6 +909,13 @@ fn request_rfc3161(
             request_algorithm: "SHA-256".into(),
             response_format: "RFC 3161 TimeStampResp (.tsr)".into(),
             provider_endpoint_identifier: endpoint.into(),
+            issuer: verified_identity.as_ref().map(|value| value.certificate_issuer.clone()).unwrap_or_default(),
+            certificate_subject: verified_identity.as_ref().map(|value| value.certificate_subject.clone()).unwrap_or_default(),
+            certificate_serial_number: verified_identity.as_ref().map(|value| value.certificate_serial_number.clone()).unwrap_or_default(),
+            certificate_sha256: verified_identity.as_ref().map(|value| value.certificate_sha256.clone()).unwrap_or_default(),
+            provider_identity_verified: verified_identity.as_ref().map(|_| true),
+            signature_verification_applicable: Some(true),
+            trust_chain_verification_applicable: Some(true),
             request_nonce: request.nonce_hex,
             response_nonce: parsed.nonce_hex,
             nonce_match: parsed.nonce_match,
@@ -750,6 +931,7 @@ fn request_rfc3161(
             verification_result: status,
             verification_message: message.clone(),
             verification_timestamp: Utc::now().to_rfc3339(),
+            qualification,
             ..Default::default()
         },
         status,
@@ -910,14 +1092,46 @@ fn rfc3161_request(
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+struct VerifiedTimestampIdentity {
+    certificate_sha256: String,
+    certificate_subject: String,
+    certificate_issuer: String,
+    certificate_serial_number: String,
+}
+
 struct Rfc3161CryptographicVerification {
     status: ExternalTimestampStatus,
     signature_verified: Option<bool>,
     trust_chain_verified: Option<bool>,
     cryptographic_verifier: String,
     trust_anchor_sha256: Vec<String>,
+    identity: Option<VerifiedTimestampIdentity>,
     message: String,
+}
+
+fn provider_identity_qualification(
+    identity: &VerifiedTimestampIdentity,
+    policy_oid: &str,
+) -> TimestampQualificationRecord {
+    TimestampQualificationRecord {
+        status: TimestampQualificationStatus::ProviderIdentityVerified,
+        provider_identity_status: TimestampQualificationStatus::ProviderIdentityVerified,
+        trust_service_status: TimestampQualificationStatus::NotChecked,
+        eidas_qualification_status: TimestampQualificationStatus::NotChecked,
+        current_qualification_status: TimestampQualificationStatus::NotChecked,
+        qualification_at_timestamp: TimestampQualificationStatus::NotChecked,
+        message: "The timestamp signer identity was cryptographically verified. No validated official Trusted List source was available for a regulatory qualification lookup.".into(),
+        identity: TimestampServiceIdentity {
+            certificate_sha256: identity.certificate_sha256.clone(),
+            certificate_subject: identity.certificate_subject.clone(),
+            certificate_issuer: identity.certificate_issuer.clone(),
+            certificate_serial_number: identity.certificate_serial_number.clone(),
+            policy_oid: policy_oid.into(),
+            service_identifier: String::new(),
+        },
+        ..Default::default()
+    }
 }
 
 fn verify_rfc3161_cryptography(
@@ -933,6 +1147,7 @@ fn verify_rfc3161_cryptography(
             trust_chain_verified: None,
             cryptographic_verifier: String::new(),
             trust_anchor_sha256: Vec::new(),
+            identity: None,
             message: "RFC 3161 response structure, SHA-256 message imprint, nonce, and the provider-returned policy OID (including a requested-policy match when configured) were checked. This endpoint connection test did not supply finalized artifact bytes, so CMS and trust-chain verification were not asserted."
                 .into(),
         };
@@ -945,6 +1160,7 @@ fn verify_rfc3161_cryptography(
             trust_chain_verified: None,
             cryptographic_verifier: String::new(),
             trust_anchor_sha256: Vec::new(),
+            identity: None,
             message: "The finalized artifact bytes supplied to the RFC 3161 verifier no longer match the selected SHA-256 anchor."
                 .into(),
         };
@@ -960,6 +1176,7 @@ fn verify_rfc3161_cryptography(
             trust_chain_verified: None,
             cryptographic_verifier: String::new(),
             trust_anchor_sha256: Vec::new(),
+            identity: None,
             message: "RFC 3161 response structure, SHA-256 message imprint, nonce, and the provider-returned policy OID (including a requested-policy match when configured) were checked, but no explicit TSA CA trust-anchor file is configured. The response remains archived without a VERIFIED claim."
                 .into(),
         };
@@ -973,18 +1190,25 @@ fn verify_rfc3161_cryptography(
                 trust_chain_verified: None,
                 cryptographic_verifier: String::new(),
                 trust_anchor_sha256: Vec::new(),
+                identity: None,
                 message,
             };
         }
     };
     let opts = sigstore_tsa::VerifyOpts::new().with_roots(roots);
     match sigstore_tsa::verify_timestamp_response(response, artifact_bytes, opts) {
-        Ok(_) => Rfc3161CryptographicVerification {
+        Ok(result) => Rfc3161CryptographicVerification {
             status: ExternalTimestampStatus::Verified,
             signature_verified: Some(true),
             trust_chain_verified: Some(true),
             cryptographic_verifier: RFC3161_CRYPTOGRAPHIC_VERIFIER.into(),
             trust_anchor_sha256: fingerprints.clone(),
+            identity: Some(VerifiedTimestampIdentity {
+                certificate_sha256: sha256_bytes(&result.signer_certificate_der),
+                certificate_subject: result.signer_subject,
+                certificate_issuer: result.signer_issuer,
+                certificate_serial_number: result.signer_serial_number,
+            }),
             message: format!(
                 "RFC 3161 response verified with {RFC3161_CRYPTOGRAPHIC_VERIFIER}: SHA-256 message imprint, request nonce, provider-returned policy OID (and requested-policy match when configured), CMS signature, critical and sole timeStamping EKU, certificate validity at genTime, and chain to the configured trust anchor all match. Trust anchor SHA-256: {}.",
                 fingerprints.join(", ")
@@ -1003,12 +1227,182 @@ fn verify_rfc3161_cryptography(
                 trust_chain_verified,
                 cryptographic_verifier: RFC3161_CRYPTOGRAPHIC_VERIFIER.into(),
                 trust_anchor_sha256: fingerprints,
+                identity: None,
                 message: format!(
                     "RFC 3161 response was archived, but CMS/X.509 verification failed: {error}."
                 ),
             }
         }
     }
+}
+
+const QUALIFIED_TIMESTAMP_SERVICE_TYPE: &str = "http://uri.etsi.org/TrstSvc/Svctype/TSA/QTST";
+const QUALIFIED_SERVICE_GRANTED_STATUS: &str =
+    "http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted";
+
+#[derive(Debug, Clone)]
+pub(crate) struct TrustedServiceStatusPeriod {
+    pub valid_from: String,
+    pub valid_until: String,
+    pub status_uri: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedTrustedService {
+    pub certificate_sha256: String,
+    pub policy_oid: String,
+    pub provider_name: String,
+    pub service_name: String,
+    pub service_type: String,
+    pub service_identifier: String,
+    pub periods: Vec<TrustedServiceStatusPeriod>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedTrustedListSnapshot {
+    pub evidence: TrustedListEvidence,
+    pub services: Vec<ValidatedTrustedService>,
+}
+
+/// Match only the cryptographically verified signer certificate (and policy
+/// when the Trusted List service specifies one). Provider labels and endpoint
+/// URLs are deliberately not inputs to this classifier. The caller may only
+/// supply a snapshot whose LOTL/TL validation completed successfully.
+pub(crate) fn verify_provider_qualification(
+    identity: &TimestampServiceIdentity,
+    timestamp_value: &str,
+    checked_at: &str,
+    snapshot: &ValidatedTrustedListSnapshot,
+) -> TimestampQualificationRecord {
+    let checked_at_value = parse_qualification_time(checked_at);
+    let timestamp = parse_qualification_time(timestamp_value);
+    let base = TimestampQualificationRecord {
+        provider_identity_status: TimestampQualificationStatus::ProviderIdentityVerified,
+        checked_at: checked_at.into(),
+        identity: identity.clone(),
+        trusted_list: Some(snapshot.evidence.clone()),
+        ..Default::default()
+    };
+    if snapshot.evidence.validation_status != TrustedListValidationStatus::Verified {
+        return TimestampQualificationRecord {
+            status: TimestampQualificationStatus::CheckFailed,
+            trust_service_status: TimestampQualificationStatus::NotVerified,
+            eidas_qualification_status: TimestampQualificationStatus::NotVerified,
+            current_qualification_status: TimestampQualificationStatus::NotVerified,
+            qualification_at_timestamp: TimestampQualificationStatus::NotVerified,
+            message: "Qualification lookup failed because the Trusted List source was not cryptographically validated.".into(),
+            ..base
+        };
+    }
+    let service = snapshot.services.iter().find(|service| {
+        service
+            .certificate_sha256
+            .eq_ignore_ascii_case(&identity.certificate_sha256)
+            && (service.policy_oid.is_empty() || service.policy_oid == identity.policy_oid)
+    });
+    let Some(service) = service else {
+        return TimestampQualificationRecord {
+            status: TimestampQualificationStatus::NotVerified,
+            trust_service_status: TimestampQualificationStatus::NotVerified,
+            eidas_qualification_status: TimestampQualificationStatus::NotVerified,
+            current_qualification_status: TimestampQualificationStatus::NotVerified,
+            qualification_at_timestamp: TimestampQualificationStatus::NotVerified,
+            message: "The verified timestamp signer identity could not be matched to a service in the validated Trusted List snapshot. This is not a finding that the provider is unsafe or unqualified.".into(),
+            ..base
+        };
+    };
+    let timestamp_period = timestamp
+        .as_ref()
+        .and_then(|value| qualification_period_at(&service.periods, value));
+    let current_period = checked_at_value
+        .as_ref()
+        .and_then(|value| qualification_period_at(&service.periods, value));
+    let qualified_service_type = service.service_type == QUALIFIED_TIMESTAMP_SERVICE_TYPE;
+    let qualified_at_timestamp = qualified_service_type
+        && timestamp_period
+            .is_some_and(|period| period.status_uri == QUALIFIED_SERVICE_GRANTED_STATUS);
+    let currently_qualified = qualified_service_type
+        && current_period
+            .is_some_and(|period| period.status_uri == QUALIFIED_SERVICE_GRANTED_STATUS);
+    let qualification_at_timestamp = if qualified_at_timestamp {
+        TimestampQualificationStatus::QualifiedServiceVerified
+    } else {
+        TimestampQualificationStatus::NotVerified
+    };
+    let current_qualification_status = if currently_qualified {
+        TimestampQualificationStatus::QualifiedServiceVerified
+    } else {
+        TimestampQualificationStatus::NotVerified
+    };
+    TimestampQualificationRecord {
+        status: if qualified_at_timestamp {
+            TimestampQualificationStatus::QualifiedServiceVerified
+        } else {
+            TimestampQualificationStatus::TrustServiceVerified
+        },
+        trust_service_status: TimestampQualificationStatus::TrustServiceVerified,
+        eidas_qualification_status: qualification_at_timestamp,
+        current_qualification_status,
+        qualification_at_timestamp,
+        message: if qualified_at_timestamp {
+            "The cryptographically verified timestamp signer was matched to a qualified electronic time-stamp service in a validated Trusted List for the timestamp time.".into()
+        } else if currently_qualified {
+            "A Trust Service entry was verified and is currently qualified, but a qualified electronic time-stamp service status for the timestamp time was not established.".into()
+        } else {
+            "A Trust Service entry was verified, but a qualified electronic time-stamp service status for the timestamp time was not established.".into()
+        },
+        trust_service_provider: service.provider_name.clone(),
+        trust_service_name: service.service_name.clone(),
+        service_type: service.service_type.clone(),
+        service_status: timestamp_period
+            .map(|value| value.status_uri.clone())
+            .unwrap_or_default(),
+        current_service_status: current_period
+            .map(|value| value.status_uri.clone())
+            .unwrap_or_default(),
+        service_identifier: service.service_identifier.clone(),
+        qualification_type: if qualified_service_type {
+            QUALIFIED_TIMESTAMP_SERVICE_TYPE.into()
+        } else {
+            String::new()
+        },
+        status_valid_from: timestamp_period
+            .map(|value| value.valid_from.clone())
+            .unwrap_or_default(),
+        status_valid_until: timestamp_period
+            .map(|value| value.valid_until.clone())
+            .unwrap_or_default(),
+        current_status_valid_from: current_period
+            .map(|value| value.valid_from.clone())
+            .unwrap_or_default(),
+        current_status_valid_until: current_period
+            .map(|value| value.valid_until.clone())
+            .unwrap_or_default(),
+        ..base
+    }
+}
+
+fn parse_qualification_time(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn qualification_period_at<'a>(
+    periods: &'a [TrustedServiceStatusPeriod],
+    value: &DateTime<Utc>,
+) -> Option<&'a TrustedServiceStatusPeriod> {
+    periods.iter().find(|period| {
+        let Some(valid_from) = parse_qualification_time(&period.valid_from) else {
+            return false;
+        };
+        if valid_from > *value {
+            return false;
+        }
+        period.valid_until.is_empty()
+            || parse_qualification_time(&period.valid_until)
+                .is_some_and(|valid_until| *value < valid_until)
+    })
 }
 
 fn load_trust_anchors(
@@ -1840,14 +2234,16 @@ fn verify_record_in_directory(
             ));
         }
         0 => {}
-        SIDECAR_FORMAT_VERSION if !stored_record.integrity_verified_at_publication => {
+        LEGACY_SIDECAR_FORMAT_VERSION | SIDECAR_FORMAT_VERSION
+            if !stored_record.integrity_verified_at_publication =>
+        {
             return Err(AppError::Validation(
                 "Timestamp sidecar does not record successful publication-time integrity verification."
                     .into(),
             ));
         }
-        SIDECAR_FORMAT_VERSION => {
-            // Current sidecars have one canonical immutable JSON
+        LEGACY_SIDECAR_FORMAT_VERSION | SIDECAR_FORMAT_VERSION => {
+            // Versioned sidecars have one canonical immutable JSON
             // representation. A semantic deserialize/compare would accept
             // unknown or runtime-only claims after an attacker regenerated the
             // self-contained hash list; exact bytes reject that ambiguity.
@@ -1901,7 +2297,10 @@ fn verify_record_in_directory(
             "Timestamp sidecar SHA-256 list is incomplete or no longer matches.".into(),
         ));
     }
-    if stored_record.sidecar_format_version == SIDECAR_FORMAT_VERSION {
+    if matches!(
+        stored_record.sidecar_format_version,
+        LEGACY_SIDECAR_FORMAT_VERSION | SIDECAR_FORMAT_VERSION
+    ) {
         let markdown_sha256 = hashes
             .get(MARKDOWN_FILE)
             .ok_or_else(|| AppError::Data("Timestamp Markdown hash is missing.".into()))?;
@@ -2258,7 +2657,8 @@ fn artifact_hashes_with_provider_response(
 fn render_hash_list(version: u32, hashes: &BTreeMap<String, String>) -> Result<String> {
     let mut output = match version {
         0 => String::new(),
-        SIDECAR_FORMAT_VERSION => HASH_LIST_V1_HEADER.to_owned(),
+        LEGACY_SIDECAR_FORMAT_VERSION => HASH_LIST_V1_HEADER.to_owned(),
+        SIDECAR_FORMAT_VERSION => HASH_LIST_V2_HEADER.to_owned(),
         other => {
             return Err(AppError::Validation(format!(
                 "Unsupported external timestamp sidecar format version: {other}."
@@ -2625,8 +3025,9 @@ fn render_markdown(record: &ExternalTimestampRecord) -> String {
         "Provider verification URL"
     };
     let provider_metadata_md = provider_metadata_markdown(record);
+    let qualification_md = qualification_markdown(record);
     format!(
-        "# SunoDM External Timestamp Evidence Addendum\n\n> Post-finalization technical evidence record — no legal qualification asserted.\n\n## Certificate association\n\n- Certificate ID: `{}`\n- Timestamp record ID: `{}`\n- Imported at [System value]: {}\n\n## External Timestamp Evidence\n\n- Provider / issuer [{provider_origin}]: {}\n- Timestamp type [{provider_origin}]: {}\n- Timestamp value [{provider_origin}]: {}\n- Referenced artifact [System value]: {}\n- Referenced artifact path [System value]: `{}`\n- Referenced SHA-256 [System verification]: `{}`\n- Actual artifact SHA-256 [System verification]: `{}`\n- Referenced hash match [System verification]: **{}**\n- Timestamp evidence filename [Evidence-derived metadata]: {}\n- Timestamp evidence SHA-256 [System verification]: `{}`\n- External reference ID [{provider_origin}]: {}\n- {provider_url_label} [{provider_origin}]: {}\n- Note [{provider_origin}]: {}\n- Provenance [System value]: {}\n{provider_metadata_md}\n{}\n",
+        "# SunoDM External Timestamp Evidence Addendum\n\n> Post-finalization technical timestamp and provider-qualification evidence.\n\n## Certificate association\n\n- Certificate ID: `{}`\n- Timestamp record ID: `{}`\n- Imported at [System value]: {}\n\n## External Timestamp Evidence\n\n- Provider / issuer [{provider_origin}]: {}\n- Timestamp type [{provider_origin}]: {}\n- Timestamp value [{provider_origin}]: {}\n- Referenced artifact [System value]: {}\n- Referenced artifact path [System value]: `{}`\n- Referenced SHA-256 [System verification]: `{}`\n- Actual artifact SHA-256 [System verification]: `{}`\n- Referenced hash match [System verification]: **{}**\n- Timestamp evidence filename [Evidence-derived metadata]: {}\n- Timestamp evidence SHA-256 [System verification]: `{}`\n- External reference ID [{provider_origin}]: {}\n- {provider_url_label} [{provider_origin}]: {}\n- Note [{provider_origin}]: {}\n- Provenance [System value]: {}\n{provider_metadata_md}\n{qualification_md}\n{}\n",
         md(&record.certificate_id),
         md(&record.id),
         md(&record.imported_at),
@@ -2720,6 +3121,71 @@ fn provider_metadata_markdown(record: &ExternalTimestampRecord) -> String {
         documented_md(&metadata.certificate_subject),
         documented_md(&metadata.certificate_serial_number),
     )
+}
+
+fn qualification_markdown(record: &ExternalTimestampRecord) -> String {
+    let Some(metadata) = record.provider_metadata.as_ref() else {
+        return "\n### Provider Trust and Qualification\n\n- Provider identity [Independent trust verification]: NOT DOCUMENTED\n- Trust Service [Independent trust verification]: NOT DOCUMENTED\n- eIDAS qualification [Independent trust verification]: NOT DOCUMENTED\n- Qualification at timestamp [Independent trust verification]: NOT DOCUMENTED\n".into();
+    };
+    let Some(qualification) = metadata.qualification.as_ref() else {
+        return "\n### Provider Trust and Qualification\n\n- Provider identity [Independent trust verification]: NOT CHECKED\n- Trust Service [Independent trust verification]: NOT CHECKED\n- eIDAS qualification [Independent trust verification]: NOT CHECKED\n- Qualification at timestamp [Independent trust verification]: NOT CHECKED\n\nNo validated qualification source was checked. This does not mean that the provider is unsafe or not qualified.\n".into();
+    };
+    let trusted_list = qualification
+        .trusted_list
+        .as_ref()
+        .map(|source| {
+            format!(
+                "- Trusted List source [Independent trust verification]: {}\n- Trusted List territory [Independent trust verification]: {}\n- Trusted List version / sequence [Independent trust verification]: {} / {}\n- Trusted List issued at [Independent trust verification]: {}\n- Trusted List next update [Independent trust verification]: {}\n- Trusted List SHA-256 [System verification]: {}\n- Trusted List validation [System verification]: {:?}\n- Trusted List validated at [System verification]: {}\n",
+                documented_md(&source.source),
+                documented_md(&source.territory),
+                documented_md(&source.version),
+                documented_md(&source.sequence_number),
+                documented_md(&source.issued_at),
+                documented_md(&source.next_update),
+                documented_md(&source.sha256),
+                source.validation_status,
+                documented_md(&source.validated_at),
+            )
+        })
+        .unwrap_or_default();
+    let verified_badge = (qualification.eidas_qualification_status
+        == TimestampQualificationStatus::QualifiedServiceVerified)
+        .then_some("\n**eIDAS QUALIFIED TRUST SERVICE – VERIFIED**\n")
+        .unwrap_or_default();
+    format!(
+        "\n### Provider Trust and Qualification\n\n- Provider identity [Independent trust verification]: {}\n- Trust Service [Independent trust verification]: {}\n- eIDAS qualification [Independent trust verification]: {}\n- Qualification at timestamp [Independent trust verification]: {}\n- Current qualification [Independent trust verification]: {}\n- Qualification checked at [System verification]: {}\n- Recognized Trust Service Provider [Independent trust verification]: {}\n- Recognized Trust Service [Independent trust verification]: {}\n- Trust Service type [Independent trust verification]: {}\n- Service status at timestamp [Independent trust verification]: {}\n- Current service status [Independent trust verification]: {}\n- Trust Service identifier [Independent trust verification]: {}\n- Qualification type [Independent trust verification]: {}\n- Timestamp-time status valid from [Independent trust verification]: {}\n- Timestamp-time status valid until [Independent trust verification]: {}\n- Current status valid from [Independent trust verification]: {}\n- Current status valid until [Independent trust verification]: {}\n- Signer certificate SHA-256 [System verification]: {}\n{trusted_list}\n- Qualification detail [Independent trust verification]: {}\n{verified_badge}",
+        qualification_status_label(qualification.provider_identity_status),
+        qualification_status_label(qualification.trust_service_status),
+        qualification_status_label(qualification.eidas_qualification_status),
+        qualification_status_label(qualification.qualification_at_timestamp),
+        qualification_status_label(qualification.current_qualification_status),
+        documented_md(&qualification.checked_at),
+        documented_md(&qualification.trust_service_provider),
+        documented_md(&qualification.trust_service_name),
+        documented_md(&qualification.service_type),
+        documented_md(&qualification.service_status),
+        documented_md(&qualification.current_service_status),
+        documented_md(&qualification.service_identifier),
+        documented_md(&qualification.qualification_type),
+        documented_md(&qualification.status_valid_from),
+        documented_md(&qualification.status_valid_until),
+        documented_md(&qualification.current_status_valid_from),
+        documented_md(&qualification.current_status_valid_until),
+        documented_md(&qualification.identity.certificate_sha256),
+        documented_md(&qualification.message),
+    )
+}
+
+pub fn qualification_status_label(value: TimestampQualificationStatus) -> &'static str {
+    match value {
+        TimestampQualificationStatus::NotChecked => "NOT CHECKED",
+        TimestampQualificationStatus::NotDocumented => "NOT DOCUMENTED",
+        TimestampQualificationStatus::NotVerified => "NOT VERIFIED",
+        TimestampQualificationStatus::ProviderIdentityVerified => "PROVIDER IDENTITY VERIFIED",
+        TimestampQualificationStatus::TrustServiceVerified => "TRUST SERVICE VERIFIED",
+        TimestampQualificationStatus::QualifiedServiceVerified => "QUALIFIED SERVICE VERIFIED",
+        TimestampQualificationStatus::CheckFailed => "CHECK FAILED",
+    }
 }
 
 fn is_open_timestamps_metadata(metadata: &TimestampProviderMetadata) -> bool {
@@ -2900,6 +3366,47 @@ mod tests {
     }
 
     #[test]
+    fn provider_failure_is_captured_without_failing_finalization() {
+        let mut settings = free_tsa_settings();
+        settings.auto_after_finalization = true;
+        let transport = MockTransport {
+            calls: Cell::new(0),
+            requests: RefCell::new(Vec::new()),
+            response: Err(ProviderFailure {
+                status: ExternalTimestampStatus::ProviderUnavailable,
+                message: "Trusted timestamp endpoint unavailable.".into(),
+            }),
+        };
+
+        let outcome = attempt_finalization_timestamp_with_transport(
+            &settings,
+            None,
+            &"ab".repeat(32),
+            b"immutable manifest bytes",
+            &transport,
+        );
+
+        assert_eq!(transport.calls.get(), 1);
+        assert!(outcome.response.is_none());
+        assert_eq!(
+            outcome.snapshot.provider_configuration_status,
+            TimestampProviderConfigurationStatus::ConnectionFailed
+        );
+        assert_eq!(
+            outcome.snapshot.technical_status,
+            ExternalTimestampStatus::VerificationFailed
+        );
+        assert_eq!(
+            outcome.snapshot.provider_metadata, None,
+            "a failed request must not invent technical or qualification evidence"
+        );
+        assert!(outcome
+            .snapshot
+            .technical_message
+            .contains("endpoint unavailable"));
+    }
+
+    #[test]
     fn rfc3161_parser_binds_nonce_and_requested_policy() {
         let digest = "ab".repeat(32);
         let nonce = [0x01, 0x23, 0x45, 0x67];
@@ -3050,6 +3557,324 @@ mod tests {
         );
     }
 
+    fn trusted_list_fixture(
+        certificate_sha256: &str,
+        periods: Vec<TrustedServiceStatusPeriod>,
+        validation_status: TrustedListValidationStatus,
+    ) -> ValidatedTrustedListSnapshot {
+        ValidatedTrustedListSnapshot {
+            evidence: TrustedListEvidence {
+                source: "https://example.test/official-member-state-tl.xml".into(),
+                territory: "DE".into(),
+                version: "6".into(),
+                sequence_number: "42".into(),
+                issued_at: "2026-08-01T00:00:00Z".into(),
+                next_update: "2027-02-01T00:00:00Z".into(),
+                sha256: "ab".repeat(32),
+                validation_status,
+                validated_at: "2026-08-21T10:00:00Z".into(),
+            },
+            services: vec![ValidatedTrustedService {
+                certificate_sha256: certificate_sha256.into(),
+                policy_oid: "1.2.3.4".into(),
+                provider_name: "Official TSP identity".into(),
+                service_name: "Qualified timestamp service".into(),
+                service_type: QUALIFIED_TIMESTAMP_SERVICE_TYPE.into(),
+                service_identifier: "service-42".into(),
+                periods,
+            }],
+        }
+    }
+
+    fn timestamp_identity(certificate_sha256: &str) -> TimestampServiceIdentity {
+        TimestampServiceIdentity {
+            certificate_sha256: certificate_sha256.into(),
+            certificate_subject: "CN=Fixture TSA".into(),
+            certificate_issuer: "CN=Fixture Root".into(),
+            certificate_serial_number: "01".into(),
+            policy_oid: "1.2.3.4".into(),
+            service_identifier: String::new(),
+        }
+    }
+
+    #[test]
+    fn technically_verified_rfc3161_identity_does_not_imply_eidas_qualification() {
+        let response = decode_test_fixture(include_str!("../testdata/rfc3161_valid.tsr.b64"));
+        let payload = decode_test_fixture(include_str!("../testdata/rfc3161_payload.b64"));
+        let root = decode_test_fixture(include_str!("../testdata/rfc3161_root.der.b64"));
+        let directory = tempdir().expect("temporary trust directory");
+        let root_path = directory.path().join("tsa-root.der");
+        fs::write(&root_path, root).expect("trust root fixture");
+        let settings = TimestampSettings {
+            custom: CustomRfc3161Settings {
+                ca_certificate_path: root_path.display().to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let verified = verify_rfc3161_cryptography(
+            &response,
+            &sha256_bytes(&payload),
+            Some(&payload),
+            &settings,
+        );
+        let identity = verified.identity.expect("verified signer identity");
+        let qualification = provider_identity_qualification(&identity, "1.2.3.4");
+
+        assert_eq!(verified.status, ExternalTimestampStatus::Verified);
+        assert!(!identity.certificate_sha256.is_empty());
+        assert_eq!(
+            qualification.provider_identity_status,
+            TimestampQualificationStatus::ProviderIdentityVerified
+        );
+        assert_eq!(
+            qualification.eidas_qualification_status,
+            TimestampQualificationStatus::NotChecked
+        );
+        assert!(!qualification.message.contains("not qualified"));
+    }
+
+    #[test]
+    fn validated_trusted_list_recognizes_qualified_service_at_timestamp() {
+        let certificate_sha256 = "11".repeat(32);
+        let snapshot = trusted_list_fixture(
+            &certificate_sha256,
+            vec![TrustedServiceStatusPeriod {
+                valid_from: "2025-01-01T00:00:00Z".into(),
+                valid_until: String::new(),
+                status_uri: QUALIFIED_SERVICE_GRANTED_STATUS.into(),
+            }],
+            TrustedListValidationStatus::Verified,
+        );
+
+        let result = verify_provider_qualification(
+            &timestamp_identity(&certificate_sha256),
+            "2026-08-18T12:00:00Z",
+            "2026-08-21T10:00:00Z",
+            &snapshot,
+        );
+
+        assert_eq!(
+            result.status,
+            TimestampQualificationStatus::QualifiedServiceVerified
+        );
+        assert_eq!(
+            result.provider_identity_status,
+            TimestampQualificationStatus::ProviderIdentityVerified
+        );
+        assert_eq!(
+            result.trust_service_status,
+            TimestampQualificationStatus::TrustServiceVerified
+        );
+        assert_eq!(
+            result.qualification_at_timestamp,
+            TimestampQualificationStatus::QualifiedServiceVerified
+        );
+        assert_eq!(result.trust_service_provider, "Official TSP identity");
+        assert_eq!(
+            result
+                .trusted_list
+                .as_ref()
+                .expect("trusted list evidence")
+                .validation_status,
+            TrustedListValidationStatus::Verified
+        );
+    }
+
+    #[test]
+    fn custom_provider_label_and_endpoint_cannot_set_qualification() {
+        let certificate_sha256 = "22".repeat(32);
+        let snapshot = trusted_list_fixture(
+            &certificate_sha256,
+            vec![TrustedServiceStatusPeriod {
+                valid_from: "2025-01-01T00:00:00Z".into(),
+                valid_until: String::new(),
+                status_uri: QUALIFIED_SERVICE_GRANTED_STATUS.into(),
+            }],
+            TrustedListValidationStatus::Verified,
+        );
+        let freely_configured_provider_name = "Meine TSA – eIDAS qualified";
+        let freely_configured_endpoint = "https://marketing-label.example.test/tsa";
+
+        let result = verify_provider_qualification(
+            &timestamp_identity(&certificate_sha256),
+            "2026-08-18T12:00:00Z",
+            "2026-08-21T10:00:00Z",
+            &snapshot,
+        );
+
+        assert_eq!(result.trust_service_provider, "Official TSP identity");
+        assert_ne!(
+            result.trust_service_provider,
+            freely_configured_provider_name
+        );
+        assert!(!result.message.contains(freely_configured_endpoint));
+    }
+
+    #[test]
+    fn unknown_identity_is_not_verified_without_negative_provider_finding() {
+        let snapshot = trusted_list_fixture(
+            &"33".repeat(32),
+            Vec::new(),
+            TrustedListValidationStatus::Verified,
+        );
+
+        let result = verify_provider_qualification(
+            &timestamp_identity(&"44".repeat(32)),
+            "2026-08-18T12:00:00Z",
+            "2026-08-21T10:00:00Z",
+            &snapshot,
+        );
+
+        assert_eq!(result.status, TimestampQualificationStatus::NotVerified);
+        assert_eq!(
+            result.provider_identity_status,
+            TimestampQualificationStatus::ProviderIdentityVerified
+        );
+        assert_eq!(
+            result.eidas_qualification_status,
+            TimestampQualificationStatus::NotVerified
+        );
+        assert!(result.message.contains("not a finding"));
+        assert!(!result.message.contains("NOT QUALIFIED"));
+    }
+
+    #[test]
+    fn unavailable_trusted_list_does_not_change_technical_timestamp_status() {
+        let snapshot = trusted_list_fixture(
+            &"55".repeat(32),
+            Vec::new(),
+            TrustedListValidationStatus::Failed,
+        );
+        let technical_status = ExternalTimestampStatus::Verified;
+
+        let qualification = verify_provider_qualification(
+            &timestamp_identity(&"55".repeat(32)),
+            "2026-08-18T12:00:00Z",
+            "2026-08-21T10:00:00Z",
+            &snapshot,
+        );
+
+        assert_eq!(technical_status, ExternalTimestampStatus::Verified);
+        assert_eq!(
+            qualification.status,
+            TimestampQualificationStatus::CheckFailed
+        );
+    }
+
+    #[test]
+    fn historical_qualification_is_evaluated_at_timestamp_time() {
+        let certificate_sha256 = "66".repeat(32);
+        let snapshot = trusted_list_fixture(
+            &certificate_sha256,
+            vec![
+                TrustedServiceStatusPeriod {
+                    valid_from: "2025-01-01T00:00:00Z".into(),
+                    valid_until: "2026-08-20T00:00:00Z".into(),
+                    status_uri: QUALIFIED_SERVICE_GRANTED_STATUS.into(),
+                },
+                TrustedServiceStatusPeriod {
+                    valid_from: "2026-08-20T00:00:00Z".into(),
+                    valid_until: String::new(),
+                    status_uri: "http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/withdrawn"
+                        .into(),
+                },
+            ],
+            TrustedListValidationStatus::Verified,
+        );
+
+        let result = verify_provider_qualification(
+            &timestamp_identity(&certificate_sha256),
+            "2026-08-18T12:00:00Z",
+            "2026-08-21T10:00:00Z",
+            &snapshot,
+        );
+
+        assert_eq!(
+            result.qualification_at_timestamp,
+            TimestampQualificationStatus::QualifiedServiceVerified
+        );
+        assert_eq!(
+            result.current_qualification_status,
+            TimestampQualificationStatus::NotVerified
+        );
+        assert_eq!(result.status_valid_until, "2026-08-20T00:00:00Z");
+        assert_eq!(
+            result.current_service_status,
+            "http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/withdrawn"
+        );
+        assert_eq!(result.current_status_valid_from, "2026-08-20T00:00:00Z");
+    }
+
+    #[test]
+    fn current_qualification_uses_its_own_service_status_period() {
+        let certificate_sha256 = "77".repeat(32);
+        let withdrawn = "http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/withdrawn".to_owned();
+        let snapshot = trusted_list_fixture(
+            &certificate_sha256,
+            vec![
+                TrustedServiceStatusPeriod {
+                    valid_from: "2025-01-01T00:00:00Z".into(),
+                    valid_until: "2026-08-20T00:00:00Z".into(),
+                    status_uri: withdrawn.clone(),
+                },
+                TrustedServiceStatusPeriod {
+                    valid_from: "2026-08-20T00:00:00Z".into(),
+                    valid_until: String::new(),
+                    status_uri: QUALIFIED_SERVICE_GRANTED_STATUS.into(),
+                },
+            ],
+            TrustedListValidationStatus::Verified,
+        );
+
+        let result = verify_provider_qualification(
+            &timestamp_identity(&certificate_sha256),
+            "2026-08-18T12:00:00Z",
+            "2026-08-21T10:00:00Z",
+            &snapshot,
+        );
+
+        assert_eq!(
+            result.qualification_at_timestamp,
+            TimestampQualificationStatus::NotVerified
+        );
+        assert_eq!(
+            result.current_qualification_status,
+            TimestampQualificationStatus::QualifiedServiceVerified
+        );
+        assert_eq!(result.service_status, withdrawn);
+        assert_eq!(
+            result.current_service_status,
+            QUALIFIED_SERVICE_GRANTED_STATUS
+        );
+        assert_eq!(result.status_valid_from, "2025-01-01T00:00:00Z");
+        assert_eq!(result.current_status_valid_from, "2026-08-20T00:00:00Z");
+    }
+
+    #[test]
+    fn qualification_and_concrete_timestamp_failure_are_independent() {
+        let metadata = TimestampProviderMetadata {
+            verification_result: ExternalTimestampStatus::VerificationFailed,
+            qualification: Some(TimestampQualificationRecord {
+                status: TimestampQualificationStatus::QualifiedServiceVerified,
+                eidas_qualification_status: TimestampQualificationStatus::QualifiedServiceVerified,
+                qualification_at_timestamp: TimestampQualificationStatus::QualifiedServiceVerified,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            metadata.verification_result,
+            ExternalTimestampStatus::VerificationFailed
+        );
+        assert_eq!(
+            metadata.qualification.expect("qualification record").status,
+            TimestampQualificationStatus::QualifiedServiceVerified
+        );
+    }
+
     #[test]
     fn qualified_type_is_explicitly_user_declared() {
         assert!(
@@ -3106,7 +3931,10 @@ mod tests {
         let result = test_provider_with_transport(&free_tsa_settings(), None, &mock);
 
         assert_eq!(mock.calls.get(), 1);
-        assert_eq!(result.status, ExternalTimestampStatus::UnsupportedResponse);
+        assert_eq!(
+            result.status,
+            TimestampProviderConfigurationStatus::ProviderError
+        );
         assert!(result.message.contains("could not be technically verified"));
     }
 
@@ -3120,7 +3948,7 @@ mod tests {
 
         let (status, message) = settings_status(&settings, false);
 
-        assert_eq!(status, ExternalTimestampStatus::Ready);
+        assert_eq!(status, TimestampProviderConfigurationStatus::Ready);
         assert!(message.contains("not RFC 3161"));
         assert!(message.contains("ATTACHED"));
         assert!(message.contains("Bitcoin anchoring"));

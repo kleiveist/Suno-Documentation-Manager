@@ -574,7 +574,7 @@ describe("demo external timestamp attachment", () => {
     }));
   });
 
-  it("uses the configured provider and the evidence-manifest anchor automatically after finalization", async () => {
+  it("uses the configured provider and evidence-manifest anchor for an explicit later attachment", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
@@ -670,7 +670,7 @@ describe("demo external timestamp attachment", () => {
     expect(attempted.externalTimestampSummary).toEqual(expect.objectContaining({ status: "provider_unavailable" }));
   });
 
-  it("can attach automatically after phase-one finalization without creating a duplicate", async () => {
+  it("captures automatic timestamp evidence during finalization without creating a duplicate", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());

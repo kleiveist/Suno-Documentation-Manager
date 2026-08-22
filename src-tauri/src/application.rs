@@ -15,10 +15,10 @@ use crate::model::{
     ExternalTimestampRecord, ExternalTimestampStatus, ExternalTimestampSummary, FinalizationAnchor,
     FinalizeOptions, GlobalEvidenceItem, IntegrityState, LegacyCandidate, OperationProgress,
     Profile, StepState, StepStatus, SubscriptionBillingCycle, SunoContentClassification,
-    SunoLyricsContentType, TimestampProviderTestResult, TimestampSecretInput, TimestampSettings,
-    TrackCoverPreview, TrackDetail, TrackLibraryPlacement, TrackLibrarySection, TrackPatch,
-    TrackPatchRequest, TrackRecord, TrackStatus, TrackSummary, ValidationResult, WorkspaceScan,
-    WorkspaceSummary,
+    SunoLyricsContentType, TimestampProviderConfigurationStatus, TimestampProviderTestResult,
+    TimestampSecretInput, TimestampSettings, TrackCoverPreview, TrackDetail, TrackLibraryPlacement,
+    TrackLibrarySection, TrackPatch, TrackPatchRequest, TrackRecord, TrackStatus, TrackSummary,
+    ValidationResult, WorkspaceScan, WorkspaceSummary,
 };
 use crate::persistence::Persistence;
 use crate::security::{
@@ -364,7 +364,7 @@ impl WorkspaceApp {
         // These fields are derived server-side. A UI payload must not be able
         // to persist a misleading green status or an arbitrary test timestamp.
         let previous = self.persistence.timestamp_settings()?;
-        settings.status = ExternalTimestampStatus::NotRecorded;
+        settings.status = TimestampProviderConfigurationStatus::Disabled;
         settings.status_message.clear();
         settings.last_tested_at = previous.last_tested_at;
         if settings.provider == crate::model::TimestampProviderKind::Disabled {
@@ -2665,6 +2665,80 @@ impl WorkspaceApp {
             total_files: evidence.len() as u32,
             ..OperationProgress::default()
         });
+        let (timestamp_settings, timestamp_settings_error) =
+            match self.persistence.timestamp_settings() {
+                Ok(settings) => (settings, None),
+                Err(_) => (
+                    TimestampSettings::default(),
+                    Some(
+                        "The local timestamp-provider configuration could not be read for this finalization."
+                            .to_owned(),
+                    ),
+                ),
+            };
+        let timestamp_secret_required = timestamp_settings.provider
+            == crate::model::TimestampProviderKind::CustomRfc3161
+            && matches!(
+                timestamp_settings.custom.authentication_mode,
+                crate::model::TimestampAuthenticationMode::Basic
+                    | crate::model::TimestampAuthenticationMode::BearerToken
+                    | crate::model::TimestampAuthenticationMode::ApiKey
+            );
+        let (timestamp_secret, timestamp_secret_error) = if timestamp_settings_error.is_none()
+            && timestamp_secret_required
+        {
+            match self.persistence.timestamp_secret() {
+                    Ok(secret) => (secret, None),
+                    Err(_) => (
+                        None,
+                        Some(
+                            "The local timestamp-provider credential could not be read for this finalization."
+                                .to_owned(),
+                        ),
+                    ),
+                }
+        } else {
+            (None, None)
+        };
+        let timestamp_setup_error = timestamp_settings_error.clone().or(timestamp_secret_error);
+        let mut captured_timestamp_snapshot =
+            crate::model::FinalizationTimestampSnapshot::default();
+        let mut captured_timestamp_response = None;
+        let mut captured_timestamp_anchor_sha256 = String::new();
+        let mut timestamp_resolver = |digest: &str, manifest_bytes: &[u8]| {
+            let attempt = if let Some(message) = timestamp_setup_error.as_deref() {
+                external_timestamp::FinalizationTimestampAttempt {
+                    snapshot: crate::model::FinalizationTimestampSnapshot {
+                        provider: if timestamp_settings_error.is_some() {
+                            String::new()
+                        } else {
+                            external_timestamp::provider_display_name(&timestamp_settings)
+                        },
+                        provider_configuration_status:
+                            TimestampProviderConfigurationStatus::ProviderError,
+                        provider_configuration_message: message.to_owned(),
+                        automatic_request_enabled: timestamp_settings.enabled
+                            && timestamp_settings.auto_after_finalization,
+                        technical_status: ExternalTimestampStatus::NotRecorded,
+                        technical_message: "No automatic external timestamp was requested because its local provider configuration was unavailable."
+                            .into(),
+                        ..Default::default()
+                    },
+                    response: None,
+                }
+            } else {
+                external_timestamp::attempt_finalization_timestamp(
+                    &timestamp_settings,
+                    timestamp_secret.as_deref(),
+                    digest,
+                    manifest_bytes,
+                )
+            };
+            captured_timestamp_anchor_sha256 = digest.to_owned();
+            captured_timestamp_snapshot = attempt.snapshot.clone();
+            captured_timestamp_response = attempt.response;
+            attempt.snapshot
+        };
         #[cfg(test)]
         let publication = match failure.and_then(FinalizationFailure::certificate_failure) {
             Some(certificate_failure) => certificate::generate_with_failure(
@@ -2680,7 +2754,7 @@ impl WorkspaceApp {
                 certificate_render_options,
                 certificate_failure,
             ),
-            None => certificate::generate(
+            None => certificate::generate_with_finalization_timestamp(
                 &track_root,
                 &certificate_track,
                 &certificate_track.profile_snapshot,
@@ -2691,10 +2765,11 @@ impl WorkspaceApp {
                 &finalized_at,
                 &transaction_id,
                 certificate_render_options,
+                &mut timestamp_resolver,
             ),
         };
         #[cfg(not(test))]
-        let publication = certificate::generate(
+        let publication = certificate::generate_with_finalization_timestamp(
             &track_root,
             &certificate_track,
             &certificate_track.profile_snapshot,
@@ -2705,6 +2780,7 @@ impl WorkspaceApp {
             &finalized_at,
             &transaction_id,
             certificate_render_options,
+            &mut timestamp_resolver,
         );
         if let Err(error) = publication {
             if directory_is_empty_or_missing(&live_certificate).unwrap_or(false)
@@ -2756,6 +2832,26 @@ impl WorkspaceApp {
                 return Err(rolled_back.error);
             }
         };
+        let initial_timestamp_record = match captured_timestamp_response.take() {
+            Some(response) => match self.archive_finalization_provider_response(
+                &track.id,
+                &track_root,
+                &certificate_id,
+                &finalization_snapshot_id,
+                &captured_timestamp_anchor_sha256,
+                response,
+            ) {
+                Ok(record) => Some(record),
+                Err(error) => {
+                    let rolled_back = rollback_certificate_set(&track_root, error);
+                    if rolled_back.complete {
+                        let _ = fs::remove_file(&finalization_marker);
+                    }
+                    return Err(rolled_back.error);
+                }
+            },
+            None => None,
+        };
         track.integrity = post_publish_integrity;
         track.audio_screening.external.configured_at_snapshot = certificate_track
             .audio_screening
@@ -2791,6 +2887,20 @@ impl WorkspaceApp {
         #[cfg(not(test))]
         let database_commit = self.persistence.save_track(&track);
         if let Err(error) = database_commit {
+            let error = if let Some(record) = initial_timestamp_record.as_ref() {
+                match self.rollback_finalization_provider_response(
+                    &track.id,
+                    &track_root,
+                    record,
+                ) {
+                    Ok(()) => error,
+                    Err(cleanup) => AppError::Data(format!(
+                        "Final snapshot database commit failed ({error}); initial timestamp rollback also failed ({cleanup})."
+                    )),
+                }
+            } else {
+                error
+            };
             let rolled_back = rollback_certificate_set(&track_root, error);
             if rolled_back.complete {
                 let _ = fs::remove_file(&finalization_marker);
@@ -2800,21 +2910,19 @@ impl WorkspaceApp {
         // The database commit is authoritative. A stale marker is harmless and is
         // removed during the next workspace recovery if this best-effort cleanup fails.
         let _ = fs::remove_file(&finalization_marker);
+        let _ = self.save_timestamp_attachment_summary(
+            &track,
+            ExternalTimestampSummary {
+                status: captured_timestamp_snapshot.technical_status,
+                message: captured_timestamp_snapshot.technical_message.clone(),
+                provider: captured_timestamp_snapshot.provider.clone(),
+                record_id: initial_timestamp_record
+                    .as_ref()
+                    .map(|record| record.id.clone()),
+                updated_at: Some(now()),
+            },
+        );
         let detail = self.detail_from_record(track, false)?;
-        // Phase two is deliberately attempted only after the immutable phase
-        // one snapshot has been published and committed. Every outcome is
-        // represented as timestamp status; no provider failure can roll back
-        // DOCUMENTATION COMPLETE.
-        let detail = if self
-            .persistence
-            .timestamp_settings()
-            .is_ok_and(|settings| settings.enabled && settings.auto_after_finalization)
-        {
-            self.attach_configured_external_timestamp(&detail.id)
-                .unwrap_or(detail)
-        } else {
-            detail
-        };
         on_progress(OperationProgress {
             stage: "complete".into(),
             processed_files: detail.integrity.verified_count,
@@ -2829,6 +2937,97 @@ impl WorkspaceApp {
             ),
             track: Some(detail),
         })
+    }
+
+    fn archive_finalization_provider_response(
+        &self,
+        track_id: &str,
+        track_root: &Path,
+        certificate_id: &str,
+        finalization_snapshot_id: &str,
+        expected_manifest_sha256: &str,
+        response: external_timestamp::ProviderTimestampResponse,
+    ) -> Result<ExternalTimestampRecord> {
+        let anchor = external_timestamp::finalized_manifest_anchor(track_root)?;
+        if !anchor.sha256.eq_ignore_ascii_case(expected_manifest_sha256) {
+            return Err(AppError::Validation(
+                "The manifest anchor changed between the timestamp request and evidence archival."
+                    .into(),
+            ));
+        }
+        let anchors_before = external_timestamp::finalization_anchors(track_root)?;
+        let temporary_source =
+            provider_response_staging_path(track_root, &response.evidence_extension)?;
+        atomic_write_new(&temporary_source, &response.evidence_bytes)?;
+        let staged = external_timestamp::stage_provider_response(
+            track_root,
+            certificate_id,
+            finalization_snapshot_id,
+            &anchor.sha256,
+            &temporary_source,
+            response,
+        );
+        let _ = fs::remove_file(&temporary_source);
+        let staged = staged?;
+        let record = staged.record.clone();
+
+        if let Err(error) = self.persistence.save_external_timestamp(track_id, &record) {
+            return Err(match external_timestamp::discard_staged(track_root, &staged) {
+                Ok(()) => error,
+                Err(cleanup) => AppError::Data(format!(
+                    "Initial timestamp database registration failed ({error}); staging cleanup also failed ({cleanup})."
+                )),
+            });
+        }
+
+        let publication = (|| -> Result<()> {
+            external_timestamp::publish(track_root, &staged)?;
+            external_timestamp::verify_published_record(track_root, &record)?;
+            certificate::verify(track_root)?;
+            let integrity = integrity::verify(track_root)?;
+            if !integrity.verified {
+                return Err(AppError::Validation(
+                    "Archiving the initial timestamp changed the finalized integrity set.".into(),
+                ));
+            }
+            if external_timestamp::finalization_anchors(track_root)? != anchors_before {
+                return Err(AppError::Validation(
+                    "Archiving the initial timestamp changed a finalized anchor.".into(),
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = publication {
+            let filesystem_cleanup =
+                external_timestamp::remove_published_record(track_root, &record)
+                    .and_then(|()| external_timestamp::discard_staged(track_root, &staged));
+            if let Err(cleanup) = filesystem_cleanup {
+                return Err(AppError::Data(format!(
+                    "Initial timestamp publication failed ({error}); filesystem cleanup also failed ({cleanup}). The database record was retained for recovery."
+                )));
+            }
+            if let Err(cleanup) = self
+                .persistence
+                .remove_external_timestamp(track_id, &record.id)
+            {
+                return Err(AppError::Data(format!(
+                    "Initial timestamp publication failed ({error}); database rollback also failed ({cleanup})."
+                )));
+            }
+            return Err(error);
+        }
+        Ok(record)
+    }
+
+    fn rollback_finalization_provider_response(
+        &self,
+        track_id: &str,
+        track_root: &Path,
+        record: &ExternalTimestampRecord,
+    ) -> Result<()> {
+        external_timestamp::remove_published_record(track_root, record)?;
+        self.persistence
+            .remove_external_timestamp(track_id, &record.id)
     }
 
     pub fn attach_external_timestamp_from(
@@ -2944,11 +3143,11 @@ impl WorkspaceApp {
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty()),
         );
-        if configuration_status != ExternalTimestampStatus::Ready {
+        if configuration_status != TimestampProviderConfigurationStatus::Ready {
             self.save_timestamp_attachment_summary(
                 &track,
                 ExternalTimestampSummary {
-                    status: configuration_status,
+                    status: ExternalTimestampStatus::NotRecorded,
                     message: configuration_message,
                     provider,
                     record_id: None,
@@ -3037,7 +3236,7 @@ impl WorkspaceApp {
                 self.save_timestamp_attachment_summary(
                     &track,
                     ExternalTimestampSummary {
-                        status: failure.status,
+                        status: ExternalTimestampStatus::VerificationFailed,
                         message: failure.message,
                         provider,
                         record_id: None,
@@ -7312,7 +7511,7 @@ mod tests {
         assert!(finalized.certificate.valid);
         assert_eq!(
             finalized.external_timestamp_summary.status,
-            ExternalTimestampStatus::ProviderUnavailable
+            ExternalTimestampStatus::VerificationFailed
         );
         assert!(finalized.external_timestamps.is_empty());
     }

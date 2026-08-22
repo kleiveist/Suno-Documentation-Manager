@@ -97,8 +97,27 @@ export type ExternalTimestampStatus =
   | "unsupported_response"
   | "verification_configuration_incomplete";
 
-/** The native model uses one factual status set for provider and attachment state. */
-export type TimestampProviderStatus = ExternalTimestampStatus;
+/** Provider readiness is independent from concrete timestamp evidence. */
+export type TimestampProviderStatus =
+  | "disabled"
+  | "not_configured"
+  | "ready"
+  | "authentication_required"
+  | "authentication_failed"
+  | "connection_failed"
+  | "verification_configuration_incomplete"
+  | "provider_error";
+
+export type TimestampQualificationStatus =
+  | "not_checked"
+  | "not_documented"
+  | "not_verified"
+  | "provider_identity_verified"
+  | "trust_service_verified"
+  | "qualified_service_verified"
+  | "check_failed";
+
+export type TrustedListValidationStatus = "not_checked" | "verified" | "failed";
 
 export interface TimestampProviderCapabilities {
   rfc3161: boolean;
@@ -574,6 +593,10 @@ export interface TimestampProviderMetadata {
   issuer: string;
   certificateSubject: string;
   certificateSerialNumber: string;
+  certificateSha256?: string;
+  providerIdentityVerified?: boolean | null;
+  signatureVerificationApplicable?: boolean | null;
+  trustChainVerificationApplicable?: boolean | null;
   requestNonce?: string;
   responseNonce?: string;
   nonceMatch?: boolean | null;
@@ -589,6 +612,54 @@ export interface TimestampProviderMetadata {
   verificationResult: ExternalTimestampStatus;
   verificationMessage: string;
   verificationTimestamp: string;
+  qualification?: TimestampQualificationRecord;
+}
+
+export interface TimestampServiceIdentity {
+  certificateSha256: string;
+  certificateSubject: string;
+  certificateIssuer: string;
+  certificateSerialNumber: string;
+  policyOid: string;
+  serviceIdentifier: string;
+}
+
+export interface TrustedListEvidence {
+  source: string;
+  territory: string;
+  version: string;
+  sequenceNumber: string;
+  issuedAt: string;
+  nextUpdate: string;
+  sha256: string;
+  validationStatus: TrustedListValidationStatus;
+  validatedAt: string;
+}
+
+export interface TimestampQualificationRecord {
+  status: TimestampQualificationStatus;
+  providerIdentityStatus: TimestampQualificationStatus;
+  trustServiceStatus: TimestampQualificationStatus;
+  eidasQualificationStatus: TimestampQualificationStatus;
+  currentQualificationStatus: TimestampQualificationStatus;
+  qualificationAtTimestamp: TimestampQualificationStatus;
+  checkedAt: string;
+  message: string;
+  identity: TimestampServiceIdentity;
+  trustedList?: TrustedListEvidence;
+  trustServiceProvider: string;
+  trustServiceName: string;
+  serviceType: string;
+  /** Official service status applicable at the documented timestamp time. */
+  serviceStatus: string;
+  /** Official service status applicable at the qualification-check time. */
+  currentServiceStatus?: string;
+  serviceIdentifier: string;
+  qualificationType: string;
+  statusValidFrom: string;
+  statusValidUntil: string;
+  currentStatusValidFrom?: string;
+  currentStatusValidUntil?: string;
 }
 
 /** A compact, current-snapshot status for the normal finalization UI. */

@@ -42,9 +42,9 @@ flowchart LR
     Archive --> Output
 ```
 
-`certificate.rs` owns orchestration. It prepares the finalized manifest and Markdown certificate, selects the already sorted and verified evidence slice, creates bounded artwork previews once, and invokes `generate_pdf` twice with the same snapshot content and preview assets. Only `CertificateRenderOptions.language` differs between the DE and EN calls.
+`certificate.rs` owns orchestration. It serializes the schema-9 manifest and computes its anchor first, invokes the finalization timestamp resolver exactly once, then prepares the Markdown and invokes `generate_pdf` twice with the same captured `FinalizationTimestampSnapshot`, sorted verified evidence, and bounded artwork previews. Only `CertificateRenderOptions.language` differs between the DE and EN calls. Neither PDF renderer contacts a provider or performs provider-specific classification.
 
-`CertificatePdfSnapshot` is the renderer input contract. It borrows the authoritative track, evidence, automation, workflow steps, deviations, revision references, certificate identity, finalization time, and the SHA-256 anchors for `SHA256SUMS.txt`, `EVIDENCE_MANIFEST.json`, and `DOCUMENTATION_CERTIFICATE.md`. It also borrows render-only artwork derivatives. Validation rejects contradictory ACRCloud overall/sample match states and a displayed coverage percentage that disagrees with the recorded sampled/source durations. The PDF renderer does not load mutable application state or query SQLite.
+`CertificatePdfSnapshot` is the renderer input contract. It borrows the authoritative track, evidence, automation, workflow steps, deviations, revision references, certificate identity, finalization time, and the SHA-256 anchors for `SHA256SUMS.txt`, `EVIDENCE_MANIFEST.json`, and `DOCUMENTATION_CERTIFICATE.md`. It owns the captured finalization timestamp state, including separate provider configuration, concrete technical result, structured protocol checks, signer identity, and optional provider-neutral qualification/Trusted List audit. It also borrows render-only artwork derivatives. Validation rejects contradictory ACRCloud overall/sample match states and a displayed coverage percentage that disagrees with the recorded sampled/source durations. The PDF renderer does not load mutable application state or query SQLite.
 
 `CertificateViewModel::from_snapshot` is the shared, language-independent presentation normalization for the summary and overview. It calculates each displayed summary fact once, including coverage status, workflow counts, open blocking deviations, final-artwork selection, screening status, and the consolidated provider-response summary. German and English renderers therefore cannot independently interpret the same fact. The A–L technical sections continue to read the same immutable snapshot directly so no detail is discarded by the compact view model.
 
@@ -54,7 +54,7 @@ flowchart LR
 | --- | --- | --- |
 | `certificate.rs` | Assemble the finalized certificate input, prepare previews, render both languages, hash and publish the artifact set | Build a language-specific evidence set or mutate registered evidence |
 | `prepare_artwork_previews` | Resolve, verify, decode, bound, convert, and deduplicate optional image derivatives | Rewrite source images, repair evidence paths, or change registered hashes |
-| `CertificatePdfSnapshot` validation | Enforce identity, digest, ordering, verification, preview-binding, workflow, and phase-one invariants | Infer missing historical facts or silently accept unverified evidence |
+| `CertificatePdfSnapshot` validation | Enforce identity, digest, ordering, verification, preview-binding, workflow, finalization-timestamp, and qualification-source invariants | Infer missing historical facts or silently accept unverified evidence |
 | `CertificateViewModel` | Normalize shared summary and overview facts | Replace the full technical record or localize source values |
 | Localization functions | Translate certificate-owned labels and prose for one rendition | Translate user input, evidence filenames, provider text, IDs, or hashes |
 | `PdfLayout` | Paginate and draw all shared A4 content, headers, footers, TOC entries, bookmarks, tables, and images | Read files or maintain a second DE/EN layout implementation |
@@ -133,7 +133,7 @@ The in-process validator proves the SunoDM structural contract. Independent PDF/
 
 ## Snapshot, integrity, and secrets boundary
 
-Certificate rendering is downstream of the finalization gate. `validate_snapshot` requires verified evidence with SHA-256 values in stable relative-path order and rejects phase-one legacy external-timestamp evidence. Render assets must bind back to the exact registered artwork role, evidence ID, filename, relative path, and digest. A preview resource ID cannot alias different image content.
+Certificate rendering is downstream of the mandatory gate and the optional one-shot timestamp resolver. `validate_snapshot` requires verified evidence with SHA-256 values in stable relative-path order and rejects legacy external-timestamp evidence from the ordinary evidence register. It validates timestamp/Trusted List digests and refuses a positive Trust Service or qualified-service presentation unless the signer identity and cryptographically validated list source are present and consistent; each positive timestamp-time or current eIDAS result additionally requires the official qualified service type plus its own granted service-status URI and period. Render assets must bind back to the exact registered artwork role, evidence ID, filename, relative path, and digest. A preview resource ID cannot alias different image content.
 
 The two PDF byte streams are hashed only after successful rendering. Their SHA-256 values are written into `CERTIFICATE_SHA256.txt` together with the primary snapshot anchors, and the complete staged set is verified before rollback-protected publication. A renderer upgrade applies to a newly finalized snapshot or explicit revision; it must not rewrite an existing finalized historical certificate merely to adopt a newer layout.
 
@@ -152,8 +152,8 @@ Focused tests should cover the contracts below in addition to the full Rust and 
 
 | Area | Required assertions |
 | --- | --- |
-| Snapshot validation | Required IDs/timestamps/digests, evidence sort order, verified hashes, workflow order, external-timestamp exclusion, exact preview-to-evidence binding |
-| Summary and overview | Required identity/status facts on the expected pages, factual timeline bounds, fallback behavior, complete technical/legal limitation text |
+| Snapshot validation | Required IDs/timestamps/digests, evidence sort order, verified hashes, workflow order, external-timestamp exclusion, exact preview binding, and rejection of qualified status without validated signer/list/service evidence |
+| Summary and overview | Required identity/status facts on expected pages; independent provider, concrete timestamp, protocol, and qualification states; compact page-one trust result; full Section-I audit; factual fallback and limitation text |
 | DE/EN parity | Same source fixture and technical fact set; translated renderer-owned text; no unexplained DE/EN label leakage; source values unchanged |
 | Pagination and navigation | A4 MediaBox on every page, stable wrapping, page footer totals, TOC page numbers, and outline destinations matching section pages |
 | Artwork | Source bytes/hash unchanged, decode limits, 640/384 pixel bounds, white alpha flattening, CMYK XObjects, deduplication, compressed streams, missing/invalid-image fallback |
@@ -214,4 +214,5 @@ Finally compare extracted DE/EN facts mechanically, verify that every registered
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-21 | Added the schema-9 manifest-anchor -> one resolver call -> one certificate-render contract plus signer/Trusted-List qualification validation and DE/EN trust-status coverage. | Project team |
 | 2026-08-21 | Documented the shared normalized DE/EN certificate renderer, bounded artwork-preview pipeline, PDF/A boundary, and review strategy. | Project team |

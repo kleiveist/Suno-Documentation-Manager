@@ -57,6 +57,7 @@ import {
   type TimestampProviderKind,
   type TimestampProviderStatus,
   type TimestampProviderTestResult,
+  type TimestampQualificationStatus,
   type TimestampSettings,
   type WorkflowDefinitionDto,
   type WorkspaceSummary
@@ -616,21 +617,26 @@ export function timestampProviderLabel(value: TimestampProviderKind): string {
 
 export function timestampProviderStatusLabel(value: TimestampProviderStatus): string {
   return ({
-    not_recorded: "NOT RECORDED",
-    requesting: "REQUESTING",
-    attached: "ATTACHED",
-    verified: "VERIFIED",
-    verification_failed: "Verification failed",
-    provider_unavailable: "Provider unavailable",
-    authentication_failed: "Authentication failed",
-    anchor_mismatch: "Anchor mismatch",
     disabled: "Disabled",
+    not_configured: "Not configured",
     ready: "Ready",
-    configuration_incomplete: "Configuration incomplete",
     authentication_required: "Authentication required",
+    authentication_failed: "Authentication failed",
     connection_failed: "Connection failed",
-    unsupported_response: "Unsupported response",
-    verification_configuration_incomplete: "Verification configuration incomplete"
+    verification_configuration_incomplete: "Verification configuration incomplete",
+    provider_error: "Provider error"
+  } as const)[value];
+}
+
+export function timestampQualificationStatusLabel(value: TimestampQualificationStatus): string {
+  return ({
+    not_checked: "NOT CHECKED",
+    not_documented: "NOT DOCUMENTED",
+    not_verified: "NOT VERIFIED",
+    provider_identity_verified: "PROVIDER IDENTITY VERIFIED",
+    trust_service_verified: "TRUST SERVICE VERIFIED",
+    qualified_service_verified: "QUALIFIED SERVICE VERIFIED",
+    check_failed: "CHECK FAILED"
   } as const)[value];
 }
 
@@ -2855,15 +2861,21 @@ export class SunoDocumentationApp {
           const integrity = externalTimestampIntegrityPresentation(record);
           const presentation = externalTimestampRecordPresentation(record);
           const legacy = /user-confirmed|manually recorded/i.test(record.provenance);
+          const qualification = record.providerMetadata?.qualification;
+          const qualificationStatus = qualification?.status ?? (legacy ? "not_documented" : "not_checked");
           return `<article class="timestamp-record ${record.integrityVerified ? "" : "is-integrity-invalid"}">
             <header><div><strong>${escapeHtml(summary.provider || record.provider)}</strong><small>${legacy ? "Legacy manually recorded timestamp evidence" : "Provider-derived metadata"}</small></div><span class="verification ${integrity.label === "VERIFIED" ? "is-valid" : ""}">Addendum files and anchor integrity: ${integrity.label}</span></header>
             <dl>
               <div><dt>${presentation.timestampLabel}</dt><dd>${escapeHtml(presentation.timestampValue)}</dd></div>
               <div><dt>Referenced artifact</dt><dd>${escapeHtml(timestampArtifactLabel(record.referencedArtifact))}</dd></div>
               <div><dt>Referenced SHA-256</dt><dd><code>${escapeHtml(record.referencedSha256)}</code></dd></div>
-              <div><dt>Verification status</dt><dd>${escapeHtml(externalTimestampStatusLabel(summary.status))}</dd></div>
+              <div><dt>Current provider configuration</dt><dd>${escapeHtml(this.t(timestampProviderStatusLabel(this.state.timestampSettings.status)))}</dd></div>
+              <div><dt>Technical timestamp status</dt><dd>${escapeHtml(this.t(externalTimestampStatusLabel(summary.status)))}</dd></div>
+              <div><dt>Protocol</dt><dd>${escapeHtml(record.providerMetadata?.protocol || "Not documented")}</dd></div>
+              <div><dt>Provider qualification</dt><dd>${escapeHtml(this.t(timestampQualificationStatusLabel(qualificationStatus)))}</dd></div>
             </dl>
             <details><summary>Details anzeigen</summary>
+              <h4>Technischer Zeitstempel</h4>
               <dl>
                 <div><dt>Anchor path</dt><dd>${escapeHtml(record.referencedArtifactPath)}</dd></div>
                 <div><dt>Timestamp evidence</dt><dd>${escapeHtml(record.evidenceFileName)} · <code>${escapeHtml(record.evidenceSha256)}</code></dd></div>
@@ -2881,9 +2893,21 @@ export class SunoDocumentationApp {
                 ${record.providerMetadata.cryptographicVerifier ? `<div><dt>Cryptographic verifier</dt><dd>${escapeHtml(record.providerMetadata.cryptographicVerifier)}</dd></div>` : ""}
                 ${record.providerMetadata.trustAnchorSha256?.length ? `<div><dt>Trust-anchor SHA-256</dt><dd><code>${escapeHtml(record.providerMetadata.trustAnchorSha256.join(", "))}</code></dd></div>` : ""}
                 <div><dt>Verification result</dt><dd>${escapeHtml(externalTimestampStatusLabel(record.providerMetadata.verificationResult))}</dd></div>
-                ${record.providerMetadata.issuer ? `<div><dt>Timestamp issuer</dt><dd>${escapeHtml(record.providerMetadata.issuer)}</dd></div>` : ""}
+                ${record.providerMetadata.issuer ? `<div><dt>Timestamp issuer</dt><dd>${escapeHtml(record.providerMetadata.issuer)}</dd></div>` : ""}${record.providerMetadata.certificateSubject ? `<div><dt>Signer certificate subject</dt><dd>${escapeHtml(record.providerMetadata.certificateSubject)}</dd></div>` : ""}${record.providerMetadata.certificateSerialNumber ? `<div><dt>Signer certificate serial</dt><dd><code>${escapeHtml(record.providerMetadata.certificateSerialNumber)}</code></dd></div>` : ""}${record.providerMetadata.certificateSha256 ? `<div><dt>Signer certificate SHA-256</dt><dd><code>${escapeHtml(record.providerMetadata.certificateSha256)}</code></dd></div>` : ""}<div><dt>Provider identity technically recognized</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.providerIdentityVerified ?? null)}</dd></div><div><dt>Signature applicable / valid</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.signatureVerificationApplicable ?? null)} / ${externalTimestampMatchLabel(record.providerMetadata.signatureVerified)}</dd></div><div><dt>Certificate chain applicable / verified</dt><dd>${externalTimestampMatchLabel(record.providerMetadata.trustChainVerificationApplicable ?? null)} / ${externalTimestampMatchLabel(record.providerMetadata.trustChainVerified)}</dd></div>
                 ${record.providerMetadata.policyOid ? `<div><dt>Policy OID</dt><dd>${escapeHtml(record.providerMetadata.policyOid)}</dd></div>` : ""}
               </dl>` : ""}
+              <h4>Provider-Vertrauen und Qualifizierung</h4>
+              ${qualification?.eidasQualificationStatus === "qualified_service_verified" ? `<p><strong>${escapeHtml(this.t("eIDAS QUALIFIED TRUST SERVICE – VERIFIED"))}</strong></p>` : ""}
+              <dl>
+                <div><dt>Provider identity</dt><dd>${escapeHtml(this.t(timestampQualificationStatusLabel(qualification?.providerIdentityStatus ?? (legacy ? "not_documented" : "not_checked"))))}</dd></div>
+                <div><dt>Trust Service</dt><dd>${escapeHtml(this.t(timestampQualificationStatusLabel(qualification?.trustServiceStatus ?? (legacy ? "not_documented" : "not_checked"))))}</dd></div>
+                <div><dt>eIDAS qualification</dt><dd>${escapeHtml(this.t(timestampQualificationStatusLabel(qualification?.eidasQualificationStatus ?? (legacy ? "not_documented" : "not_checked"))))}</dd></div>
+                <div><dt>Qualification at timestamp</dt><dd>${escapeHtml(this.t(timestampQualificationStatusLabel(qualification?.qualificationAtTimestamp ?? (legacy ? "not_documented" : "not_checked"))))}</dd></div>
+                <div><dt>Current qualification</dt><dd>${escapeHtml(this.t(timestampQualificationStatusLabel(qualification?.currentQualificationStatus ?? (legacy ? "not_documented" : "not_checked"))))}</dd></div>
+                ${qualification?.trustedList ? `<div><dt>Trusted List source / validation</dt><dd>${escapeHtml(qualification.trustedList.source)} · ${escapeHtml(qualification.trustedList.validationStatus.toUpperCase())}</dd></div><div><dt>Trusted List identity</dt><dd>${escapeHtml(qualification.trustedList.territory || "Not documented")} · Version ${escapeHtml(qualification.trustedList.version || "Not documented")} · Sequence ${escapeHtml(qualification.trustedList.sequenceNumber || "Not documented")} · <code>${escapeHtml(qualification.trustedList.sha256)}</code></dd></div><div><dt>Trusted List period / validation time</dt><dd>${escapeHtml(qualification.trustedList.issuedAt || "Not documented")} – ${escapeHtml(qualification.trustedList.nextUpdate || "Not documented")} · ${escapeHtml(qualification.trustedList.validatedAt || "Not documented")}</dd></div>` : ""}
+                ${qualification?.trustServiceName ? `<div><dt>Matched service</dt><dd>${escapeHtml(qualification.trustServiceProvider)} · ${escapeHtml(qualification.trustServiceName)}</dd></div>` : ""}${qualification?.serviceType ? `<div><dt>Service type</dt><dd>${escapeHtml(qualification.serviceType)}</dd></div>` : ""}${qualification?.serviceStatus ? `<div><dt>Service status at timestamp</dt><dd>${escapeHtml(qualification.serviceStatus)}</dd></div>` : ""}${qualification?.currentServiceStatus ? `<div><dt>Current service status</dt><dd>${escapeHtml(qualification.currentServiceStatus)}</dd></div>` : ""}${qualification?.serviceIdentifier ? `<div><dt>Service identifier</dt><dd><code>${escapeHtml(qualification.serviceIdentifier)}</code></dd></div>` : ""}${qualification?.qualificationType ? `<div><dt>Qualification type</dt><dd>${escapeHtml(qualification.qualificationType)}</dd></div>` : ""}${qualification?.statusValidFrom || qualification?.statusValidUntil ? `<div><dt>Timestamp-time service-status period</dt><dd>${escapeHtml(qualification.statusValidFrom || "Not documented")} – ${escapeHtml(qualification.statusValidUntil || "open")}</dd></div>` : ""}${qualification?.currentStatusValidFrom || qualification?.currentStatusValidUntil ? `<div><dt>Current service-status period</dt><dd>${escapeHtml(qualification.currentStatusValidFrom || "Not documented")} – ${escapeHtml(qualification.currentStatusValidUntil || "open")}</dd></div>` : ""}${qualification?.identity?.certificateSha256 ? `<div><dt>Matched identity certificate</dt><dd><code>${escapeHtml(qualification.identity.certificateSha256)}</code> · ${escapeHtml(qualification.identity.certificateSubject || "Not documented")}</dd></div>` : ""}
+                ${qualification?.checkedAt ? `<div><dt>Checked at</dt><dd>${formatDate(qualification.checkedAt, true, this.language)}</dd></div>` : ""}${qualification?.message ? `<div><dt>Qualification detail</dt><dd>${escapeHtml(qualification.message)}</dd></div>` : ""}
+              </dl>
               ${record.externalReferenceId ? `<p>External reference ID: ${escapeHtml(record.externalReferenceId)}</p>` : ""}
               ${record.providerVerificationUrl ? `<p>${escapeHtml(this.t(presentation.endpointLabel))}: ${escapeHtml(record.providerVerificationUrl)}</p>` : ""}
               ${integrity.issues.length ? `<p>${escapeHtml(integrity.issues.map((issue) => this.systemText(issue)).join(" · "))}</p>` : ""}
@@ -2892,12 +2916,12 @@ export class SunoDocumentationApp {
         })()
       : "";
     return `<section class="panel external-timestamp-section">
-      <div class="panel-heading"><div><p class="overline">Post-finalization attachment</p><h3>External Timestamp Evidence</h3><p>Der Timestamp-Anchor wird automatisch aus dem finalisierten Zertifikatssnapshot bestimmt. Der ursprüngliche Manifest-/Hash-Snapshot bleibt unverändert.</p></div>${action}</div>
-      <div class="timestamp-summary">${icon("lock")}<div><strong>Basiszertifikat (Phase 1): NOT RECORDED BY DESIGN</strong><span>Der unveränderliche Zertifikatssnapshot wurde vor dem externen Provider-Aufruf abgeschlossen. Spätere Nachweise gehören ausschließlich in separate Addenda.</span></div></div>
-      <div class="timestamp-summary ${statusClass}">${icon(statusIcon)}<div><strong>${escapeHtml(this.t(`Aktueller Nachtrag (Phase 2): ${this.t(externalTimestampStatusLabel(summary.status))}`))}</strong><span>${escapeHtml(this.systemText(summary.message))}</span></div></div>
+      <div class="panel-heading"><div><p class="overline">Finalization snapshot and later addenda</p><h3>External Timestamp Evidence</h3><p>Das finale Zertifikat hält den tatsächlichen Timestamp- und Qualification-Zustand seiner Erzeugung fest. Spätere Wiederholungen ergänzen unveränderliche Addenda, ohne das PDF umzuschreiben.</p></div>${action}</div>
+      <div class="timestamp-summary">${icon("lock")}<div><strong>Finales Zertifikat: Timestamp-Zustand bei einmaliger Erzeugung erfasst</strong><span>Der Manifest-Anchor wird zuerst festgelegt; anschließend wird der automatische Provider- und Qualification-Versuch ausgewertet und erst danach das finale PDF genau einmal gerendert. Spätere Wiederholungen bleiben separate Addenda.</span></div></div>
+      <div class="timestamp-summary ${statusClass}">${icon(statusIcon)}<div><strong>${escapeHtml(this.t(`Aktueller Timestamp-Nachweis: ${this.t(externalTimestampStatusLabel(summary.status))}`))}</strong><span>${escapeHtml(this.systemText(summary.message))}</span></div></div>
       ${summary.status === "not_recorded" ? `<p class="timestamp-summary-copy">Der Track ist technisch vollständig finalisiert. Ein externer Zeitstempel wurde für diesen Zertifikatssnapshot noch nicht hinterlegt.</p>${providerReady ? "" : `<p class="timestamp-summary-copy">Kein externer Timestamp-Dienst eingerichtet.</p>`}` : ""}
       ${recordMarkup}
-      <p class="certificate-disclaimer">This records technical external timestamp evidence. No legal qualification of the timestamp is determined by Suno Documentation Manager.</p>
+      <p class="certificate-disclaimer">Technical timestamp verification and provider qualification are independent. A positive eIDAS statement is shown only when backed by a validated Trusted List record for the relevant timestamp time.</p>
     </section>`;
   }
 
@@ -3032,11 +3056,11 @@ export class SunoDocumentationApp {
     );
     const isReady = status === "ready";
     const statusClass = isReady ? "is-valid" : status === "disabled" ? "" : "is-warning";
-    return `<div class="settings-section timestamp-settings-section"><div class="settings-section-copy"><span>05</span><div><h3>Externer Zeitstempel</h3><p>Der Dienst wird einmal pro Workspace eingerichtet. Pro finalisiertem Track wird nur noch der stabile Manifest-Anchor automatisch verwendet.</p></div></div><div>
+    return `<div class="settings-section timestamp-settings-section"><div class="settings-section-copy"><span>05</span><div><h3>Externer Zeitstempel</h3><p>Der Dienst wird einmal pro Workspace eingerichtet. Bei der Finalisierung wird der stabile Manifest-Anchor vor dem einmaligen PDF-Rendering automatisch verwendet.</p></div></div><div>
       <label class="toggle-row"><span><strong>Externer Zeitstempel aktiviert</strong><small>Ein deaktivierter Dienst beeinflusst die technische Finalisierung nicht.</small></span><input type="checkbox" name="timestampEnabled" aria-label="Externen Zeitstempel aktivieren" ${settings.enabled ? "checked" : ""}><i aria-hidden="true"></i></label>
       <div class="field-grid two-col timestamp-settings-grid">
         ${this.selectField("timestampProvider", "Timestamp Provider", settings.provider, [["free_tsa", "FreeTSA"], ["open_timestamps", "OpenTimestamps"], ["sigstore_public_tsa", "Sigstore Public TSA"], ["custom_rfc3161", "Custom RFC 3161"], ["disabled", "Disabled"]])}
-        <label class="toggle-row timestamp-auto-toggle"><span><strong>Automatisch nach Finalisierung</strong><small>Phase 1 bleibt bei einem Providerfehler vollständig abgeschlossen.</small></span><input type="checkbox" name="timestampAutoAfterFinalization" aria-label="Zeitstempel automatisch nach Finalisierung anhängen" ${settings.autoAfterFinalization ? "checked" : ""}><i aria-hidden="true"></i></label>
+        <label class="toggle-row timestamp-auto-toggle"><span><strong>Automatisch bei Finalisierung</strong><small>Provider- oder Qualification-Fehler blockieren die technische Finalisierung nicht.</small></span><input type="checkbox" name="timestampAutoAfterFinalization" aria-label="Zeitstempel automatisch bei Finalisierung anfordern" ${settings.autoAfterFinalization ? "checked" : ""}><i aria-hidden="true"></i></label>
       </div>
       <p class="timestamp-settings-note"><strong>${escapeHtml(this.t(`Protokoll: ${this.t(protocol.label)}`))}</strong><br>${escapeHtml(this.t(protocol.detail))}</p>
       <div class="timestamp-provider-status ${statusClass}"><div><strong>${escapeHtml(this.t(`Status: ${this.t(timestampProviderStatusLabel(status))}`))}</strong><span>${escapeHtml(this.systemText(message || "Noch nicht getestet."))}</span>${testedAt ? `<small>Zuletzt geprüft: ${formatDate(testedAt, true, this.language)}</small>` : ""}</div><button type="button" class="button button--secondary" data-action="test-timestamp-provider" ${settings.enabled && settings.provider !== "disabled" ? "" : "disabled"}>${icon("scan")} Verbindung testen</button></div>

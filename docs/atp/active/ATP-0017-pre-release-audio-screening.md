@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Planned execution |
 | Owner | Product team |
-| Last review | 2026-08-20 |
+| Last review | 2026-08-21 |
 | Audience | Acceptance owners and product developers |
 | Related definition | [Pre-release audio screening](../../def/pre-release-audio-screening.md) |
 
@@ -23,7 +23,7 @@ Validate that SunoDM records a real local Chromaprint result for the authoritati
 | AS-02 | Replace the authoritative release file | Old screening state is stale/replaced; the new local record has the replacement SHA-256 and does not claim the old bytes | Rust replacement test plus track-state assertions | Planned |
 | AS-03 | Use a target without a verified bundled engine | Controlled `ENGINE_UNAVAILABLE`; no system executable lookup and no synthetic fingerprint | Unit test injects unavailable runner | Planned |
 | AS-04 | Generate documents and hashes after a local run | Documentation freshness includes screening state; all present `03_DOCUMENTATION/AUDIO_SCREENING/*` artifacts occur in `SHA256SUMS.txt` | Rust document/integrity test | Planned |
-| AS-05 | Finalize a new current record | Manifest schema 8 and certificate/PDF format 6.1 expose the same K.2 multi-sample summary in both languages, source binding, per-sample offsets/results, artifact hashes, and technical-only disclaimer in the deterministic PDF/A-2b certificate set; no raw fingerprint or secret appears | Rust manifest/Markdown/PDF extraction and forbidden-content tests | Planned |
+| AS-05 | Finalize a new current record | Manifest schema 9 and certificate/PDF format 6.2 expose the same K.2 multi-sample summary in both languages, source binding, per-sample offsets/results, artifact hashes, and technical-only disclaimer in the deterministic PDF/A-2b certificate set; no raw fingerprint or secret appears | Rust manifest/Markdown/PDF extraction and forbidden-content tests | Planned |
 | AS-06 | Open an old finalized snapshot | Existing certificate, manifest, PDF, and hashes remain byte-identical; no audio-screening backfill occurs | Rust historical fixture verification | Planned |
 | AS-07 | Leave ACRCloud disabled or unconfigured | Step 07 explains configuration; the external state is non-positive (`SKIPPED_NOT_CONFIGURED`/configuration state), and finalization remains available | Native plus frontend workflow tests | Planned |
 | AS-08 | Configure valid credentials and select external screening | Exactly one explicit HTTPS request uses a bounded audio sample; request contains no Chromaprint fingerprint; the structured result and safe response archive contain no credentials/signature | Adapter request-capture test | Planned |

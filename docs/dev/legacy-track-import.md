@@ -107,7 +107,7 @@ Older `lyricsSource` and `lyricsText` values remain readable under explicitly la
 
 The former `sunoPlanAtCreation` JSON name remains readable only as the separate `legacySunoPlanAtCreation` historical value. It is never copied into or presented as `sunoPlanAtGeneration`. If an older track has no explicitly confirmed new value, `Suno plan at generation` remains `NOT DOCUMENTED` and the applicable workflow requirement remains blocked until the user confirms it in mutable state. Generated review output may show the legacy value as historical user data, but it must state that this is not a plan-at-generation claim. Known provider suggestions apply only to new selections; historical spellings are preserved.
 
-Existing finalized certificate, manifest, hash, PDF, timestamp sidecar, and revision bytes are never upgraded in place. Current workflow 1.9, template 1.11, manifest schema 8, certificate/PDF format 6.1, PDF/A-2b output, and the current semantic fields apply only to new tracks, mutable older tracks, or a new revision after the prior snapshot has been archived. No importer renames historical or finalized artwork to the current title-based convention, embeds fonts into an older PDF, backfills ACRCloud multi-sample records, or promotes a manual/legacy timestamp record to cryptographically verified RFC-3161 evidence.
+Existing finalized certificate, manifest, hash, PDF, timestamp sidecar, and revision bytes are never upgraded in place. Current workflow 1.9, template 1.11, manifest schema 9, certificate/PDF format 6.2, sidecar format 2, PDF/A-2b output, and the current timestamp/provider-qualification semantic fields apply only to new tracks, mutable older tracks, or a new revision after the prior snapshot has been archived. No importer renames historical or finalized artwork to the current title-based convention, embeds fonts into an older PDF, backfills ACRCloud multi-sample records, or promotes a manual/legacy timestamp record to cryptographically verified RFC-3161 evidence.
 
 ## Scan algorithm
 
@@ -206,6 +206,7 @@ Reviewers compare pre-scan and post-scan candidate-tree hashes to prove that dis
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-21 | Recorded manifest 9, certificate/PDF 6.2, and sidecar 2 as new-revision-only formats; historical timestamp and qualification data is never backfilled or promoted. | Project team |
 | 2026-08-20 | Clarified that current workflow/template/manifest/certificate/PDF-A behavior applies only to mutable or new revisions and never renames artwork, rewrites older PDFs, or promotes legacy timestamp evidence. | Project team |
 | 2026-08-17 | Corrected migration semantics so legacy plan-at-creation remains separate and the new plan-at-generation stays `NOT DOCUMENTED` until explicit confirmation. | Project team |
 | 2026-08-17 | Documented non-inferential migration for legacy lyrics/provider fields, exact `NO`/`N/A`/`NOT DOCUMENTED` semantics, immutable older certificate formats, and explicit revision-bound timestamp attachment. | Project team |

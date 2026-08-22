@@ -17,6 +17,10 @@ describe("bidirectional system localization", () => {
       .toBe("Der externe Zeitstempeldienst ist deaktiviert.");
     expect(translateUiText("Der externe Zeitstempeldienst ist deaktiviert.", "en"))
       .toBe("External timestamp service is disabled.");
+    expect(translateUiText("QUALIFIED SERVICE VERIFIED", "de"))
+      .toBe("QUALIFIZIERTER DIENST VERIFIZIERT");
+    expect(translateUiText("eIDAS QUALIFIED TRUST SERVICE – VERIFIED", "de"))
+      .toBe("eIDAS-QUALIFIZIERTER VERTRAUENSDIENST – VERIFIZIERT");
   });
 
   it("recognizes every workflow and system message in either source or target language", () => {

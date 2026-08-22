@@ -212,7 +212,7 @@ A non-applicable requirement is removed from both numerator and denominator. A j
 - native re-verification has verified every listed file; and
 - the selected workflow and application versions are recorded.
 
-External timestamp evidence is deliberately absent from this gate. It can be attached only after a successful technical finalization commit, when the phase-one anchors are stable. A configured automatic RFC-3161 action then uses only the exact finalized Evidence Manifest; manual/legacy attachment can use another permitted stable anchor. Every timestamp outcome remains separate from the gate, never rolls back `DOCUMENTATION COMPLETE`, and does not turn it into a legal or evidentiary-strength conclusion.
+External timestamp evidence is not a prerequisite of this gate. After the gate passes, finalization serializes the schema-9 Evidence Manifest anchor, performs at most one enabled automatic provider attempt, captures separate provider-configuration, concrete technical, protocol/identity, and qualification states, and renders the final certificate once. Provider, verification, Trusted List, or historical-status failure is non-blocking data and never changes `DOCUMENTATION COMPLETE` into a legal or evidentiary-strength conclusion. A successful response is archived before the final database commit; later retry/manual attachment may use a permitted stable anchor but cannot rewrite the base PDF.
 
 The optional ACRCloud result is also absent from the gate. It can be requested only from Step 07 after explicit workspace configuration, and it never runs automatically during import, document generation, hash operations, opening a workspace, validation, or finalization. Its provider statuses are technical comparison facts, not copyright, ownership, permission, infringement, legality, or release-clearance determinations.
 
@@ -287,6 +287,7 @@ Gate results belong in [ATP-0008](../atp/active/ATP-0008-finalization-gate.md); 
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-21 | Kept timestamp and provider qualification outside the mandatory gate while moving one optional manifest-anchored attempt before the single certificate render and separating current/historical Trusted List results. | Project team |
 | 2026-08-20 | Raised the workflow to 1.9 for scalar Content Classification, explicit independent Vocal Intent, explicit AI-artwork disclosure decisions, artwork identity/chronology/filename semantics, and the post-commit fixed-manifest RFC-3161 boundary. | Project team |
 | 2026-08-18 | Raised the workflow to 1.8 for current local Chromaprint screening of authoritative release evidence and optional non-blocking explicit ACRCloud screening in Step 07. | Project team |
 | 2026-08-17 | Defined verified local Terms evidence plus an unavailable claim as a native-update rejection and blocking consistency/rendering contradiction without changing workflow version 1.7. | Project team |

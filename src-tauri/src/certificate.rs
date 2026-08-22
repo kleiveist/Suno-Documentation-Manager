@@ -5,8 +5,10 @@ use crate::model::{
     AudioScreeningExternalRecord, AudioScreeningMode, AudioScreeningProviderStatus,
     AudioScreeningState, AudioScreeningStatus, BlockingDeviation, CertificateLanguage,
     CertificateRenderOptions, DocumentationAnswer, EvidenceItem, EvidenceMetadata,
-    EvidenceProvenance, EvidenceRole, FactOrigin, Profile, StepState, StepStatus,
-    SunoContentClassification, SunoLyricsContentSource, TrackFields, TrackRecord, VocalIntent,
+    EvidenceProvenance, EvidenceRole, ExternalTimestampStatus, FactOrigin,
+    FinalizationTimestampSnapshot, Profile, StepState, StepStatus, SunoContentClassification,
+    SunoLyricsContentSource, TimestampProviderConfigurationStatus, TimestampQualificationStatus,
+    TrackFields, TrackRecord, TrustedListValidationStatus, VocalIntent,
 };
 use crate::security::{
     atomic_write_new, contained_path, copy_new, ensure_contained_directory, portable_relative,
@@ -27,8 +29,8 @@ pub const CERTIFICATE_HASH_FILE: &str = "06_CERTIFICATE/CERTIFICATE_SHA256.txt";
 pub const PDF_FILE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE.pdf";
 pub const PDF_FILE_EN: &str = PDF_FILE;
 pub const PDF_FILE_DE: &str = "SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf";
-pub const CERTIFICATE_FORMAT_VERSION: &str = "6.1";
-pub const EVIDENCE_MANIFEST_SCHEMA_VERSION: u32 = 8;
+pub const CERTIFICATE_FORMAT_VERSION: &str = "6.2";
+pub const EVIDENCE_MANIFEST_SCHEMA_VERSION: u32 = 9;
 
 // These sentinels exist only while the Markdown template is localized. Input
 // validation rejects them, and they are removed before either language is
@@ -229,6 +231,8 @@ fn is_certificate_owned_markdown_prose(line: &str) -> bool {
             | "This is a factual coverage and archive status only; it is not a rights determination."
             | "Post-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot."
             | "For long-term evidentiary preservation, an external timestamp can be added after technical finalization."
+            | "Technical timestamp verification and provider qualification answer different questions. No legal effect is inferred. A regulatory qualification is reported only when independently verified."
+            | "For long-term evidentiary preservation, an external timestamp can be requested in a later immutable addendum."
             | "Audio-screening results are technical comparison records only. They do not establish authorship, ownership, permission, infringement, legality, release clearance, or any legal conclusion."
             | "This certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks."
             | "It does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification."
@@ -351,6 +355,15 @@ fn german_certificate_paragraph(english: &str) -> String {
         "Factual archive and coverage status only. No rights ownership, license validity, legality, or non-infringement conclusion is made." => {
             "Ausschließlich sachlicher Archiv- und Abdeckungsstatus. Es wird keine Feststellung zu Rechteinhaberschaft, Lizenzgültigkeit, Rechtmäßigkeit oder Nichtverletzung getroffen."
         }
+        "The application records technical timestamp evidence separately from provider qualification. It does not infer legal effect; a regulatory qualification is reported only when independently verified." => {
+            "Die Anwendung dokumentiert technische Zeitstempel-Evidence getrennt von der Providerqualifikation. Sie leitet daraus keine Rechtswirkung ab; eine regulatorische Qualifikation wird nur ausgewiesen, wenn sie unabhängig verifiziert wurde."
+        }
+        "Technical timestamp verification and provider qualification answer different questions. No legal effect is inferred. A regulatory qualification is reported only when independently verified." => {
+            "Die technische Zeitstempelverifikation und die Providerqualifikation beantworten unterschiedliche Fragen. Es wird keine Rechtswirkung abgeleitet. Eine regulatorische Qualifikation wird nur ausgewiesen, wenn sie unabhängig verifiziert wurde."
+        }
+        "For long-term evidentiary preservation, an external timestamp can be requested in a later immutable addendum." => {
+            "Zur langfristigen Beweissicherung kann ein externer Zeitstempel in einem späteren unveränderlichen Nachtrag angefordert werden."
+        }
         "Post-finalization technical evidence record – no legal qualification asserted" => {
             "Technischer Evidenzdatensatz nach der Finalisierung – keine rechtliche Qualifizierung behauptet"
         }
@@ -459,6 +472,168 @@ fn german_certificate_label(english: &str) -> String {
             "Screening- und Workflow-Snapshot",
         ),
         ("Provider response", "Providerantwort"),
+        ("A. Technical timestamp", "A. Technischer Zeitstempel"),
+        (
+            "B. Provider trust and qualification",
+            "B. Providervertrauen und Qualifikation",
+        ),
+        (
+            "Provider Trust and Qualification",
+            "Providervertrauen und Qualifikation",
+        ),
+        (
+            "Provider configuration detail",
+            "Details zur Providerkonfiguration",
+        ),
+        ("Provider configuration", "Providerkonfiguration"),
+        (
+            "Automatic request for this finalization",
+            "Automatische Anfrage für diese Finalisierung",
+        ),
+        (
+            "Concrete timestamp status",
+            "Status des konkreten Zeitstempels",
+        ),
+        (
+            "Concrete timestamp detail",
+            "Details zum konkreten Zeitstempel",
+        ),
+        ("Referenced artifact", "Referenziertes Artefakt"),
+        ("Manifest anchor SHA-256", "SHA-256 des Manifestankers"),
+        ("Timestamp protocol", "Zeitstempelprotokoll"),
+        ("Technical status", "Technischer Status"),
+        ("Provider qualification", "Providerqualifikation"),
+        ("Protocol", "Protokoll"),
+        ("Hash algorithm", "Hash-Algorithmus"),
+        ("Provider response format", "Format der Providerantwort"),
+        ("Provider adapter", "Provideradapter"),
+        ("Timestamp value", "Zeitstempelwert"),
+        ("Provider reference ID", "Provider-Referenz-ID"),
+        ("Provider endpoint", "Provider-Endpunkt"),
+        ("Policy OID", "Policy-OID"),
+        ("Service identifier", "Dienstkennung"),
+        (
+            "Signer certificate subject",
+            "Subjekt des Signer-Zertifikats",
+        ),
+        (
+            "Signer certificate issuer",
+            "Aussteller des Signer-Zertifikats",
+        ),
+        (
+            "Signer certificate serial",
+            "Seriennummer des Signer-Zertifikats",
+        ),
+        (
+            "Signer certificate SHA-256",
+            "SHA-256 des Signer-Zertifikats",
+        ),
+        (
+            "Technical verification timestamp",
+            "Zeitpunkt der technischen Verifikation",
+        ),
+        (
+            "Provider response structurally valid",
+            "Providerantwort strukturell gültig",
+        ),
+        ("Manifest hash binding", "Manifest-Hashbindung"),
+        (
+            "Timestamp signature applicable",
+            "Zeitstempelsignatur anwendbar",
+        ),
+        ("Timestamp signature valid", "Zeitstempelsignatur gültig"),
+        ("Certificate chain applicable", "Zertifikatskette anwendbar"),
+        (
+            "Certificate chain technically verified",
+            "Zertifikatskette technisch verifiziert",
+        ),
+        (
+            "Provider identity technically recognized",
+            "Provideridentität technisch erkannt",
+        ),
+        ("Policy match", "Policy-Übereinstimmung"),
+        ("Hash binding", "Hashbindung"),
+        ("Provider identity", "Provideridentität"),
+        ("eIDAS qualification", "eIDAS-Qualifikation"),
+        (
+            "Qualification at timestamp",
+            "Qualifikation zum Zeitstempelzeitpunkt",
+        ),
+        ("Current qualification", "Aktuelle Qualifikation"),
+        ("Qualification result detail", "Details zum Qualifikationsergebnis"),
+        ("Qualification detail", "Details zur Qualifikation"),
+        (
+            "Verified higher qualification",
+            "Verifizierte höhere Qualifikation",
+        ),
+        ("Qualification checked at", "Qualifikation geprüft am"),
+        (
+            "Recognized Trust Service Provider",
+            "Erkannter Vertrauensdiensteanbieter",
+        ),
+        ("Recognized Trust Service", "Erkannter Vertrauensdienst"),
+        ("Trust Service type", "Vertrauensdiensttyp"),
+        ("Trust Service status", "Vertrauensdienststatus"),
+        (
+            "Service status at timestamp",
+            "Dienststatus zum Zeitstempelzeitpunkt",
+        ),
+        ("Current service status", "Aktueller Dienststatus"),
+        ("Trust Service identifier", "Vertrauensdienstkennung"),
+        ("Trust Service", "Vertrauensdienst"),
+        ("Qualification type", "Qualifikationstyp"),
+        ("Status valid from", "Status gültig ab"),
+        ("Status valid until", "Status gültig bis"),
+        (
+            "Timestamp-time status valid from",
+            "Zeitstempelzeitpunkt-Status gültig ab",
+        ),
+        (
+            "Timestamp-time status valid until",
+            "Zeitstempelzeitpunkt-Status gültig bis",
+        ),
+        ("Current status valid from", "Aktueller Status gültig ab"),
+        ("Current status valid until", "Aktueller Status gültig bis"),
+        (
+            "Identity certificate SHA-256",
+            "SHA-256 des Identitätszertifikats",
+        ),
+        (
+            "Identity certificate subject",
+            "Subjekt des Identitätszertifikats",
+        ),
+        (
+            "Identity certificate issuer",
+            "Aussteller des Identitätszertifikats",
+        ),
+        (
+            "Identity certificate serial",
+            "Seriennummer des Identitätszertifikats",
+        ),
+        ("Identity policy OID", "Identitäts-Policy-OID"),
+        ("Trusted List source", "Quelle der Vertrauensliste"),
+        ("Trusted List territory", "Gebiet der Vertrauensliste"),
+        ("Trusted List version", "Version der Vertrauensliste"),
+        ("Trusted List sequence", "Sequenz der Vertrauensliste"),
+        ("Trusted List issued at", "Vertrauensliste ausgestellt am"),
+        (
+            "Trusted List next update",
+            "Nächste Aktualisierung der Vertrauensliste",
+        ),
+        ("Trusted List SHA-256", "SHA-256 der Vertrauensliste"),
+        (
+            "Trusted List validated at",
+            "Vertrauensliste validiert am",
+        ),
+        ("Trusted List validation", "Validierung der Vertrauensliste"),
+        (
+            "Independent trust verification",
+            "Unabhängige Vertrauensprüfung",
+        ),
+        (
+            "No validated qualification source was checked. This does not mean that the provider is unsafe or not qualified.",
+            "Es wurde keine validierte Qualifikationsquelle geprüft. Dies bedeutet nicht, dass der Provider unsicher oder nicht qualifiziert ist.",
+        ),
         ("API version", "API-Version"),
         ("Workflow checks", "Workflow-Prüfungen"),
         (
@@ -1053,6 +1228,31 @@ fn german_certificate_label(english: &str) -> String {
         ("NONE RECORDED", "KEINE ERFASST"),
         ("DYNAMIC BY TRACK DURATION", "DYNAMISCH NACH TRACKDAUER"),
         ("FIXED REFERENCE DURATION", "FESTE REFERENZDAUER"),
+        (
+            "eIDAS QUALIFIED TRUST SERVICE – VERIFIED",
+            "eIDAS-QUALIFIZIERTER VERTRAUENSDIENST – VERIFIZIERT",
+        ),
+        (
+            "VERIFICATION CONFIGURATION INCOMPLETE",
+            "VERIFIKATIONSKONFIGURATION UNVOLLSTÄNDIG",
+        ),
+        ("PROVIDER IDENTITY VERIFIED", "PROVIDERIDENTITÄT VERIFIZIERT"),
+        ("QUALIFIED SERVICE VERIFIED", "QUALIFIZIERTER DIENST VERIFIZIERT"),
+        ("TRUST SERVICE VERIFIED", "VERTRAUENSDIENST VERIFIZIERT"),
+        ("AUTHENTICATION REQUIRED", "AUTHENTIFIZIERUNG ERFORDERLICH"),
+        ("CONFIGURATION INCOMPLETE", "KONFIGURATION UNVOLLSTÄNDIG"),
+        ("VERIFICATION FAILED", "VERIFIKATION FEHLGESCHLAGEN"),
+        ("CONNECTION FAILED", "VERBINDUNG FEHLGESCHLAGEN"),
+        ("UNSUPPORTED RESPONSE", "NICHT UNTERSTÜTZTE ANTWORT"),
+        ("ANCHOR MISMATCH", "ANKERABWEICHUNG"),
+        ("PROVIDER ERROR", "PROVIDERFEHLER"),
+        ("CHECK FAILED", "PRÜFUNG FEHLGESCHLAGEN"),
+        ("NOT CHECKED", "NICHT GEPRÜFT"),
+        ("REQUESTING", "WIRD ANGEFORDERT"),
+        ("ATTACHED", "ANGEHÄNGT"),
+        ("ENABLED", "AKTIVIERT"),
+        ("VERIFIED", "VERIFIZIERT"),
+        ("FAILED", "FEHLGESCHLAGEN"),
         ("READY", "BEREIT"),
         ("DISABLED", "DEAKTIVIERT"),
         ("NOT CONFIGURED", "NICHT KONFIGURIERT"),
@@ -1669,6 +1869,41 @@ pub fn generate(
         finalized_at,
         transaction_id,
         render_options,
+        None,
+        #[cfg(test)]
+        None,
+    )
+}
+
+/// Generate the immutable certificate after resolving the concrete timestamp
+/// state for the already serialized manifest anchor. The resolver is called
+/// exactly once and before either language PDF is rendered.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_with_finalization_timestamp(
+    track_root: &Path,
+    track: &TrackRecord,
+    profile: &Profile,
+    steps: &[StepState],
+    evidence: &[EvidenceItem],
+    deviations: &[BlockingDeviation],
+    certificate_id: &str,
+    finalized_at: &str,
+    transaction_id: &str,
+    render_options: CertificateRenderOptions,
+    timestamp_resolver: &mut dyn FnMut(&str, &[u8]) -> FinalizationTimestampSnapshot,
+) -> Result<()> {
+    generate_impl(
+        track_root,
+        track,
+        profile,
+        steps,
+        evidence,
+        deviations,
+        certificate_id,
+        finalized_at,
+        transaction_id,
+        render_options,
+        Some(timestamp_resolver),
         #[cfg(test)]
         None,
     )
@@ -1709,6 +1944,7 @@ pub(crate) fn generate_with_failure(
         finalized_at,
         transaction_id,
         render_options,
+        None,
         Some(failure),
     )
 }
@@ -1725,6 +1961,7 @@ fn generate_impl(
     finalized_at: &str,
     transaction_id: &str,
     render_options: CertificateRenderOptions,
+    timestamp_resolver: Option<&mut dyn FnMut(&str, &[u8]) -> FinalizationTimestampSnapshot>,
     #[cfg(test)] failure: Option<CertificateGenerationFailure>,
 ) -> Result<()> {
     let hash_manifest = contained_path(track_root, Path::new(HASH_FILE), true)?;
@@ -1902,7 +2139,7 @@ fn generate_impl(
             "subscription_production_coverage": crate::workflow::subscription_production_coverage(track, evidence),
             "release_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::ReleaseWav),
             "suno_export_original_file_name": crate::workflow::original_evidence_file_name(evidence, EvidenceRole::SunoFinalExport),
-            "external_timestamp_at_technical_finalization": "NOT RECORDED",
+            "external_timestamp_anchor_prepared": true,
             "fact_origins": {
                 "final_suno_generation_id": automation.final_generation_id_origin,
                 "final_suno_generation_date": automation.final_generation_origin,
@@ -1920,9 +2157,11 @@ fn generate_impl(
             "consistency_issues": &automation.consistency_issues,
         },
         "external_timestamp": {
-            "status_at_technical_finalization": "NOT RECORDED",
-            "attachment_phase": "post_finalization_addendum",
-            "changes_phase_one_snapshot": false,
+            "anchor_artifact": MANIFEST_FILE,
+            "attempt_timing": "after_manifest_anchor_before_single_certificate_render",
+            "status_recorded_in_final_certificate": true,
+            "successful_response_archived_as_immutable_addendum": true,
+            "later_retry_changes_certificate_pdf": false,
         },
         "deviations": deviations,
         "revision_archives": &archived_revisions,
@@ -1930,6 +2169,9 @@ fn generate_impl(
     let mut manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
     manifest_bytes.push(b'\n');
     let manifest_sha = sha256_bytes(&manifest_bytes);
+    let finalization_timestamp = timestamp_resolver
+        .map(|resolver| resolver(&manifest_sha, &manifest_bytes))
+        .unwrap_or_default();
 
     let release_wav = evidence_values
         .iter()
@@ -2021,8 +2263,13 @@ fn generate_impl(
     } else {
         markdown_raw_value(&archived_revisions.join(", "))
     };
+    let finalization_timestamp_md = finalization_timestamp_markdown(
+        &finalization_timestamp,
+        &manifest_sha,
+        track.fields.commercial_use_intended,
+    );
     let english_certificate = format!(
-        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- Final generation ID [{final_generation_id_origin}]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n- External timestamp evidence at technical finalization: **NOT RECORDED**\n- No external timestamp evidence recorded.\n{}\nPost-finalization timestamp evidence, if later attached, is recorded in a separate addendum and does not change this technical-finalization snapshot.\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### K.1 Configured workflow checks\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n### K.2 Pre-release audio screening\n\n{audio_screening_md}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
+        "# SunoDM Technical Documentation and Evidence Certificate\n\n> Technical documentation only — not a legal or governmental certification.\n\n## A. Certificate / Snapshot Identity\n\n- Certificate ID: `{certificate_id}`\n- Application version: `{}`\n- Workflow: `{}` / `{}`\n- Certificate schema: `{CERTIFICATE_FORMAT_VERSION}`\n- Finalized at: `{finalized_at}`\n- Documentation status: **DOCUMENTATION COMPLETE**\n- Meaning: configured documentation requirements completed\n- PASS definition: Configured documentation requirements for this step were satisfied.\n\n## B. Track identity\n\n- Documented title [User-confirmed fact]: {}\n- Artist [User-confirmed fact]: {}\n- Actual release filename [Evidence-derived metadata]: `{release_file_name}`\n- Actual Suno export filename [Evidence-derived metadata]: `{suno_export_file_name}`\n- Last editing date [{last_editing_origin}]: {last_editing_date}\n\n## C. Final Suno Generation\n\n- Final generation date [{final_generation_origin}]: {}\n- Final generation date origin: **{final_generation_origin}**\n- Final generation ID [{final_generation_id_origin}]: {}\n- Suno project URL [User-confirmed fact]: {}\n- Download/export date [{download_export_origin}]: {}\n- Download/export date origin: **{download_export_origin}**\n- Suno Studio metadata detected: **{suno_metadata_detected}**\n- Metadata detection origin: **System verification**\n- Metadata origin: {}\n- Suno model [User-confirmed fact]: {}\n- Suno plan at generation [User-confirmed fact]: {}\n- Release identical to Suno final export: **{release_identical_to_suno_export}**\n- Release identity origin: **System verification**\n\n## D. Source provenance\n\n{source_provenance_md}\n## E. Human contribution\n\n{human_contribution_md}\n{suno_field_md}\n## G. AI Transparency Assessment\n\n### G.1 Audio\n\n{ai_audio_md}\n### G.2 Artwork\n\n{ai_artwork_md}\n## H. License and rights evidence\n\n- Assigned subscription evidence jointly covers the production period [System verification]: **{production_coverage}**\n- Final-generation date covered [System verification]: **{generation_coverage}**\n- Terms evidence exists [System verification]: **{}**\n- Terms evidence IDs [System value]: {terms_ids}\n- Terms evidence not available [User-confirmed fact]: {}\n\n### Archived service-terms evidence\n\n{terms_details_md}\nThis is a factual coverage and archive status only; it is not a rights determination.\n\n## I. External Timestamp Evidence\n\n{finalization_timestamp_md}\n\n## J. Evidence register\n\n- Evidence file count: {}\n\n{evidence_register_md}\n## K. Integrity anchors and workflow\n\n- Release audio SHA-256: `{release_wav}`\n- Final artwork SHA-256: `{final_artwork}`\n- SHA256SUMS.txt SHA-256: `{hash_manifest_sha}`\n- Evidence manifest SHA-256: `{manifest_sha}`\n- Blocking deviations: {open_blocking}\n- Previous revision archives [System verification]: `{revision_archives}`\n- Final result: **DOCUMENTATION COMPLETE**\n\n### K.1 Configured workflow checks\n\n{completed_steps}\n### N/A steps with reasons\n\n{}\n### K.2 Pre-release audio screening\n\n{audio_screening_md}\n## L. Technical certificate statement\n\nThis certificate confirms the recorded inputs, finalized snapshot, registered evidence, recorded provenance, SHA-256 values, and configured workflow checks.\n\nIt does **not** confirm authorship, rights ownership, non-infringement, legality, license validity, judicial evidentiary weight, statutory compliance, or governmental certification.\n\nOrigin labels used: **User-confirmed fact**, **Evidence-derived metadata**, **System verification**, and **System value**.\n",
         env!("CARGO_PKG_VERSION"),
         track.workflow_id,
         track.workflow_version,
@@ -2041,11 +2288,6 @@ fn generate_impl(
         markdown_documented(&track.fields.suno_plan_at_generation),
         if terms.is_empty() { "NO" } else { "YES" },
         recorded_bool(track.fields.suno_terms_evidence_not_available),
-        if track.fields.commercial_use_intended {
-            "\nFor long-term evidentiary preservation, an external timestamp can be added after technical finalization.\n"
-        } else {
-            ""
-        },
         evidence_values.len(),
         if na_steps.is_empty() {
             "- NONE\n"
@@ -2085,6 +2327,7 @@ fn generate_impl(
         sha256sums_sha256: &hash_manifest_sha,
         evidence_manifest_sha256: &manifest_sha,
         markdown_certificate_sha256: &certificate_sha,
+        finalization_timestamp: finalization_timestamp.clone(),
         artwork_previews: &artwork_previews,
         render_options: CertificateRenderOptions {
             language: CertificateLanguage::En,
@@ -2105,6 +2348,7 @@ fn generate_impl(
         sha256sums_sha256: &hash_manifest_sha,
         evidence_manifest_sha256: &manifest_sha,
         markdown_certificate_sha256: &certificate_sha,
+        finalization_timestamp: finalization_timestamp.clone(),
         artwork_previews: &artwork_previews,
         render_options: CertificateRenderOptions {
             language: CertificateLanguage::De,
@@ -2138,6 +2382,180 @@ fn generate_impl(
         failure.and_then(CertificateGenerationFailure::publication_failure),
     )?;
     Ok(())
+}
+
+fn finalization_timestamp_markdown(
+    timestamp: &FinalizationTimestampSnapshot,
+    manifest_sha256: &str,
+    commercial_use_intended: bool,
+) -> String {
+    let provider = markdown_documented(&timestamp.provider);
+    let mut output = format!(
+        "### A. Technical timestamp\n\n- Provider configuration [System verification]: **{}**\n- Provider configuration detail [System verification]: {}\n- Provider [System value]: {}\n- Automatic request for this finalization [System value]: **{}**\n- Concrete timestamp status [System verification]: **{}**\n- Concrete timestamp detail [System verification]: {}\n- Referenced artifact [System value]: `EVIDENCE_MANIFEST.json`\n- Manifest anchor SHA-256 [System verification]: `{}`\n",
+        timestamp_provider_configuration_label(timestamp.provider_configuration_status),
+        markdown_documented(&timestamp.provider_configuration_message),
+        provider,
+        if timestamp.automatic_request_enabled { "ENABLED" } else { "DISABLED" },
+        timestamp_technical_status_label(timestamp.technical_status),
+        markdown_documented(&timestamp.technical_message),
+        markdown_raw_value(manifest_sha256),
+    );
+
+    if let Some(metadata) = timestamp.provider_metadata.as_ref() {
+        output.push_str(&format!(
+            "- Timestamp protocol [Provider-derived metadata]: {}\n- Hash algorithm [Provider-derived metadata]: {}\n- Provider response structurally valid [System verification]: **{}**\n- Manifest hash binding [System verification]: **{}**\n- Timestamp signature applicable [System verification]: **{}**\n- Timestamp signature valid [System verification]: **{}**\n- Certificate chain applicable [System verification]: **{}**\n- Certificate chain technically verified [System verification]: **{}**\n- Provider identity technically recognized [System verification]: **{}**\n- Timestamp value [Provider-derived metadata]: {}\n- Provider reference ID [Provider-derived metadata]: {}\n- Signer certificate subject [System verification]: {}\n- Signer certificate issuer [System verification]: {}\n- Signer certificate serial [System verification]: {}\n- Signer certificate SHA-256 [System verification]: `{}`\n- Policy OID [Provider-derived metadata]: {}\n",
+            markdown_documented(&metadata.protocol),
+            markdown_documented(&metadata.request_algorithm),
+            optional_verification_label(metadata.response_structure_valid),
+            optional_verification_label(metadata.provider_digest_match),
+            recorded_bool(metadata.signature_verification_applicable),
+            optional_verification_label(metadata.signature_verified),
+            recorded_bool(metadata.trust_chain_verification_applicable),
+            optional_verification_label(metadata.trust_chain_verified),
+            optional_verification_label(metadata.provider_identity_verified),
+            markdown_documented(&timestamp.timestamp_value),
+            markdown_documented(&timestamp.external_reference_id),
+            markdown_documented(&metadata.certificate_subject),
+            markdown_documented(&metadata.issuer),
+            markdown_documented(&metadata.certificate_serial_number),
+            markdown_raw_value(&metadata.certificate_sha256),
+            markdown_documented(&metadata.policy_oid),
+        ));
+    } else {
+        output.push_str(
+            "- Timestamp protocol [System verification]: **NOT DOCUMENTED**\n- Manifest hash binding [System verification]: **NOT VERIFIED**\n",
+        );
+    }
+
+    let qualification = timestamp
+        .provider_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.qualification.as_ref());
+    let qualification_status =
+        |field: fn(&crate::model::TimestampQualificationRecord) -> TimestampQualificationStatus| {
+            qualification.map(field).unwrap_or_default()
+        };
+    output.push_str(&format!(
+        "\n### B. Provider trust and qualification\n\n- Provider identity [Independent trust verification]: **{}**\n- Trust Service [Independent trust verification]: **{}**\n- eIDAS qualification [Independent trust verification]: **{}**\n- Qualification at timestamp [Independent trust verification]: **{}**\n- Current qualification [Independent trust verification]: **{}**\n",
+        timestamp_qualification_status_label(qualification_status(|value| value.provider_identity_status)),
+        timestamp_qualification_status_label(qualification_status(|value| value.trust_service_status)),
+        timestamp_qualification_status_label(qualification_status(|value| value.eidas_qualification_status)),
+        timestamp_qualification_status_label(qualification_status(|value| value.qualification_at_timestamp)),
+        timestamp_qualification_status_label(qualification_status(|value| value.current_qualification_status)),
+    ));
+
+    if let Some(qualification) = qualification {
+        if qualification.eidas_qualification_status
+            == TimestampQualificationStatus::QualifiedServiceVerified
+        {
+            output.push_str("\n**eIDAS QUALIFIED TRUST SERVICE – VERIFIED**\n");
+        }
+        output.push_str(&format!(
+            "- Qualification checked at [System verification]: {}\n- Qualification detail [Independent trust verification]: {}\n- Recognized Trust Service Provider [Independent trust verification]: {}\n- Recognized Trust Service [Independent trust verification]: {}\n- Trust Service type [Independent trust verification]: {}\n- Service status at timestamp [Independent trust verification]: {}\n- Current service status [Independent trust verification]: {}\n- Trust Service identifier [Independent trust verification]: {}\n- Qualification type [Independent trust verification]: {}\n- Timestamp-time status valid from [Independent trust verification]: {}\n- Timestamp-time status valid until [Independent trust verification]: {}\n- Current status valid from [Independent trust verification]: {}\n- Current status valid until [Independent trust verification]: {}\n- Identity certificate SHA-256 [System verification]: `{}`\n",
+            markdown_documented(&qualification.checked_at),
+            markdown_documented(&qualification.message),
+            markdown_documented(&qualification.trust_service_provider),
+            markdown_documented(&qualification.trust_service_name),
+            markdown_documented(&qualification.service_type),
+            markdown_documented(&qualification.service_status),
+            markdown_documented(&qualification.current_service_status),
+            markdown_documented(&qualification.service_identifier),
+            markdown_documented(&qualification.qualification_type),
+            markdown_documented(&qualification.status_valid_from),
+            markdown_documented(&qualification.status_valid_until),
+            markdown_documented(&qualification.current_status_valid_from),
+            markdown_documented(&qualification.current_status_valid_until),
+            markdown_raw_value(&qualification.identity.certificate_sha256),
+        ));
+        if let Some(source) = qualification.trusted_list.as_ref() {
+            output.push_str(&format!(
+                "- Trusted List source [Independent trust verification]: {}\n- Trusted List territory [Independent trust verification]: {}\n- Trusted List version [Independent trust verification]: {}\n- Trusted List sequence [Independent trust verification]: {}\n- Trusted List issued at [Independent trust verification]: {}\n- Trusted List next update [Independent trust verification]: {}\n- Trusted List SHA-256 [System verification]: `{}`\n- Trusted List validation [Independent trust verification]: **{}**\n- Trusted List validated at [System verification]: {}\n",
+                markdown_documented(&source.source),
+                markdown_documented(&source.territory),
+                markdown_documented(&source.version),
+                markdown_documented(&source.sequence_number),
+                markdown_documented(&source.issued_at),
+                markdown_documented(&source.next_update),
+                markdown_raw_value(&source.sha256),
+                timestamp_trusted_list_validation_label(source.validation_status),
+                markdown_documented(&source.validated_at),
+            ));
+        }
+    } else {
+        output.push_str("- Qualification detail [System verification]: No validated qualification source was checked. This does not mean that the provider is unsafe or not qualified.\n");
+    }
+
+    output.push_str("\nTechnical timestamp verification and provider qualification answer different questions. No legal effect is inferred. A regulatory qualification is reported only when independently verified.\n");
+    if commercial_use_intended && timestamp.technical_status == ExternalTimestampStatus::NotRecorded
+    {
+        output.push_str("\nFor long-term evidentiary preservation, an external timestamp can be requested in a later immutable addendum.\n");
+    }
+    output
+}
+
+fn timestamp_provider_configuration_label(
+    status: TimestampProviderConfigurationStatus,
+) -> &'static str {
+    match status {
+        TimestampProviderConfigurationStatus::Disabled => "DISABLED",
+        TimestampProviderConfigurationStatus::NotConfigured => "NOT CONFIGURED",
+        TimestampProviderConfigurationStatus::Ready => "READY",
+        TimestampProviderConfigurationStatus::AuthenticationRequired => "AUTHENTICATION REQUIRED",
+        TimestampProviderConfigurationStatus::AuthenticationFailed => "AUTHENTICATION FAILED",
+        TimestampProviderConfigurationStatus::ConnectionFailed => "CONNECTION FAILED",
+        TimestampProviderConfigurationStatus::VerificationConfigurationIncomplete => {
+            "VERIFICATION CONFIGURATION INCOMPLETE"
+        }
+        TimestampProviderConfigurationStatus::ProviderError => "PROVIDER ERROR",
+    }
+}
+
+fn timestamp_technical_status_label(status: ExternalTimestampStatus) -> &'static str {
+    match status {
+        ExternalTimestampStatus::NotRecorded => "NOT RECORDED",
+        ExternalTimestampStatus::Requesting => "REQUESTING",
+        ExternalTimestampStatus::Attached => "ATTACHED",
+        ExternalTimestampStatus::Verified => "VERIFIED",
+        ExternalTimestampStatus::VerificationFailed => "FAILED",
+        ExternalTimestampStatus::ProviderUnavailable => "FAILED",
+        ExternalTimestampStatus::AuthenticationFailed => "FAILED",
+        ExternalTimestampStatus::AnchorMismatch => "FAILED",
+        ExternalTimestampStatus::Disabled => "NOT RECORDED",
+        ExternalTimestampStatus::Ready => "NOT RECORDED",
+        ExternalTimestampStatus::ConfigurationIncomplete => "NOT RECORDED",
+        ExternalTimestampStatus::AuthenticationRequired => "NOT RECORDED",
+        ExternalTimestampStatus::ConnectionFailed => "FAILED",
+        ExternalTimestampStatus::UnsupportedResponse => "FAILED",
+        ExternalTimestampStatus::VerificationConfigurationIncomplete => "FAILED",
+    }
+}
+
+fn timestamp_qualification_status_label(status: TimestampQualificationStatus) -> &'static str {
+    match status {
+        TimestampQualificationStatus::NotChecked => "NOT CHECKED",
+        TimestampQualificationStatus::NotDocumented => "NOT DOCUMENTED",
+        TimestampQualificationStatus::NotVerified => "NOT VERIFIED",
+        TimestampQualificationStatus::ProviderIdentityVerified => "PROVIDER IDENTITY VERIFIED",
+        TimestampQualificationStatus::TrustServiceVerified => "TRUST SERVICE VERIFIED",
+        TimestampQualificationStatus::QualifiedServiceVerified => "QUALIFIED SERVICE VERIFIED",
+        TimestampQualificationStatus::CheckFailed => "CHECK FAILED",
+    }
+}
+
+fn timestamp_trusted_list_validation_label(status: TrustedListValidationStatus) -> &'static str {
+    match status {
+        TrustedListValidationStatus::NotChecked => "NOT CHECKED",
+        TrustedListValidationStatus::Verified => "VERIFIED",
+        TrustedListValidationStatus::Failed => "FAILED",
+    }
+}
+
+fn optional_verification_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "VERIFIED",
+        Some(false) => "NOT VERIFIED",
+        None => "NOT CHECKED",
+    }
 }
 
 fn archived_revision_references(track_root: &Path) -> Result<Vec<String>> {
@@ -3163,7 +3581,7 @@ fn certificate_format_requires_pdfa_2b(manifest_path: &Path) -> Result<bool> {
         .and_then(serde_json::Value::as_str);
     Ok(matches!(
         format_version,
-        Some(version) if version == CERTIFICATE_FORMAT_VERSION || version == "6.0"
+        Some(version) if matches!(version, CERTIFICATE_FORMAT_VERSION | "6.1" | "6.0")
     ))
 }
 
@@ -3178,7 +3596,7 @@ fn required_certificate_pdf_paths(
         .and_then(|certificate| certificate.get("format_version"))
         .and_then(serde_json::Value::as_str);
     match format_version {
-        Some(version) if version == CERTIFICATE_FORMAT_VERSION || version == "6.0" => {
+        Some(version) if matches!(version, CERTIFICATE_FORMAT_VERSION | "6.1" | "6.0") => {
             if !hashes.contains_key(PDF_FILE) || !hashes.contains_key(PDF_FILE_DE) {
                 return Err(AppError::Validation(
                     format!(
@@ -3339,6 +3757,23 @@ mod tests {
         };
         for (english, expected) in [
             ("Coverage", "Abdeckung"),
+            ("A. Technical timestamp", "A. Technischer Zeitstempel"),
+            (
+                "B. Provider trust and qualification",
+                "B. Providervertrauen und Qualifikation",
+            ),
+            (
+                "Qualification at timestamp [Independent trust verification]",
+                "Qualifikation zum Zeitstempelzeitpunkt [Unabhängige Vertrauensprüfung]",
+            ),
+            (
+                "Trusted List validation [Independent trust verification]",
+                "Validierung der Vertrauensliste [Unabhängige Vertrauensprüfung]",
+            ),
+            (
+                "eIDAS QUALIFIED TRUST SERVICE – VERIFIED",
+                "eIDAS-QUALIFIZIERTER VERTRAUENSDIENST – VERIFIZIERT",
+            ),
             (
                 "Subscription evidence 1 path [System value]",
                 "Abo-Evidence 1 Pfad [Systemwert]",
@@ -3729,6 +4164,14 @@ mod tests {
     }
 
     fn generate_current_pdfa_fixture(track_root: &Path) -> serde_json::Value {
+        let mut resolver = |_digest: &str, _bytes: &[u8]| FinalizationTimestampSnapshot::default();
+        generate_current_pdfa_fixture_with_resolver(track_root, &mut resolver)
+    }
+
+    fn generate_current_pdfa_fixture_with_resolver(
+        track_root: &Path,
+        timestamp_resolver: &mut dyn FnMut(&str, &[u8]) -> FinalizationTimestampSnapshot,
+    ) -> serde_json::Value {
         let hash_manifest = track_root.join(HASH_FILE);
         fs::create_dir_all(hash_manifest.parent().expect("hash manifest parent"))
             .expect("create hash manifest parent");
@@ -3780,7 +4223,7 @@ mod tests {
             legacy: false,
         };
 
-        generate(
+        generate_with_finalization_timestamp(
             track_root,
             &track,
             &profile,
@@ -3791,6 +4234,7 @@ mod tests {
             "2026-08-20T10:00:00Z",
             "semantic-manifest-transaction",
             CertificateRenderOptions::default(),
+            timestamp_resolver,
         )
         .expect("generate semantic manifest fixture");
 
@@ -3798,6 +4242,89 @@ mod tests {
             &fs::read(track_root.join(MANIFEST_FILE)).expect("read evidence manifest"),
         )
         .expect("parse evidence manifest")
+    }
+
+    #[test]
+    fn finalization_resolves_timestamp_once_before_certificate_rendering() {
+        let workspace = tempfile::tempdir().expect("temporary track root");
+        let mut calls = 0_u32;
+        let mut resolver = |digest: &str, bytes: &[u8]| {
+            calls += 1;
+            assert_eq!(sha256_bytes(bytes), digest);
+            FinalizationTimestampSnapshot {
+                provider: "Certificate identity fixture".into(),
+                provider_configuration_status: TimestampProviderConfigurationStatus::Ready,
+                provider_configuration_message: "Provider ready.".into(),
+                automatic_request_enabled: true,
+                technical_status: ExternalTimestampStatus::Verified,
+                technical_message: "Concrete RFC 3161 timestamp verified.".into(),
+                timestamp_value: "2026-08-20T10:00:01Z".into(),
+                external_reference_id: "fixture-serial".into(),
+                provider_verification_url: "https://endpoint.example.invalid".into(),
+                provider_metadata: Some(crate::model::TimestampProviderMetadata {
+                    protocol: "RFC 3161 Timestamp Protocol".into(),
+                    request_algorithm: "SHA-256".into(),
+                    response_structure_valid: Some(true),
+                    provider_digest_match: Some(true),
+                    signature_verification_applicable: Some(true),
+                    signature_verified: Some(true),
+                    trust_chain_verification_applicable: Some(true),
+                    trust_chain_verified: Some(true),
+                    provider_identity_verified: Some(true),
+                    certificate_subject: "CN=Fixture TSA".into(),
+                    issuer: "CN=Fixture Root".into(),
+                    certificate_serial_number: "42".into(),
+                    certificate_sha256: DIGEST.into(),
+                    verification_result: ExternalTimestampStatus::Verified,
+                    verification_message: "Technically verified.".into(),
+                    verification_timestamp: "2026-08-20T10:00:02Z".into(),
+                    qualification: Some(crate::model::TimestampQualificationRecord {
+                        status: TimestampQualificationStatus::ProviderIdentityVerified,
+                        provider_identity_status:
+                            TimestampQualificationStatus::ProviderIdentityVerified,
+                        trust_service_status: TimestampQualificationStatus::NotVerified,
+                        eidas_qualification_status: TimestampQualificationStatus::NotVerified,
+                        current_qualification_status: TimestampQualificationStatus::NotVerified,
+                        qualification_at_timestamp: TimestampQualificationStatus::NotVerified,
+                        checked_at: "2026-08-20T10:00:03Z".into(),
+                        message: "No qualified-service evidence was verified.".into(),
+                        identity: crate::model::TimestampServiceIdentity {
+                            certificate_sha256: DIGEST.into(),
+                            certificate_subject: "CN=Fixture TSA".into(),
+                            certificate_issuer: "CN=Fixture Root".into(),
+                            certificate_serial_number: "42".into(),
+                            policy_oid: "1.2.3.4".into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            }
+        };
+
+        let manifest = generate_current_pdfa_fixture_with_resolver(workspace.path(), &mut resolver);
+        assert_eq!(calls, 1, "timestamp resolver must run exactly once");
+        assert_eq!(
+            manifest["external_timestamp"]["attempt_timing"],
+            "after_manifest_anchor_before_single_certificate_render"
+        );
+        assert_eq!(
+            manifest["external_timestamp"]["status_recorded_in_final_certificate"],
+            true
+        );
+        let markdown = fs::read_to_string(workspace.path().join(CERTIFICATE_FILE))
+            .expect("read final Markdown certificate");
+        assert!(markdown.contains("Concrete timestamp status [System verification]: **VERIFIED**"));
+        assert!(markdown.contains(
+            "Timestamp protocol [Provider-derived metadata]: RFC 3161 Timestamp Protocol"
+        ));
+        assert!(markdown
+            .contains("eIDAS qualification [Independent trust verification]: **NOT VERIFIED**"));
+        assert!(!markdown.contains("eIDAS QUALIFIED TRUST SERVICE – VERIFIED"));
+        assert!(!markdown
+            .contains("External timestamp evidence at technical finalization: **NOT RECORDED**"));
+        verify(workspace.path()).expect("single-render certificate set verifies");
     }
 
     #[test]

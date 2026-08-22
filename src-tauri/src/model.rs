@@ -410,8 +410,9 @@ pub enum TimestampAuthenticationMode {
     ClientCertificate,
 }
 
-/// A visible, non-legal status for global provider configuration and an
-/// individual post-finalization attachment attempt.
+/// Technical status of one concrete external-timestamp attempt/evidence item.
+/// Provider configuration and regulatory qualification deliberately use
+/// separate status types below.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalTimestampStatus {
@@ -431,6 +432,145 @@ pub enum ExternalTimestampStatus {
     ConnectionFailed,
     UnsupportedResponse,
     VerificationConfigurationIncomplete,
+}
+
+/// Technical readiness of the globally configured timestamp provider. This
+/// says nothing about a concrete timestamp and nothing about eIDAS or another
+/// regulatory qualification.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampProviderConfigurationStatus {
+    #[default]
+    Disabled,
+    #[serde(alias = "configuration_incomplete")]
+    NotConfigured,
+    Ready,
+    AuthenticationRequired,
+    AuthenticationFailed,
+    #[serde(alias = "provider_unavailable")]
+    ConnectionFailed,
+    VerificationConfigurationIncomplete,
+    #[serde(
+        alias = "not_recorded",
+        alias = "requesting",
+        alias = "attached",
+        alias = "verified",
+        alias = "verification_failed",
+        alias = "anchor_mismatch",
+        alias = "unsupported_response"
+    )]
+    ProviderError,
+}
+
+/// Independent classification of the externally verifiable identity and
+/// qualification of a timestamp service. This never describes the validity
+/// of an individual timestamp.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampQualificationStatus {
+    #[default]
+    NotChecked,
+    NotDocumented,
+    NotVerified,
+    ProviderIdentityVerified,
+    TrustServiceVerified,
+    QualifiedServiceVerified,
+    CheckFailed,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustedListValidationStatus {
+    #[default]
+    NotChecked,
+    Verified,
+    Failed,
+}
+
+/// Cryptographically recognized identity from the timestamp response. The
+/// freely configured provider label and endpoint are intentionally absent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TimestampServiceIdentity {
+    pub certificate_sha256: String,
+    pub certificate_subject: String,
+    pub certificate_issuer: String,
+    pub certificate_serial_number: String,
+    pub policy_oid: String,
+    pub service_identifier: String,
+}
+
+/// Immutable evidence identifying the exact official Trusted List snapshot
+/// used by a qualification verifier.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TrustedListEvidence {
+    pub source: String,
+    pub territory: String,
+    pub version: String,
+    pub sequence_number: String,
+    pub issued_at: String,
+    pub next_update: String,
+    pub sha256: String,
+    pub validation_status: TrustedListValidationStatus,
+    pub validated_at: String,
+}
+
+/// Provider-neutral audit result for identity/trust-service/qualification
+/// lookup. It is independent from ExternalTimestampStatus, including when a
+/// lookup fails or historical status cannot be established.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TimestampQualificationRecord {
+    pub status: TimestampQualificationStatus,
+    pub provider_identity_status: TimestampQualificationStatus,
+    pub trust_service_status: TimestampQualificationStatus,
+    pub eidas_qualification_status: TimestampQualificationStatus,
+    pub current_qualification_status: TimestampQualificationStatus,
+    pub qualification_at_timestamp: TimestampQualificationStatus,
+    pub checked_at: String,
+    pub message: String,
+    pub identity: TimestampServiceIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_list: Option<TrustedListEvidence>,
+    pub trust_service_provider: String,
+    pub trust_service_name: String,
+    pub service_type: String,
+    /// Official service status applicable at the documented timestamp time.
+    pub service_status: String,
+    /// Official service status applicable at the qualification-check time.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub current_service_status: String,
+    pub service_identifier: String,
+    pub qualification_type: String,
+    /// Service-status period applicable at the documented timestamp time.
+    pub status_valid_from: String,
+    pub status_valid_until: String,
+    /// Service-status period applicable at the qualification-check time.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub current_status_valid_from: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub current_status_valid_until: String,
+}
+
+/// Immutable provider/configuration/technical/trust state captured between
+/// creation of the manifest anchor and the single rendering of the final
+/// certificate. Provider response bytes are deliberately not part of this
+/// presentation snapshot; successful responses are archived separately.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FinalizationTimestampSnapshot {
+    pub provider: String,
+    pub provider_configuration_status: TimestampProviderConfigurationStatus,
+    pub provider_configuration_message: String,
+    pub automatic_request_enabled: bool,
+    pub technical_status: ExternalTimestampStatus,
+    pub technical_message: String,
+    pub timestamp_value: String,
+    pub external_reference_id: String,
+    pub provider_verification_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<TimestampProviderMetadata>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -479,7 +619,7 @@ pub struct TimestampSettings {
     /// Derived on read/update; update payloads cannot choose a misleading
     /// status. It is persisted only as harmless UX history.
     #[serde(default)]
-    pub status: ExternalTimestampStatus,
+    pub status: TimestampProviderConfigurationStatus,
     #[serde(default)]
     pub status_message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -496,7 +636,7 @@ impl Default for TimestampSettings {
                 timeout_seconds: 15,
                 ..Default::default()
             },
-            status: ExternalTimestampStatus::Disabled,
+            status: TimestampProviderConfigurationStatus::Disabled,
             status_message: "External timestamp service is disabled.".into(),
             last_tested_at: None,
         }
@@ -516,7 +656,7 @@ pub struct TimestampSecretInput {
 #[serde(rename_all = "camelCase")]
 pub struct TimestampProviderTestResult {
     pub provider: TimestampProviderKind,
-    pub status: ExternalTimestampStatus,
+    pub status: TimestampProviderConfigurationStatus,
     pub message: String,
     pub tested_at: String,
     pub capabilities: TimestampProviderCapabilities,
@@ -1049,6 +1189,14 @@ pub struct TimestampProviderMetadata {
     pub issuer: String,
     pub certificate_subject: String,
     pub certificate_serial_number: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub certificate_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_identity_verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_verification_applicable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_chain_verification_applicable: Option<bool>,
     /// Request/response binding values retained for independent review of the
     /// RFC 3161 exchange. Empty values keep historical sidecars byte-compatible.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1074,6 +1222,10 @@ pub struct TimestampProviderMetadata {
     pub verification_result: ExternalTimestampStatus,
     pub verification_message: String,
     pub verification_timestamp: String,
+    /// Separate immutable trust/qualification audit evidence. Its absence on
+    /// historical records means NOT CHECKED and never "not qualified".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<TimestampQualificationRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2396,6 +2548,56 @@ mod tests {
 
         assert_eq!(fields.suno_lyrics_field_text, "pending field text");
         assert_eq!(fields.audio_ai_system, "pending system");
+    }
+
+    #[test]
+    fn legacy_timestamp_provider_statuses_deserialize_into_separate_configuration_states() {
+        for (legacy, expected) in [
+            (
+                "configuration_incomplete",
+                TimestampProviderConfigurationStatus::NotConfigured,
+            ),
+            (
+                "provider_unavailable",
+                TimestampProviderConfigurationStatus::ConnectionFailed,
+            ),
+            (
+                "unsupported_response",
+                TimestampProviderConfigurationStatus::ProviderError,
+            ),
+        ] {
+            let status: TimestampProviderConfigurationStatus =
+                serde_json::from_value(serde_json::json!(legacy)).expect("legacy provider status");
+            assert_eq!(status, expected);
+        }
+
+        assert_eq!(
+            serde_json::to_value(TimestampProviderConfigurationStatus::NotConfigured)
+                .expect("current provider status"),
+            "not_configured"
+        );
+    }
+
+    #[test]
+    fn empty_current_qualification_period_fields_remain_absent_from_legacy_json() {
+        let legacy_shape = serde_json::to_value(TimestampQualificationRecord::default())
+            .expect("serialize default qualification record");
+        assert!(legacy_shape.get("currentServiceStatus").is_none());
+        assert!(legacy_shape.get("currentStatusValidFrom").is_none());
+        assert!(legacy_shape.get("currentStatusValidUntil").is_none());
+
+        let current = TimestampQualificationRecord {
+            current_service_status: "granted".into(),
+            current_status_valid_from: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        let current_shape =
+            serde_json::to_value(current).expect("serialize current qualification record");
+        assert_eq!(current_shape["currentServiceStatus"], "granted");
+        assert_eq!(
+            current_shape["currentStatusValidFrom"],
+            "2026-01-01T00:00:00Z"
+        );
     }
 
     #[test]

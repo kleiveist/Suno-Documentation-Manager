@@ -42,6 +42,7 @@ import {
   timestampProviderIsReady,
   timestampProviderProtocolPresentation,
   timestampProviderStatusLabel,
+  timestampQualificationStatusLabel,
   VOCAL_INTENT_CHOICES,
   visibleExternalAudioScreening,
   visibleLocalAudioScreening,
@@ -342,6 +343,8 @@ describe("navigation", () => {
   it("keeps global provider readiness separate from optional per-track timestamp evidence", () => {
     expect(timestampProviderStatusLabel("ready")).toBe("Ready");
     expect(externalTimestampStatusLabel("not_recorded")).toBe("NOT RECORDED");
+    expect(timestampQualificationStatusLabel("not_verified")).toBe("NOT VERIFIED");
+    expect(timestampQualificationStatusLabel("qualified_service_verified")).toBe("QUALIFIED SERVICE VERIFIED");
     expect(timestampProviderIsReady({
       ...emptyTimestampSettings,
       custom: { ...emptyTimestampSettings.custom },
@@ -668,7 +671,7 @@ describe("navigation", () => {
           supportsOfflineVerification: false,
           returnsSignedTimestamp: true,
           externalTrustRootAvailable: false,
-          qualificationStatus: "unknown"
+          qualificationStatus: "not_checked"
         }
       },
       audioScreeningSettings: {

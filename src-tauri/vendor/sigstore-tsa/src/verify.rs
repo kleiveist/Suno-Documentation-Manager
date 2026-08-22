@@ -100,6 +100,13 @@ impl Default for VerifyOpts<'_> {
 pub struct TimestampResult {
     /// The timestamp from the TSA
     pub time: Timestamp,
+    /// DER bytes and stable X.509 identity of the cryptographically verified
+    /// signer. Callers can match this identity against an independently
+    /// validated trust-service source without relying on endpoint labels.
+    pub signer_certificate_der: Vec<u8>,
+    pub signer_subject: String,
+    pub signer_issuer: String,
+    pub signer_serial_number: String,
 }
 
 /// Parse a timestamp token and return the extracted TstInfo and SignedData.
@@ -248,7 +255,19 @@ pub fn verify_timestamp_response(
     validate_tsa_certificate_chain(&signer_cert, timestamp, &opts, &embedded_certs)?;
     tracing::debug!("TSA certificate chain validation completed successfully");
 
-    Ok(TimestampResult { time: timestamp })
+    use x509_cert::der::Encode;
+    let signer_certificate_der = signer_cert.to_der().map_err(|error| {
+        Error::ParseError(format!(
+            "failed to encode verified TSA certificate: {error}"
+        ))
+    })?;
+    Ok(TimestampResult {
+        time: timestamp,
+        signer_certificate_der,
+        signer_subject: signer_cert.tbs_certificate.subject.to_string(),
+        signer_issuer: signer_cert.tbs_certificate.issuer.to_string(),
+        signer_serial_number: signer_cert.tbs_certificate.serial_number.to_string(),
+    })
 }
 
 /// Verify the message imprint matches the signature bytes
