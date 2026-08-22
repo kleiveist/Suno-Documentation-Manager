@@ -6,6 +6,7 @@
 ## Product development guides
 
 - [Certificate PDF architecture](certificate-pdf-architecture.md)
+- [Codex CLI prompt for folder-import preparation](folder-import-preparation-prompt.md)
 - [Legacy track import and managed-document adoption](legacy-track-import.md)
 
 The template final-acceptance page below is an inherited upstream historical record, not Suno Documentation Manager acceptance evidence.
@@ -15,6 +16,7 @@ The template final-acceptance page below is an inherited upstream historical rec
 ## 📄 Pages
 - 📝 [Acceptance execution report — 2026-08-14](acceptance-report.md)
 - 📝 [Certificate PDF architecture](certificate-pdf-architecture.md)
+- 📝 [Codex CLI prompt for folder-import preparation](folder-import-preparation-prompt.md)
 - 📝 [Legacy track import and managed-document adoption](legacy-track-import.md)
 - 📝 [Upstream template final acceptance — historical reference](template-final-acceptance.md)
 

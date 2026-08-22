@@ -45,6 +45,8 @@ Generic template, backend, CI, database, container, and deployment pages retaine
 ## 📁 DEV
 - 🗂️ [Overview](dev/dev.md)
 - 📝 [Acceptance execution report — 2026-08-14](dev/acceptance-report.md)
+- 📝 [Certificate PDF architecture](dev/certificate-pdf-architecture.md)
+- 📝 [Codex CLI prompt for folder-import preparation](dev/folder-import-preparation-prompt.md)
 - 📝 [Legacy track import and managed-document adoption](dev/legacy-track-import.md)
 - 📝 [Upstream template final acceptance — historical reference](dev/template-final-acceptance.md)
 

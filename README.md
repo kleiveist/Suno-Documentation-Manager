@@ -237,6 +237,8 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 ## 📁 DEV
 - 🗂️ [Overview](docs/dev/dev.md)
 - 📝 [Acceptance execution report — 2026-08-14](docs/dev/acceptance-report.md)
+- 📝 [Certificate PDF architecture](docs/dev/certificate-pdf-architecture.md)
+- 📝 [Codex CLI prompt for folder-import preparation](docs/dev/folder-import-preparation-prompt.md)
 - 📝 [Legacy track import and managed-document adoption](docs/dev/legacy-track-import.md)
 - 📝 [Upstream template final acceptance — historical reference](docs/dev/template-final-acceptance.md)
 
