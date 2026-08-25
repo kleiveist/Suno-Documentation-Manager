@@ -43,11 +43,7 @@ pub fn contained_path(root: &Path, relative: &Path, require_exists: bool) -> Res
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
         return Err(AppError::Symlink(root.display().to_string()));
     }
-    let supplied_root = root.to_owned();
     let root = fs::canonicalize(root).map_err(|e| AppError::io(root, e))?;
-    if supplied_root != root {
-        return Err(AppError::PathEscape);
-    }
     let candidate = root.join(relative);
 
     let mut current = root.clone();
@@ -449,6 +445,22 @@ mod tests {
         assert_eq!(
             fs::read(&outside_sentinel).expect("unchanged outside sentinel"),
             b"outside sentinel"
+        );
+    }
+
+    #[test]
+    fn safe_path_accepts_a_noncanonical_directory_alias() {
+        let directory = tempdir().expect("temporary directory");
+        let root = directory.path().join("workspace");
+        fs::create_dir(&root).expect("workspace directory");
+
+        let alias = root.join(".");
+        assert_eq!(
+            contained_path(&alias, Path::new("nested/file.txt"), false)
+                .expect("canonical directory alias"),
+            fs::canonicalize(&root)
+                .expect("canonical workspace directory")
+                .join("nested/file.txt")
         );
     }
 
