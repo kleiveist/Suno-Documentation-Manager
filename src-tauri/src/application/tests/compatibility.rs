@@ -59,13 +59,14 @@ fn phase_24_workspace_round_trip_classifies_tree_hash_changes() {
 
 fn prepare_phase_24_fixture() -> Phase24Fixture {
     let directory = tempdir().expect("temporary Phase 24 directory");
-    let workspace = directory.path().join("workspace");
+    let workspace_input = directory.path().join("workspace");
     let fixture_root = directory.path().join("fixtures");
 
     // Fixture setup is outside the numbered compatibility pass. It creates
     // only synthetic data below `tempdir` and leaves an active track with
     // generated documents and a verified SHA256SUMS file.
-    let setup = WorkspaceApp::open(&workspace, true).expect("temporary workspace setup");
+    let setup = WorkspaceApp::open(&workspace_input, true).expect("temporary workspace setup");
+    let workspace = setup.root().to_path_buf();
     setup
         .update_profile(complete_profile())
         .expect("synthetic fixture profile");

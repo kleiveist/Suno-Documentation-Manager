@@ -1,10 +1,9 @@
 use crate::error::{AppError, Result};
 use sha2::{Digest, Sha256};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use tempfile::{Builder, NamedTempFile, PathPersistError};
-use uuid::Uuid;
 
 pub fn canonical_workspace(path: &Path, create: bool) -> Result<PathBuf> {
     if create {
@@ -96,30 +95,24 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .ok_or_else(|| AppError::Validation("A managed file needs a parent directory.".into()))?;
     fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    let name = path
-        .file_name()
+    path.file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| AppError::Validation("Invalid managed file name.".into()))?;
-    let temporary = parent.join(format!(".{name}.{}.tmp", Uuid::new_v4()));
-    let write_result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|e| AppError::io(&temporary, e))?;
-        file.write_all(bytes)
-            .map_err(|e| AppError::io(&temporary, e))?;
-        file.sync_all().map_err(|e| AppError::io(&temporary, e))?;
-        fs::rename(&temporary, path).map_err(|e| AppError::io(path, e))?;
-        if let Ok(parent_file) = fs::File::open(parent) {
-            let _ = parent_file.sync_all();
-        }
-        Ok(())
-    })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    let mut temporary = temporary_file(parent, ".replace-")?;
+    temporary
+        .write_all(bytes)
+        .map_err(|e| AppError::io(temporary.path(), e))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| AppError::io(temporary.path(), e))?;
+    temporary
+        .persist(path)
+        .map_err(|error| AppError::io(path, error.error))?;
+    if let Ok(parent_file) = fs::File::open(parent) {
+        let _ = parent_file.sync_all();
     }
-    write_result
+    Ok(())
 }
 
 pub fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<()> {
