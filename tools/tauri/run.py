@@ -55,9 +55,7 @@ def main(args: argparse.Namespace) -> int:
         "VITE_API_BASE_URL",
     }
     frontend_environment = {
-        name: value
-        for name, value in resolved.values.items()
-        if value is not None and name in frontend_names
+        name: value for name, value in resolved.values.items() if value is not None and name in frontend_names
     }
     secret_environment = {name for name in os.environ if is_server_only_name(name)}
 
@@ -83,10 +81,7 @@ def _dev_config_override(frontend_port: int, frontend_host: str = "127.0.0.1") -
     return json.dumps(
         {
             "build": {
-                "beforeDevCommand": (
-                    "cd ../frontend && npm run dev -- "
-                    f"--host {frontend_host} --port {frontend_port}"
-                ),
+                "beforeDevCommand": (f"cd ../frontend && npm run dev -- --host {frontend_host} --port {frontend_port}"),
                 "devUrl": f"http://{client_host}:{frontend_port}",
             }
         }
@@ -103,11 +98,7 @@ def _run_detached(
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / "tauri.log"
     log_file = log_path.open("w", encoding="utf-8")
-    environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not is_server_only_name(name)
-    }
+    environment = {name: value for name, value in os.environ.items() if not is_server_only_name(name)}
     for name in remove_env or set():
         environment.pop(name, None)
     environment.update(env or {})

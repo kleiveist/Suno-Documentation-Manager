@@ -4,16 +4,16 @@ import os
 import platform
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from tools import logger
 from tools.config import is_server_only_name
 from tools.process import prepare_command
 from tools.tauri import paths
 
-TAURI_CLI_PACKAGE = "@tauri-apps/cli@2.10.1"
+TAURI_CLI_PACKAGE = "@tauri-apps/cli@2.11.4"
 
 
 @dataclass(slots=True)
@@ -76,9 +76,12 @@ def find_build_artifacts(*, include_dist: bool = True) -> list[Path]:
         if not root.exists():
             continue
         for item in root.rglob("*"):
-            if item.is_file() and item.suffix.lower() in {".appimage", ".deb", ".rpm", ".dmg", ".msi", ".exe", ".zip"}:
-                artifacts.append(item)
-            elif item.is_dir() and item.suffix.lower() == ".app":
+            if (
+                item.is_file()
+                and item.suffix.lower() in {".appimage", ".deb", ".rpm", ".dmg", ".msi", ".exe", ".zip"}
+                or item.is_dir()
+                and item.suffix.lower() == ".app"
+            ):
                 artifacts.append(item)
     return sorted(set(artifacts))
 
@@ -108,11 +111,7 @@ def run_command(
         return CommandResult(command=command, cwd=resolved_cwd, returncode=0, dry_run=True)
 
     try:
-        environment = {
-            name: value
-            for name, value in os.environ.items()
-            if not is_server_only_name(name)
-        }
+        environment = {name: value for name, value in os.environ.items() if not is_server_only_name(name)}
         for name in remove_env or set():
             environment.pop(name, None)
         environment.update(env or {})
@@ -138,7 +137,11 @@ def run_command(
 def command_output(command: list[str], *, cwd: Path | None = None) -> tuple[bool, str]:
     try:
         completed = subprocess.run(
-            prepare_command(command), cwd=cwd, capture_output=True, text=True, check=False
+            prepare_command(command),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except OSError as exc:
         return False, str(exc)

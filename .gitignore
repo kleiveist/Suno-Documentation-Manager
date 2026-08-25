@@ -30,6 +30,7 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 .venv/
@@ -38,6 +39,9 @@ venv/
 # Node, Vite and tests
 node_modules/
 dist/
+!tools/quality/rust_analyzer/dist/
+tools/quality/rust_analyzer/dist/*
+!tools/quality/rust_analyzer/dist/rust_quality_analyzer.wasm
 out/
 .vite/
 *.tsbuildinfo

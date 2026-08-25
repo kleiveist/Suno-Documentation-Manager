@@ -11,6 +11,8 @@
 - [Track documentation model](track-documentation-model.md)
 - [Local persistence and recovery](persistence.md)
 - [Suno track workflow model](workflow-model.md)
+- [SunoDM observability decision](observability.md)
+- [Template lifecycle](template-lifecycle.md)
 
 Generic inherited feature pages describe template background only. The product definitions above govern the active `desktop-local` application.
 
@@ -18,14 +20,17 @@ Generic inherited feature pages describe template background only. The product d
 
 ## 📄 Pages
 - 📝 [Application architecture](architecture.md)
+- 📝 [Code quality and architecture governance](code-quality.md)
 - 📝 [Runtime configuration — inherited template reference](configuration.md)
 - 📝 [Database feature — unavailable inherited reference](database-feature.md)
 - 📝 [Deployment architecture — unavailable inherited reference](deployment-architecture.md)
+- 📝 [SunoDM observability decision](observability.md)
 - 📝 [Provider-neutral persistence architecture — inherited template reference](persistence-architecture.md)
 - 📝 [Local persistence and recovery](persistence.md)
 - 📝 [Pre-release audio screening](pre-release-audio-screening.md)
 - 📝 [Suno Documentation Manager product architecture](product-architecture.md)
 - 📝 [Project profiles — inherited template reference](project-profiles.md)
+- 📝 [Template lifecycle](template-lifecycle.md)
 - 📝 [Track documentation model](track-documentation-model.md)
 - 📝 [Track library organization model](track-library-model.md)
 - 📝 [Suno track workflow model](workflow-model.md)

@@ -3,6 +3,7 @@ name = "sunodm"
 version = "0.1.0"
 description = "Offline-first Suno track documentation manager"
 authors = ["Suno Documentation Manager Contributors"]
+license-file = "../LICENSE"
 edition = "2021"
 rust-version = "1.88"
 

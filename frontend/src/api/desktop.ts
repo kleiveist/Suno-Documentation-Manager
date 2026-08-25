@@ -56,9 +56,20 @@ export interface DesktopApi {
   updateAudioScreeningSecret(input: AudioScreeningSecretInput): Promise<void>;
   testAudioScreeningProvider(): Promise<AudioScreeningProviderTestResult>;
   listGlobalEvidence(): Promise<GlobalEvidenceItem[]>;
-  importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle, language?: AppLanguage): Promise<GlobalEvidenceItem | null>;
-  importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<GlobalEvidenceItem | null>;
-  updateGlobalTermsEvidenceMetadata(evidenceId: string, metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem>;
+  importGlobalEvidence(
+    role: EvidenceRole,
+    coverageStart: string,
+    billingCycle: SubscriptionBillingCycle,
+    language?: AppLanguage
+  ): Promise<GlobalEvidenceItem | null>;
+  importGlobalTermsEvidence(
+    metadata: Partial<EvidenceMetadata>,
+    language?: AppLanguage
+  ): Promise<GlobalEvidenceItem | null>;
+  updateGlobalTermsEvidenceMetadata(
+    evidenceId: string,
+    metadata: Partial<EvidenceMetadata>
+  ): Promise<GlobalEvidenceItem>;
   removeGlobalEvidence(evidenceId: string): Promise<void>;
   attachGlobalEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
   listTracks(): Promise<TrackSummary[]>;
@@ -77,19 +88,33 @@ export interface DesktopApi {
   resolveDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   removeDeviation(trackId: string, deviationId: string): Promise<TrackDetail>;
   setStepStatus(trackId: string, stepId: StepId, status: StepStatus, naReason?: string): Promise<TrackDetail>;
-  importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<TrackDetail | null>;
+  importEvidence(
+    trackId: string,
+    role: EvidenceRole,
+    replaceEvidenceId?: string,
+    metadata?: Partial<EvidenceMetadata>,
+    language?: AppLanguage
+  ): Promise<TrackDetail | null>;
   removeEvidence(trackId: string, evidenceId: string): Promise<TrackDetail>;
   previewEvidence(trackId: string, evidenceId: string): Promise<EvidencePreview>;
   verifyEvidence(trackId: string, evidenceId?: string): Promise<TrackDetail>;
   previewDocumentGeneration(trackId: string): Promise<DocumentPreview>;
-  generateDocuments(trackId: string, adoptExisting?: boolean, onProgress?: OperationProgressHandler): Promise<ActionResult>;
+  generateDocuments(
+    trackId: string,
+    adoptExisting?: boolean,
+    onProgress?: OperationProgressHandler
+  ): Promise<ActionResult>;
   generateArtworkDisclosure(trackId: string, disclosureText?: string): Promise<ActionResult>;
   calculateHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   verifyHashes(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   runLocalAudioScreening(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   runExternalAudioScreening(trackId: string, onProgress?: OperationProgressHandler): Promise<ActionResult>;
   validateTrack(trackId: string): Promise<ValidationResult>;
-  finalizeTrack(trackId: string, options?: FinalizeOptions, onProgress?: OperationProgressHandler): Promise<ActionResult>;
+  finalizeTrack(
+    trackId: string,
+    options?: FinalizeOptions,
+    onProgress?: OperationProgressHandler
+  ): Promise<ActionResult>;
   attachExternalTimestamp(trackId: string): Promise<TrackDetail>;
   invalidateCertificate(trackId: string): Promise<ActionResult>;
   createRevision(trackId: string): Promise<ActionResult>;
@@ -199,7 +224,12 @@ class TauriDesktopApi implements DesktopApi {
     return command("list_global_evidence");
   }
 
-  async importGlobalEvidence(role: EvidenceRole, coverageStart: string, billingCycle: SubscriptionBillingCycle, language?: AppLanguage): Promise<GlobalEvidenceItem | null> {
+  async importGlobalEvidence(
+    role: EvidenceRole,
+    coverageStart: string,
+    billingCycle: SubscriptionBillingCycle,
+    language?: AppLanguage
+  ): Promise<GlobalEvidenceItem | null> {
     try {
       return await command<GlobalEvidenceItem | null>("import_global_evidence", {
         role,
@@ -213,7 +243,10 @@ class TauriDesktopApi implements DesktopApi {
     }
   }
 
-  async importGlobalTermsEvidence(metadata: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<GlobalEvidenceItem | null> {
+  async importGlobalTermsEvidence(
+    metadata: Partial<EvidenceMetadata>,
+    language?: AppLanguage
+  ): Promise<GlobalEvidenceItem | null> {
     try {
       return await command<GlobalEvidenceItem | null>("import_global_terms_evidence", {
         metadata,
@@ -225,7 +258,10 @@ class TauriDesktopApi implements DesktopApi {
     }
   }
 
-  updateGlobalTermsEvidenceMetadata(evidenceId: string, metadata: Partial<EvidenceMetadata>): Promise<GlobalEvidenceItem> {
+  updateGlobalTermsEvidenceMetadata(
+    evidenceId: string,
+    metadata: Partial<EvidenceMetadata>
+  ): Promise<GlobalEvidenceItem> {
     return command("update_global_terms_evidence_metadata", { evidenceId, metadata });
   }
 
@@ -306,7 +342,13 @@ class TauriDesktopApi implements DesktopApi {
     return command("set_step_status", { trackId, stepId, status, naReason });
   }
 
-  async importEvidence(trackId: string, role: EvidenceRole, replaceEvidenceId?: string, metadata?: Partial<EvidenceMetadata>, language?: AppLanguage): Promise<TrackDetail | null> {
+  async importEvidence(
+    trackId: string,
+    role: EvidenceRole,
+    replaceEvidenceId?: string,
+    metadata?: Partial<EvidenceMetadata>,
+    language?: AppLanguage
+  ): Promise<TrackDetail | null> {
     try {
       const args: Record<string, unknown> = { trackId, role, replaceEvidenceId };
       if (metadata) args.metadata = metadata;
@@ -334,7 +376,11 @@ class TauriDesktopApi implements DesktopApi {
     return command("preview_documents", { trackId });
   }
 
-  generateDocuments(trackId: string, adoptExisting = false, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+  generateDocuments(
+    trackId: string,
+    adoptExisting = false,
+    onProgress?: OperationProgressHandler
+  ): Promise<ActionResult> {
     return command("generate_documents", { trackId, adoptExisting, onProgress: progressChannel(onProgress) });
   }
 
@@ -362,7 +408,11 @@ class TauriDesktopApi implements DesktopApi {
     return command("validate_track", { trackId });
   }
 
-  finalizeTrack(trackId: string, options?: FinalizeOptions, onProgress?: OperationProgressHandler): Promise<ActionResult> {
+  finalizeTrack(
+    trackId: string,
+    options?: FinalizeOptions,
+    onProgress?: OperationProgressHandler
+  ): Promise<ActionResult> {
     return command("finalize_track", {
       trackId,
       ...(options ? { options } : {}),

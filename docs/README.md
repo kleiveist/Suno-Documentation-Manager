@@ -22,6 +22,7 @@ This file defines the mandatory rules for every document in the repository. Docu
 | `README.md` | Product overview, quick start, and central commands | Everyone |
 | `docs/def/` | Stable definitions, architecture, and domain models | Development and architecture |
 | `docs/dev/` | Requirements, implementation notes, and migration plans | Development |
+| `docs/dev/migrations/` | Versioned template/product migration evidence and navigation | Development, reviewers, and migration owners |
 | `docs/usr/` | Task-oriented user guides | Users |
 | `docs/tools/` | Operations, build, release, and tooling reference | Development and operations |
 | `docs/tools/tauri/` | Platform-specific desktop guidance | Desktop development |
@@ -76,6 +77,7 @@ Use the project wrapper for the system-installed PyGitIndex script:
 ```sh
 python tools/control.py docs index --dry-run
 python tools/control.py docs index
+python tools/control.py docs check
 ```
 
 The wrapper locates `PyGitIndex.py`, regenerates directory indices and backlinks, and normalizes generated navigation labels to English. Set `PYGITINDEX_PATH` or pass `--script <path>` when the script is stored outside a known location.
@@ -103,13 +105,14 @@ A document becomes `Deprecated` when it no longer describes the preferred soluti
 4. Update documentation alongside the implementation.
 5. Verify commands, links, examples, and English language consistency.
 6. Set the owner and review date.
-7. Preview and regenerate the PyGitIndex navigation.
+7. Preview and regenerate the PyGitIndex navigation, then run the read-only documentation check.
 8. Review and commit documentation with the code.
 
 ## Verification
 
 ```sh
 python tools/control.py docs index --dry-run
+python tools/control.py docs check
 python tools/control.py test --suite tools
 ```
 

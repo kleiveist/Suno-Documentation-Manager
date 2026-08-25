@@ -53,9 +53,7 @@ def test_debian_family_packages_match_supported_release_names(
     )
 
     assert expected_fuse in packages
-    assert {"libwebkit2gtk-4.1-dev", "libgtk-3-dev", "libayatana-appindicator3-dev", "librsvg2-dev"} <= set(
-        packages
-    )
+    assert {"libwebkit2gtk-4.1-dev", "libgtk-3-dev", "libayatana-appindicator3-dev", "librsvg2-dev"} <= set(packages)
     assert {"build-essential", "libxdo-dev", "patchelf"} <= set(packages)
 
 
@@ -140,9 +138,7 @@ def test_tauri_install_skip_flags_do_not_invoke_skipped_installers(monkeypatch) 
     )
     monkeypatch.setattr(tauri_install, "_check_tauri_scaffold", lambda: 0)
 
-    args = control._build_parser().parse_args(
-        ["tauri", "install", "--skip-rust", "--skip-node", "--skip-frontend"]
-    )
+    args = control._build_parser().parse_args(["tauri", "install", "--skip-rust", "--skip-node", "--skip-frontend"])
 
     assert tauri_install.main(args) == 0
 

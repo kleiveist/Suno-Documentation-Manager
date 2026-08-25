@@ -11,6 +11,14 @@ _EMOJI = {
     "INFO": "ℹ️",
 }
 
+_ASCII = {
+    "OK": "[OK]",
+    "SKIP": "[SKIP]",
+    "WARN": "[WARN]",
+    "FAIL": "[FAIL]",
+    "INFO": "[INFO]",
+}
+
 
 def _normalize(status: str) -> str:
     return status.strip().upper()
@@ -22,8 +30,27 @@ def format_message(status: str, message: str) -> str:
     return f"{emoji} {message}"
 
 
+def _stream_message(status_value: str, message: str, stream: TextIO) -> str:
+    formatted = format_message(status_value, message)
+    encoding = getattr(stream, "encoding", None)
+    if not encoding:
+        return formatted
+
+    try:
+        formatted.encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        normalized = _normalize(status_value)
+        marker = _ASCII.get(normalized, _ASCII["INFO"])
+        try:
+            safe_message = message.encode(encoding, errors="backslashreplace").decode(encoding)
+        except LookupError:
+            safe_message = message.encode("ascii", errors="backslashreplace").decode("ascii")
+        return f"{marker} {safe_message}"
+    return formatted
+
+
 def status(status_value: str, message: str, *, stream: TextIO = sys.stdout) -> None:
-    print(format_message(status_value, message), file=stream)
+    print(_stream_message(status_value, message, stream), file=stream)
 
 
 def ok(message: str, *, stream: TextIO = sys.stdout) -> None:

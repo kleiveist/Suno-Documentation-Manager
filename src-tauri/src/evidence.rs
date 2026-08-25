@@ -1,3 +1,6 @@
+mod signatures;
+
+use self::signatures::validate_signature;
 use crate::audio_metadata::{
     has_suno_metadata_marker, is_persistable_metadata_text, parse_suno_metadata,
 };
@@ -11,7 +14,6 @@ use crate::security::{
 };
 use chrono::Utc;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -133,77 +135,6 @@ pub fn validate_type(role: &EvidenceRole, source: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_signature(source: &Path, extension: &str) -> Result<()> {
-    const OPEN_TIMESTAMPS_DETACHED_MAGIC: &[u8] = &[
-        0x00, b'O', b'p', b'e', b'n', b'T', b'i', b'm', b'e', b's', b't', b'a', b'm', b'p', b's',
-        0x00, 0x00, b'P', b'r', b'o', b'o', b'f', 0x00, 0xbf, 0x89, 0xe2, 0xe8, 0x84, 0xe8, 0x92,
-        0x94,
-    ];
-    let mut file = fs::File::open(source).map_err(|error| AppError::io(source, error))?;
-    let mut header = [0_u8; 64];
-    let count = file
-        .read(&mut header)
-        .map_err(|error| AppError::io(source, error))?;
-    let bytes = &header[..count];
-    let matches = match extension {
-        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "jpg" | "jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
-        "webp" => riff_kind(bytes, b"WEBP"),
-        "pdf" => bytes.starts_with(b"%PDF-"),
-        "zip" => {
-            bytes.starts_with(b"PK\x03\x04")
-                || bytes.starts_with(b"PK\x05\x06")
-                || bytes.starts_with(b"PK\x07\x08")
-        }
-        "wav" => riff_kind(bytes, b"WAVE"),
-        "aif" | "aiff" => {
-            bytes.starts_with(b"FORM")
-                && bytes.len() >= 12
-                && (&bytes[8..12] == b"AIFF" || &bytes[8..12] == b"AIFC")
-        }
-        "mp3" => {
-            bytes.starts_with(b"ID3")
-                || (bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
-        }
-        "flac" => bytes.starts_with(b"fLaC"),
-        "ogg" => bytes.starts_with(b"OggS"),
-        "mp4" | "m4v" | "m4a" => bytes.len() >= 12 && &bytes[4..8] == b"ftyp",
-        "txt" | "md" | "json" | "rb" | "py" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs"
-        | "java" | "kt" | "kts" | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "cs" | "rs" | "go"
-        | "php" | "swift" | "scala" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "lua" | "r"
-        | "jl" | "ex" | "exs" | "erl" | "hrl" | "fs" | "fsx" | "vb" | "sql" | "html" | "htm"
-        | "css" | "scss" | "sass" | "less" | "xml" | "yaml" | "yml" | "toml" | "csv" | "ipynb"
-        | "svg" => valid_text_prefix(bytes),
-        // RFC 3161 responses and detached signature containers are opaque
-        // binary evidence. Their legal/cryptographic qualification is not
-        // inferred here; the dedicated timestamp workflow records and hashes
-        // the exact non-empty bytes.
-        "tsr" | "tst" | "p7s" => !bytes.is_empty(),
-        "ots" => bytes.starts_with(OPEN_TIMESTAMPS_DETACHED_MAGIC),
-        _ => false,
-    };
-    if count == 0 || !matches {
-        return Err(AppError::Validation(format!(
-            "Evidence file contents do not match the .{extension} file type."
-        )));
-    }
-    Ok(())
-}
-
-fn riff_kind(bytes: &[u8], kind: &[u8; 4]) -> bool {
-    bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == kind
-}
-
-fn valid_text_prefix(bytes: &[u8]) -> bool {
-    if bytes.contains(&0) {
-        return false;
-    }
-    match std::str::from_utf8(bytes) {
-        Ok(_) => true,
-        Err(error) => error.error_len().is_none() && error.valid_up_to() + 4 >= bytes.len(),
-    }
-}
-
 pub fn import(
     track_root: &Path,
     track_title: &str,
@@ -242,6 +173,82 @@ pub fn managed_relative_path(
     )
 }
 
+struct ReplacementPaths {
+    destination: PathBuf,
+    previous: PathBuf,
+    archive_relative: PathBuf,
+    archived: PathBuf,
+}
+
+fn replacement_paths(
+    track_root: &Path,
+    relative: &Path,
+    previous: &EvidenceItem,
+    transaction_id: &str,
+) -> Result<ReplacementPaths> {
+    let destination = contained_path(track_root, relative, false)?;
+    let previous_path = contained_path(track_root, Path::new(&previous.relative_path), false)?;
+    let previous_name = previous_path.file_name().ok_or_else(|| {
+        AppError::Validation("The existing evidence path has no file name.".into())
+    })?;
+    let archive_relative = PathBuf::from(".archive/evidence-replacements").join(transaction_id);
+    let archived = contained_path(track_root, &archive_relative.join(previous_name), false)?;
+    Ok(ReplacementPaths {
+        destination,
+        previous: previous_path,
+        archive_relative,
+        archived,
+    })
+}
+
+fn replace_at_same_path(
+    track_root: &Path,
+    source: &Path,
+    relative: &Path,
+    transaction_id: &str,
+    paths: &ReplacementPaths,
+) -> Result<(String, u64, Option<PathBuf>)> {
+    if !paths.previous.is_file() {
+        let (sha256, size_bytes) = copy_new_hashed(source, &paths.destination)?;
+        return Ok((sha256, size_bytes, None));
+    }
+
+    let stage_relative = relative.with_file_name(format!(".replacement-{transaction_id}.tmp"));
+    let stage_path = contained_path(track_root, &stage_relative, false)?;
+    let (sha256, size_bytes) = copy_new_hashed(source, &stage_path)?;
+    ensure_contained_directory(track_root, &paths.archive_relative)?;
+    if let Err(error) = fs::rename(&paths.previous, &paths.archived) {
+        let _ = fs::remove_file(&stage_path);
+        return Err(AppError::io(&paths.previous, error));
+    }
+    if let Err(error) = fs::rename(&stage_path, &paths.destination) {
+        let _ = fs::rename(&paths.archived, &paths.previous);
+        let _ = fs::remove_file(&stage_path);
+        let _ = fs::remove_dir_all(track_root.join(&paths.archive_relative));
+        return Err(AppError::io(&paths.destination, error));
+    }
+    Ok((sha256, size_bytes, Some(paths.archived.clone())))
+}
+
+fn replace_at_new_path(
+    track_root: &Path,
+    source: &Path,
+    paths: &ReplacementPaths,
+) -> Result<(String, u64, Option<PathBuf>)> {
+    let (sha256, size_bytes) = copy_new_hashed(source, &paths.destination)?;
+    if !paths.previous.is_file() {
+        return Ok((sha256, size_bytes, None));
+    }
+
+    ensure_contained_directory(track_root, &paths.archive_relative)?;
+    if let Err(error) = fs::rename(&paths.previous, &paths.archived) {
+        let _ = fs::remove_file(&paths.destination);
+        let _ = fs::remove_dir_all(track_root.join(&paths.archive_relative));
+        return Err(AppError::io(&paths.previous, error));
+    }
+    Ok((sha256, size_bytes, Some(paths.archived.clone())))
+}
+
 /// Replaces one explicitly selected evidence record without overwriting or
 /// deleting its previous bytes. The old file is moved into the excluded local
 /// archive, and filesystem changes are rolled back if persistence fails.
@@ -263,60 +270,22 @@ where
     }
     validate_type(&role, source)?;
     let relative = managed_relative_path(track_title, &role, source)?;
-    let destination = contained_path(track_root, &relative, false)?;
-    let previous_path = contained_path(track_root, Path::new(&previous.relative_path), false)?;
-    let previous_name = previous_path.file_name().ok_or_else(|| {
-        AppError::Validation("The existing evidence path has no file name.".into())
-    })?;
     let transaction_id = Uuid::new_v4().to_string();
-    let archive_relative = PathBuf::from(".archive/evidence-replacements").join(&transaction_id);
-    let archived_path = contained_path(track_root, &archive_relative.join(previous_name), false)?;
-    let mut archived_previous: Option<PathBuf> = None;
-
-    let (sha256, size_bytes) = if destination == previous_path {
-        if previous_path.is_file() {
-            let stage_relative =
-                relative.with_file_name(format!(".replacement-{transaction_id}.tmp"));
-            let stage_path = contained_path(track_root, &stage_relative, false)?;
-            let copied = copy_new_hashed(source, &stage_path)?;
-            ensure_contained_directory(track_root, &archive_relative)?;
-            if let Err(error) = fs::rename(&previous_path, &archived_path) {
-                let _ = fs::remove_file(&stage_path);
-                return Err(AppError::io(&previous_path, error));
-            }
-            archived_previous = Some(archived_path.clone());
-            if let Err(error) = fs::rename(&stage_path, &destination) {
-                let _ = fs::rename(&archived_path, &previous_path);
-                let _ = fs::remove_file(&stage_path);
-                let _ = fs::remove_dir_all(track_root.join(&archive_relative));
-                return Err(AppError::io(&destination, error));
-            }
-            copied
-        } else {
-            copy_new_hashed(source, &destination)?
-        }
+    let paths = replacement_paths(track_root, &relative, previous, &transaction_id)?;
+    let (sha256, size_bytes, archived_previous) = if paths.destination == paths.previous {
+        replace_at_same_path(track_root, source, &relative, &transaction_id, &paths)?
     } else {
-        let copied = copy_new_hashed(source, &destination)?;
-        if previous_path.is_file() {
-            ensure_contained_directory(track_root, &archive_relative)?;
-            if let Err(error) = fs::rename(&previous_path, &archived_path) {
-                let _ = fs::remove_file(&destination);
-                let _ = fs::remove_dir_all(track_root.join(&archive_relative));
-                return Err(AppError::io(&previous_path, error));
-            }
-            archived_previous = Some(archived_path);
-        }
-        copied
+        replace_at_new_path(track_root, source, &paths)?
     };
 
-    let mut item = build_item_from_copy(role, relative, &destination, sha256, size_bytes);
+    let mut item = build_item_from_copy(role, relative, &paths.destination, sha256, size_bytes);
     item.id = previous.id.clone();
     if let Err(error) = persist(&item) {
-        let _ = fs::remove_file(&destination);
+        let _ = fs::remove_file(&paths.destination);
         if let Some(archived) = &archived_previous {
-            let _ = fs::rename(archived, &previous_path);
+            let _ = fs::rename(archived, &paths.previous);
         }
-        let _ = fs::remove_dir_all(track_root.join(&archive_relative));
+        let _ = fs::remove_dir_all(track_root.join(&paths.archive_relative));
         return Err(error);
     }
     Ok(item)

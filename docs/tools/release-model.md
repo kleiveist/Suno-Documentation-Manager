@@ -6,78 +6,81 @@
 | Field | Value |
 | --- | --- |
 | Status | Active |
-| Owner | Project team |
-| Last review | 2026-08-13 |
+| Owner | SunoDM maintainers |
+| Last review | 2026-08-25 |
 | Audience | Release operators and desktop developers |
 | Related ATP | [ATP-0013: End-to-end offline workflow](../atp/active/ATP-0013-end-to-end-offline-workflow.md) |
-
-> **Product availability:** Local version checks, release checks, web builds, and unsigned Tauri packaging are available. The GitHub Actions workflow descriptions below are inherited template provenance: this generated product contains no `.github/workflows/`, signing pipeline, publication job, backend artifact, or deployment unit. They are not evidence of product CI or release execution.
+| Release state | Not approved; remote validation NOT RUN |
 
 ## Purpose
 
-This document separates continuous verification, release validation, signing, publishing, and deployment. It defines the unsigned desktop matrix and the external inputs required for a future signed product release.
+This document separates local verification, remote release validation, unsigned desktop candidates, signing, publication, and deployment for SunoDM. The repository contains product-owned CI and release-validation definitions, but their presence is not execution evidence and does not authorize a release.
 
-## Scope
+## Current availability
 
-### Included
+### Included in the repository
 
-- version consistency and release identity checks;
-- unsigned Windows, macOS, and Linux verification artifacts;
-- explicit tag or manual release validation; and
-- signing and notarization activation requirements.
+- local product/version and identity checks;
+- frontend and native test/build commands;
+- unsigned Windows, macOS, and Linux verification paths;
+- manual or version-tag release validation;
+- SPDX JSON dependency-SBOM generation in release validation; and
+- short-lived validation artifacts.
 
-### Excluded
+### Not implemented or authorized
 
-- real certificates, Apple credentials, updater keys, artifact publication, application stores, update services, and cloud deployment.
+- Windows or macOS signing;
+- Apple notarization;
+- updater keys or endpoints;
+- GitHub Release or package-registry publication;
+- application-store submission;
+- deployment; and
+- production release credentials.
+
+Remote workflow execution, Windows/macOS bundles, signing, notarization, and publication remain `NOT RUN`. No checked-in workflow publishes a release.
 
 ## Responsibility flow
 
 ```mermaid
 flowchart LR
     Development[Development]
-    CI[CI verification]
-    Artifact[Unsigned build artifact]
-    Gate[Release validation]
-    Signing[Protected signing job]
-    Publishing[Publishing]
-    Deployment[Deployment]
+    Local[Local verification]
+    CI[Remote validation]
+    Artifact[Unsigned candidate]
+    Review[Release review]
+    Signing[Protected signing]
+    Publishing[Publication]
 
-    Development --> CI --> Artifact --> Gate --> Signing --> Publishing --> Deployment
+    Development --> Local --> CI --> Artifact --> Review
+    Review -. not implemented .-> Signing
+    Signing -. not implemented .-> Publishing
 ```
 
-The baseline automates CI verification, unsigned artifacts, and the release gate. Signing, publishing, and deployment remain explicit product integrations. Normal CI never deploys, uses signing secrets, or creates a public release.
+Only the solid-line path is defined by this repository. Signing and publication require a separate reviewed product integration and authority.
 
-## Desktop verification matrix
+## Version and identity sources
 
-`.github/workflows/desktop.yml` runs natively on `windows-latest`, `macos-latest`, and `ubuntu-latest`. Each job installs the platform prerequisites, runs locked Cargo checks, invokes the existing `control.py build desktop` path, and uploads short-lived unsigned artifacts.
-
-These files prove technical buildability. They are not signed production releases. Linux currently verifies a Debian package. Tauri creates the technically available default bundle formats on Windows and macOS.
-
-## Release triggers
-
-`.github/workflows/release.yml` runs only through `workflow_dispatch` or a tag matching `v*.*.*`. It runs tests, builds the web candidate, executes `release check`, and then calls the unsigned desktop workflow. It has read-only repository permission and contains no publication job.
-
-A product repository may add protected signing and publication jobs only after the validation job. Recommended activation conditions are:
-
-1. an annotated, reviewed semantic-version tag or an approved manual dispatch;
-2. a protected GitHub Environment with required reviewers;
-3. successful tests, builds, `version check`, and `release check`;
-4. secrets scoped only to the platform signing job; and
-5. write permission granted only to the final publication job.
-
-## Version source of truth
-
-`VERSION` is the intended application version. It uses semantic versioning. Enabled component metadata mirrors that value in:
+`VERSION` is the product version source. Enabled component metadata mirrors it in:
 
 - `frontend/package.json` and `frontend/package-lock.json`;
 - `src-tauri/tauri.conf.json`;
-- `src-tauri/Cargo.toml` and the root package entry in `Cargo.lock`.
+- `src-tauri/Cargo.toml`; and
+- the root package entry in `src-tauri/Cargo.lock`.
 
-The inherited template can also synchronize FastAPI metadata in backend-enabled projects; that component is absent here.
+The fixed product identity is:
 
-Native product builds require stable Rust 1.88 or newer, matching the crate's declared `rust-version`.
+| Field | Value |
+| --- | --- |
+| Product version | `0.1.0` |
+| Display name | `Suno Documentation Manager` |
+| Slug, package, and binary | `sunodm` |
+| Tauri identifier | `com.grav0id.sunodoc` |
+| Active profile | `desktop-local` |
+| Enabled features | `frontend`, `tauri` |
 
-Change `VERSION`, synchronize metadata, and verify it:
+The full display name belongs in user-facing titles. The short `sunodm` identity belongs in package, binary, and artifact names.
+
+Version synchronization is explicit and does not create a tag or release:
 
 ```sh
 python tools/control.py version
@@ -85,79 +88,78 @@ python tools/control.py version sync
 python tools/control.py version check
 ```
 
-`version sync` changes metadata but never creates a tag or publishes an artifact.
+## Non-publishing release gate
 
-## Project identity and release gate
-
-Initialize a product identity when generating a project:
-
-```sh
-python tools/control.py init \
-  --profile desktop-cloud \
-  --name CustomerApp \
-  --identifier com.customer.app
-```
-
-The command derives `customer-app` and uses that short slug for generated artifact names, the frontend package, Tauri product and binary names, Cargo package, web ZIP, and Compose services. The full `CustomerApp` name remains the window title and other user-visible display text. Use `--slug` only when the derived value is unsuitable.
-
-Run the non-publishing gate before a release:
+Run the local gate from a clean candidate worktree:
 
 ```sh
 python tools/control.py release check
 ```
 
-In the template source repository, the gate recognizes the profile-matrix workflow as the master marker and accepts the intentional canonical scaffold identity. Generated projects do not contain that workflow marker: their gate fails for known template identities such as `com.example.templateproject` until product identity is configured. In both repository types, the gate fails for inconsistent versions, a version tag that differs from `v<VERSION>`, a dirty Git tree, or unreadable metadata. It checks the Tauri CSP and capabilities and warns when signing configuration is absent. A warning preserves unsigned CI verification; it does not certify a production release.
+It checks version mirrors, tag/version consistency when a tag is present, product identity, Tauri security configuration, and release metadata. It rejects a dirty tree. An unsigned-signing warning does not turn an artifact into a production release.
 
-## Signing and notarization preparation
+The gate neither signs nor publishes. During the migration, a dirty-tree rejection is expected state evidence and must not be reported as a passing release gate.
 
-No signing value is committed or consumed by normal CI. A future protected Windows signing job may expect:
+## Desktop verification matrix
 
-- `WINDOWS_CERTIFICATE_BASE64`;
-- `WINDOWS_CERTIFICATE_PASSWORD`; and
-- a reviewed, non-secret timestamp service URL in product configuration.
+`.github/workflows/desktop.yml` runs natively on Ubuntu, macOS, and Windows. It exercises the portable analyzer, Tauri diagnostics, native tests, and an unsigned package build before creating one validated prearchive per runner.
 
-A future protected macOS signing and notarization job may expect:
+| Target | Default verification | Uploaded archive |
+| --- | --- | --- |
+| Linux | Unsigned DEB | `sunodm-desktop-linux-unsigned.tar.gz` |
+| macOS | Technically available unsigned Tauri bundles | `sunodm-desktop-macos-unsigned.tar.gz` |
+| Windows | Technically available unsigned Tauri bundles | `sunodm-desktop-windows-unsigned.zip` |
 
-- `APPLE_CERTIFICATE`;
-- `APPLE_CERTIFICATE_PASSWORD`;
-- `APPLE_SIGNING_IDENTITY`;
-- `APPLE_ID`;
-- `APPLE_PASSWORD` containing an app-specific password; and
-- `APPLE_TEAM_ID`.
+Release Validation requests Linux DEB, RPM, and AppImage candidates and requires the generated Linux bundle manifest and SHA-256 list before upload. These files establish only technical build evidence for the runner environment. They are not signed installers, public releases, or broad distribution-compatibility claims.
 
-Apple API key authentication may replace Apple ID authentication when the product workflow documents `APPLE_API_ISSUER` and a protected API private key. Secrets are decoded only inside the matching OS job, written to a temporary keychain or file, and deleted by unconditional cleanup steps. Fork pull requests and ordinary pushes must never reach those jobs.
+## Release-validation trigger
 
-## Tauri security and updater
+`.github/workflows/release.yml` accepts `workflow_dispatch` and tags matching `v*.*.*`. It runs release-strict quality, documentation checks, the complete applicable test suite, web build, `release check`, SPDX SBOM generation, and the reusable unsigned desktop matrix. The validation artifacts are retained temporarily in the workflow artifact store.
 
-The baseline CSP allows only local application assets, local development/API connections, image data URLs, and no plugins, objects, arbitrary frames, or remote scripts. A desktop-cloud product adds only its exact HTTPS API origin to `connect-src`. It does not add wildcard hosts or `'unsafe-eval'`.
+The workflow has read-only repository permission and contains no release-creation or deployment job. Pushing a matching tag would trigger validation, not publication. Tag creation itself is outside this migration and requires separate authorization.
 
-The default capability contains only `core:default`. Add one permission at a time with an architecture review and acceptance coverage.
+## Source and third-party licensing
 
-The auto-updater is intentionally absent and therefore disabled. A future integration requires a real HTTPS update endpoint, an offline-generated updater signing key, a committed public verification key, rollback behavior, and a signed release pipeline. Do not add a placeholder URL or dummy key.
+The product source is governed by the root `LICENSE` and `NOTICE`. That product license does not replace the licenses of bundled fonts, native sidecars, vendored Rust code, npm packages, or Cargo dependencies. Before any distributable candidate is approved, the operator must verify the reviewed third-party notice inventory, include every required full license/provenance/source-offer file in the bundle, and confirm that packaged resources match the approved Tauri configuration.
+
+Release validation can detect structural omissions, but it is not legal advice and does not by itself establish distribution compliance.
+
+## Signing, notarization, and updater boundary
+
+No signing value is committed or consumed by normal CI. A future signing design must isolate platform credentials in protected jobs and environments, restrict write permission to the final reviewed publication step, remove temporary key material unconditionally, and prevent fork pull requests from reaching secrets.
+
+The auto-updater is absent. Activating it requires a real HTTPS endpoint, an offline-generated updater signing key, a committed public verification key, rollback behavior, and a signed publication path. Placeholder URLs or dummy keys are not acceptable.
 
 ## Release checklist
 
+The technical candidate checklist is:
+
 ```sh
 python tools/control.py doctor
+python tools/control.py config doctor
+python tools/control.py quality --release
+python tools/control.py test --suite all --report
+python tools/control.py docs check
 python tools/control.py version check
-python tools/control.py test --suite all
 python tools/control.py build web
-python tools/control.py build desktop --dry-run
+python tools/control.py tauri doctor
+python tools/control.py build desktop --dry-run --no-clean
 python tools/control.py release check
 ```
 
-Before signing, also verify the product icon, bundle identifier ownership, privacy declarations, license files, changelog, API origin/CSP match, platform entitlements, certificate validity, and recovery access to signing credentials.
+Before distribution, also verify product icons and names, identifier ownership, privacy declarations, product and third-party licenses/notices, sidecar and font provenance, SBOM output, changelog, platform entitlements, certificate validity, signing recovery access, cross-platform results, and the exact approved commit.
 
-## Verification
+Every result must be recorded honestly as `PASS`, `FAIL`, `SKIP`, `NOT RUN`, or `NOT APPLICABLE`. A local Linux dry run cannot prove native Windows or macOS packaging.
 
-Workflow structure is covered by `tools/tests/test_ci_workflows.py`. Identity, version, CSP, placeholder, and release gate behavior are covered by `tools/tests/test_container_release.py` and profile generator tests.
+## Verification ownership
 
-For this product, workflow-structure tests validate retained tooling contracts only; they do not prove that product GitHub Actions exist or ran.
+Workflow structure is covered by `tools/tests/test_ci_workflows.py`. Identity and release-gate behavior are covered by `tools/tests/test_container_release.py` and profile/lifecycle tests. These tests validate repository contracts; they do not prove a GitHub workflow ran.
 
 ## Related documents
 
 - [Continuous integration](ci.md)
 - [Tooling guide](tooling.md)
-- [Container builds](container-builds.md)
-- [Deployment architecture](../def/deployment-architecture.md)
-- [Framework architecture](../def/architecture.md)
+- [Tauri desktop development](tauri/tauri.md)
+- [Code quality](../def/code-quality.md)
+- [Template lifecycle](../def/template-lifecycle.md)
+- [Template v1.0.3 migration plan](../dev/migrations/template-v1.0.3/migration-plan.md)

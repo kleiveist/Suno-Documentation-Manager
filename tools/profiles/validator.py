@@ -5,7 +5,7 @@ from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Iterable
 
-from tools.profiles.model import ProfileCatalog
+from tools.profiles.model import FeatureDefinition, ProfileCatalog, ProfileDefinition
 
 
 class ProfileError(RuntimeError):
@@ -150,83 +150,106 @@ def resolve_optional_features(
     return validate_feature_selection(selected, catalog)
 
 
+def _catalog_path_error(
+    relative: str,
+    *,
+    context: str,
+    root: Path | None,
+    validate_paths: bool,
+) -> str | None:
+    path_error = _validate_relative_path(relative, context=context)
+    if path_error or not validate_paths or root is None:
+        return path_error
+    candidate = (root / relative).resolve()
+    if not candidate.is_relative_to(root):
+        return f"{context} path '{relative}' resolves outside {root}."
+    if not candidate.exists():
+        return f"{context} path '{relative}' does not exist under {root}."
+    return None
+
+
+def _core_errors(catalog: ProfileCatalog, root: Path | None, validate_paths: bool) -> list[str]:
+    errors: list[str] = []
+    if not catalog.core_paths:
+        errors.append("Profile catalog must define at least one core path.")
+    for relative in catalog.core_paths:
+        error = _catalog_path_error(relative, context="Core", root=root, validate_paths=validate_paths)
+        if error:
+            errors.append(error)
+    return errors
+
+
+def _feature_errors(
+    feature: FeatureDefinition,
+    catalog: ProfileCatalog,
+    root: Path | None,
+    validate_paths: bool,
+) -> list[str]:
+    errors: list[str] = []
+    id_error = _validate_id(feature.id, kind="Feature")
+    if id_error:
+        errors.append(id_error)
+    errors.extend(
+        f"Feature '{feature.id}' requires unknown feature '{dependency}'."
+        for dependency in feature.requires
+        if dependency not in catalog.features
+    )
+    if feature.selectable and not feature.optional:
+        errors.append(f"Feature '{feature.id}' is selectable but is not marked optional.")
+    for relative in feature.paths:
+        error = _catalog_path_error(
+            relative,
+            context=f"Feature '{feature.id}'",
+            root=root,
+            validate_paths=validate_paths,
+        )
+        if error:
+            errors.append(error)
+    return errors
+
+
+def _profile_errors(profile: ProfileDefinition, catalog: ProfileCatalog) -> list[str]:
+    errors: list[str] = []
+    id_error = _validate_id(profile.id, kind="Profile")
+    if id_error:
+        errors.append(id_error)
+    if profile.schema_version != catalog.schema_version:
+        errors.append(
+            f"Profile '{profile.id}' uses schema version {profile.schema_version}; "
+            f"catalog version is {catalog.schema_version}."
+        )
+    try:
+        validate_feature_selection(profile.features, catalog)
+    except CatalogValidationError as exc:
+        errors.append(f"Profile '{profile.id}' is invalid: {exc}")
+    optional = [
+        feature_id
+        for feature_id in profile.features
+        if catalog.features.get(feature_id) is not None and catalog.features[feature_id].optional
+    ]
+    if optional:
+        errors.append(f"Profile '{profile.id}' must not hardcode optional feature(s): {', '.join(optional)}.")
+    return errors
+
+
 def validate_catalog(
     catalog: ProfileCatalog,
     *,
     project_root: Path | None = None,
     validate_paths: bool = True,
 ) -> None:
-    errors: list[str] = []
-
-    if not catalog.core_paths:
-        errors.append("Profile catalog must define at least one core path.")
-
+    root = project_root.resolve() if project_root is not None else None
+    errors = _core_errors(catalog, root, validate_paths)
     if not catalog.features:
         errors.append("Profile catalog must define at least one feature.")
-
     if not catalog.profiles:
         errors.append("Profile catalog must define at least one profile.")
-
-    root = project_root.resolve() if project_root is not None else None
-    for relative in catalog.core_paths:
-        path_error = _validate_relative_path(relative, context="Core")
-        if path_error:
-            errors.append(path_error)
-            continue
-        if validate_paths and root is not None:
-            candidate = (root / relative).resolve()
-            if not candidate.is_relative_to(root):
-                errors.append(f"Core path '{relative}' resolves outside {root}.")
-            elif not candidate.exists():
-                errors.append(f"Core path '{relative}' does not exist under {root}.")
-
     for feature in catalog.features.values():
-        id_error = _validate_id(feature.id, kind="Feature")
-        if id_error:
-            errors.append(id_error)
-        for dependency in feature.requires:
-            if dependency not in catalog.features:
-                errors.append(f"Feature '{feature.id}' requires unknown feature '{dependency}'.")
-        if feature.selectable and not feature.optional:
-            errors.append(f"Feature '{feature.id}' is selectable but is not marked optional.")
-        for relative in feature.paths:
-            path_error = _validate_relative_path(relative, context=f"Feature '{feature.id}'")
-            if path_error:
-                errors.append(path_error)
-                continue
-            if validate_paths and root is not None:
-                candidate = (root / relative).resolve()
-                if not candidate.is_relative_to(root):
-                    errors.append(f"Feature '{feature.id}' path '{relative}' resolves outside {root}.")
-                elif not candidate.exists():
-                    errors.append(f"Feature '{feature.id}' path '{relative}' does not exist under {root}.")
-
+        errors.extend(_feature_errors(feature, catalog, root, validate_paths))
     cycle = _dependency_cycle(catalog)
     if cycle is not None:
         errors.append(f"Feature dependency cycle detected: {' -> '.join(cycle)}.")
-
     for profile in catalog.profiles.values():
-        id_error = _validate_id(profile.id, kind="Profile")
-        if id_error:
-            errors.append(id_error)
-        if profile.schema_version != catalog.schema_version:
-            errors.append(
-                f"Profile '{profile.id}' uses schema version {profile.schema_version}; "
-                f"catalog version is {catalog.schema_version}."
-            )
-        try:
-            validate_feature_selection(profile.features, catalog)
-        except CatalogValidationError as exc:
-            errors.append(f"Profile '{profile.id}' is invalid: {exc}")
-        optional_in_profile = [
-            item
-            for item in profile.features
-            if catalog.features.get(item) is not None and catalog.features[item].optional
-        ]
-        if optional_in_profile:
-            errors.append(
-                f"Profile '{profile.id}' must not hardcode optional feature(s): {', '.join(optional_in_profile)}."
-            )
-
+        errors.extend(_profile_errors(profile, catalog))
     if errors:
         raise CatalogValidationError("\n".join(errors))

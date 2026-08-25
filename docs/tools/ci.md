@@ -1,29 +1,28 @@
 <!-- AUTO-GENERATED:backlink START -->
 [← Back](tools.md)
 <!-- AUTO-GENERATED:backlink END -->
-# Continuous integration — unavailable inherited reference
+# Continuous integration
 
 | Field | Value |
 | --- | --- |
-| Status | Archived |
-| Owner | Project team |
-| Last review | 2026-08-13 |
+| Status | Active |
+| Owner | SunoDM maintainers |
+| Last review | 2026-08-25 |
 | Audience | Contributors and repository maintainers |
-| Related ATP | N/A - automated evidence supports, but does not replace, feature ATPs |
-
-> **Unavailable in this product:** This page describes the upstream master template's GitHub Actions design. The generated Suno Documentation Manager source tree contains no `.github/workflows/` directory, so none of the workflow names, matrices, remote checks, artifacts, or branch-protection recommendations below is current product CI evidence. Use the local verification commands and product ATP records until product-specific CI is added and executed.
+| Related ATP | Product-specific acceptance remains under [Active acceptance](../atp/active/active.md) |
+| Remote execution | NOT RUN for the migration branch |
 
 ## Purpose
 
-This document defines the automated quality gates for the master template. Continuous integration detects regressions in shared tooling, feature modules, profile generation, PostgreSQL integration, container builds, production web builds, and native desktop packaging before a change reaches `main`.
+This document defines the product-owned GitHub Actions validation model for Suno Documentation Manager. The workflows are intentionally limited to the active `desktop-local` product: frontend, Tauri, Rust, shared tooling, documentation, security analysis, unsigned desktop candidates, and non-publishing release validation.
 
-## Scope
+The workflow files are checked-in configuration only. No remote run for the migration branch has been observed or claimed, so remote CI remains `NOT RUN` until an exact commit and its actual GitHub results are recorded.
 
-Core, profile, PostgreSQL, and desktop workflows run for pull requests and pushes to `main`. They validate the repository and temporary generated projects. The separate release-validation workflow runs only for a matching version tag or manual dispatch. Deployment, publishing, signing, release creation, and production database operations remain outside the automated baseline.
+## Product scope
 
-## Local and CI equivalence
+SunoDM enables exactly `frontend` and `tauri`. CI does not add or validate a FastAPI service, PostgreSQL, Alembic, cloud deployment, Docker product image, profile-generation matrix, signing pipeline, or publication workflow.
 
-GitHub Actions orchestrates the same public interface used by developers:
+GitHub Actions uses the same public entry point as local development:
 
 ```text
 GitHub Actions
@@ -31,187 +30,121 @@ GitHub Actions
       v
 python tools/control.py
       |
-      +-- install
-      +-- doctor / config doctor / tauri doctor
-      +-- test --suite <name>
-      +-- db upgrade
-      +-- build web
-      +-- container validate / build container
+      +-- install / doctor / config doctor / tauri doctor
+      +-- quality
+      +-- test --suite tools|frontend|tauri|e2e|all
+      +-- build web / build desktop
       +-- version check / release check
+      +-- docs check
 ```
 
-Project behavior remains in `tools/control.py` and its modules. Workflow YAML is responsible only for runtime setup, dependency caches, temporary service containers, command ordering, and job boundaries.
+## Active workflow inventory
 
-The local baseline is:
+| Workflow | File | Pull request | Push to `main` | Manual | Weekly | Version tag | Reusable |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Core CI | `.github/workflows/ci.yml` | Yes | Yes | Yes | No | No | No |
+| Desktop CI | `.github/workflows/desktop.yml` | Yes | Yes | Yes | No | No | Yes |
+| Security | `.github/workflows/security.yml` | Yes | Yes | Yes | Yes | No | No |
+| Release Validation | `.github/workflows/release.yml` | No | No | Yes | No | `v*.*.*` | No |
 
-```sh
-python tools/control.py install
-python tools/control.py doctor
-python tools/control.py test --suite all
-python tools/control.py build web
-```
+There is no `profiles.yml`, `postgres.yml`, `release-publish.yml`, signing job, deployment job, or package-registry publication path in this product.
 
-`test --suite all` reads `project-profile.toml`. Disabled features report `SKIP` and return success. Missing files or failed checks for enabled features report `FAIL` and return a non-zero exit code.
+## Core CI
 
-Tests that exercise generator capabilities outside a derived project's enabled feature set are skipped. The same tooling suite still runs in every generated project; only master-only source-completeness checks are excluded when the corresponding source modules were intentionally not scaffolded.
-
-## Test levels
-
-| Level | Coverage | Public command |
-| --- | --- | --- |
-| Core tests | Tooling, profiles, configuration, schema, FastAPI, SQLAlchemy, frontend, Tauri, and Rust | `python tools/control.py test --suite <name>` |
-| External service tests | PostgreSQL connectivity and Alembic migration | `python tools/control.py test --suite postgres`, `python tools/control.py db upgrade` |
-| Generated project tests | Real scaffolds for every supported profile | `python tools/control.py init`, followed by generated-project commands |
-| Build verification | Vite, provider-neutral images, and native Tauri packages | `python tools/control.py build web`, `build container`, `build desktop` |
-
-Playwright E2E remains an optional suite. It reports `SKIP` until a real E2E configuration and tests exist.
-
-## Workflows
-
-### Core CI
-
-`.github/workflows/ci.yml` separates failures into four jobs:
+`.github/workflows/ci.yml` runs one governance job followed by five independent product jobs:
 
 | Check name | Responsibility |
 | --- | --- |
-| `Core / Tooling, Profiles & Configuration` | CLI, generator, profile, configuration, and workflow regression tests |
-| `Core / Backend, Database & Schema` | JSON Schema, FastAPI, and SQLAlchemy unit tests |
-| `Core / Frontend & Web Build` | Vitest and a production Vite build |
-| `Core / Container Build` | Version and Compose validation plus backend and frontend image builds |
+| `Core / Code Quality & Architecture` | Central policy, source metrics, architecture rules, pinned Rust/WASI analyzer verification, Ruff, frontend quality tools, rustfmt, Clippy, and Cargo checks |
+| `Core / Tooling & Configuration` | CLI, profile, lifecycle, configuration, and shared-tool regressions for the active product shape |
+| `Core / Documentation Check` | Read-only generated-navigation validation and focused documentation-tool tests |
+| `Core / Frontend Tests & Web Build` | Frontend tests, coverage controls, and the budgeted production Vite build |
+| `Core / Browser Smoke & Accessibility` | Chromium smoke behavior and axe accessibility checks against the locally started frontend |
+| `Core / Rust 1.88 MSRV` | Locked native-target checking at the crate's declared minimum Rust version |
 
-The jobs are independent and run in parallel. Native packages belong to Desktop CI.
+The downstream jobs depend on Quality. A warning remains visible according to `config/code-quality.toml`; an unsuppressed error or failed required tool blocks the workflow. In particular, the 900-code-line hard limit is not bypassed in CI.
 
-### Profile Matrix
+## Desktop CI
 
-`.github/workflows/profiles.yml` generates `web-only`, `web-cloud`, `desktop-local`, `desktop-cloud`, and `full-platform` projects. Each matrix entry runs an initial structure doctor, dependency installation, a prepared-environment doctor, the profile-aware complete suite, and a production web build. Desktop entries also install Linux Tauri prerequisites, run Tauri doctor, and execute Cargo checks. Cloud entries validate their generated Compose model.
+`.github/workflows/desktop.yml` uses native Ubuntu, macOS, and Windows runners. Each job installs the portable tooling and frontend dependencies, verifies the checked-in analyzer runtime, runs Tauri diagnostics and native tests, and builds technically available unsigned packages.
 
-On Debian-family Linux runners, `tauri install` refreshes apt metadata before a non-interactive install. It uses the Tauri v2 WebKitGTK 4.1 dependency set and selects the release-appropriate FUSE 2 package name (`libfuse2` on Ubuntu 22.04 and `libfuse2t64` on Ubuntu 24.04 and newer). Missing required compile-time libraries make `tauri doctor` fail; AppImage-only helpers remain warnings during check-only CI.
+| Runner | Target | Uploaded artifact | Archive transport |
+| --- | --- | --- | --- |
+| Ubuntu | Linux | `sunodm-desktop-linux-unsigned` | `sunodm-desktop-linux-unsigned.tar.gz` |
+| macOS | macOS | `sunodm-desktop-macos-unsigned` | `sunodm-desktop-macos-unsigned.tar.gz` |
+| Windows | Windows | `sunodm-desktop-windows-unsigned` | `sunodm-desktop-windows-unsigned.zip` |
 
-The matrix uses `fail-fast: false`. One broken preset therefore does not hide the status of the other presets.
+Linux defaults to an unsigned DEB. A reusable or manual call can request a validated comma-separated Linux bundle list. Release Validation requests DEB, RPM, and AppImage. The POSIX prearchives preserve executable modes before GitHub artifact upload; the Windows archive is validated before upload. Artifacts are retained for 14 days and are neither signed installers nor published releases.
 
-### PostgreSQL Integration
+## Security
 
-`.github/workflows/postgres.yml` starts PostgreSQL 16 as an isolated service container with test-only credentials and a `pg_isready` health check. No external database is contacted.
+`.github/workflows/security.yml` runs CodeQL `security-extended` analysis for Python, JavaScript/TypeScript, and Rust on pull requests, pushes to `main`, weekly schedule, and manual dispatch. A pull-request-only Dependency Review job rejects newly introduced high or critical vulnerabilities.
 
-The integration job performs this sequence:
+All external Actions are pinned to full commit SHAs. `.github/dependabot.yml` covers GitHub Actions, frontend npm, tooling pip, product Cargo, and analyzer Cargo inputs. Routine minor and patch updates are grouped; major updates remain separate and receive the supported review cooldown where configured. Dependabot configuration does not itself prove that an update is safe.
 
-```text
-fresh temporary database
-        |
-        v
-config doctor
-        |
-        v
-Alembic upgrade head
-        |
-        v
-PostgreSQL integration test
-```
+## Release validation
 
-The same workflow generates `web-cloud`, `desktop-cloud`, and `full-platform` with `--with postgres`. Each generated project runs doctor, migration, the complete profile-aware suite, the web build, and container-model validation. Desktop entries also run Tauri checks. `DATABASE_URL` and `DATABASE_URL_TEST` point only to the job-local service.
+`.github/workflows/release.yml` runs by manual dispatch or a tag matching `v*.*.*`. Its validation job creates an SPDX JSON dependency SBOM, rebuild-checks the pinned analyzer, runs release-strict quality, documentation checks, the complete applicable product suite, the web build, and `release check`. It uploads short-lived web/SBOM validation evidence, then calls the same unsigned desktop workflow with Linux DEB, RPM, and AppImage targets.
 
-Application startup never runs migrations. CI invokes `db upgrade` explicitly.
+The workflow has no signing, notarization, attestation, GitHub Release creation, publication, deployment, or write-capable repository job. A successful validation run would be technical evidence only; it would not by itself authorize distribution.
 
-### Desktop CI
+## Runtime baselines
 
-`.github/workflows/desktop.yml` uses a native matrix over Ubuntu, macOS, and Windows. Every runner installs its Tauri prerequisites, executes locked Rust checks, builds a technically available native package, and uploads a short-lived artifact named `desktop-<target>-unsigned`. Linux verifies a Debian package. No job reads signing or notarization secrets.
-
-The artifacts establish build compatibility. They are not production releases and are not published outside the workflow artifact store.
-
-### Release Validation
-
-`.github/workflows/release.yml` accepts `workflow_dispatch` and tags matching `v*.*.*`. It runs the full validation suite, builds the web candidate, executes `release check`, and calls the same unsigned desktop workflow. It has read-only repository permission and no publication or deployment job. Product repositories add protected signing and publication jobs only after this gate.
-
-## Runtime versions
-
-| Runtime | CI baseline |
+| Runtime | Workflow baseline |
 | --- | --- |
 | Python | 3.11 |
-| Node.js | 20 |
-| Rust | Stable toolchain |
-| PostgreSQL | 16 service container for integration tests |
+| Node.js | 24 |
+| Product Rust MSRV | 1.88.0 |
+| Quality and desktop Rust | 1.97.1 |
 
-These values test the minimum versions documented by the template for Python and Node.js and the supported stable Rust channel.
+The product crate remains authoritative for its MSRV. The pinned quality-analyzer provenance remains authoritative for the analyzer toolchain and artifact hash.
 
-The official setup and cache actions use their Node.js 24-based stable majors. This internal action runtime is independent of the project-level Node.js 20 baseline above.
+## Installation, caching, and permissions
 
-## Dependency installation and caching
+Frontend jobs use the committed lockfile. Rust jobs use locked Cargo dependencies. GitHub-hosted caches cover npm, pip, and Cargo inputs by their relevant lock or requirement files; caches are an optimization, not evidence.
 
-`control.py install` uses `npm ci` whenever `frontend/package-lock.json` exists and falls back to `npm install` only for projects without a lockfile. Cargo commands use `--locked` with `src-tauri/Cargo.lock`. Python keeps the existing requirements-file and virtual-environment strategy.
+Every workflow begins with `contents: read`. CodeQL narrows `security-events: write` to its analysis job. No normal job reads signing, notarization, updater, deployment, database, or publication credentials. Pull-request concurrency cancels an older run for the same pull request; pushes to `main` and release validation are not cancelled by a later run.
 
-GitHub-hosted caches cover:
+## Evidence semantics
 
-- pip downloads keyed by the relevant requirements files;
-- npm downloads keyed by `frontend/package-lock.json`;
-- Cargo registry, Git sources, and target output keyed by `src-tauri/Cargo.lock`.
+- `PASS`: the named check was actually executed for an identified commit and succeeded.
+- `SKIP`: the active profile excludes the optional suite, or a documented optional condition does not apply.
+- `FAIL`: a required enabled check ran and failed, or required configuration is incomplete.
+- `NOT RUN`: a workflow or manual check has not been executed or no result was inspected.
+- `NOT APPLICABLE`: the product architecture excludes the capability.
 
-Caches improve execution time but are never required for correctness.
-
-## Permissions and secrets
-
-Every workflow declares only `contents: read`. Pull requests from forks do not require repository secrets. PostgreSQL uses the temporary user, password, and database declared in workflow YAML; those values exist only inside an isolated CI run and are not production credentials.
-
-The workflows do not use cloud credentials, signing material, deployment tokens, package publication, public release creation, or write permissions. Commands must not print database URLs or other secret values. Normal CI jobs run `git diff --exit-code` to detect unintended changes to versioned files.
-
-## Failure handling
-
-Jobs use explicit timeouts. Pull-request concurrency cancels an older run after a newer commit arrives, while `main` runs are not cancelled. Independent jobs remain parallel so GitHub reports the failing subsystem directly.
-
-`PASS`, `SKIP`, and `FAIL` have distinct meanings:
-
-- `PASS`: the selected check ran and completed successfully.
-- `SKIP`: the active profile disables the feature or an optional suite is not configured.
-- `FAIL`: an enabled feature is incomplete, configuration is invalid, or the executed check failed.
-
-A configured but unreachable `DATABASE_URL_TEST` is a failure, not a skip.
+Workflow source, a test definition, or an inherited upstream run is not a SunoDM `PASS`. Remote CI stays `NOT RUN` for this migration until exact-SHA results exist.
 
 ## Branch protection recommendation
 
-Configure `main` branch protection after the workflows have completed stable repository runs. Require the actual checks shown by GitHub for:
+Configure required checks only after the product workflows have completed stable runs and GitHub exposes their actual check names. Candidate checks are the six `Core / ...` jobs, the three `Desktop / ... / Unsigned Verification` jobs, and the applicable Security checks. Require current pull-request results and do not grant validation workflows deployment or bypass privileges.
 
-- all four `Core / ...` jobs;
-- all five `Profiles / ...` matrix jobs;
-- `PostgreSQL / Integration & Migration`;
-- all three `Profiles / ... + postgres` jobs; and
-- all three `Desktop / ... / Unsigned Verification` jobs.
+## Local verification
 
-Require pull requests and current branch status before merge. Do not grant test workflows deployment or bypass privileges.
-
-## Acceptance evidence
-
-Automated tests and CI output provide repeatable technical evidence. They do not replace feature acceptance:
-
-```text
-Automated tests + CI evidence + acceptance testing = feature acceptance
-```
-
-Reference relevant CI runs from an ATP when they support an acceptance decision.
-
-## Verification
-
-Run the local equivalents from the repository root:
+Run applicable checks from the repository root:
 
 ```sh
+python tools/control.py config doctor
+python tools/control.py quality
 python tools/control.py test --suite tools
-python tools/control.py test --suite schema
-python tools/control.py test --suite api
-python tools/control.py test --suite database
 python tools/control.py test --suite frontend
 python tools/control.py test --suite tauri
-python tools/control.py build web
-python tools/control.py container validate
+python tools/control.py test --suite e2e
+python tools/control.py test --suite all --report
+python tools/control.py docs check
 python tools/control.py version check
+python tools/control.py build web
+python tools/control.py tauri doctor
+python tools/control.py build desktop --dry-run --no-clean
 ```
 
-PostgreSQL verification additionally requires a disposable test database through `DATABASE_URL` and `DATABASE_URL_TEST`.
+Local execution cannot prove Windows or macOS packaging and does not substitute for a recorded remote run.
 
 ## Related documents
 
-- [Tooling Guide](tooling.md)
-- [Framework Architecture](../def/architecture.md)
-- [Project Profiles](../def/project-profiles.md)
-- [Database Feature](../def/database-feature.md)
-- [Runtime Configuration](../def/configuration.md)
-- [Deployment Architecture](../def/deployment-architecture.md)
-- [Release Model](release-model.md)
-- [ATP Workflow](../atp/README.md)
+- [Tooling guide](tooling.md)
+- [Code quality](../def/code-quality.md)
+- [Application architecture](../def/architecture.md)
+- [Template lifecycle](../def/template-lifecycle.md)
+- [Release model](release-model.md)
+- [ATP workflow](../atp/README.md)

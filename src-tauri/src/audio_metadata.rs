@@ -53,6 +53,15 @@ struct FormatChunk {
     bit_depth: u16,
 }
 
+#[derive(Default)]
+struct ChunkInspection {
+    format: Option<FormatChunk>,
+    data_bytes: u64,
+    embedded_metadata: Vec<EmbeddedMetadata>,
+    embedded_metadata_bytes: u64,
+    chunk_count: usize,
+}
+
 /// Inspects a RIFF/WAVE file without reading audio payloads into memory.
 ///
 /// `Ok(None)` means that the selected file is not a RIFF/WAVE file. A valid WAV
@@ -64,12 +73,35 @@ pub fn inspect_wav(path: &Path) -> Result<Option<WavMetadata>> {
         .map_err(|error| AppError::io(path, error))?
         .len();
 
+    let Some(riff_end) = read_riff_end(&mut file, path, file_len)? else {
+        return Ok(None);
+    };
+    let chunks = inspect_chunks(&mut file, path, riff_end)?;
+    let duration_milliseconds = chunks
+        .format
+        .and_then(|format| duration_ms(format, chunks.data_bytes));
+    let mut metadata = WavMetadata {
+        audio_format: "WAV".to_owned(),
+        channels: chunks.format.and_then(|value| nonzero_u16(value.channels)),
+        sample_rate_hz: chunks
+            .format
+            .and_then(|value| nonzero_u32(value.sample_rate_hz)),
+        duration_milliseconds,
+        bit_depth: chunks.format.and_then(|value| nonzero_u16(value.bit_depth)),
+        embedded_metadata: chunks.embedded_metadata,
+        ..WavMetadata::default()
+    };
+    populate_suno_metadata(&mut metadata);
+    Ok(Some(metadata))
+}
+
+fn read_riff_end(file: &mut File, path: &Path, file_len: u64) -> Result<Option<u64>> {
     if file_len < 4 {
         return Ok(None);
     }
 
     let mut riff_id = [0_u8; 4];
-    read_exact(&mut file, path, &mut riff_id, "RIFF identifier")?;
+    read_exact(file, path, &mut riff_id, "RIFF identifier")?;
     if riff_id != *b"RIFF" {
         return Ok(None);
     }
@@ -78,7 +110,7 @@ pub fn inspect_wav(path: &Path) -> Result<Option<WavMetadata>> {
     }
 
     let mut header_tail = [0_u8; 8];
-    read_exact(&mut file, path, &mut header_tail, "RIFF header")?;
+    read_exact(file, path, &mut header_tail, "RIFF header")?;
     if header_tail[4..8] != *b"WAVE" {
         return Ok(None);
     }
@@ -99,17 +131,16 @@ pub fn inspect_wav(path: &Path) -> Result<Option<WavMetadata>> {
             "declared RIFF size exceeds the file length",
         ));
     }
+    Ok(Some(riff_end))
+}
 
-    let mut format = None;
-    let mut data_bytes = 0_u64;
-    let mut embedded_metadata = Vec::new();
-    let mut embedded_metadata_bytes = 0_u64;
+fn inspect_chunks(file: &mut File, path: &Path, riff_end: u64) -> Result<ChunkInspection> {
+    let mut inspection = ChunkInspection::default();
     let mut position = RIFF_HEADER_LEN;
-    let mut chunk_count = 0_usize;
 
     while position < riff_end {
-        chunk_count += 1;
-        if chunk_count > MAX_RIFF_CHUNKS {
+        inspection.chunk_count += 1;
+        if inspection.chunk_count > MAX_RIFF_CHUNKS {
             return Err(invalid_wav(path, "too many top-level chunks"));
         }
         let remaining = riff_end - position;
@@ -118,39 +149,41 @@ pub fn inspect_wav(path: &Path) -> Result<Option<WavMetadata>> {
         }
 
         let (chunk_id, chunk_size, data_start, data_end, padded_end) =
-            read_chunk_header(&mut file, path, position, riff_end, "top-level")?;
+            read_chunk_header(file, path, position, riff_end, "top-level")?;
 
         match chunk_id {
             id if id == *b"fmt " => {
-                if format.is_none() {
-                    format = Some(read_format_chunk(&mut file, path, data_start, chunk_size)?);
+                if inspection.format.is_none() {
+                    inspection.format =
+                        Some(read_format_chunk(file, path, data_start, chunk_size)?);
                 }
             }
             id if id == *b"data" => {
-                data_bytes = data_bytes
+                inspection.data_bytes = inspection
+                    .data_bytes
                     .checked_add(chunk_size)
                     .ok_or_else(|| invalid_wav(path, "combined audio data size overflows"))?;
             }
             id if id == *b"LIST" => {
                 read_list_chunk(
-                    &mut file,
+                    file,
                     path,
                     data_start,
                     data_end,
-                    &mut embedded_metadata,
-                    &mut embedded_metadata_bytes,
-                    &mut chunk_count,
+                    &mut inspection.embedded_metadata,
+                    &mut inspection.embedded_metadata_bytes,
+                    &mut inspection.chunk_count,
                 )?;
             }
             id if is_known_info_text_chunk(id) => {
                 read_and_record_text_chunk(
-                    &mut file,
+                    file,
                     path,
                     data_start,
                     chunk_size,
                     id,
-                    &mut embedded_metadata,
-                    &mut embedded_metadata_bytes,
+                    &mut inspection.embedded_metadata,
+                    &mut inspection.embedded_metadata_bytes,
                 )?;
             }
             _ => {}
@@ -158,19 +191,7 @@ pub fn inspect_wav(path: &Path) -> Result<Option<WavMetadata>> {
 
         position = padded_end;
     }
-
-    let duration_milliseconds = format.and_then(|format| duration_ms(format, data_bytes));
-    let mut metadata = WavMetadata {
-        audio_format: "WAV".to_owned(),
-        channels: format.and_then(|value| nonzero_u16(value.channels)),
-        sample_rate_hz: format.and_then(|value| nonzero_u32(value.sample_rate_hz)),
-        duration_milliseconds,
-        bit_depth: format.and_then(|value| nonzero_u16(value.bit_depth)),
-        embedded_metadata,
-        ..WavMetadata::default()
-    };
-    populate_suno_metadata(&mut metadata);
-    Ok(Some(metadata))
+    Ok(inspection)
 }
 
 fn read_chunk_header(
@@ -279,7 +300,6 @@ fn read_list_chunk(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn read_and_record_text_chunk(
     file: &mut File,
     path: &Path,

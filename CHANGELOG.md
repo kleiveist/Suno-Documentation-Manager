@@ -3,6 +3,14 @@
 <!-- AUTO-GENERATED:backlink END -->
 # Changelog
 
+## 2026-08-25
+
+- Added the product-shaped Template-Projekte v1.0.3 technical migration foundation: lifecycle and quality governance, local documentation validation, frontend quality controls, product-owned validation workflows, and migration evidence. The active profile remains `desktop-local` with only `frontend` and `tauri`; product lifecycle adoption and remote workflow evidence remain separately gated.
+
+## 2026-08-22
+
+- Advanced new finalizations to evidence-manifest schema `9` and Markdown/PDF certificate format `6.2`, with the exact manifest hash prepared before one bounded automatic timestamp attempt and the final certificate rendered once from the captured result. Provider qualification remains separately evidenced; historical certificate, manifest, timestamp, and revision bytes remain unchanged.
+
 ## 2026-08-20
 
 - Added configurable deterministic ACRCloud multi-sample screening: dynamic or fixed-reference intensity planning, evenly distributed non-overlapping samples, a hard 25-request / 300-second cap, structured response archives, and K.2/manifest coverage reporting. Advanced document templates to `1.11`, evidence-manifest schema to `8`, and Markdown/PDF certificate format to `6.1`; historical artifacts remain unchanged.

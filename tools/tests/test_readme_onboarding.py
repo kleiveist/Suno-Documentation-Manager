@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import unquote
 
 from tools import control
 from tools.profiles import runtime as profile_runtime
@@ -48,7 +49,8 @@ def test_readme_matches_the_active_local_desktop_profile() -> None:
 
     assert profile.profile_id == "desktop-local"
     assert profile.features == ("frontend", "tauri")
-    assert "There is no product backend and no network dependency." in content
+    assert "any required network connection" in content
+    assert "FastAPI, a backend service, PostgreSQL" in content
     assert "src-tauri/" in content
     assert "backend/" not in content
     assert "deployment/" not in content
@@ -68,5 +70,5 @@ def test_all_local_readme_links_resolve() -> None:
     for target in targets:
         if target.startswith(("http://", "https://", "#")):
             continue
-        relative_path = target.split("#", 1)[0]
+        relative_path = unquote(target.split("#", 1)[0])
         assert (ROOT / relative_path).exists(), f"README link does not exist: {target}"

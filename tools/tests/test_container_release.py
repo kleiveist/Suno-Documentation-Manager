@@ -52,10 +52,7 @@ def test_production_locks_match_container_python_runtime() -> None:
         lock_names.append("requirements-database-production.lock")
     if profile.has_feature("postgres"):
         lock_names.append("requirements-postgres-production.lock")
-    locks = {
-        name: (ROOT / "backend" / name).read_text(encoding="utf-8")
-        for name in lock_names
-    }
+    locks = {name: (ROOT / "backend" / name).read_text(encoding="utf-8") for name in lock_names}
 
     assert all("pip-compile with Python 3.11" in content for content in locks.values())
     if profile.has_feature("database"):
@@ -105,7 +102,9 @@ def test_general_doctor_treats_missing_compose_as_optional_warning(monkeypatch, 
 def test_container_build_dispatches_profile_components(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     monkeypatch.setattr(container, "ROOT", tmp_path)
-    monkeypatch.setattr(container.profile_runtime, "active_profile", lambda _root: _profile("frontend", "backend", "cloud"))
+    monkeypatch.setattr(
+        container.profile_runtime, "active_profile", lambda _root: _profile("frontend", "backend", "cloud")
+    )
     monkeypatch.setattr(container, "_build_component", lambda component, no_cache=False: calls.append(component) or 0)
 
     assert container.build(argparse.Namespace(component="all", no_cache=False)) == 0
@@ -193,15 +192,18 @@ def test_release_check_rejects_default_generated_identity(monkeypatch, tmp_path:
         pytest.skip("Canonical template identity is already customized in this derived project")
     profile = container.profile_runtime.active_profile(ROOT)
     target = tmp_path / "default-app"
-    assert control.main(
-        [
-            "init",
-            "--profile",
-            profile.profile_id,
-            "--target-dir",
-            str(target),
-        ]
-    ) == 0
+    assert (
+        control.main(
+            [
+                "init",
+                "--profile",
+                profile.profile_id,
+                "--target-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
     monkeypatch.setattr(release, "ROOT", target)
 
     checks = release._placeholder_checks()
@@ -213,19 +215,22 @@ def test_release_check_accepts_custom_generated_identity(monkeypatch, tmp_path: 
     if not (ROOT / "src-tauri" / "tauri.conf.json").exists() or not (ROOT / "deployment").exists():
         pytest.skip("Complete desktop-cloud sources are absent from this derived project")
     target = tmp_path / "customer-app"
-    assert control.main(
-        [
-            "init",
-            "--profile",
-            "desktop-cloud",
-            "--name",
-            "CustomerApp",
-            "--identifier",
-            "com.customer.app",
-            "--target-dir",
-            str(target),
-        ]
-    ) == 0
+    assert (
+        control.main(
+            [
+                "init",
+                "--profile",
+                "desktop-cloud",
+                "--name",
+                "CustomerApp",
+                "--identifier",
+                "com.customer.app",
+                "--target-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
     monkeypatch.setattr(release, "ROOT", target)
 
     checks = [

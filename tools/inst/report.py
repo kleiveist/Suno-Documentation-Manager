@@ -145,8 +145,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
 
 def _append_detail_section(lines: list[str], title: str, item: dict[str, Any]) -> None:
     has_details = item.get("exit_code") is not None or any(
-        item.get(key)
-        for key in ("command", "cwd", "detail", "stdout", "stderr", "stdout_tail", "stderr_tail")
+        item.get(key) for key in ("command", "cwd", "detail", "stdout", "stderr", "stdout_tail", "stderr_tail")
     )
     if not has_details:
         return

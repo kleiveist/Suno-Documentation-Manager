@@ -116,9 +116,7 @@ def _configuration_checks(*, connect: bool) -> list[DatabaseCheck]:
     except ConfigLoadError as exc:
         checks.append(DatabaseCheck("configuration", "FAIL", str(exc)))
         return checks
-    non_database_issues = [
-        issue for issue in validate_configuration(resolved) if issue.name != "DATABASE_URL"
-    ]
+    non_database_issues = [issue for issue in validate_configuration(resolved) if issue.name != "DATABASE_URL"]
     if non_database_issues:
         checks.append(
             DatabaseCheck(
@@ -154,9 +152,7 @@ def _configuration_checks(*, connect: bool) -> list[DatabaseCheck]:
         )
         return checks
     if profile.has_feature("postgres") and (not hostname or not parsed.path.strip("/")):
-        checks.append(
-            DatabaseCheck("DATABASE_URL", "FAIL", "PostgreSQL URL must include a host and database name")
-        )
+        checks.append(DatabaseCheck("DATABASE_URL", "FAIL", "PostgreSQL URL must include a host and database name"))
         return checks
     checks.append(DatabaseCheck("DATABASE_URL", "OK", f"driver scheme is {parsed.scheme}"))
 

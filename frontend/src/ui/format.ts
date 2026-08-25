@@ -31,5 +31,11 @@ export function formatBytes(bytes: number, language: AppLanguage = "de"): string
 }
 
 export function titleInitials(title: string): string {
-  return title.split(/\s+/).slice(0, 2).map((word) => word[0]?.toUpperCase()).join("") || "ST";
+  return (
+    title
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((word) => word[0]?.toUpperCase())
+      .join("") || "ST"
+  );
 }

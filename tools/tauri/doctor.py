@@ -6,7 +6,7 @@ import shutil
 import socket
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from tools import logger
@@ -72,7 +72,12 @@ def main(args: argparse.Namespace) -> int:
 
     if getattr(args, "json", False):
         checks, overall = collect_checks()
-        print(json.dumps({"overall": overall, "checks": [item.as_dict() for item in checks]}, indent=2))
+        print(
+            json.dumps(
+                {"overall": overall, "checks": [item.as_dict() for item in checks]},
+                indent=2,
+            )
+        )
         return 1 if overall == "FAIL" else 0
 
     if not getattr(args, "watch", False):
@@ -184,7 +189,11 @@ def _linux_checks() -> list[CheckResult]:
             required=True,
         ),
         _check_optional_binary("patchelf", "patchelf for AppImage builds", ["patchelf", "--version"]),
-        _check_optional_binary("mksquashfs", "squashfs-tools for AppImage builds", ["mksquashfs", "-version"]),
+        _check_optional_binary(
+            "mksquashfs",
+            "squashfs-tools for AppImage builds",
+            ["mksquashfs", "-version"],
+        ),
         _check_optional_binary(
             "desktop-file-validate",
             "desktop-file-utils for AppImage builds",
@@ -235,13 +244,17 @@ def _print_report(
     overall: str,
     previous: dict[str, str] | None = None,
 ) -> None:
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"Tauri doctor report at {timestamp}")
     for item in checks:
         logger.status(item.status, f"{item.name:<18} {item.message}")
 
     if previous is not None:
-        changed = [f"{item.name}: {previous[item.name]} -> {item.status}" for item in checks if previous.get(item.name) != item.status]
+        changed = [
+            f"{item.name}: {previous[item.name]} -> {item.status}"
+            for item in checks
+            if previous.get(item.name) != item.status
+        ]
         if changed:
             logger.info("Changes since previous run:")
             for line in changed:

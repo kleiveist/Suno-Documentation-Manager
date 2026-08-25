@@ -1,0 +1,21 @@
+# Keep the byte-verified Rust analyzer reproducible across checkout platforms.
+/tools/quality/rust_analyzer/*.py text eol=lf
+/tools/quality/rust_analyzer/*.toml text eol=lf
+/tools/quality/rust_analyzer/*.json text eol=lf
+/tools/quality/rust_analyzer/Cargo.lock text eol=lf
+/tools/quality/rust_analyzer/src/** text eol=lf
+/tools/quality/rust_analyzer/tests/** text eol=lf
+/tools/quality/rust_analyzer/dist/*.wasm binary
+
+# Keep tracked lifecycle provenance deterministic on every checkout platform.
+/.template/state.toml text eol=lf
+/.template/baseline.json text eol=lf
+
+# Keep product and third-party legal notices byte-stable.
+/LICENSE text eol=lf
+/NOTICE text eol=lf
+/THIRD_PARTY_NOTICES.md text eol=lf
+/src-tauri/binaries/*.md text eol=lf
+/src-tauri/binaries/*.txt text eol=lf
+/src-tauri/assets/fonts/LICENSE-* text eol=lf
+/src-tauri/vendor/**/LICENSE text eol=lf

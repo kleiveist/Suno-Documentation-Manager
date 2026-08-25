@@ -16,9 +16,9 @@ from tools.config import (
     resolve_configuration,
     validate_configuration,
 )
-from tools.profiles.model import ProjectProfile
-from tools.profiles.loader import load_active_profile, load_catalog
 from tools.inst import configuration, install
+from tools.profiles.loader import load_active_profile, load_catalog
+from tools.profiles.model import ProjectProfile
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = load_contract(ROOT / "config" / "environment.toml")
@@ -51,11 +51,7 @@ def test_runtime_config_uses_profile_aware_defaults(tmp_path: Path) -> None:
 
 def test_contract_feature_references_exist_in_profile_catalog() -> None:
     catalog = load_catalog(ROOT / "profiles", validate_paths=False)
-    referenced = {
-        feature
-        for variable in CONTRACT.variables
-        for feature in variable.required_features
-    }
+    referenced = {feature for variable in CONTRACT.variables for feature in variable.required_features}
 
     assert referenced <= set(catalog.features)
 
@@ -79,6 +75,53 @@ secret = true
     )
 
     with pytest.raises(ConfigLoadError, match="must not use the public VITE_ prefix"):
+        load_contract(contract_path)
+
+
+@pytest.mark.parametrize(
+    ("definition", "message"),
+    [
+        (
+            'name = "invalid_name"\nscope = "runtime"\nkind = "string"',
+            "must use UPPER_SNAKE_CASE",
+        ),
+        (
+            'name = "APP_NAME"\nscope = "runtime"\nkind = "unsupported"',
+            "unsupported kind",
+        ),
+        (
+            'name = "APP_NAME"\nscope = "runtime"\nkind = "string"\nderived = "unsupported"',
+            "unsupported derivation",
+        ),
+        (
+            'name = "AUTH_TOKEN"\nscope = "runtime"\nkind = "string"',
+            "must be marked secret",
+        ),
+        (
+            'name = "PUBLIC_URL"\nscope = "public-client"\nkind = "string"',
+            "must use the VITE_ prefix",
+        ),
+    ],
+)
+def test_contract_rejects_invalid_variable_constraints(
+    tmp_path: Path,
+    definition: str,
+    message: str,
+) -> None:
+    contract_path = tmp_path / "environment.toml"
+    contract_path.write_text(
+        f"""schema_version = 1
+
+[[variables]]
+{definition}
+section = "Test"
+description = "Invalid test definition"
+required_features = []
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigLoadError, match=message):
         load_contract(contract_path)
 
 
@@ -193,6 +236,34 @@ def test_invalid_configuration_is_rejected(
         )
 
 
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("BACKEND_HOST", "bad host", "valid IP address or host name"),
+        ("VITE_API_BASE_URL", "ftp://example.test", "HTTP(S) URL"),
+        ("BACKEND_CORS_ORIGINS", "*", "explicit HTTP(S) or Tauri origins"),
+        ("DATABASE_URL", "postgresql://localhost/app", "postgresql+psycopg"),
+    ],
+)
+def test_configuration_kind_validation_reports_the_variable(
+    tmp_path: Path,
+    name: str,
+    value: str,
+    message: str,
+) -> None:
+    environ = {"DATABASE_URL": "postgresql+psycopg://localhost/app", name: value}
+    resolved = resolve_configuration(
+        _profile("frontend", "backend", "postgres"),
+        project_root=tmp_path,
+        environ=environ,
+        contract=CONTRACT,
+    )
+
+    issues = validate_configuration(resolved)
+
+    assert any(issue.name == name and message in issue.message for issue in issues)
+
+
 def test_postgres_requires_database_url(tmp_path: Path) -> None:
     resolved = resolve_configuration(
         _profile("frontend", "backend", "database", "postgres"),
@@ -209,9 +280,7 @@ def test_postgres_requires_database_url(tmp_path: Path) -> None:
 def test_secret_masking_hides_urls_and_plain_secret_values() -> None:
     database_url = "postgresql+psycopg://app:p%40ss@localhost:5432/app"
 
-    assert mask_config_value("DATABASE_URL", database_url) == (
-        "postgresql+psycopg://app:***@localhost:5432/app"
-    )
+    assert mask_config_value("DATABASE_URL", database_url) == ("postgresql+psycopg://app:***@localhost:5432/app")
     assert mask_config_value("AUTH_TOKEN", "token-value") == "<redacted>"
     detail = redact_text(
         f"connection {database_url} failed with password p@ss",
@@ -236,7 +305,11 @@ def test_frontend_environment_never_contains_database_secret(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("features", "included", "excluded"),
     [
-        (("frontend",), {"APP_ENV", "FRONTEND_HOST", "FRONTEND_PORT"}, {"BACKEND_HOST", "DATABASE_URL"}),
+        (
+            ("frontend",),
+            {"APP_ENV", "FRONTEND_HOST", "FRONTEND_PORT"},
+            {"BACKEND_HOST", "DATABASE_URL"},
+        ),
         (
             ("frontend", "backend", "cloud"),
             {"BACKEND_HOST", "BACKEND_PORT", "VITE_API_BASE_URL"},
@@ -247,7 +320,11 @@ def test_frontend_environment_never_contains_database_secret(tmp_path: Path) -> 
             {"BACKEND_HOST", "VITE_API_BASE_URL", "DATABASE_URL"},
             set(),
         ),
-        (("frontend", "tauri"), {"FRONTEND_HOST"}, {"BACKEND_HOST", "VITE_API_BASE_URL", "DATABASE_URL"}),
+        (
+            ("frontend", "tauri"),
+            {"FRONTEND_HOST"},
+            {"BACKEND_HOST", "VITE_API_BASE_URL", "DATABASE_URL"},
+        ),
         (
             ("frontend", "backend", "tauri", "cloud"),
             {"BACKEND_HOST", "VITE_API_BASE_URL"},

@@ -5,10 +5,11 @@ import json
 import os
 import re
 import subprocess
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import tomllib
 
 from tools import logger
 from tools.profiles import runtime as profile_runtime
@@ -34,7 +35,7 @@ def source_version() -> str:
 def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError(f"{path} must contain a JSON object")
+        raise TypeError(f"{path} must contain a JSON object")
     return payload
 
 
@@ -60,7 +61,10 @@ def collect_version_checks() -> list[ReleaseCheck]:
             versions.extend(
                 [
                     ("frontend/package.json", str(package.get("version", ""))),
-                    ("frontend/package-lock.json", str(package_lock.get("version", ""))),
+                    (
+                        "frontend/package-lock.json",
+                        str(package_lock.get("version", "")),
+                    ),
                     (
                         "frontend/package-lock.json root package",
                         str(lock_root.get("version", "")) if isinstance(lock_root, dict) else "",
@@ -83,11 +87,23 @@ def collect_version_checks() -> list[ReleaseCheck]:
             versions.extend(
                 [
                     ("src-tauri/tauri.conf.json", str(tauri.get("version", ""))),
-                    ("src-tauri/Cargo.toml", str(cargo.get("package", {}).get("version", ""))),
-                    ("src-tauri/Cargo.lock root package", str(locked_root.get("version", ""))),
+                    (
+                        "src-tauri/Cargo.toml",
+                        str(cargo.get("package", {}).get("version", "")),
+                    ),
+                    (
+                        "src-tauri/Cargo.lock root package",
+                        str(locked_root.get("version", "")),
+                    ),
                 ]
             )
-    except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        tomllib.TOMLDecodeError,
+    ) as exc:
         checks.append(ReleaseCheck("version:metadata", "FAIL", f"Could not read version metadata: {exc}"))
         return checks
 
@@ -120,7 +136,10 @@ def _placeholder_checks() -> list[ReleaseCheck]:
     if profile.has_feature("frontend"):
         targets.extend(
             [
-                (ROOT / "frontend" / "package.json", ("template-project", "project-template")),
+                (
+                    ROOT / "frontend" / "package.json",
+                    ("template-project", "project-template"),
+                ),
                 (ROOT / "frontend" / "index.html", ("Template Project",)),
                 (ROOT / "frontend" / "src" / "main.ts", ("Template Project",)),
             ]
@@ -128,23 +147,37 @@ def _placeholder_checks() -> list[ReleaseCheck]:
     if profile.has_feature("backend"):
         targets.extend(
             [
-                (ROOT / "backend" / "app" / "config" / "settings.py", ("Template Project API",)),
+                (
+                    ROOT / "backend" / "app" / "config" / "settings.py",
+                    ("Template Project API",),
+                ),
                 (ROOT / "backend" / "app" / "api" / "health.py", ("template-backend",)),
             ]
         )
     targets.append((ROOT / "tools" / "inst" / "build.py", ("template-project-web.zip",)))
     if profile.has_feature("cloud"):
         targets.append(
-            (ROOT / "deployment" / "compose.yaml", ("Template Project", "template-project", "project-template"))
+            (
+                ROOT / "deployment" / "compose.yaml",
+                ("Template Project", "template-project", "project-template"),
+            )
         )
     if profile.has_feature("tauri"):
         targets.extend(
             [
                 (
                     ROOT / "src-tauri" / "tauri.conf.json",
-                    ("Template Project", "template-project", "project-template", "com.example.templateproject"),
+                    (
+                        "Template Project",
+                        "template-project",
+                        "project-template",
+                        "com.example.templateproject",
+                    ),
                 ),
-                (ROOT / "src-tauri" / "Cargo.toml", ("Template Project", "project-template")),
+                (
+                    ROOT / "src-tauri" / "Cargo.toml",
+                    ("Template Project", "project-template"),
+                ),
                 (ROOT / "src-tauri" / "app-icon.svg", ("Template Project",)),
             ]
         )
@@ -166,7 +199,13 @@ def _placeholder_checks() -> list[ReleaseCheck]:
                 )
             )
     if not checks:
-        checks.append(ReleaseCheck("template-identity", "OK", "release identity contains no known template placeholders"))
+        checks.append(
+            ReleaseCheck(
+                "template-identity",
+                "OK",
+                "release identity contains no known template placeholders",
+            )
+        )
     return checks
 
 
@@ -176,26 +215,29 @@ def _tauri_security_checks() -> list[ReleaseCheck]:
     try:
         config = _read_json(ROOT / "src-tauri" / "tauri.conf.json")
         capabilities = _read_json(ROOT / "src-tauri" / "capabilities" / "default.json")
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return [ReleaseCheck("tauri-security", "FAIL", f"Could not read Tauri security configuration: {exc}")]
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return [
+            ReleaseCheck(
+                "tauri-security",
+                "FAIL",
+                f"Could not read Tauri security configuration: {exc}",
+            )
+        ]
     csp = config.get("app", {}).get("security", {}).get("csp")
     hardened_csp = (
-        isinstance(csp, str)
-        and "default-src 'self'" in csp
-        and "'unsafe-eval'" not in csp
-        and "*" not in csp
+        isinstance(csp, str) and "default-src 'self'" in csp and "'unsafe-eval'" not in csp and "*" not in csp
     )
     checks = [
         ReleaseCheck(
             "tauri-csp",
             "OK" if hardened_csp else "WARN",
-            "Tauri CSP is explicitly restricted"
-            if hardened_csp
-            else "Tauri CSP is not production hardened.",
+            "Tauri CSP is explicitly restricted" if hardened_csp else "Tauri CSP is not production hardened.",
         )
     ]
     permissions = capabilities.get("permissions", [])
-    unexpected = [item for item in permissions if item != "core:default"] if isinstance(permissions, list) else ["invalid"]
+    unexpected = (
+        [item for item in permissions if item != "core:default"] if isinstance(permissions, list) else ["invalid"]
+    )
     checks.append(
         ReleaseCheck(
             "tauri-capabilities",
@@ -284,7 +326,11 @@ def sync_versions() -> int:
             packages = package_lock.get("packages")
             if isinstance(packages, dict) and isinstance(packages.get(""), dict):
                 packages[""]["version"] = expected
-            lock_path.write_text(json.dumps(package_lock, indent=2) + "\n", encoding="utf-8", newline="\n")
+            lock_path.write_text(
+                json.dumps(package_lock, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
 
         if profile.has_feature("tauri"):
             tauri_path = ROOT / "src-tauri" / "tauri.conf.json"
@@ -314,7 +360,13 @@ def sync_versions() -> int:
             if replacements != 1:
                 raise ValueError("Cargo.lock root package version could not be located")
             lock_path.write_text(lock_text, encoding="utf-8", newline="\n")
-    except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        tomllib.TOMLDecodeError,
+    ) as exc:
         logger.fail(f"Could not synchronize version metadata: {exc}")
         return 1
     logger.ok(f"Synchronized enabled component metadata to {expected}")

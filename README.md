@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-20 |
+| Last review | 2026-08-25 |
 | Audience | Users, contributors, and acceptance owners |
 | Related ATP | [Product acceptance plans](docs/atp/active/active.md) |
 
@@ -108,7 +108,7 @@ The browser-only Vite preview cannot perform the native workspace, evidence, art
 
 Start with [Getting started](docs/usr/getting-started.md). Before finalization, read [Finalizing a track](docs/usr/finalizing-a-track.md).
 
-Step 10 creates `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` (English) and `SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf` (German) directly in the track root. The local native renderer uses the same finalized structured snapshot as the Markdown certificate and evidence manifest; both PDFs occur in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`. New format-6.1 PDFs and external-timestamp PDF addenda use PDF/A-2b with the complete DejaVu 2.37 Sans/Mono regular and bold font programs embedded under the DejaVu Fonts License, plus a CMYK FOGRA39 output intent.
+Step 10 creates `SunoDM_DOCUMENTATION_CERTIFICATE.pdf` (English) and `SunoDM_DOCUMENTATION_CERTIFICATE_DE.pdf` (German) directly in the track root. The local native renderer uses the same finalized structured snapshot as the Markdown certificate and evidence manifest; both PDFs occur in `06_CERTIFICATE/CERTIFICATE_SHA256.txt`. New format-6.2 PDFs and external-timestamp PDF addenda use PDF/A-2b with the complete DejaVu 2.37 Sans/Mono regular and bold font programs embedded under the DejaVu Fonts License, plus a CMYK FOGRA39 output intent.
 
 Workflow 1.9 recognizes exactly delimited `made with suno studio` and `made with suno` metadata records in imported Suno WAV exports. A record becomes evidence-derived metadata only when it contains exactly one accepted marker, one valid RFC 3339 `created` timestamp, and one valid UUID `id`; this bounded structural check records file metadata and does not authenticate Suno or the provider. While a valid metadata date exists, it authoritatively fills and locks the final-generation date, production-end date, and optional download/export date. In Step 07, `No` to desktop-PC editing also derives and locks the last-editing date; `Yes` requires a freely selected date and the confirmed editing work. Manual fallbacks remain available when no valid metadata record exists. Section C of the certificate identifies the final generation date, Suno ID, project URL, model, plan at generation, metadata origin, and release/export hash comparison as separate facts.
 
@@ -126,7 +126,7 @@ The current UI separately derives an automatic-consistency presentation from tho
 
 Every sidecar format-v1 record is durably staged, verified, and parent-synchronized before SQLite registration, and only then published to its live certificate path; live-parent synchronization precedes any compensating database rollback. Startup publishes a valid registered pending stage, removes an unregistered abandoned stage, and rejects an unexpected unregistered live sidecar instead of adopting metadata. The immutable `TIMESTAMP_RECORD.json` records its certificate and finalization-snapshot binding, selected artifact, hashes, provider verification facts, publication-time integrity result, provenance, and pinned Markdown/PDF hashes; current `integrityVerified` and issues are computed presentation state. On load, SunoDM hashes the exact managed sidecar and referenced phase-one bytes without re-rendering them, verifies the exact registered JSON and file set, and reconstructs a positive RFC-3161 summary only when the complete current predicate still holds. Current and archived revision sidecars remain independently bound and reverified. Attachment does not alter the stamped anchor, create a cyclic self-hash, transfer to a later revision, or establish legal qualification.
 
-Generated documents use template `1.11`; new finalizations write manifest schema `8` and certificate/PDF format `6.1`. SQLite schema `7` stores non-secret external-service configuration separately from the immutable finalized snapshot. Existing finalized artifacts remain byte-identical; there is no format, screening, timestamp, or font backfill. `PASS` means only that the configured documentation requirements for a step were satisfied. `DOCUMENTATION COMPLETE` means only that the configured documentation requirements for the finalized snapshot were completed. Neither status certifies authorship, ownership, non-infringement, legality, license validity, judicial weight, AI-law compliance, or governmental approval.
+Generated documents use template `1.11`; new finalizations write manifest schema `9` and certificate/PDF format `6.2`. SQLite schema `7` stores non-secret external-service configuration separately from the immutable finalized snapshot. Existing finalized artifacts remain byte-identical; there is no format, screening, timestamp, or font backfill. `PASS` means only that the configured documentation requirements for a step were satisfied. `DOCUMENTATION COMPLETE` means only that the configured documentation requirements for the finalized snapshot were completed. Neither status certifies authorship, ownership, non-infringement, legality, license validity, judicial weight, AI-law compliance, or governmental approval.
 
 Archived Suno terms/rights files are selected once under `Einstellungen` together with their document title, provider/source, and retrieval date. Optional source URL, effective date, applicable production period, and a factual note add context without legal evaluation. SunoDM stores the local global record with its SHA-256 and metadata, then places a linked portable `global_copy` in every new or still editable project. Certificate summary and evidence-register detail refer to that same local Evidence ID, while `sourceGlobalEvidenceId` preserves the workspace-record link. Metadata edits propagate only to editable copies; finalized snapshots are never changed, so use a new revision before attaching newer or corrected terms.
 
@@ -206,10 +206,17 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 - [ATP workflow](docs/atp/README.md)
 - [Documentation standard](docs/README.md)
 
+## Source license
+
+SunoDM is source-available under the [PolyForm Shield License 1.0.0](LICENSE). Under that license, using the software to provide a competing product is not a permitted purpose. This summary is non-binding; `LICENSE` controls. The required licensor notices are in [`NOTICE`](NOTICE). Bundled components remain under their own terms and are inventoried in [Third-party notices](THIRD_PARTY_NOTICES.md); that inventory currently marks binary-distribution review as not ready.
+
 <!-- AUTO-GENERATED:docs-index START -->
 
 ## 📄 Files
+- 📝 [Coding Agent Governance](AGENTS.md)
 - 📝 [Changelog](CHANGELOG.md)
+- 📝 [Roadmap: V0.1(Verified Service Zertifizierungsreife)](Roadmap%3A%20V0.1%28Verified%20Service-Zertifizierungsreife%29.md)
+- 📝 [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 # DOCS
 - 📚 [Docs Home](docs/index.md)
@@ -222,14 +229,17 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 ## 📁 DEF
 - 🗂️ [Overview](docs/def/def.md)
 - 📝 [Application architecture](docs/def/architecture.md)
+- 📝 [Code quality and architecture governance](docs/def/code-quality.md)
 - 📝 [Runtime configuration — inherited template reference](docs/def/configuration.md)
 - 📝 [Database feature — unavailable inherited reference](docs/def/database-feature.md)
 - 📝 [Deployment architecture — unavailable inherited reference](docs/def/deployment-architecture.md)
+- 📝 [SunoDM observability decision](docs/def/observability.md)
 - 📝 [Provider-neutral persistence architecture — inherited template reference](docs/def/persistence-architecture.md)
 - 📝 [Local persistence and recovery](docs/def/persistence.md)
 - 📝 [Pre-release audio screening](docs/def/pre-release-audio-screening.md)
 - 📝 [Suno Documentation Manager product architecture](docs/def/product-architecture.md)
 - 📝 [Project profiles — inherited template reference](docs/def/project-profiles.md)
+- 📝 [Template lifecycle](docs/def/template-lifecycle.md)
 - 📝 [Track documentation model](docs/def/track-documentation-model.md)
 - 📝 [Track library organization model](docs/def/track-library-model.md)
 - 📝 [Suno track workflow model](docs/def/workflow-model.md)
@@ -241,12 +251,15 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 - 📝 [Codex CLI prompt for folder-import preparation](docs/dev/folder-import-preparation-prompt.md)
 - 📝 [Legacy track import and managed-document adoption](docs/dev/legacy-track-import.md)
 - 📝 [Upstream template final acceptance — historical reference](docs/dev/template-final-acceptance.md)
+- 📝 [Upstream template lifecycle acceptance — historical reference](docs/dev/template-lifecycle-acceptance.md)
 
 ## 📁 Tools
 - 🗂️ [Overview](docs/tools/tools.md)
-- 📝 [Continuous integration — unavailable inherited reference](docs/tools/ci.md)
+- 📝 [Continuous integration](docs/tools/ci.md)
 - 📝 [Container builds and local production simulation — unavailable inherited reference](docs/tools/container-builds.md)
 - 📝 [Release and desktop packaging model](docs/tools/release-model.md)
+- 📝 [Template-Projekte v1.0.0 release notes — historical reference](docs/tools/release-notes-v1.0.0.md)
+- 📝 [Template migrations](docs/tools/template-migrations.md)
 - 📝 [Tooling guide](docs/tools/tooling.md)
 
 ## 📁 USR
@@ -266,6 +279,8 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-25 | Added the product-shaped Template-Projekte v1.0.3 migration foundation, lifecycle and quality governance, documentation checks, and validation-only CI definitions; lifecycle adoption and every remote workflow result remain separately gated. | Project team |
+| 2026-08-22 | Advanced new finalizations to manifest schema 9 and certificate/PDF format 6.2 with single-render automatic timestamp capture and separately evidenced provider qualification; historical artifacts remain unchanged. | Project team |
 | 2026-08-20 | Added configurable deterministic ACRCloud multi-sample intensity with a 25-request / 300-second hard cap, response hashes, and certificate reporting; advanced templates to 1.11, manifest schema to 8, and certificate/PDF format to 6.1. | Project team |
 | 2026-08-20 | Raised workflow to 1.9, templates to 1.10, manifest schema to 7, and certificate/PDF format to 6.0; added automatic cryptographically verified RFC-3161 manifest timestamps, PDF/A-2b with fully embedded DejaVu 2.37 fonts, canonical Content Classification and Vocal Intent values, explicit Artwork Disclosure decisions, artwork hash-identity/chronology reporting, and safe title-based artwork filenames. | Project team |
 | 2026-08-18 | Added pre-release local Chromaprint screening and explicit optional ACRCloud screening documentation; advanced template to 1.9, manifest to 6, certificate/PDF to 5.1, and SQLite schema to 7. | Project team |

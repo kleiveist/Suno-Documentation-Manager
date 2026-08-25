@@ -62,7 +62,9 @@ def _install_frontend_dependencies(*, dry_run: bool) -> int:
 
     command = common.package_manager_install_command()
     result = common.run_command(command, cwd=paths.FRONTEND_DIR, dry_run=dry_run)
-    code = common.print_result(result, "Frontend dependency install command completed", "Frontend dependency install failed")
+    code = common.print_result(
+        result, "Frontend dependency install command completed", "Frontend dependency install failed"
+    )
     if code != 0 or dry_run:
         return code
 

@@ -30,16 +30,19 @@ describe("error presentation", () => {
     expect(toUserMessage("No workspace is open.", "de")).toBe("Kein Workspace ist geöffnet.");
     expect(toUserMessage("No workspace is open.", "en")).toBe("No workspace is open.");
     expect(toUserMessage("Kein Workspace ist geöffnet.", "de")).toBe("Kein Workspace ist geöffnet.");
-    expect(toUserMessage("The operation is blocked: Track title is missing.", "de"))
-      .toBe("Der Vorgang ist blockiert: Tracktitel fehlt.");
-    expect(toUserMessage("The operation is blocked: Internal driver fault 42", "de"))
-      .toBe("Der Vorgang ist blockiert: Technisches Detail ist nicht verfügbar.");
-    expect(toUserMessage("File operation failed for releases/My Track.wav: Permission denied", "de"))
-      .toBe("Dateioperation für releases/My Track.wav fehlgeschlagen: Technisches Detail ist nicht verfügbar.");
-    expect(toUserMessage("Internal driver fault 42", "de"))
-      .toBe("Die lokale Aktion konnte nicht abgeschlossen werden.");
-    expect(toUserMessage("Interner Treiberfehler 42", "en"))
-      .toBe("The local action could not be completed.");
+    expect(toUserMessage("The operation is blocked: Track title is missing.", "de")).toBe(
+      "Der Vorgang ist blockiert: Tracktitel fehlt."
+    );
+    expect(toUserMessage("The operation is blocked: Internal driver fault 42", "de")).toBe(
+      "Der Vorgang ist blockiert: Technisches Detail ist nicht verfügbar."
+    );
+    expect(toUserMessage("File operation failed for releases/My Track.wav: Permission denied", "de")).toBe(
+      "Dateioperation für releases/My Track.wav fehlgeschlagen: Technisches Detail ist nicht verfügbar."
+    );
+    expect(toUserMessage("Internal driver fault 42", "de")).toBe(
+      "Die lokale Aktion konnte nicht abgeschlossen werden."
+    );
+    expect(toUserMessage("Interner Treiberfehler 42", "en")).toBe("The local action could not be completed.");
   });
 });
 
@@ -85,20 +88,26 @@ describe("runtime selection", () => {
     expect(invokeMock.mock.calls).toEqual([
       ["open_workspace", { language: "de" }],
       ["create_workspace", { language: "en" }],
-      ["import_global_evidence", {
-        role: "subscription_payment",
-        coverageStart: "2026-08-01",
-        billingCycle: "annual",
-        language: "de"
-      }],
+      [
+        "import_global_evidence",
+        {
+          role: "subscription_payment",
+          coverageStart: "2026-08-01",
+          billingCycle: "annual",
+          language: "de"
+        }
+      ],
       ["import_global_terms_evidence", { metadata: {}, language: "en" }],
       ["scan_import_folder", { language: "de" }],
-      ["import_evidence", {
-        trackId: "track-1",
-        role: "suno_final_export",
-        replaceEvidenceId: undefined,
-        language: "en"
-      }]
+      [
+        "import_evidence",
+        {
+          trackId: "track-1",
+          role: "suno_final_export",
+          replaceEvidenceId: undefined,
+          language: "en"
+        }
+      ]
     ]);
   });
 
@@ -127,7 +136,9 @@ describe("runtime selection", () => {
       metadata
     });
   });
+});
 
+describe("native provider commands", () => {
   it("uses the configured provider to attach an external timestamp to a finalized track", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
@@ -202,8 +213,14 @@ describe("runtime selection", () => {
       input: { accessKey: "write-only-key", accessSecret: "write-only-secret" }
     });
     expect(invokeMock).toHaveBeenNthCalledWith(4, "test_audio_screening_provider", undefined);
-    expect(invokeMock.mock.calls[4]).toEqual(["run_local_audio_screening", expect.objectContaining({ trackId: "track-1", onProgress: expect.anything() })]);
-    expect(invokeMock.mock.calls[5]).toEqual(["run_external_audio_screening", expect.objectContaining({ trackId: "track-1", onProgress: expect.anything() })]);
+    expect(invokeMock.mock.calls[4]).toEqual([
+      "run_local_audio_screening",
+      expect.objectContaining({ trackId: "track-1", onProgress: expect.anything() })
+    ]);
+    expect(invokeMock.mock.calls[5]).toEqual([
+      "run_external_audio_screening",
+      expect.objectContaining({ trackId: "track-1", onProgress: expect.anything() })
+    ]);
   });
 
   it("preserves an explicit null in a track patch sent to the native command", async () => {
@@ -225,7 +242,9 @@ describe("runtime selection", () => {
       }
     });
   });
+});
 
+describe("native library and import commands", () => {
   it("passes a library assignment when creating a track", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
@@ -318,7 +337,9 @@ describe("runtime selection", () => {
       evidenceId: "evidence-1"
     });
   });
+});
 
+describe("native evidence and progress commands", () => {
   it("lets the native Suno importer derive technical metadata without user-supplied fields", async () => {
     invokeMock.mockResolvedValue({ id: "track-1" });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
@@ -346,7 +367,13 @@ describe("runtime selection", () => {
   it("streams native integrity progress through a scoped IPC channel", async () => {
     const progress = vi.fn();
     invokeMock.mockImplementationOnce(async (_command, args) => {
-      args.onProgress.onmessage({ stage: "hashing", processedBytes: 50, totalBytes: 100, processedFiles: 1, totalFiles: 2 });
+      args.onProgress.onmessage({
+        stage: "hashing",
+        processedBytes: 50,
+        totalBytes: 100,
+        processedFiles: 1,
+        totalFiles: 2
+      });
       return { message: "done" };
     });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
@@ -363,7 +390,13 @@ describe("runtime selection", () => {
   it("streams finalization progress through the certificate command", async () => {
     const progress = vi.fn();
     invokeMock.mockImplementationOnce(async (_command, args) => {
-      args.onProgress.onmessage({ stage: "generating_certificate", processedBytes: 0, totalBytes: 0, processedFiles: 4, totalFiles: 4 });
+      args.onProgress.onmessage({
+        stage: "generating_certificate",
+        processedBytes: 0,
+        totalBytes: 0,
+        processedFiles: 4,
+        totalFiles: 4
+      });
       return { message: "finalized" };
     });
     const api = createDesktopApi({ __TAURI_INTERNALS__: {} } as unknown as Window);
