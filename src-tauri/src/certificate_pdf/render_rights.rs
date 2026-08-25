@@ -447,7 +447,11 @@ fn append_technical_provider_rows(
             ),
             (
                 "Manifest hash binding",
-                yes_no(metadata.provider_digest_match),
+                match metadata.provider_digest_match {
+                    Some(true) => "VERIFIED",
+                    Some(false) => "NOT VERIFIED",
+                    None => "NOT CHECKED",
+                },
             ),
             (
                 "Timestamp signature applicable",

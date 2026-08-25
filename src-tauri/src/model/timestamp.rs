@@ -194,7 +194,7 @@ pub struct TimestampQualificationRecord {
 /// creation of the manifest anchor and the single rendering of the final
 /// certificate. Provider response bytes are deliberately not part of this
 /// presentation snapshot; successful responses are archived separately.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FinalizationTimestampSnapshot {
     pub provider: String,
@@ -208,6 +208,24 @@ pub struct FinalizationTimestampSnapshot {
     pub provider_verification_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_metadata: Option<TimestampProviderMetadata>,
+}
+
+impl Default for FinalizationTimestampSnapshot {
+    fn default() -> Self {
+        Self {
+            provider: "Disabled".into(),
+            provider_configuration_status: TimestampProviderConfigurationStatus::Disabled,
+            provider_configuration_message: "External timestamp service is disabled.".into(),
+            automatic_request_enabled: false,
+            technical_status: ExternalTimestampStatus::NotRecorded,
+            technical_message:
+                "No automatic external timestamp was requested for this finalization.".into(),
+            timestamp_value: String::new(),
+            external_reference_id: String::new(),
+            provider_verification_url: String::new(),
+            provider_metadata: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

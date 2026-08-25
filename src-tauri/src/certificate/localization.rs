@@ -376,7 +376,7 @@ pub(super) fn german_certificate_label(english: &str) -> String {
     // Translate the most specific phrase first. This prevents a short summary
     // label such as "Final generation" or "DOCUMENTED" from consuming the
     // prefix of a longer technical label/status before it can be localized.
-    replacements.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+    replacements.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
     for (source, target) in replacements {
         translated = translated.replace(source, target);
     }

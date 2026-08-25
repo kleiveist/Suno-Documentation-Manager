@@ -216,7 +216,13 @@ fn verify_sidecar_hash_list(
     let hash_list_path = directory.join(HASH_LIST_FILE);
     let hash_list =
         fs::read(&hash_list_path).map_err(|error| AppError::io(&hash_list_path, error))?;
-    if hash_list != expected_hash_list.as_bytes() {
+    let previous_v2_hash_list = (sidecar_format_version == SIDECAR_FORMAT_VERSION)
+        .then(|| render_hash_list_with_header(HASH_LIST_V2_HEADER, hashes));
+    if hash_list != expected_hash_list.as_bytes()
+        && !previous_v2_hash_list
+            .as_ref()
+            .is_some_and(|legacy| hash_list == legacy.as_bytes())
+    {
         return Err(AppError::Validation(
             "Timestamp sidecar SHA-256 list is incomplete or no longer matches.".into(),
         ));
@@ -657,20 +663,31 @@ pub(super) fn artifact_hashes_with_provider_response(
 }
 
 pub(super) fn render_hash_list(version: u32, hashes: &BTreeMap<String, String>) -> Result<String> {
-    let mut output = match version {
-        0 => String::new(),
-        LEGACY_SIDECAR_FORMAT_VERSION => HASH_LIST_V1_HEADER.to_owned(),
-        SIDECAR_FORMAT_VERSION => HASH_LIST_V2_HEADER.to_owned(),
+    let header = match version {
+        0 => "",
+        // The hash-list byte contract has remained v1 even though the
+        // immutable JSON sidecar gained qualification-audit fields in v2.
+        // Keep accepting the briefly emitted v2-labelled header above so
+        // already published local records remain verifiable.
+        LEGACY_SIDECAR_FORMAT_VERSION | SIDECAR_FORMAT_VERSION => HASH_LIST_V1_HEADER,
         other => {
             return Err(AppError::Validation(format!(
                 "Unsupported external timestamp sidecar format version: {other}."
             )));
         }
     };
+    Ok(render_hash_list_with_header(header, hashes))
+}
+
+pub(super) fn render_hash_list_with_header(
+    header: &str,
+    hashes: &BTreeMap<String, String>,
+) -> String {
+    let mut output = header.to_owned();
     for (name, digest) in hashes {
         output.push_str(&format!("{digest}  {name}\n"));
     }
-    Ok(output)
+    output
 }
 
 pub(super) fn verify_referenced_artifact(

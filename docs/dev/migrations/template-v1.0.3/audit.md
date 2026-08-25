@@ -5,15 +5,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | IN PROGRESS — Gate A approved; technical migration underway |
+| Status | Active |
+| Execution / decision status | Regenerated audit and technical matrix passed; Gate C technical commit decision and adoption still open |
 | Owner | SunoDM maintainers |
 | Last review | 2026-08-25 |
 
 ## Scope
 
-This audit records the read-only preflight for the ownership-based Variant C migration of Suno Documentation Manager to the reconstructed `desktop-local` scaffold from Template-Projekte `v1.0.3`. The preflight did not alter either repository, a product workspace, a database, user data, a remote, a release, or a tag. The authorized migration branch was created at the unchanged product starting commit.
+This audit records the initial read-only preflight and the regenerated pre-Gate-C comparison for the ownership-based Variant C migration of Suno Documentation Manager to the reconstructed `desktop-local` scaffold from Template-Projekte `v1.0.3`. Neither audit altered either repository, a product workspace, a database, user data, a remote, a release, or a tag. The authorized migration branch was created at the unchanged product starting commit.
 
-Gate A was subsequently approved with the product license decision recorded below. This repository copy is the reviewed, path-neutral version of the external preflight evidence. Raw lifecycle output remains outside both repositories.
+Gate A was subsequently approved with the product license decision recorded below. This repository copy is the reviewed, path-neutral version of the external evidence. The external evidence root is `VTFV/.migration-reports/SunoDM/template-v1.0.3/`, expressed relative to the shared `Projects/` directory, and remains outside both repositories. Following the workstation transfer, the raw lifecycle evidence was regenerated on this workstation and its five artifact hashes were reverified before the Gate C review.
 
 ## Fixed identity and provenance
 
@@ -47,17 +48,17 @@ Gate A was subsequently approved with the product license decision recorded belo
 
 Ignored dependency, build, report, generated-schema, cache, and virtual-environment directories were present locally before migration. They are `GENERATED_UNTRACKED`, were not used as source, and must not be staged.
 
-## Local toolchain observed during preflight
+## Current host toolchain revalidated before Gate C
 
 | Component | Observed value | Notes |
 | --- | --- | --- |
-| Python | `3.13.9` | No product root pin |
-| Node.js | `26.2.0` | No product `engines` field at preflight |
-| npm | `11.13.0` | Existing package manager; lockfile v3 |
-| cargo / rustc | `1.92.0` | Product MSRV remains `1.88`; edition remains 2021 |
-| Tauri | 2 (`tauri 2.11.5`, CLI `2.11.4`) | Existing product lock state |
-| SQLite | `rusqlite 0.32.1`, bundled | Product-owned Rust persistence |
-| PyGitIndex | Available | Required for documentation navigation |
+| Python | `3.14.7` | Doctor PASS; no product root pin |
+| Node.js | `26.7.0` | Doctor PASS; no product `engines` field |
+| npm | `12.0.2` | Doctor PASS; existing package manager |
+| cargo / rustc | `1.97.1` | Doctor PASS; product MSRV remains `1.88` and edition remains 2021 |
+| Tauri CLI | `2.11.4` | Doctor PASS; product remains on Tauri 2 |
+| SQLite dependency | `rusqlite 0.32.1`, bundled | Product-owned locked Rust persistence, not a host database service |
+| PyGitIndex | Available | Documentation navigation check passed |
 
 No secret value, private key, original workspace, or signing material was opened.
 
@@ -84,19 +85,29 @@ PYTHONDONTWRITEBYTECODE=1 python tools/control.py template audit \
 | Exit code | `0` |
 | Outcome | `AUDIT` |
 | Repository kind | `legacy` |
-| Lifecycle run ID | `20260825T100419930362Z` |
+| Lifecycle run ID | `20260825T180624842030Z` |
+| External report root | `VTFV/.migration-reports/SunoDM/template-v1.0.3/`, relative to `Projects/` |
+| Transferred raw-report state | Regenerated and SHA-256 reverified on this workstation |
 | Baseline operations | 302 |
-| `ADD` | 118 |
-| `CONFLICT` | 84 |
-| `PRESERVE` | 100 |
-| Product-owned paths reported | 117 |
-| Audit verification | `NOT RUN`, as expected before adoption |
+| `ADD` | 3 |
+| `CONFLICT` | 94 |
+| `PRESERVE` | 205 |
+| Product-owned paths reported | 333 |
+| Audit verification | `NOT RUN`, as expected before lifecycle adoption |
 
-The raw evidence contains `plan.json`, `conflicts.json`, `changes.patch`, `summary.md`, and `verification.json`. Its SHA-256 values are retained in the external preflight report; raw machine output is intentionally not copied into this repository.
+The raw evidence set consists of `plan.json`, `conflicts.json`, `changes.patch`, `summary.md`, and `verification.json`. Raw machine output is intentionally not copied into this repository. The regenerated evidence used for the Gate C review has these verified digests:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `changes.patch` | `5703707464bcb9a351a63c9826939cd9dc444d74b66a6210447a3cce38f73916` |
+| `conflicts.json` | `ada8d52d06a199bb4c8115fb2827e6f0ac9f9dc30de5f49de14c086874d81525` |
+| `plan.json` | `49043cd17cfcfe5ca6329e92445a0dd569dfd4e6d75dc28304d6f2cc8d874417` |
+| `summary.md` | `7d3a117ef7707288e52839bbe012fa899e5498b7a5c0e90f0bcfd40a5c21ffc2` |
+| `verification.json` | `87c0718076ef109306f61c5eac7e1f15ce89fe0eb855a1b335837f523bc05455` |
 
 ## Matching scaffold areas
 
-Important preflight matches included:
+The regenerated audit reports 205 `PRESERVE` operations. Important matches include:
 
 - `VERSION`, `project-profile.toml`, and `frontend/src/project-profile.ts`;
 - `.env.example` and the profile-filtered environment catalog;
@@ -106,19 +117,19 @@ Important preflight matches included:
 
 Backend and database vocabulary in universal catalogs remains inactive. It does not authorize a FastAPI, PostgreSQL, server migration, backend health endpoint, or `DATABASE_URL` runtime requirement in `desktop-local`.
 
-## Missing scaffold areas
+## Remaining scaffold additions
 
-The 118 additions were concentrated in:
+The workstation-transfer review found five released managed paths missing from the WIP checkpoint. They are now adapted and integrated:
 
-- `AGENTS.md`, `.gitattributes`, and the scaffold-owned license path;
-- the code-quality policy and documentation;
-- lifecycle implementation and tests;
-- quality implementation, analyzer source, and provenance;
-- frontend lint, formatting, coverage, performance, Vitest, and Playwright configuration;
-- shared tooling modules and tests; and
-- lifecycle, quality, and release documentation.
+1. `tools/inst/release_publish.py`;
+2. `tools/inst/release_publish_bundle.py`;
+3. `tools/inst/release_publish_cli.py`;
+4. `tools/tests/test_community_ownership.py`; and
+5. `tools/tests/test_release_publish.py`.
 
-Three reconstructed managed paths are deliberately not migrated:
+These paths retain `TEMPLATE_MANAGED` lifecycle ownership while being shaped to SunoDM identity and governance. Their integration does not add a publishing workflow and does not authorize or perform publishing.
+
+The regenerated audit therefore reports exactly three `ADD` operations, all deliberately omitted from the product tree:
 
 1. `frontend/src/api/backend.ts`;
 2. `frontend/src/api/backend.test.ts`;
@@ -128,7 +139,7 @@ The first two implement a forbidden FastAPI health adapter. The third collides w
 
 ## Conflict groups
 
-The 84 conflicts cover:
+The 94 conflicts cover:
 
 - `.gitignore` and `README.md`;
 - documentation navigation, architecture/configuration references, ATP navigation, tooling, release, and Tauri documentation;
@@ -137,6 +148,15 @@ The 84 conflicts cover:
 - common configuration, tooling, build, and test modules.
 
 Each conflict is an integration decision. Product identity, product UI, all native commands, SQLite dependencies, bundle resources, sidecars, and profile exclusions must remain intact.
+
+## Deviation and ambiguity findings
+
+| Finding | Result | Detail |
+| --- | --- | --- |
+| `UNCLEAR` ownership cases | None | Every audited path or area has an allowed migration class and lifecycle owner. |
+| Profile deviations | None | The active profile is `desktop-local` with exactly `frontend` and `tauri`; no backend, database, PostgreSQL, or cloud feature is active. |
+| Deviations from the approved target architecture | None | The TypeScript-to-Tauri-to-Rust-to-SQLite product path and all 54 native contracts remain authoritative. |
+| Deliberate differences from the universal scaffold | Concrete and approved | The FastAPI adapter and its test remain absent, SunoDM retains product-owned Rust/SQLite behavior, the colliding template ATP remains absent, and no publishing workflow is adopted. |
 
 ## Product-owned architecture
 
@@ -157,9 +177,9 @@ Static preflight extraction found 54 frontend invoke names and the same 54 regis
 
 Product-owned areas include the TypeScript application, invoke and demo adapters, domain/UI modules, Rust application/commands/model/persistence/evidence/integrity/certificate/document/timestamp/audio/artwork/import/security/workflow modules, product fixtures, fonts, sidecars, vendor code and notices, and `workflows/suno-track.toml`.
 
-## Immutable data and format boundary
+## Data and format boundary
 
-The migration must not change:
+The migration must not change, outside the exact Gate B correction set below:
 
 - SQLite path `.suno-doc/workspace.sqlite`, schema 7, or migrations v1–v7;
 - persisted Serde names, evidence roles/provenance, workspace or track layout;
@@ -169,7 +189,21 @@ The migration must not change:
 - certificate format 6.2, manifest schema 9, timestamp compatibility, PDF/A behavior, or fixed asset hashes; or
 - the 54-command TypeScript/Tauri/Rust contract.
 
-Opening a workspace can write and migrate state. Compatibility testing therefore uses only synthetic or temporary fixtures. Gate B is required before any data or format change.
+Opening a workspace can write and migrate state. Compatibility testing therefore uses only synthetic or temporary fixtures.
+
+On 2026-08-25 the product owner explicitly supplied `FREIGABE DATEN- ODER FORMATÄNDERUNG`. Gate B authorizes exactly these five corrections and nothing broader:
+
+1. preserve the disabled external-timestamp service wording in the default finalization snapshot instead of rendering `NOT DOCUMENTED`;
+2. state in the external-timestamp addendum that the application does not determine any legal qualification;
+3. state in the automatic timestamp-addendum PDF that the record does not establish a qualified timestamp, legal effect, or rights determination;
+4. render the successful final-certificate manifest binding as `Manifest hash binding VERIFIED`; and
+5. emit the stable `HASH_LIST_V1_HEADER` contract for sidecar format v2 while continuing to verify already published v2-labelled hash lists.
+
+The approved work changes no SQLite schema or migration, no workspace schema or path layout, no persisted product DTO, and no native command contract.
+
+## History review after workstation transfer
+
+The suspected rollback was checked against the retained product history. No rollback or revert explains the five failures. They are product regressions present since `0e940be`, before the template-migration checkpoint, and are therefore corrected under the explicit Gate B decision rather than attributed to the template integration.
 
 ## License and governance decision
 
@@ -187,6 +221,12 @@ The unmodified official PolyForm text is stored in `LICENSE`; the approved copyr
 
 No maintainer handle, security mailbox, support address, contributor enforcement contact, signing identity, or release secret was approved. Product-owned community governance files therefore remain absent instead of receiving invented values.
 
+## Release and distribution boundary
+
+Legal distribution files are fail-closed across the integrated tooling. The `core` path set in `profiles/features.toml` requires `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md` for every generated scaffold profile, and scaffold verification requires their exact product bytes. A source package is created from the exact authorized commit SHA and must contain all three files. A web package must contain the same three files byte-for-byte and is checked against that exact-SHA source package. These controls validate packaging inputs; they do not create a publication path.
+
+The product intentionally has no publish workflow. `.github/release-notes/` is therefore absent and inactive, and that absence is not a technical migration gap. The directory may be created only after separate release authorization, with a specifically reviewed `.github/release-notes/<tag>.md` for the authorized tag.
+
 ## Risks and controls
 
 | Risk | Severity | Control |
@@ -194,12 +234,14 @@ No maintainer handle, security mailbox, support address, contributor enforcement
 | FastAPI files appear in reconstructed frontend baseline | High | Exact two-file omission and absence scan |
 | Template ATP identifier collides with product history | High | Preserve product history; exact one-file omission |
 | Product modules exceed new quality thresholds | High | Record inherited findings; do not refactor product formats opportunistically |
-| No persisted end-to-end workspace fixture | High | Use isolated synthetic tests; mark manual GUI/restart scope honestly |
+| Installed native-GUI restart is not automated | Medium | Use the passing persisted 16-step application-service fixture and retain the installed interactive GUI check as manual |
 | Rust analyzer WASM is ignored by lifecycle manifests | Medium | Verify exact released bytes/provenance and document product-owned artifact status |
 | Product CI did not exist at start | Medium | Add narrowly scoped product-owned validation; remote runs remain `NOT RUN` |
+| Legal files drift between scaffold, source, and web packages | High | Require exact `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`; bind source and web packages to the exact release SHA |
+| Inactive release notes are mistaken for a migration omission | Medium | Keep `.github/release-notes/` absent until separate release authorization and reviewed tag notes exist |
 | Cross-platform/signing evidence unavailable locally | Medium | Do not claim it; no publishing or signing |
 | Documentation contains historical version drift | Medium | Correct only current-state docs; preserve historical acceptance evidence |
 
 ## Preflight result
 
-All repository, identity, profile, audit, ownership, and planning prerequisites passed. The former license blocker was resolved by the explicit owner decision. Gate A is complete; later test results belong in `compatibility-report.md` and no final migration result is claimed here.
+All repository, identity, profile, audit, ownership, and planning prerequisites passed. The former license blocker was resolved by the explicit owner decision. Gate A is complete and Gate B is approved for only the five named corrections. The current Rust run reports 391 passed, 0 failed, and 1 environment-bound ignored test out of 392. The full technical matrix passes, including 16 of 16 Phase 24 compatibility checks with schema 7 remaining schema 7 and an empty unexpected-change set `{}`. Gate C approval, the technical commit, and lifecycle adoption remain open, so no final migration result is claimed here.

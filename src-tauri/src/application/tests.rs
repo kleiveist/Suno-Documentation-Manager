@@ -578,6 +578,7 @@ fn p0_raw_finalized_rows(
 }
 
 mod certificate_cross_checks;
+mod compatibility;
 mod disclosure_and_workflow;
 mod end_to_end_certificate;
 mod finalization_recovery;

@@ -78,7 +78,7 @@ pub fn generate_external_timestamp_addendum_pdf(
     );
     layout.write_wrapped(
         if snapshot.provider_metadata.is_some() {
-            "Technical timestamp verification and provider qualification answer different questions. A higher qualification is shown only when the archived independent trust record verifies it for the relevant timestamp time; no legal-effect or rights determination is made."
+            "Provider-derived metadata and the displayed technical verification checks are factual record data only. They do not establish a qualified timestamp, legal effect, or a rights determination."
         } else {
             "Legacy manually recorded timestamp evidence: provider and timestamp values were supplied by the user and were not promoted to provider verification. No qualified timestamp, legal effect, or rights determination is asserted."
         },

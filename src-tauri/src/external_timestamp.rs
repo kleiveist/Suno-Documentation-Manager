@@ -42,7 +42,7 @@ const SIDECAR_FORMAT_VERSION: u32 = 2;
 const HASH_LIST_V1_HEADER: &str = "# SunoDM external timestamp sidecar SHA-256 v1\n";
 const HASH_LIST_V2_HEADER: &str =
     "# SunoDM external timestamp sidecar SHA-256 v2 (provider qualification audit)\n";
-const DISCLAIMER: &str = "The application records technical timestamp evidence separately from provider qualification. It does not infer legal effect; a regulatory qualification is reported only when independently verified.";
+const DISCLAIMER: &str = "The application records technical timestamp evidence separately from provider qualification. It does not determine any legal qualification of the timestamp or infer legal effect; a regulatory qualification is reported only when independently verified.";
 
 /// Centrally defined public presets. They intentionally live only here, so
 /// UI components and archive records cannot drift into provider-specific

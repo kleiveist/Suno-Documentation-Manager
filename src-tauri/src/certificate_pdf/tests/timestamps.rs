@@ -222,6 +222,28 @@ fn final_pdf_separates_concrete_timestamp_from_provider_qualification() {
     assert_german_timestamp_qualification(&mut fixture);
 }
 
+#[test]
+fn final_pdf_renders_all_manifest_hash_binding_states() {
+    let mut fixture = timestamp_qualification_fixture();
+    for (value, expected) in [
+        (Some(true), "VERIFIED"),
+        (Some(false), "NOT VERIFIED"),
+        (None, "NOT CHECKED"),
+    ] {
+        fixture
+            .finalization_timestamp
+            .provider_metadata
+            .as_mut()
+            .expect("timestamp provider metadata")
+            .provider_digest_match = value;
+        let (_, text) = parse_text(&fixture.generate());
+        assert!(
+            normalized_text(&text).contains(&format!("Manifest hash binding {expected}")),
+            "final PDF omitted manifest hash binding state {expected}"
+        );
+    }
+}
+
 fn timestamp_qualification_fixture() -> Fixture {
     let mut fixture = Fixture::new(1);
     fixture.finalization_timestamp = FinalizationTimestampSnapshot {
@@ -546,7 +568,9 @@ fn automatic_timestamp_addendum_renders_provider_metadata_without_user_or_legal_
     assert!(!text.contains("[User-confirmed fact]"));
     assert!(!text.contains("Legacy manually recorded timestamp evidence"));
     assert!(!text.contains("Qualified electronic timestamp"));
-    assert!(normalized.contains("do not establish a qualified timestamp, legal effect"));
+    assert!(normalized.contains(
+        "do not establish a qualified timestamp, legal effect, or a rights determination"
+    ));
 }
 
 #[test]

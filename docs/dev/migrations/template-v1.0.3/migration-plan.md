@@ -5,7 +5,8 @@
 
 | Field | Value |
 | --- | --- |
-| Status | IN PROGRESS — technical integration complete; Gate B approval required |
+| Status | Active |
+| Execution status | Blocks, regenerated audit, and technical matrix passed; Gate C technical commit decision and adoption still open |
 | Owner | SunoDM maintainers |
 | Last review | 2026-08-25 |
 
@@ -27,9 +28,9 @@ The active profile remains `desktop-local` with exactly `frontend` and `tauri`. 
 
 The repository stores the unmodified PolyForm Shield License 1.0.0 body in `LICENSE`. `NOTICE` contains `Required Notice: Copyright (c) 2026 Blobbite.com` and `Required Notice: Licensor: Blobbite.com`. Competing products and services are prohibited. Existing third-party terms and notices remain independently applicable.
 
-## Immutable contracts
+## Controlled contracts and Gate B decision
 
-Gate B is required before changing any of the following:
+The following contracts remain immutable outside an explicitly approved correction:
 
 - `.suno-doc/workspace.sqlite`, schema 7, migrations v1–v7, table/Serde semantics;
 - workspace, track, evidence, archive, document, certificate, timestamp, or secret paths;
@@ -37,7 +38,15 @@ Gate B is required before changing any of the following:
 - workflow, document, manifest, certificate, PDF/A, timestamp, or audio-screening formats; or
 - native command names, arguments, serialization, and frontend mappings.
 
-No Gate B change is part of this plan.
+The product owner explicitly supplied `FREIGABE DATEN- ODER FORMATÄNDERUNG` on 2026-08-25. That decision adds exactly the following work to block 9:
+
+1. preserve the disabled external-timestamp service wording in the default finalization snapshot instead of rendering `NOT DOCUMENTED`;
+2. add the external-timestamp addendum statement that the application does not determine any legal qualification;
+3. add the automatic timestamp-addendum PDF statement that the record does not establish a qualified timestamp, legal effect, or rights determination;
+4. render the successful final-certificate binding as `Manifest hash binding VERIFIED`; and
+5. emit `HASH_LIST_V1_HEADER` for sidecar format v2 while verifying already published v2-labelled lists for backward compatibility.
+
+This correction set changes no SQLite schema or migration, workspace schema or path layout, persisted DTO, manifest schema, sidecar JSON schema, or 54-command native interface. Any additional data or format change is outside the approval and triggers a new stop.
 
 ## Migration blocks
 
@@ -48,19 +57,57 @@ No Gate B change is part of this plan.
 | 3 | `project-profile.toml`, `VERSION`, environment/profile/shared config, runtime identity | Preserve matching identity/profile; merge only v1.0.3 fixes; scan placeholders | Product identity unchanged; no active backend/database feature | Config doctor, version check, doctor, semantic searches | Reverse block-3 paths |
 | 4 | `config/code-quality.toml`, analyzer source/artifact/provenance, frontend quality configs and local test control | Add v1.0.3 quality framework; product-shape applicable frontend checks; retain tests | New quality policy/tools; no broad suppressions | Quality, tools, frontend and Tauri suites; full suite when available | Reverse block-4 additions/config merges |
 | 5 | Product-owned `.github` validation workflows and dependency policy | Adapt reference jobs to `desktop-local` and actual commands; exclude publish, backend and Postgres jobs | New CI definitions only; remote status remains `NOT RUN` | Local YAML/tooling/quality validation and full diff | Reverse workflow patch |
-| 6 | Web/Tauri/desktop build and release validation tooling, manifests, assets, sidecars | Merge v1.0.3 generic fixes with SunoDM names/resources; no dependency upgrade or publish | Dry-run/build validation improvements; identity unchanged | Web build, Tauri doctor, desktop dry run; platform-specific results scoped honestly | Reverse block-6 paths |
+| 6 | Web/Tauri/desktop build and release validation tooling, manifests, assets, sidecars; three release-publishing modules and their two release/community ownership tests | Merge v1.0.3 generic fixes with SunoDM names/resources; adapt the five managed release/community paths; require the three legal files in scaffold/source/web packaging; no dependency upgrade, publish workflow, or publication | Dry-run/build validation improvements, restored managed paths, and exact-SHA distribution guards; identity unchanged | Web build, Tauri doctor, desktop dry run, release/tooling tests, legal-file equality, exact-SHA binding, and workflow publication scan; platform-specific results scoped honestly | Reverse block-6 paths |
 | 7 | Managed generic docs, product docs navigation, migration navigation | Add applicable lifecycle/quality docs, preserve historical/product docs, regenerate indexes with PyGitIndex | English docs/navigation; no historical result rewriting | Index dry run/apply, docs diff, docs check | Reverse docs/index patch after full docs diff |
 | 8 | Cargo/npm manifests and locks, Tauri config/capability, native/frontend entry/config files | Controlled integration; retain product dependencies, all commands, identity, CSP, resources, and no HTTP backend | Minimal manifest/config/entry changes; no product feature replacement | Cargo metadata/fmt/check/clippy/test, frontend type/lint/test/build, static command parity | Reverse exact integration files; no product data touched |
-| 9 | Product modules, architecture boundaries, critical integration tests | Preserve existing modules; add only characterization/integration tests needed by scaffold | No data/format changes; possible test-only additions | Workspace/SQLite/track/evidence/hash/certificate/document and IPC tests on synthetic fixtures | Reverse test-only/product-structure patch; Gate B on semantic need |
+| 9 | Product modules, architecture boundaries, critical integration tests, and the five Gate B certificate/timestamp corrections | Preserve existing modules; apply only the explicitly approved wording, PDF status, default snapshot, and hash-list compatibility corrections | Narrow approved data/format semantics; no SQLite/workspace schema or IPC change | Workspace/SQLite/track/evidence/hash/certificate/document/timestamp and IPC tests on synthetic fixtures | Reverse the five correction hunks independently; stop on any broader semantic need |
 | 10 | Proven obsolete duplicate config/demo/backend artifacts, placeholder and consistency drift | Remove only items with a tested replacement; retain history, fixtures, assets, notices | Narrow cleanup; exact deliberate baseline omissions remain | Placeholder, duplicate, artifact, backend/Postgres, secret/data scans plus complete suite | Reverse each documented deletion independently |
 
 Blocks execute in this order. There are no intermediate commits unless separately authorized.
 
+## Block dependencies
+
+| Block | Must be complete first | Completion dependency |
+| ---: | --- | --- |
+| 1 | Gate A | Repository evidence, identity decisions, and governance inputs are recorded before source integration. |
+| 2 | Block 1 | Shared control and lifecycle commands depend on the recorded ownership boundary. |
+| 3 | Blocks 1–2 | Profile and identity checks depend on the integrated command surface. |
+| 4 | Blocks 2–3 | Quality configuration must evaluate the effective `desktop-local` profile and actual tools. |
+| 5 | Blocks 3–4 | Product CI definitions depend on stable profile commands and local quality/test entry points. |
+| 6 | Blocks 2–5 | Build and release validation depends on the command map, product identity, quality gates, and non-publishing workflow decision. |
+| 7 | Blocks 1–6 | Current-state documentation depends on the settled tooling, profile, CI, and build/release shape. |
+| 8 | Blocks 2–6 | Bootstrap and manifest integration depends on the stable commands, profile, and build contract. |
+| 9 | Blocks 3 and 8, plus the 2026-08-25 Gate B decision for only the five named corrections | Product compatibility work depends on fixed identity/profile and the integrated frontend/Tauri/Rust boundary. |
+| 10 | Blocks 1–9 | Cleanup is permitted only after every retained or replaced path has an implemented and tested owner. |
+
+The technical full matrix depends on block 10 and the focused Gate B tests; those dependencies are now satisfied. Gate C additionally depends on the reviewed unstaged diff and explicit technical-commit approval. Adoption preview depends on the later clean technical commit; the adoption commit depends on its own explicit approval; final-report completion depends on the pure adoption commit.
+
 ## Current technical outcome
 
-Blocks 1–10 are implemented on the unstaged migration tree. Identity, profile, licensing, tooling, frontend, Rust/Tauri structure, product command parity, documentation, CI configuration, build validation, and final consistency scans are complete. The quality gate, tools, frontend, E2E, web build, Tauri diagnostics, desktop dry run, Cargo metadata, formatting, and Clippy all pass.
+Blocks 1–10, the five restored release/community managed paths, and the five explicitly approved Gate B corrections are implemented on the unstaged migration tree. Identity, profile, licensing, tooling, frontend, Rust/Tauri structure, product command parity, documentation, CI configuration, build validation, and the full local technical matrix are verified. No publish workflow was added and no publication was performed.
 
-The mandatory Rust run still has the exact pre-migration result: 383 passed, 5 failed, and 1 explicitly environment-bound test ignored. All five failures concern certificate/timestamp output or compatibility semantics. The stop rule and Gate B boundary therefore apply before any attempt to correct them. A user-authorized WIP checkpoint and branch push may preserve this unfinished state for a workstation handoff; that checkpoint is not the Gate C technical commit and does not start adoption, lifecycle state, final reporting, or a release.
+The current complete Rust run discovers 392 tests: 391 pass, 0 fail, and 1 disposable-filesystem test is explicitly ignored because it requires an environment-provided removable-filesystem root. The five former certificate/timestamp failures are resolved without a SQLite or workspace-schema change. The WIP checkpoint is not the Gate C technical commit and does not start adoption, lifecycle state, final reporting, or a release.
+
+Legal distribution hardening is active without enabling publication. Every scaffold profile receives the exact product `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md` through the `core` profile paths. Source packages are created from the exact authorized commit SHA and must include all three files; web packages must include identical copies and are validated against that exact-SHA source package. No publish workflow exists.
+
+`.github/release-notes/` is intentionally absent and inactive because the product has no publication path. Its absence is not a technical migration gap. It may be created only after separate release authorization, together with a reviewed `.github/release-notes/<tag>.md` for the authorized tag.
+
+## Verified pre-Gate-C matrix
+
+| Area | Result | Evidence |
+| --- | --- | --- |
+| Regenerated read-only lifecycle audit | PASS | Run `20260825T180624842030Z`; 302 operations: 205 `PRESERVE`, 94 `CONFLICT`, and exactly the three deliberate `ADD` paths; 333 product-owned paths |
+| Quality | PASS | 414 files; 0 errors, 210 strong warnings, 501 warnings, and 0 suppressed findings |
+| Tools | PASS | 863 passed and 25 skipped |
+| Frontend | PASS | 200 tests passed |
+| E2E | PASS | 2 Playwright tests passed |
+| Rust | PASS | 391 passed, 0 failed, and 1 environment-bound ignored test out of 392 |
+| Complete report run | PASS | `python tools/control.py test --suite all --report` completed successfully |
+| Build and diagnostics | PASS | Doctor, configuration, version, documentation, web build, Tauri diagnostics, desktop dry run, Cargo metadata, formatting, and Clippy checks passed |
+| Phase 24 compatibility | PASS | 16 of 16 checks passed; schema 7 remained schema 7; unexpected-change set `{}` |
+| Diff formatting | PASS | `git diff --check` reports no whitespace errors |
+
+This is a verified pre-Gate-C technical result, not final migration acceptance. The technical commit and every adoption/finalization gate remain pending explicit approval.
 
 ## Expected deliberate lifecycle deviations
 
@@ -76,7 +123,7 @@ The Rust analyzer WASM is copied as an exact released artifact but is `PRODUCT_O
 
 ## Technical verification matrix
 
-Commands are executed only when defined by the migrated tooling. Every result is recorded with its exit code; unavailable, platform-specific, remote, and manual checks are not reported as passing.
+The following locally applicable commands were executed through the migrated tooling and passed. Unavailable, platform-specific, remote, and manual checks are not reported as passing.
 
 ```sh
 python tools/control.py doctor
@@ -95,7 +142,7 @@ python tools/control.py build desktop --dry-run --no-clean
 cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features --no-fail-fast
 git diff --check
 ```
 
@@ -103,13 +150,14 @@ API, database, PostgreSQL, backend-container, publishing, signing, notarization,
 
 ## Compatibility approach
 
-No original database or workspace exists in the repository and no original user data may be used. The product already contains synthetic Rust fixtures and extensive unit tests. Compatibility verification will:
+No original database or workspace exists in the repository and no original user data was used. The product contains synthetic Rust fixtures and extensive unit tests. Compatibility verification:
 
-1. preserve hashes of existing tracked format fixtures and third-party/product assets;
-2. run schema v1–v7 and current v7 persistence tests in temporary directories;
-3. run legacy/current certificate, manifest, timestamp, evidence, hashing, and document tests;
-4. statically recheck all 54 invoke/registration names; and
-5. record GUI, cross-platform, signing, and any missing full restart fixture as manual or `NOT RUN`.
+1. preserved hashes of existing tracked format fixtures and third-party/product assets;
+2. ran schema v1–v7 and current v7 persistence tests in temporary directories;
+3. ran legacy/current certificate, manifest, timestamp, evidence, hashing, and document tests;
+4. statically rechecked all 54 invoke/registration names;
+5. exercised the 16-step close/restart/reload path in an isolated temporary workspace; and
+6. records installed-GUI, cross-platform, signing, and remote checks as manual or `NOT RUN`.
 
 A mutating test may operate only in a new temporary directory. If a safe test cannot be isolated, the result is `MANUAL VERIFICATION REQUIRED`, not a product-workspace test.
 
@@ -117,7 +165,7 @@ A mutating test may operate only in a new temporary directory. If a safe test ca
 
 Stop immediately on:
 
-- any required data or format semantic change;
+- any data or format semantic change outside the exact five-item Gate B approval;
 - a database, workspace, secret, private key, user file, or release artifact in the diff;
 - active backend, cloud, database, or Postgres profile capability;
 - loss or mismatch of a native command or frontend invoke;
@@ -131,10 +179,12 @@ Stop immediately on:
 - Remote GitHub Actions runs require a later push and remain `NOT RUN`.
 - Windows and macOS bundles, signing, notarization, and updater behavior are not provable on the local Linux host.
 - Native GUI smoke/restart behavior requires an interactive session if automation is unavailable.
-- A full persisted end-to-end workspace fixture may remain manual even when isolated subsystem tests pass.
+- Installed native-GUI close/restart behavior remains manual; the persisted 16-step application-service workspace fixture passes locally.
 - The product retains inherited warning-level size and complexity findings. The final quality run reports them without suppression and passes with zero rule errors; they are not combined with an unsafe behavioral rewrite.
 
 ## Commit and adoption boundaries
+
+Current state: no Gate C technical commit exists, adoption has not started, and all later commit/adoption approvals remain open.
 
 1. Gate C: after all technical and compatibility checks, show the complete unstaged diff and stop for `FREIGABE TECHNISCHER COMMIT`.
 2. Technical commit: one selective commit; lifecycle state files excluded.

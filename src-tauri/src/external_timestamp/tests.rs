@@ -907,11 +907,13 @@ fn verification_pins_published_bytes_and_never_requires_current_renderer_output(
     .must("updated immutable record fixture");
     let hashes =
         artifact_hashes(&record_directory, "TIMESTAMP_EVIDENCE.json").must("artifact hashes");
-    fs::write(
-        record_directory.join(HASH_LIST_FILE),
-        render_hash_list(SIDECAR_FORMAT_VERSION, &hashes).must("versioned hash list"),
-    )
-    .must("updated hash list fixture");
+    let stable_v1_hash_list =
+        render_hash_list(LEGACY_SIDECAR_FORMAT_VERSION, &hashes).must("v1 hash list");
+    let current_v2_hash_list =
+        render_hash_list(SIDECAR_FORMAT_VERSION, &hashes).must("v2 sidecar hash list");
+    assert_eq!(current_v2_hash_list, stable_v1_hash_list);
+    fs::write(record_directory.join(HASH_LIST_FILE), current_v2_hash_list)
+        .must("updated hash list fixture");
 
     verify_published_record(track_root, &record)
         .must("persisted historical bytes verify without re-rendering");
@@ -926,6 +928,16 @@ fn verification_pins_published_bytes_and_never_requires_current_renderer_output(
     assert!(fs::read_to_string(record_directory.join(HASH_LIST_FILE))
         .must("hash list")
         .starts_with(HASH_LIST_V1_HEADER));
+
+    // Records created during the short-lived v2-header implementation remain
+    // readable even though the stable hash-list format itself is still v1.
+    fs::write(
+        record_directory.join(HASH_LIST_FILE),
+        render_hash_list_with_header(HASH_LIST_V2_HEADER, &hashes),
+    )
+    .must("legacy v2-labelled hash list fixture");
+    verify_published_record(track_root, &record)
+        .must("legacy v2-labelled hash list remains compatible");
 
     // Even a self-consistent rewritten hash list cannot authorize extra
     // runtime/trust claims in the immutable v1 JSON record.

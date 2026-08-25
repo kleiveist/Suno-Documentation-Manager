@@ -4,6 +4,8 @@ schema_version = 1
 paths = [
   "AGENTS.md",
   "LICENSE",
+  "NOTICE",
+  "THIRD_PARTY_NOTICES.md",
   "README.md",
   "VERSION",
   ".gitattributes",

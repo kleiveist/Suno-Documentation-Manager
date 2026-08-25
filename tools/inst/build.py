@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import time
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -17,6 +18,7 @@ FRONTEND_DIR = ROOT / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 WEB_ARTIFACT_DIR = ROOT / ".dist" / "web"
 WEB_ZIP_PATH = WEB_ARTIFACT_DIR / "sunodm-web.zip"
+WEB_LEGAL_FILES = ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md")
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -42,14 +44,32 @@ def _relative(path: Path) -> str:
 
 
 def _create_web_zip() -> tuple[bool, str]:
-    files = sorted(path for path in DIST_DIR.rglob("*") if path.is_file())
+    entries = sorted(DIST_DIR.rglob("*"))
+    symlinks = [path for path in entries if path.is_symlink()]
+    if symlinks:
+        return False, f"frontend/dist contains a symbolic link: {symlinks[0].relative_to(DIST_DIR).as_posix()}"
+    files = [path for path in entries if path.is_file()]
     if not files:
         return False, "frontend/dist contains no files to package"
+    legal_files = [(name, ROOT / name) for name in WEB_LEGAL_FILES]
+    missing = [name for name, path in legal_files if path.is_symlink() or not path.is_file()]
+    if missing:
+        return False, f"required web distribution file is missing: {', '.join(missing)}"
+    legal_names = {unicodedata.normalize("NFC", name).casefold() for name in WEB_LEGAL_FILES}
+    dist_names = {path.relative_to(DIST_DIR).as_posix() for path in files}
+    collisions = sorted(name for name in dist_names if unicodedata.normalize("NFC", name).casefold() in legal_names)
+    if collisions:
+        return (
+            False,
+            f"frontend/dist shadows required web distribution file: {', '.join(collisions)}",
+        )
 
     WEB_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(WEB_ZIP_PATH, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in files:
             archive.write(path, path.relative_to(DIST_DIR).as_posix())
+        for name, path in legal_files:
+            archive.write(path, name)
 
     return True, _relative(WEB_ZIP_PATH)
 

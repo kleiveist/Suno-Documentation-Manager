@@ -271,7 +271,7 @@ impl WorkspaceApp {
             let detail = self.detail_from_record(track, true)?;
             result.push(summary_from_detail(&detail));
         }
-        result.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        result.sort_by_key(|track| track.title.to_lowercase());
         Ok(result)
     }
 

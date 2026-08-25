@@ -73,7 +73,7 @@ impl WorkspaceApp {
                 hash_manifest_present: inspection.hash_manifest_present,
             });
         }
-        candidates.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        candidates.sort_by_key(|candidate| candidate.name.to_lowercase());
         let scanned_at = now();
         self.persistence.set_meta("last_scanned_at", &scanned_at)?;
         Ok(WorkspaceScan {
