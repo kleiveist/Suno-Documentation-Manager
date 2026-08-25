@@ -6,7 +6,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Active |
-| Execution / decision status | Regenerated audit and technical matrix passed; Gate C technical commit decision and adoption still open |
+| Execution / decision status | Gate C technical commit `23c6152` exists; post-commit identity correction verified; correction commit and adoption remain open |
 | Owner | SunoDM maintainers |
 | Last review | 2026-08-25 |
 
@@ -44,11 +44,11 @@ Gate A was subsequently approved with the product license decision recorded belo
 | Product history | PASS | Original Git directory, history, branch base, and remote retained |
 | In-progress Git operation | PASS | No merge, rebase, or cherry-pick state found |
 | Original product database | PASS | No repository `.db`, `.sqlite`, `.sqlite3`, or `.suno-doc` workspace found |
-| Remote and release operations | PASS | No fetch, pull, push, tag, publish, signing, or release action performed |
+| Remote and release operations | PASS at preflight; later state recorded | No fetch, pull, push, tag, publish, signing, or release action occurred during the audited preflight or local integration execution. After the Gate C commit, the remote-tracking reflog was observed at `23c6152` with `update by push`; the actor is not established by the local evidence. No further remote mutation, tag, publication, signing, or release is part of this migration. |
 
 Ignored dependency, build, report, generated-schema, cache, and virtual-environment directories were present locally before migration. They are `GENERATED_UNTRACKED`, were not used as source, and must not be staged.
 
-## Current host toolchain revalidated before Gate C
+## Current host toolchain revalidated for the technical commit and correction
 
 | Component | Observed value | Notes |
 | --- | --- | --- |
@@ -85,13 +85,13 @@ PYTHONDONTWRITEBYTECODE=1 python tools/control.py template audit \
 | Exit code | `0` |
 | Outcome | `AUDIT` |
 | Repository kind | `legacy` |
-| Lifecycle run ID | `20260825T180624842030Z` |
+| Lifecycle run ID | `20260825T192159164542Z` |
 | External report root | `VTFV/.migration-reports/SunoDM/template-v1.0.3/`, relative to `Projects/` |
 | Transferred raw-report state | Regenerated and SHA-256 reverified on this workstation |
 | Baseline operations | 302 |
 | `ADD` | 3 |
-| `CONFLICT` | 94 |
-| `PRESERVE` | 205 |
+| `CONFLICT` | 88 |
+| `PRESERVE` | 211 |
 | Product-owned paths reported | 333 |
 | Audit verification | `NOT RUN`, as expected before lifecycle adoption |
 
@@ -100,14 +100,14 @@ The raw evidence set consists of `plan.json`, `conflicts.json`, `changes.patch`,
 | Artifact | SHA-256 |
 | --- | --- |
 | `changes.patch` | `5703707464bcb9a351a63c9826939cd9dc444d74b66a6210447a3cce38f73916` |
-| `conflicts.json` | `ada8d52d06a199bb4c8115fb2827e6f0ac9f9dc30de5f49de14c086874d81525` |
-| `plan.json` | `49043cd17cfcfe5ca6329e92445a0dd569dfd4e6d75dc28304d6f2cc8d874417` |
-| `summary.md` | `7d3a117ef7707288e52839bbe012fa899e5498b7a5c0e90f0bcfd40a5c21ffc2` |
+| `conflicts.json` | `97bdc8a57798933cadc03c6a484969a2a296af68c392d5ee1640361c297ee593` |
+| `plan.json` | `692185a39f0d989bd12211ea32a3e1eff5b0bb84127f649cec39c531924e7d1a` |
+| `summary.md` | `ae30272df91aeebe1570d45c9d95eb0106e31e7f9cbc5d0fe3a9b93b50214d68` |
 | `verification.json` | `87c0718076ef109306f61c5eac7e1f15ce89fe0eb855a1b335837f523bc05455` |
 
 ## Matching scaffold areas
 
-The regenerated audit reports 205 `PRESERVE` operations. Important matches include:
+The regenerated audit reports 211 `PRESERVE` operations. Important matches include:
 
 - `VERSION`, `project-profile.toml`, and `frontend/src/project-profile.ts`;
 - `.env.example` and the profile-filtered environment catalog;
@@ -139,7 +139,7 @@ The first two implement a forbidden FastAPI health adapter. The third collides w
 
 ## Conflict groups
 
-The 94 conflicts cover:
+The 88 conflicts cover:
 
 - `.gitignore` and `README.md`;
 - documentation navigation, architecture/configuration references, ATP navigation, tooling, release, and Tauri documentation;
@@ -156,6 +156,7 @@ Each conflict is an integration decision. Product identity, product UI, all nati
 | `UNCLEAR` ownership cases | None | Every audited path or area has an allowed migration class and lifecycle owner. |
 | Profile deviations | None | The active profile is `desktop-local` with exactly `frontend` and `tauri`; no backend, database, PostgreSQL, or cloud feature is active. |
 | Deviations from the approved target architecture | None | The TypeScript-to-Tauri-to-Rust-to-SQLite product path and all 54 native contracts remain authoritative. |
+| Prompt identity shorthand | Resolved against the fixed lifecycle contract | Phase 20.3's `productName = sunodm` shorthand conflicts with the fixed v1.0.3 verifier/scaffold and the mandated adoption request, which store `name = Suno Documentation Manager` and require Tauri `productName` plus the frontend bootstrap to match that display name. The released executable lifecycle contract and the later exact adoption command are authoritative. Slug, Cargo/npm package identity, `mainBinaryName`, executable, and product-owned archive names remain `sunodm`; standard Tauri bundle filenames may follow `productName`. The former `sunodm`-derived WiX UpgradeCode is explicitly pinned to preserve MSI upgrade continuity, while profile generation rekeys a copied pin from the target binary to prevent cross-product MSI collisions. |
 | Deliberate differences from the universal scaffold | Concrete and approved | The FastAPI adapter and its test remain absent, SunoDM retains product-owned Rust/SQLite behavior, the colliding template ATP remains absent, and no publishing workflow is adopted. |
 
 ## Product-owned architecture
@@ -244,4 +245,4 @@ The product intentionally has no publish workflow. `.github/release-notes/` is t
 
 ## Preflight result
 
-All repository, identity, profile, audit, ownership, and planning prerequisites passed. The former license blocker was resolved by the explicit owner decision. Gate A is complete and Gate B is approved for only the five named corrections. The current Rust run reports 391 passed, 0 failed, and 1 environment-bound ignored test out of 392. The full technical matrix passes, including 16 of 16 Phase 24 compatibility checks with schema 7 remaining schema 7 and an empty unexpected-change set `{}`. Gate C approval, the technical commit, and lifecycle adoption remain open, so no final migration result is claimed here.
+All repository, profile, audit, ownership, and planning prerequisites passed. The former license blocker was resolved by the explicit owner decision. Gate A and the five-item Gate B decision are complete. Gate C produced technical commit `23c6152494041098ec223fbdedd530e7b03f5b1c`. Its first read-only adoption preview correctly stopped because the committed frontend bootstrap and Tauri `productName` did not match the stored display identity. The corrected tree now follows the fixed v1.0.3 identity contract and passes the technical matrix, including 16 of 16 Phase 24 compatibility checks with schema 7 remaining schema 7 and an empty unexpected-change set `{}`. A separate correction commit is required because `23c6152` is already present on the remote-tracking branch; lifecycle adoption remains open and no final migration result is claimed here.

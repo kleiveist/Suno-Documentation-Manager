@@ -4,6 +4,7 @@ import json
 import re
 import signal
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -56,9 +57,12 @@ def test_tauri_identity_separates_display_and_artifact_names() -> None:
     assert paths.APP_NAME == "Suno Documentation Manager"
     assert paths.APP_ARTIFACT_NAME == "sunodm"
     assert paths.APP_SLUG == "sunodm"
-    assert payload["productName"] == "sunodm"
+    assert payload["productName"] == paths.APP_NAME
     assert payload["mainBinaryName"] == "sunodm"
     assert payload["app"]["windows"][0]["title"] == paths.APP_NAME
+    wix_upgrade_code = payload["bundle"]["windows"]["wix"]["upgradeCode"]
+    assert wix_upgrade_code == "54c9e875-02fa-5312-b9c4-14f17c9e3c61"
+    assert wix_upgrade_code == str(uuid.uuid5(uuid.NAMESPACE_DNS, "sunodm.exe.app.x64"))
 
 
 def test_bare_tauri_command_prints_help(capsys) -> None:

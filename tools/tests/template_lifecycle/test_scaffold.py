@@ -169,7 +169,7 @@ def test_reconstruction_uses_exact_commit_and_preserves_product_metadata(
     assert package["version"] == "0.7.0"
     assert package_lock["version"] == "0.7.0"
     assert package_lock["packages"][""]["version"] == "0.7.0"
-    assert tauri["productName"] == "customer-binary"
+    assert tauri["productName"] == "Customer Ü App"
     assert tauri["identifier"] == "com.customer.app"
     assert tauri["mainBinaryName"] == "customer-binary"
     assert tauri["version"] == "0.7.0"

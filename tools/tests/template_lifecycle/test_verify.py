@@ -145,7 +145,7 @@ def _write_product_metadata(root: Path, version: str) -> None:
     )
     (root / "frontend/src").mkdir(parents=True)
     (root / "frontend/index.html").write_text("<title>Customer App</title>\n", encoding="utf-8")
-    (root / "frontend/src/main.ts").write_text("export {};\n", encoding="utf-8")
+    (root / "frontend/src/main.ts").write_text('document.title = "Customer App";\n', encoding="utf-8")
     (root / "backend/app/api").mkdir(parents=True)
     (root / "backend/app/api/health.py").write_text('SERVICE = "customer-app-backend"\n', encoding="utf-8")
     (root / "tools/inst").mkdir(parents=True)
@@ -159,7 +159,7 @@ def _write_tauri_metadata(root: Path, version: str) -> None:
     _write_json(
         root / "src-tauri/tauri.conf.json",
         {
-            "productName": IDENTITY.binary,
+            "productName": IDENTITY.name,
             "identifier": IDENTITY.identifier,
             "mainBinaryName": IDENTITY.binary,
             "version": version,

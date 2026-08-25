@@ -195,7 +195,7 @@ def normalize_product_identity(root: Path, identity: ProductIdentity) -> None:
     tauri_path = resolved_root / "src-tauri" / "tauri.conf.json"
     if tauri_path.exists():
         tauri = _read_json(tauri_path)
-        tauri["productName"] = identity.binary
+        tauri["productName"] = identity.name
         tauri["identifier"] = identity.identifier
         tauri["mainBinaryName"] = identity.binary
         _normalize_window_title(tauri, identity.name)

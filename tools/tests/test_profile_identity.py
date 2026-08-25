@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,33 @@ ROOT = Path(__file__).resolve().parents[2]
 HAS_BACKEND_SOURCE = (ROOT / "backend" / "app" / "main.py").exists()
 HAS_TAURI_SOURCE = (ROOT / "src-tauri" / "tauri.conf.json").exists()
 HAS_CLOUD_SOURCE = (ROOT / "deployment" / "compose.yaml").exists()
+
+
+def test_desktop_local_scaffold_derives_its_own_wix_upgrade_code(tmp_path: Path) -> None:
+    target = tmp_path / "customer-app"
+
+    assert (
+        control.main(
+            [
+                "init",
+                "--profile",
+                "desktop-local",
+                "--name",
+                "Customer App",
+                "--identifier",
+                "com.customer.app",
+                "--target-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
+
+    tauri = json.loads((target / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
+    upgrade_code = tauri["bundle"]["windows"]["wix"]["upgradeCode"]
+    assert tauri["mainBinaryName"] == "customer-app"
+    assert upgrade_code == str(uuid.uuid5(uuid.NAMESPACE_DNS, "customer-app.exe.app.x64"))
+    assert upgrade_code != "54c9e875-02fa-5312-b9c4-14f17c9e3c61"
 
 
 @pytest.mark.skipif(
@@ -43,7 +71,7 @@ def test_init_command_applies_complete_release_identity(tmp_path: Path) -> None:
     tauri = json.loads((target / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     assert package["name"] == "customer-app-frontend"
     assert package_lock["name"] == "customer-app-frontend"
-    assert tauri["productName"] == "customer-app"
+    assert tauri["productName"] == "CustomerApp"
     assert tauri["identifier"] == "com.customer.app"
     assert tauri["mainBinaryName"] == "customer-app"
     assert 'name = "customer-app"' in (target / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
@@ -92,7 +120,7 @@ def test_nested_default_scaffold_resets_inherited_custom_identity(tmp_path: Path
     tauri = json.loads((target / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     assert package["name"] == "template-project-frontend"
     assert "<title>Template Project</title>" in (target / "frontend" / "index.html").read_text(encoding="utf-8")
-    assert tauri["productName"] == "project-template"
+    assert tauri["productName"] == "Template Project"
     assert tauri["identifier"] == "com.example.templateproject"
     assert tauri["mainBinaryName"] == "project-template"
     assert 'name = "project-template"' in (target / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")

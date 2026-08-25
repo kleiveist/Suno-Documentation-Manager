@@ -66,11 +66,13 @@ Use `python tools/control.py build desktop --help` for target and bundle options
 
 ## Artifact names
 
-`src-tauri/tauri.conf.json` defines the shared technical artifact base as `sunodm` through both `productName` and `mainBinaryName`. The full product label, `Suno Documentation Manager`, remains the main-window title and is kept separate from filenames.
+`src-tauri/tauri.conf.json` defines the full product label, `Suno Documentation Manager`, through `productName` and the main-window title. The separate `mainBinaryName` value `sunodm` is the executable name and the base used by product-owned archives.
 
-All generated native outputs therefore use the short base name: `sunodm` or `sunodm.exe` for binaries and `sunodm…` for DEB, RPM, AppImage, MSI, NSIS/EXE, DMG, and application bundles. Package formats may append their required version, architecture, or installer suffixes. The stable local Linux install is `~/Applications/sunodm.AppImage`; collected web and Windows portable archives are `sunodm-web.zip` and `sunodm-windows-portable.zip`.
+The executable is `sunodm` or `sunodm.exe`. Product-owned collected outputs use stable names such as `~/Applications/sunodm.AppImage`, `sunodm-web.zip`, and `sunodm-windows-portable.zip`. Standard Tauri DEB, RPM, AppImage, MSI, NSIS/EXE, DMG, and application-bundle filenames may instead derive from `productName` and append format-specific version, architecture, or installer suffixes; the copy and Linux evidence tools retain those produced package names.
 
-The Python build tools expose the same value as `tools.tauri.paths.APP_ARTIFACT_NAME`. Project generation applies the generated project slug in the same places, while preserving its full display name in the window title.
+The Python build tools expose the short executable/archive base as `tools.tauri.paths.APP_ARTIFACT_NAME`. Project generation applies the generated project slug to the binary identity while preserving its full display name in `productName` and the window title. If the source configuration pins a WiX UpgradeCode, generation deterministically replaces it with the code derived from the target binary so independent products cannot share an MSI upgrade line.
+
+Tauri derives a default WiX UpgradeCode from `productName`. Because the lifecycle identity correction changes `productName` from the former shorthand to the display name, `bundle.windows.wix.upgradeCode` explicitly pins the existing `sunodm`-derived value `54c9e875-02fa-5312-b9c4-14f17c9e3c61`. It must remain unchanged across Windows MSI updates so an installed version is upgraded rather than duplicated.
 
 ## Security boundary
 

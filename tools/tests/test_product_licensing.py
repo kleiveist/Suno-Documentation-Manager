@@ -40,7 +40,7 @@ def test_cargo_and_tauri_ship_the_product_and_third_party_license_boundary() -> 
 
     assert cargo["package"]["license-file"] == "../LICENSE"
     assert "license" not in cargo["package"]
-    assert tauri["productName"] == "sunodm"
+    assert tauri["productName"] == "Suno Documentation Manager"
     assert tauri["version"] == "0.1.0"
     assert tauri["identifier"] == "com.grav0id.sunodoc"
     assert tauri["mainBinaryName"] == "sunodm"

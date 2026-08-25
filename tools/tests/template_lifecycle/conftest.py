@@ -76,14 +76,14 @@ write_json(
     },
 )
 write("frontend/index.html", f"<title>{args.name}</title>\n")
-write("frontend/src/main.ts", "export {};\n")
+write("frontend/src/main.ts", f'export const PRODUCT_NAME = "{args.name}";\n')
 write("backend/app/api/health.py", f'SERVICE_NAME = "{args.slug}-backend"\n')
 write("tools/inst/build.py", f'WEB_ARTIFACT = "{args.slug}-web.zip"\n')
 write("deployment/compose.yaml", f'name: {args.slug}\n')
 write_json(
     "src-tauri/tauri.conf.json",
     {
-        "productName": args.slug,
+        "productName": args.name,
         "version": template_version,
         "identifier": args.identifier,
         "mainBinaryName": args.slug,
@@ -260,7 +260,7 @@ def _write_v1(root: Path, scaffold: Path) -> tuple[str, str, str]:
     (scaffold / ".gitignore").write_text("/.report/\n", encoding="utf-8")
     executable = scaffold / "executable.sh"
     executable.write_text("#!/bin/sh\nprintf 'fixture\\n'\n", encoding="utf-8")
-    os.chmod(executable, 0o755)
+    os.chmod(executable, 0o700)
     return _commit(root, "template v1"), renamed_from, renamed_to
 
 

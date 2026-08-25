@@ -78,7 +78,7 @@ The fixed product identity is:
 | Active profile | `desktop-local` |
 | Enabled features | `frontend`, `tauri` |
 
-The full display name belongs in user-facing titles. The short `sunodm` identity belongs in package, binary, and artifact names.
+The full display name belongs in user-facing titles and in Tauri `productName`; standard Tauri installer and bundle filenames may derive from it. The short `sunodm` identity belongs in the Cargo/npm package identifiers, executable name, and product-owned web, portable, and stable-AppImage artifact names. The existing `sunodm`-derived WiX UpgradeCode is pinned independently so a display-name correction cannot split the Windows MSI upgrade line. Generated products replace that source pin with a target-binary-derived code to prevent cross-product MSI collisions.
 
 Version synchronization is explicit and does not create a tag or release:
 

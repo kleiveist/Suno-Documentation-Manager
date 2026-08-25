@@ -74,9 +74,10 @@ def _assert_product_metadata_preserved(lifecycle_fixture, target: Path) -> None:
     assert package_lock["name"] == f"{identity.slug}-frontend"
     assert lock_root["name"] == f"{identity.slug}-frontend"
     assert identity.name in (target / "frontend/index.html").read_text(encoding="utf-8")
+    assert identity.name in (target / "frontend/src/main.ts").read_text(encoding="utf-8")
 
     tauri = _json(target / "src-tauri/tauri.conf.json")
-    assert tauri["productName"] == identity.binary
+    assert tauri["productName"] == identity.name
     assert tauri["identifier"] == identity.identifier
     assert tauri["mainBinaryName"] == identity.binary
     assert tauri["app"]["windows"][0]["title"] == identity.name

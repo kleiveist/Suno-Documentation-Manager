@@ -6,7 +6,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Active |
-| Execution status | Blocks, regenerated audit, and technical matrix passed; Gate C technical commit decision and adoption still open |
+| Execution status | Gate C technical commit `23c6152` exists; identity correction verified; correction commit and adoption still open |
 | Owner | SunoDM maintainers |
 | Last review | 2026-08-25 |
 
@@ -80,25 +80,27 @@ Blocks execute in this order. There are no intermediate commits unless separatel
 | 9 | Blocks 3 and 8, plus the 2026-08-25 Gate B decision for only the five named corrections | Product compatibility work depends on fixed identity/profile and the integrated frontend/Tauri/Rust boundary. |
 | 10 | Blocks 1–9 | Cleanup is permitted only after every retained or replaced path has an implemented and tested owner. |
 
-The technical full matrix depends on block 10 and the focused Gate B tests; those dependencies are now satisfied. Gate C additionally depends on the reviewed unstaged diff and explicit technical-commit approval. Adoption preview depends on the later clean technical commit; the adoption commit depends on its own explicit approval; final-report completion depends on the pure adoption commit.
+The technical full matrix depends on block 10 and the focused Gate B tests; those dependencies are satisfied. Gate C produced technical commit `23c6152`. Its first read-only adoption preview identified a display-identity mismatch, so the verified correction tree now requires a separate explicit technical correction commit. The official adoption preview depends on that later clean commit; the adoption commit depends on its own explicit approval; final-report completion depends on the pure adoption commit.
 
 ## Current technical outcome
 
-Blocks 1–10, the five restored release/community managed paths, and the five explicitly approved Gate B corrections are implemented on the unstaged migration tree. Identity, profile, licensing, tooling, frontend, Rust/Tauri structure, product command parity, documentation, CI configuration, build validation, and the full local technical matrix are verified. No publish workflow was added and no publication was performed.
+Blocks 1–10, the five restored release/community managed paths, and the five explicitly approved Gate B corrections are present in technical commit `23c6152`. The post-commit identity correction is implemented on the unstaged tree. Identity, profile, licensing, tooling, frontend, Rust/Tauri structure, product command parity, documentation, CI configuration, build validation, and the full local technical matrix are verified. No publish workflow was added and no publication was performed.
 
-The current complete Rust run discovers 392 tests: 391 pass, 0 fail, and 1 disposable-filesystem test is explicitly ignored because it requires an environment-provided removable-filesystem root. The five former certificate/timestamp failures are resolved without a SQLite or workspace-schema change. The WIP checkpoint is not the Gate C technical commit and does not start adoption, lifecycle state, final reporting, or a release.
+The fixed v1.0.3 lifecycle contract resolves the master prompt's phase-20.3 identity shorthand: display-facing `name`, Tauri `productName`, window title, and frontend bootstrap are `Suno Documentation Manager`; slug, Cargo/npm package identity, `mainBinaryName`, executable, and product-owned archives remain `sunodm`. Standard Tauri bundle filenames may follow `productName`. The prior `sunodm`-derived WiX UpgradeCode is pinned explicitly so the display-name correction preserves MSI upgrade continuity; profile generation rekeys a copied pin from the target binary to prevent cross-product MSI collisions. This is an identity-metadata correction required by the exact adoption command, not a product-data or persistence-format migration.
+
+The current complete Rust run discovers 392 tests: 391 pass, 0 fail, and 1 disposable-filesystem test is explicitly ignored because it requires an environment-provided removable-filesystem root. The five former certificate/timestamp failures are resolved without a SQLite or workspace-schema change. Technical commit `23c6152` does not start adoption, lifecycle state, final reporting, or a release. Its first read-only adoption preview stopped on the identity mismatch, and the correction remains uncommitted pending the renewed technical-commit gate.
 
 Legal distribution hardening is active without enabling publication. Every scaffold profile receives the exact product `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md` through the `core` profile paths. Source packages are created from the exact authorized commit SHA and must include all three files; web packages must include identical copies and are validated against that exact-SHA source package. No publish workflow exists.
 
 `.github/release-notes/` is intentionally absent and inactive because the product has no publication path. Its absence is not a technical migration gap. It may be created only after separate release authorization, together with a reviewed `.github/release-notes/<tag>.md` for the authorized tag.
 
-## Verified pre-Gate-C matrix
+## Verified technical and correction matrix
 
 | Area | Result | Evidence |
 | --- | --- | --- |
-| Regenerated read-only lifecycle audit | PASS | Run `20260825T180624842030Z`; 302 operations: 205 `PRESERVE`, 94 `CONFLICT`, and exactly the three deliberate `ADD` paths; 333 product-owned paths |
+| Regenerated read-only lifecycle audit | PASS | Run `20260825T192159164542Z`; 302 operations: 211 `PRESERVE`, 88 `CONFLICT`, and exactly the three deliberate `ADD` paths; 333 product-owned paths |
 | Quality | PASS | 414 files; 0 errors, 210 strong warnings, 501 warnings, and 0 suppressed findings |
-| Tools | PASS | 863 passed and 25 skipped |
+| Tools | PASS | 864 passed and 25 skipped |
 | Frontend | PASS | 200 tests passed |
 | E2E | PASS | 2 Playwright tests passed |
 | Rust | PASS | 391 passed, 0 failed, and 1 environment-bound ignored test out of 392 |
@@ -107,7 +109,7 @@ Legal distribution hardening is active without enabling publication. Every scaff
 | Phase 24 compatibility | PASS | 16 of 16 checks passed; schema 7 remained schema 7; unexpected-change set `{}` |
 | Diff formatting | PASS | `git diff --check` reports no whitespace errors |
 
-This is a verified pre-Gate-C technical result, not final migration acceptance. The technical commit and every adoption/finalization gate remain pending explicit approval.
+This is a verified post-Gate-C correction result, not final migration acceptance. The identity correction commit and every adoption/finalization gate remain pending explicit approval.
 
 ## Expected deliberate lifecycle deviations
 
@@ -184,11 +186,11 @@ Stop immediately on:
 
 ## Commit and adoption boundaries
 
-Current state: no Gate C technical commit exists, adoption has not started, and all later commit/adoption approvals remain open.
+Current state: Gate C technical commit `23c6152` exists and is also visible at `origin/migration/template-v1.0.3`. Its first read-only adoption preview failed closed on display-identity drift. The correction is verified but uncommitted; adoption has not started and `.template` remains absent.
 
-1. Gate C: after all technical and compatibility checks, show the complete unstaged diff and stop for `FREIGABE TECHNISCHER COMMIT`.
-2. Technical commit: one selective commit; lifecycle state files excluded.
-3. Gate D: run the read-only adoption preview only on a clean technical commit, then stop for `FREIGABE ADOPTION`.
+1. Gate C completed: the reviewed technical tree became commit `23c6152`; lifecycle state files were excluded.
+2. Correction Gate C: show the complete identity-correction diff and stop again for `FREIGABE TECHNISCHER COMMIT`; create a separate local correction commit because the original commit is already visible on the remote-tracking branch and must not be rewritten.
+3. Gate D: run the read-only adoption preview only on the clean corrected commit, then stop for `FREIGABE ADOPTION`.
 4. Gate E: adoption may change only `.template/state.toml` and `.template/baseline.json`; stop for `FREIGABE ADOPTION COMMIT`.
 5. After the pure adoption commit, create/finalize `final-report.md` and navigation.
 6. Gate F: stop for `FREIGABE ABSCHLUSSCOMMIT`; do not push or release.

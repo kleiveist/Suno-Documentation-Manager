@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -387,7 +388,7 @@ def _source_identity(target_dir: Path) -> _SourceIdentity:
         existing_tauri = _read_json_object(existing_tauri_path)
         product_name = existing_tauri.get("productName")
         binary_name = existing_tauri.get("mainBinaryName")
-        if source_name == "Template Project" and isinstance(product_name, str) and product_name.strip():
+        if isinstance(product_name, str) and product_name.strip():
             source_name = product_name
         if isinstance(binary_name, str) and binary_name.strip():
             source_binary = binary_name
@@ -463,9 +464,10 @@ def _configure_project_identity(
 
     tauri_path = target_dir / "src-tauri" / "tauri.conf.json"
     tauri = _read_json_object(tauri_path)
-    tauri["productName"] = identity.binary
+    tauri["productName"] = identity.name
     tauri["identifier"] = identity.identifier
     tauri["mainBinaryName"] = identity.binary
+    _normalize_wix_upgrade_code(tauri, identity.binary)
     app = tauri.get("app")
     if isinstance(app, dict):
         windows = app.get("windows")
@@ -481,6 +483,18 @@ def _configure_project_identity(
     cargo_lock_path = target_dir / "src-tauri" / "Cargo.lock"
     _replace_first(cargo_lock_path, f'name = "{source.binary}"', f'name = "{identity.binary}"')
     _replace_text(target_dir / "src-tauri" / "app-icon.svg", source.name, identity.name)
+
+
+def _normalize_wix_upgrade_code(tauri: dict[str, Any], binary: str) -> None:
+    bundle = tauri.get("bundle")
+    if not isinstance(bundle, dict):
+        return
+    windows = bundle.get("windows")
+    if not isinstance(windows, dict):
+        return
+    wix = windows.get("wix")
+    if isinstance(wix, dict) and "upgradeCode" in wix:
+        wix["upgradeCode"] = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{binary}.exe.app.x64"))
 
 
 def _replace_text(path: Path, old: str, new: str) -> None:

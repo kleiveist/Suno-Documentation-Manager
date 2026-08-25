@@ -132,11 +132,13 @@ def test_sunodm_desktop_identity_and_version_are_consistent() -> None:
     assert profile["features"] == ["frontend", "tauri"]
     assert profile["optional_features"] == []
 
-    assert tauri["productName"] == "sunodm"
+    assert tauri["productName"] == "Suno Documentation Manager"
     assert tauri["identifier"] == "com.grav0id.sunodoc"
     assert tauri["mainBinaryName"] == "sunodm"
     assert tauri["version"] == version
     assert tauri["app"]["windows"][0]["title"] == "Suno Documentation Manager"
+    wix_upgrade_code = tauri["bundle"]["windows"]["wix"]["upgradeCode"]
+    assert wix_upgrade_code == "54c9e875-02fa-5312-b9c4-14f17c9e3c61"
 
     assert cargo["package"]["name"] == "sunodm"
     assert cargo["package"]["version"] == version
@@ -151,6 +153,7 @@ def test_sunodm_desktop_identity_and_version_are_consistent() -> None:
     assert frontend_lock["packages"][""]["name"] == frontend["name"]
     assert frontend_lock["packages"][""]["version"] == version
     assert "<title>Suno Documentation Manager</title>" in _read("frontend/index.html")
+    assert 'const PRODUCT_NAME = "Suno Documentation Manager"' in _read("frontend/src/main.ts")
 
 
 def test_sunodm_uses_the_minimal_local_desktop_capability_without_a_backend() -> None:

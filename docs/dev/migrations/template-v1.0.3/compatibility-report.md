@@ -8,7 +8,7 @@
 | Status | Active |
 | Owner | SunoDM maintainers |
 | Last review | 2026-08-25 |
-| Execution state | Technical and product/data compatibility verified; Gate C approval is pending |
+| Execution state | Gate C technical commit `23c6152` exists; verified identity correction commit and adoption are pending |
 | Compatibility result | PASS |
 | Product baseline | `507be8b6124d5d3ceb1974f299ba7722157e0980` |
 | Template baseline | `8f4299193b5afe8545dda55208baf3adec23a68a` (`v1.0.3`) |
@@ -16,7 +16,7 @@
 
 ## Purpose
 
-This report records the technical, product, and data compatibility evidence for integrating Template-Projekte `v1.0.3` into SunoDM `0.1.0`. It describes the verified technical tree immediately before Gate C. It is not lifecycle adoption evidence or final migration acceptance.
+This report records the technical, product, and data compatibility evidence for integrating Template-Projekte `v1.0.3` into SunoDM `0.1.0`. It covers the Gate C technical commit and the verified post-commit identity-correction tree required by the fixed lifecycle contract. It is not lifecycle adoption evidence or final migration acceptance.
 
 ## Scope
 
@@ -67,7 +67,7 @@ The complete Rust run after these corrections and compatibility regressions disc
 
 | Area | Current evidence | Status |
 | --- | --- | --- |
-| Product identity and profile | Product version remains `0.1.0`; profile resolves to `desktop-local` with `frontend` and `tauri`; slug, binary, bundle identifier, and display name remain product-specific | PASS |
+| Product identity and profile | Product version remains `0.1.0`; profile resolves to `desktop-local` with `frontend` and `tauri`; `productName`, the main window, and frontend bootstrap use `Suno Documentation Manager`, while slug and `mainBinaryName` remain `sunodm` and the identifier remains `com.grav0id.sunodoc` | PASS |
 | Frontend/Tauri command boundary | The 54 invoke names remain mapped to registered native commands; no FastAPI transport was introduced | PASS |
 | Rust application architecture | Module splits retain application, domain, persistence, rendering, integrity, and adapter responsibilities; the complete Rust suite passes | PASS |
 | SQLite persistence | Database path, schema 7, migrations v1–v7, typed repositories, and transaction behavior are unchanged | PASS |
@@ -78,6 +78,8 @@ The complete Rust run after these corrections and compatibility regressions disc
 | Product UI | Product bootstrap and desktop adapters remain connected; 200 frontend tests and two Playwright tests pass | PASS |
 | Release/tooling integration | Product-scoped tooling tests pass without introducing backend/PostgreSQL profile behavior or performing a remote release action | PASS |
 
+The identity split follows the fixed v1.0.3 lifecycle contract used by the mandated adoption command: the stored name, Tauri `productName`, window title, and frontend bootstrap use `Suno Documentation Manager`; slug, Cargo/npm package identity, `mainBinaryName`, executable, and product-owned archive names use `sunodm`. Standard Tauri bundle filenames may derive from `productName`. The existing `sunodm`-derived WiX UpgradeCode `54c9e875-02fa-5312-b9c4-14f17c9e3c61` is pinned explicitly, preventing the display-name correction from creating a second MSI upgrade line. Profile generation deterministically replaces a copied pin with the code derived from the target binary, preventing independent generated products from sharing SunoDM's upgrade line. This resolves the incompatible `productName = sunodm` shorthand in phase 20.3 without changing the product identifier, version, data, or persistence format.
+
 ## Distribution hardening and inactive publication
 
 `profiles/features.toml` includes `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md` in the `core` paths used by every scaffold profile. The scaffold tests require exact byte equality with the product files. Source packages are created from the exact authorized commit SHA and must contain all three legal files; web packages must contain the same three files byte-for-byte and are validated against that exact-SHA source package.
@@ -86,22 +88,23 @@ These are fail-closed distribution controls, not publication enablement. No publ
 
 ## Technical command matrix
 
-The matrix below was run on the stable pre-Gate-C technical tree. Quality warnings remain visible and unsuppressed; the configured gate reports zero errors.
+The matrix below was rerun on the corrected pre-adoption technical tree. Quality warnings remain visible and unsuppressed; the configured gate reports zero errors.
 
 | Command | Exit code | Status | Relevant notes |
 | --- | ---: | --- | --- |
 | `python tools/control.py doctor` | 0 | PASS | Effective `desktop-local` configuration is valid; backend runtime is disabled |
 | `python tools/control.py config doctor` | 0 | PASS | Effective configuration is valid |
 | `python tools/control.py quality` | 0 | PASS | 414 files; 0 errors, 210 strong warnings, 501 warnings, 0 suppressed findings |
-| `python tools/control.py test --suite tools` | 0 | PASS | 863 passed and 25 skipped |
+| `python tools/control.py test --suite tools` | 0 | PASS | 864 passed and 25 skipped |
 | `python tools/control.py test --suite frontend` | 0 | PASS | 200 tests pass; coverage is 90.74% statements, 82.74% branches, 87.72% functions, and 92.71% lines |
 | `python tools/control.py test --suite tauri` | 0 | PASS | Rust result is 391 passed, 0 failed, and 1 environment-bound test ignored |
 | `python tools/control.py test --suite e2e` | 0 | PASS | Two Playwright tests pass; runner-owned services start and stop cleanly |
-| `python tools/control.py test --suite all --report` | 0 | PASS | `.report/test-report-20260825-200936-suite-all-ok.md` records tools, schema, frontend, Tauri, and E2E as OK; API, database, and PostgreSQL are skipped because their features are disabled |
+| `python tools/control.py test --suite all --report` | 0 | PASS | `.report/test-report-20260825-212028-suite-all-ok.md` records tools, schema, frontend, Tauri, and E2E as OK; API, database, and PostgreSQL are skipped because their features are disabled |
 | `python tools/control.py docs check` | 0 | PASS | Documentation navigation and authored-page checks are consistent |
 | `python tools/control.py version check` | 0 | PASS | All seven version sources are `0.1.0` |
 | `python tools/control.py build web` | 0 | PASS | Production frontend build succeeds |
 | `python tools/control.py tauri doctor` | 0 | PASS | Overall `WARN` only because optional Corepack is absent; pnpm and all required Tauri, GTK, WebKit, and AppImage tools are present |
+| Tauri schema validation and `tauri inspect wix-upgrade-code` | 0 | PASS | The installed schema accepts the configuration; Tauri reports the display-name default `09688621-8cb0-59c8-97bf-6a51825b85b4` and the explicit continuity override `54c9e875-02fa-5312-b9c4-14f17c9e3c61` |
 | `python tools/control.py build desktop --dry-run --no-clean` | 0 | PASS | Validates `deb,rpm,appimage` command composition; creates no desktop artifacts |
 | `cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps` | 0 | PASS | One package/workspace member, two targets, 25 dependencies |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --check` | 0 | PASS | No formatting drift |
@@ -186,7 +189,7 @@ The following SHA-256 values cover the stored `.b64` file bytes. The tests consu
 | macOS and Windows package execution | NOT RUN | Local Linux verification cannot establish platform-specific bundle behavior |
 | Remote GitHub Actions | NOT RUN | No remote workflow execution was authorized |
 | Signing, notarization, and updater delivery | NOT RUN | These release operations are outside local technical migration verification |
-| Tag, publication, upload, and release creation | NOT RUN | No release or remote mutation was authorized or performed |
+| Tag, publication, upload, and release creation | NOT RUN | No release action was performed. The remote-tracking reflog was later observed at `23c6152` with `update by push`; the actor is not established by local evidence, and no further remote mutation is included here. |
 
 These manual and non-local items do not reduce the local compatibility result because a safe, complete temporary-workspace fixture now covers the required Phase 24 data round trip. They remain relevant to final cross-platform and release acceptance.
 
@@ -201,7 +204,7 @@ These manual and non-local items do not reduce the local compatibility result be
 
 Local technical and product/data compatibility is `PASS`. The mandatory applicable command matrix passes, the approved Gate B corrections pass, the complete isolated Phase 24 fixture passes, no original product data was opened, and the unexpected product-data change class is empty.
 
-This is the pre-Gate-C state. It does not authorize the technical commit, claim adoption, create lifecycle metadata, approve a final report, or authorize a tag, signing operation, publication, upload, or release.
+Gate C produced technical commit `23c6152`. The first read-only adoption preview then exposed the display-identity mismatch; the corrected tree now passes the fixed v1.0.3 identity checks but still requires a separate approved correction commit before the official clean-tree preview. This report does not claim adoption, create lifecycle metadata, approve a final report, or authorize a push, tag, signing operation, publication, upload, or release.
 
 ## Related documents
 

@@ -108,6 +108,7 @@ def identity_issues(project_root: Path, identity: ProductIdentity) -> tuple[str,
         issues,
     )
     _check_text_contains(root, "frontend/index.html", identity.name, issues)
+    _check_text_contains(root, "frontend/src/main.ts", identity.name, issues)
     _check_text_contains(root, "backend/app/api/health.py", f"{identity.slug}-backend", issues)
     _check_text_contains(root, "tools/inst/build.py", f"{identity.slug}-web.zip", issues)
     _check_text_contains(root, "deployment/compose.yaml", identity.slug, issues)
@@ -363,7 +364,7 @@ def _check_tauri_identity(root: Path, identity: ProductIdentity, issues: list[st
     if payload is None:
         return
     for key, expected in (
-        ("productName", identity.binary),
+        ("productName", identity.name),
         ("identifier", identity.identifier),
         ("mainBinaryName", identity.binary),
     ):
