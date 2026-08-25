@@ -1,0 +1,217 @@
+/* Dashboard */
+.dashboard-welcome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+.dashboard-welcome h2 {
+  margin: 0 0 8px;
+  font-family: Georgia, serif;
+  font-size: clamp(28px, 3vw, 39px);
+  font-weight: 400;
+}
+.dashboard-welcome p:last-child {
+  margin: 0;
+  font-size: 13px;
+}
+.dashboard-welcome p strong {
+  color: var(--ink);
+}
+.workspace-seal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border: 1px solid #c9ddd0;
+  border-radius: 99px;
+  color: var(--green);
+  background: #edf5f0;
+  font-size: 10px;
+  font-weight: 750;
+}
+.workspace-seal .icon {
+  width: 15px;
+}
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.metric-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--paper);
+}
+.metric-icon {
+  display: grid;
+  width: 43px;
+  height: 43px;
+  place-items: center;
+  border-radius: 10px;
+}
+.metric-icon .icon {
+  width: 19px;
+}
+.metric-icon--ink {
+  color: #fff;
+  background: var(--ink);
+}
+.metric-icon--amber {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+.metric-icon--blue {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+.metric-icon--green {
+  color: var(--green);
+  background: var(--green-soft);
+}
+.metric-card div > span,
+.metric-card small {
+  display: block;
+}
+.metric-card div > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.metric-card strong {
+  display: inline-block;
+  margin: 2px 7px 0 0;
+  font-family: Georgia, serif;
+  font-size: 27px;
+  font-weight: 400;
+}
+.metric-card small {
+  display: inline-block;
+  color: var(--muted-light);
+  font-size: 8px;
+}
+.dashboard-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.8fr);
+  gap: 18px;
+}
+.recent-panel,
+.attention-panel {
+  padding: 22px;
+}
+.recent-panel .panel-heading {
+  margin-bottom: 14px;
+}
+.attention-count {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 11px;
+  font-weight: 800;
+}
+.attention-track {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 25px 0 20px;
+}
+.attention-track h4 {
+  margin: 6px 0 3px;
+  font-family: Georgia, serif;
+  font-size: 20px;
+  font-weight: 400;
+}
+.attention-track p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.progress-block {
+  margin: 18px 0;
+}
+.progress-block > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+.progress-block strong {
+  color: var(--ink);
+}
+.progress-track {
+  display: block;
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 99px;
+  background: #e4e1da;
+  appearance: none;
+}
+.progress-track::-webkit-progress-bar {
+  border-radius: 99px;
+  background: #e4e1da;
+}
+.progress-track::-webkit-progress-value {
+  border-radius: 99px;
+  background: var(--accent);
+}
+.progress-track::-moz-progress-bar {
+  border-radius: 99px;
+  background: var(--accent);
+}
+.principle-strip {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 15px;
+  margin-top: 18px;
+  padding: 18px 22px;
+  border-radius: 12px;
+  color: #d5d5ce;
+  background: #252622;
+}
+.principle-icon {
+  display: grid;
+  width: 37px;
+  height: 37px;
+  place-items: center;
+  border-radius: 8px;
+  color: #e4836c;
+  background: #353630;
+}
+.principle-strip strong,
+.principle-strip span {
+  display: block;
+}
+.principle-strip strong {
+  font-family: Georgia, serif;
+  font-size: 15px;
+  font-weight: 400;
+}
+.principle-strip span {
+  margin-top: 3px;
+  color: #7e8178;
+  font-size: 9px;
+}
+.principle-strip p {
+  justify-self: end;
+  max-width: 510px;
+  margin: 0;
+  color: #777a72;
+  font-size: 9px;
+  text-align: right;
+}

@@ -84,6 +84,7 @@ def test_state_render_write_and_digest_are_deterministic(tmp_path: Path) -> None
     assert load_state(product) == state
     assert render_state(state) == first_render
     assert (product / ".template/state.toml").read_bytes() == first_bytes
+    assert (product / ".template/state.toml").stat().st_mode & 0o777 == 0o600
     assert state_digest(state) == state_digest(state)
     assert state_digest(state).startswith("sha256:")
     assert str(tmp_path) not in first_render

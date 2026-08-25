@@ -1,0 +1,87 @@
+/* Audio screening is a full-width release section; its copy must stay as readable as the rest of the editor. */
+.pre-release-screening {
+  width: 100%;
+  clear: both;
+  margin-top: 30px;
+  padding: 24px;
+}
+.pre-release-screening header p:last-child {
+  font-size: 10px;
+  line-height: 1.5;
+}
+.screening-summary-head small {
+  font-size: 9px;
+}
+.screening-summary-head strong {
+  font-size: 12px;
+}
+.screening-summary-head b {
+  font-size: 10px;
+}
+.screening-summary > p {
+  font-size: 10px;
+  line-height: 1.5;
+}
+.screening-summary dt {
+  font-size: 8px;
+}
+.screening-summary dd {
+  font-size: 10px;
+}
+.screening-summary dd code {
+  font-size: 9px;
+}
+.screening-checked-at {
+  font-size: 9px;
+}
+.screening-match-warning,
+.screening-disclaimer {
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.audio-screening-settings-section p,
+.audio-screening-settings-section .audio-screening-doc-link,
+.audio-screening-settings-section .timestamp-settings-note {
+  font-size: 10px;
+  line-height: 1.5;
+}
+.audio-screening-settings-section .audio-screening-local-engine strong,
+.audio-screening-settings-section .toggle-row strong,
+.audio-screening-settings-section .timestamp-provider-status strong {
+  font-size: 11px;
+}
+.audio-screening-settings-section .audio-screening-local-engine small,
+.audio-screening-settings-section .toggle-row small,
+.audio-screening-settings-section .timestamp-provider-status span,
+.audio-screening-settings-section .timestamp-provider-status small {
+  font-size: 10px;
+  line-height: 1.45;
+}
+.audio-screening-settings-section .audio-screening-intensity__heading h4 {
+  font-size: 15px;
+}
+.audio-screening-settings-section .audio-screening-intensity__heading p,
+.audio-screening-settings-section .audio-screening-intensity__preview > span,
+.audio-screening-settings-section .audio-screening-intensity__cap {
+  font-size: 10px;
+}
+.audio-screening-settings-section .audio-screening-intensity__stops {
+  font-size: 9px;
+}
+.audio-screening-settings-section .audio-screening-intensity__preview > strong {
+  font-size: 11px;
+}
+.audio-screening-settings-section .audio-screening-intensity__preview dt {
+  font-size: 8px;
+}
+.audio-screening-settings-section .audio-screening-intensity__preview dd {
+  font-size: 10px;
+}
+.audio-screening-settings-section .audio-screening-intensity__warning strong {
+  font-size: 10px;
+}
+.audio-screening-settings-section .audio-screening-intensity__warning span,
+.audio-screening-settings-section .audio-screening-intensity__warning small {
+  font-size: 9px;
+}

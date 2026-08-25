@@ -152,7 +152,7 @@ def _incoming_manifest(
     incoming.mkdir()
     _write_files(incoming, files)
     for relative in executable:
-        os.chmod(incoming / relative, 0o755)
+        os.chmod(incoming / relative, 0o700)
     return create_manifest(incoming)
 
 

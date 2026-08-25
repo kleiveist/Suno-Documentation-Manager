@@ -215,7 +215,7 @@ SunoDM is source-available under the [PolyForm Shield License 1.0.0](LICENSE). U
 ## 📄 Files
 - 📝 [Coding Agent Governance](AGENTS.md)
 - 📝 [Changelog](CHANGELOG.md)
-- 📝 [Roadmap: V0.1(Verified Service Zertifizierungsreife)](Roadmap%3A%20V0.1%28Verified%20Service-Zertifizierungsreife%29.md)
+- 📝 [Roadmap: V0.1(Verified Service Zertifizierungsreife)](Roadmap-V0.1-Verified-Service-Zertifizierungsreife.md)
 - 📝 [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 # DOCS

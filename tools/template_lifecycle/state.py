@@ -159,7 +159,7 @@ def state_digest(state: LifecycleState) -> str:
 def write_state(project_root: Path, state: LifecycleState) -> None:
     lifecycle_dir = validate_lifecycle_directory(project_root)
     path = lifecycle_dir / Path(STATE_RELATIVE_PATH).name
-    _atomic_write(path, render_state(state).encode("utf-8"), mode=0o644)
+    _atomic_write(path, render_state(state).encode("utf-8"), mode=0o600)
 
 
 def validate_lifecycle_directory(project_root: Path) -> Path:
@@ -198,7 +198,8 @@ def _atomic_write(path: Path, content: bytes, *, mode: int) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
+        owner_only_mode = 0o700 if mode & 0o111 else 0o600
+        os.chmod(temporary, owner_only_mode)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
