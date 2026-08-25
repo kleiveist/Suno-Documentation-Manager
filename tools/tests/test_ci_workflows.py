@@ -11,7 +11,6 @@ EXPECTED_WORKFLOWS = {"ci.yml", "desktop.yml", "release.yml", "security.yml"}
 ACTION_PINS = {
     "actions/cache": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "actions/dependency-review-action": "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
     "actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
     "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -219,8 +218,15 @@ def test_security_workflow_has_least_privilege_product_scanners() -> None:
     content = _workflow("security.yml")
 
     assert "if: github.event_name == 'pull_request'" in content
-    assert "fail-on-severity: high" in content
-    assert "fail-on-scopes: development, runtime, unknown" in content
+    assert 'python-version: "3.11"' in content
+    assert 'node-version: "24"' in content
+    assert "rustup toolchain install 1.97.1 --profile minimal" in content
+    assert "python -m pip_audit --requirement tools/requirements.txt --strict --progress-spinner off" in content
+    assert "npm audit --audit-level=high" in content
+    assert "cargo install cargo-audit --locked --version 0.22.2 --no-default-features" in content
+    assert "cargo audit" in content
+    assert "--ignore-vuln" not in content
+    assert "--upgrade pip" not in content
     assert "security-events: write" in content
     assert "fail-fast: false" in content
     for language in ("javascript-typescript", "python", "rust"):

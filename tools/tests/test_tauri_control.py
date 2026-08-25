@@ -242,6 +242,26 @@ def test_tauri_run_command_reports_missing_binary(monkeypatch) -> None:
     assert "missing binary" in result.stderr
 
 
+def test_tauri_command_failure_reports_stdout_and_stderr_separately(monkeypatch) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(common.logger, "fail", messages.append)
+    result = common.CommandResult(
+        command=["cargo", "test"],
+        cwd=paths.ROOT,
+        returncode=1,
+        stdout="test fixture failed\nassertion details",
+        stderr="compiler context\nprocess exit details",
+    )
+
+    assert common.print_result(result, "passed", "failed") == 1
+    assert messages == [
+        "failed:\n"
+        "command: cargo test\n"
+        "stdout: test fixture failed | assertion details\n"
+        "stderr: compiler context | process exit details"
+    ]
+
+
 def test_tauri_windows_portable_dry_run_uses_cargo_xwin_on_linux(monkeypatch) -> None:
     calls: list[tuple[list[str], bool]] = []
     messages: list[str] = []

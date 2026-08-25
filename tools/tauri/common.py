@@ -202,8 +202,14 @@ def print_result(result: CommandResult, success_message: str, failure_message: s
         logger.ok(success_message)
         return 0
 
-    details = tail(result.stdout + "\n" + result.stderr)
-    logger.fail(f"{failure_message}: {details}")
+    details = "\n".join(
+        (
+            f"command: {command_to_string(result.command)}",
+            f"stdout: {tail(result.stdout, limit=40)}",
+            f"stderr: {tail(result.stderr, limit=40)}",
+        )
+    )
+    logger.fail(f"{failure_message}:\n{details}")
     return result.returncode
 
 
