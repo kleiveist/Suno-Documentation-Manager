@@ -8,7 +8,7 @@ use crate::model::{
 use crate::workflow::CoverageStatus;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{Shutdown, TcpListener};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -16,6 +16,8 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+const LOOPBACK_TIMESTAMP_TIMEOUT_SECONDS: u32 = 10;
 
 #[derive(Debug)]
 struct ParsedCertificate {
@@ -166,7 +168,7 @@ fn custom_timestamp_settings(endpoint: String, auto_after_finalization: bool) ->
             provider_name: "Deterministic test TSA".into(),
             endpoint,
             ca_certificate_path: "unused-test-trust-anchor.der".into(),
-            timeout_seconds: 2,
+            timeout_seconds: LOOPBACK_TIMESTAMP_TIMEOUT_SECONDS,
             ..Default::default()
         },
         ..Default::default()
@@ -182,7 +184,9 @@ fn one_shot_timestamp_server(body: Vec<u8>) -> (String, thread::JoinHandle<()>) 
     let handle = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("timestamp request");
         stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(Duration::from_secs(u64::from(
+                LOOPBACK_TIMESTAMP_TIMEOUT_SECONDS,
+            ))))
             .expect("read timeout");
         let mut request = [0_u8; 4096];
         let _ = stream.read(&mut request);
@@ -194,6 +198,10 @@ fn one_shot_timestamp_server(body: Vec<u8>) -> (String, thread::JoinHandle<()>) 
             .write_all(header.as_bytes())
             .expect("response header");
         stream.write_all(&body).expect("response body");
+        stream.flush().expect("flush timestamp response");
+        stream
+            .shutdown(Shutdown::Write)
+            .expect("close timestamp response");
     });
     (endpoint, handle)
 }
