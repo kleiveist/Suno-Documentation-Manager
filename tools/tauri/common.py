@@ -210,6 +210,7 @@ def print_result(result: CommandResult, success_message: str, failure_message: s
         )
     )
     logger.fail(f"{failure_message}:\n{details}")
+    _emit_github_actions_error(failure_message, details)
     return result.returncode
 
 
@@ -218,6 +219,15 @@ def tail(text: str, *, limit: int = 8) -> str:
     if not lines:
         return "(no output)"
     return " | ".join(lines[-limit:])
+
+
+def _emit_github_actions_error(title: str, details: str) -> None:
+    """Expose captured subprocess failures through the Checks annotation API."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    message = f"{title}:\n{details}"
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error title=Captured command failure::{escaped}")
 
 
 def ensure_directory(path: Path, *, dry_run: bool = False) -> None:

@@ -262,6 +262,27 @@ def test_tauri_command_failure_reports_stdout_and_stderr_separately(monkeypatch)
     ]
 
 
+def test_tauri_command_failure_emits_github_actions_annotation(monkeypatch, capsys) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(common.logger, "fail", messages.append)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    result = common.CommandResult(
+        command=["cargo", "test"],
+        cwd=paths.ROOT,
+        returncode=1,
+        stdout="test fixture failed",
+        stderr="process exit details",
+    )
+
+    assert common.print_result(result, "passed", "failed") == 1
+    assert messages
+    assert capsys.readouterr().out == (
+        "::error title=Captured command failure::failed:%0A"
+        "command: cargo test%0Astdout: test fixture failed%0A"
+        "stderr: process exit details\n"
+    )
+
+
 def test_tauri_windows_portable_dry_run_uses_cargo_xwin_on_linux(monkeypatch) -> None:
     calls: list[tuple[list[str], bool]] = []
     messages: list[str] = []
