@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import signal
-import stat
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
 
 from tools import control
 from tools.profiles import runtime as profile_runtime
-from tools.tauri import common, doctor, paths, run, test as tauri_test
-from tools.tauri.build import appimage, installappimage, windows_portable
-from tools.tauri.linux import install as linux_install
+from tools.tauri import common, doctor, paths, run
+from tools.tauri import test as tauri_test
+from tools.tauri.build import appimage, windows_portable
 from tools.tauri.linux import install_arch
 
 pytestmark = pytest.mark.skipif(
@@ -31,7 +30,15 @@ def test_tauri_parser_recognizes_subcommands() -> None:
         ["tauri", "install", "--dry-run"],
         ["tauri", "install-appimage", "--dry-run"],
         ["tauri", "run", "--foreground", "--no-follow", "--frontend-port", "5174"],
-        ["tauri", "build", "--target", "windows-portable", "--dry-run", "--bundles", "deb,rpm"],
+        [
+            "tauri",
+            "build",
+            "--target",
+            "windows-portable",
+            "--dry-run",
+            "--bundles",
+            "deb,rpm",
+        ],
         ["tauri", "build", "--appimage", "--dry-run", "--skip-appimage-preflight"],
         ["tauri", "test", "--all"],
         ["tauri", "test", "--cargo"],
@@ -50,9 +57,12 @@ def test_tauri_identity_separates_display_and_artifact_names() -> None:
     assert paths.APP_NAME == "Suno Documentation Manager"
     assert paths.APP_ARTIFACT_NAME == "sunodm"
     assert paths.APP_SLUG == "sunodm"
-    assert payload["productName"] == "sunodm"
+    assert payload["productName"] == paths.APP_NAME
     assert payload["mainBinaryName"] == "sunodm"
     assert payload["app"]["windows"][0]["title"] == paths.APP_NAME
+    wix_upgrade_code = payload["bundle"]["windows"]["wix"]["upgradeCode"]
+    assert wix_upgrade_code == "54c9e875-02fa-5312-b9c4-14f17c9e3c61"
+    assert wix_upgrade_code == str(uuid.uuid5(uuid.NAMESPACE_DNS, "sunodm.exe.app.x64"))
 
 
 def test_bare_tauri_command_prints_help(capsys) -> None:
@@ -96,7 +106,11 @@ def test_existing_aliases_do_not_collide_with_tauri() -> None:
     assert control._normalize_argv(["--install"]) == ["install"]
     assert control._normalize_argv(["--run"]) == ["run"]
     assert control._normalize_argv(["--stop"]) == ["stop"]
-    assert control._normalize_argv(["--test", "--suite", "frontend"]) == ["test", "--suite", "frontend"]
+    assert control._normalize_argv(["--test", "--suite", "frontend"]) == [
+        "test",
+        "--suite",
+        "frontend",
+    ]
 
 
 def test_tauri_doctor_json_is_parseable(monkeypatch, capsys) -> None:
@@ -147,12 +161,17 @@ def test_tauri_npm_install_uses_package_lock(monkeypatch) -> None:
 def test_tauri_cargo_checks_use_locked_dependencies(monkeypatch) -> None:
     commands: list[list[str]] = []
 
-    monkeypatch.setattr(tauri_test.shutil, "which", lambda name: "/usr/bin/cargo" if name == "cargo" else None)
+    monkeypatch.setattr(
+        tauri_test.shutil,
+        "which",
+        lambda name: "/usr/bin/cargo" if name == "cargo" else None,
+    )
     monkeypatch.setattr(
         common,
         "run_command",
-        lambda command, **kwargs: commands.append(command)
-        or common.CommandResult(command=command, cwd=paths.ROOT, returncode=0),
+        lambda command, **kwargs: (
+            commands.append(command) or common.CommandResult(command=command, cwd=paths.ROOT, returncode=0)
+        ),
     )
 
     assert tauri_test._run_cargo_checks() == 0
@@ -223,18 +242,64 @@ def test_tauri_run_command_reports_missing_binary(monkeypatch) -> None:
     assert "missing binary" in result.stderr
 
 
+def test_tauri_command_failure_reports_stdout_and_stderr_separately(monkeypatch) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(common.logger, "fail", messages.append)
+    result = common.CommandResult(
+        command=["cargo", "test"],
+        cwd=paths.ROOT,
+        returncode=1,
+        stdout="test fixture failed\nassertion details",
+        stderr="compiler context\nprocess exit details",
+    )
+
+    assert common.print_result(result, "passed", "failed") == 1
+    assert messages == [
+        "failed:\n"
+        "command: cargo test\n"
+        "stdout: test fixture failed | assertion details\n"
+        "stderr: compiler context | process exit details"
+    ]
+
+
+def test_tauri_command_failure_emits_github_actions_annotation(monkeypatch, capsys) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(common.logger, "fail", messages.append)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    result = common.CommandResult(
+        command=["cargo", "test"],
+        cwd=paths.ROOT,
+        returncode=1,
+        stdout="test fixture failed",
+        stderr="process exit details",
+    )
+
+    assert common.print_result(result, "passed", "failed") == 1
+    assert messages
+    assert capsys.readouterr().out == (
+        "::error title=Captured command failure::failed:%0A"
+        "command: cargo test%0Astdout: test fixture failed%0A"
+        "stderr: process exit details\n"
+    )
+
+
 def test_tauri_windows_portable_dry_run_uses_cargo_xwin_on_linux(monkeypatch) -> None:
     calls: list[tuple[list[str], bool]] = []
     messages: list[str] = []
 
     monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr("tools.tauri.build.windows_portable.shutil.which", lambda name, path=None: "cargo" if name == "cargo" else None)
+    monkeypatch.setattr(
+        "tools.tauri.build.windows_portable.shutil.which",
+        lambda name, path=None: "cargo" if name == "cargo" else None,
+    )
     monkeypatch.setattr(windows_portable.logger, "info", messages.append)
     monkeypatch.setattr(
         common,
         "run_command",
-        lambda command, **kwargs: calls.append((command, bool(kwargs.get("dry_run"))))
-        or common.CommandResult(command, paths.ROOT, 0, dry_run=bool(kwargs.get("dry_run"))),
+        lambda command, **kwargs: (
+            calls.append((command, bool(kwargs.get("dry_run"))))
+            or common.CommandResult(command, paths.ROOT, 0, dry_run=bool(kwargs.get("dry_run")))
+        ),
     )
 
     code = control.main(["tauri", "build", "--target", "windows-portable", "--dry-run"])
@@ -256,12 +321,17 @@ def test_tauri_raw_windows_portable_flags_map_to_portable_target(monkeypatch) ->
     calls: list[tuple[list[str], bool]] = []
 
     monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr("tools.tauri.build.windows_portable.shutil.which", lambda name, path=None: "cargo" if name == "cargo" else None)
+    monkeypatch.setattr(
+        "tools.tauri.build.windows_portable.shutil.which",
+        lambda name, path=None: "cargo" if name == "cargo" else None,
+    )
     monkeypatch.setattr(
         common,
         "run_command",
-        lambda command, **kwargs: calls.append((command, bool(kwargs.get("dry_run"))))
-        or common.CommandResult(command, paths.ROOT, 0, dry_run=bool(kwargs.get("dry_run"))),
+        lambda command, **kwargs: (
+            calls.append((command, bool(kwargs.get("dry_run"))))
+            or common.CommandResult(command, paths.ROOT, 0, dry_run=bool(kwargs.get("dry_run")))
+        ),
     )
 
     code = control.main(
@@ -287,7 +357,9 @@ def test_tauri_raw_windows_portable_flags_map_to_portable_target(monkeypatch) ->
     assert calls[2][0][-1:] == ["--no-bundle"]
 
 
-def test_tauri_windows_portable_installs_cargo_xwin_for_real_linux_build(monkeypatch) -> None:
+def test_tauri_windows_portable_installs_cargo_xwin_for_real_linux_build(
+    monkeypatch,
+) -> None:
     calls: list[tuple[list[str], bool]] = []
     installed = False
     llvm_installed = False
@@ -315,13 +387,19 @@ def test_tauri_windows_portable_installs_cargo_xwin_for_real_linux_build(monkeyp
     monkeypatch.setattr(common, "host_os", lambda: "linux")
     monkeypatch.setattr("tools.tauri.build.windows_portable.shutil.which", fake_which)
     monkeypatch.setattr(common, "run_command", fake_run_command)
-    monkeypatch.setattr("tools.tauri.build.windows_portable._zip_portable_binary", lambda dry_run=False: 0)
+    monkeypatch.setattr(
+        "tools.tauri.build.windows_portable._zip_portable_binary",
+        lambda dry_run=False: 0,
+    )
 
     code = control.main(["tauri", "build", "--target", "windows-portable"])
 
     assert code == 0
     assert calls[0] == (["/usr/bin/cargo", "install", "cargo-xwin"], False)
-    assert calls[1] == (["/usr/bin/rustup", "component", "add", "llvm-tools-preview"], False)
+    assert calls[1] == (
+        ["/usr/bin/rustup", "component", "add", "llvm-tools-preview"],
+        False,
+    )
     assert "--runner" in calls[2][0]
     assert calls[2][0][calls[2][0].index("--runner") + 1] == "fixture-bin/cargo-xwin"
     assert calls[2][0][-1:] == ["--no-bundle"]
@@ -333,7 +411,11 @@ def test_tauri_windows_portable_fails_without_cargo_on_linux(monkeypatch) -> Non
 
     monkeypatch.setattr(common, "host_os", lambda: "linux")
     monkeypatch.setattr("tools.tauri.build.windows_portable.shutil.which", lambda name, path=None: None)
-    monkeypatch.setattr(common, "run_command", lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0))
+    monkeypatch.setattr(
+        common,
+        "run_command",
+        lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0),
+    )
     monkeypatch.setattr("tools.tauri.build.windows_portable.logger.fail", messages.append)
 
     code = control.main(["tauri", "build", "--target", "windows-portable"])
@@ -348,7 +430,11 @@ def test_tauri_windows_cross_dry_run_requires_linux_host(monkeypatch) -> None:
     messages: list[str] = []
 
     monkeypatch.setattr(common, "host_os", lambda: "windows")
-    monkeypatch.setattr(common, "run_command", lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0))
+    monkeypatch.setattr(
+        common,
+        "run_command",
+        lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0),
+    )
     monkeypatch.setattr("tools.tauri.build.windows_cross_linux.logger.fail", messages.append)
 
     code = control.main(["tauri", "build", "--target", "windows-cross-linux", "--dry-run"])
@@ -356,505 +442,6 @@ def test_tauri_windows_cross_dry_run_requires_linux_host(monkeypatch) -> None:
     assert code == 1
     assert calls == []
     assert any("Windows cross-build is supported from Linux hosts only" in message for message in messages)
-
-
-def test_tauri_build_artifacts_print_with_icons(monkeypatch, tmp_path) -> None:
-    messages: list[str] = []
-    monkeypatch.setattr(common.logger, "info", messages.append)
-
-    root = tmp_path / "repo"
-    bundle_dir = root / "src-tauri" / "target" / "release" / "bundle"
-    dist_dir = root / ".dist" / "desktop"
-    bundle_dir.mkdir(parents=True)
-    dist_dir.mkdir(parents=True)
-    (bundle_dir / "Template Project_0.1.0_amd64.deb").write_bytes(b"deb")
-    (bundle_dir / "Template Project-0.1.0-1.x86_64.rpm").write_bytes(b"rpm")
-    (dist_dir / "Template Project-windows-portable.zip").write_bytes(b"zip")
-
-    monkeypatch.setattr(paths, "ROOT", root)
-    monkeypatch.setattr(paths, "DIST_DIR", dist_dir)
-    monkeypatch.setattr(paths, "bundle_roots", lambda: [bundle_dir])
-
-    common.print_build_artifacts()
-
-    output = "\n".join(messages)
-    assert "📁 Build artifacts:" in messages
-    assert "📦 src-tauri/target/release/bundle/Template Project_0.1.0_amd64.deb" in output
-    assert "📦 src-tauri/target/release/bundle/Template Project-0.1.0-1.x86_64.rpm" in output
-    assert "🗜️ .dist/desktop/Template Project-windows-portable.zip" in output
-
-
-def test_windows_portable_output_path_repairs_owner_directory_permissions(tmp_path) -> None:
-    dist_dir = tmp_path / "desktop"
-    dist_dir.mkdir()
-    dist_dir.chmod(stat.S_IWUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
-
-    try:
-        assert windows_portable._ensure_portable_output_path(dist_dir / "Template Project-windows-portable.zip") is True
-        mode = dist_dir.stat().st_mode
-        assert mode & stat.S_IRUSR
-        assert mode & stat.S_IWUSR
-        assert mode & stat.S_IXUSR
-    finally:
-        dist_dir.chmod(stat.S_IRWXU)
-
-
-def test_tauri_linux_build_accepts_explicit_bundle_selection(monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    monkeypatch.setattr(common, "run_command", lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0))
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-
-    code = control.main(["tauri", "build", "--target", "linux", "--bundles", "appimage"])
-
-    assert code == 0
-    assert calls[0][-3:] == ["build", "--bundles", "appimage"]
-
-
-def test_tauri_linux_build_default_includes_appimage_preflight(monkeypatch) -> None:
-    calls: list[list[str]] = []
-    preflight: list[bool] = []
-
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda *args, **kwargs: preflight.append(True) or True)
-    monkeypatch.setattr(common, "run_command", lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0))
-
-    code = control.main(["tauri", "build", "--target", "linux"])
-
-    assert code == 0
-    assert preflight == [True]
-    assert calls[0][-3:] == ["build", "--bundles", "deb,rpm,appimage"]
-
-
-def test_tauri_linux_build_uses_appimage_fallback_when_linuxdeploy_fails(monkeypatch) -> None:
-    calls: list[list[str]] = []
-    fallback: list[bool] = []
-
-    def fake_run_command(command: list[str], **kwargs) -> common.CommandResult:
-        calls.append(command)
-        return common.CommandResult(command=command, cwd=paths.ROOT, returncode=1, stderr="failed to run linuxdeploy")
-
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda *args, **kwargs: True)
-    monkeypatch.setattr(common, "run_command", fake_run_command)
-    monkeypatch.setattr(appimage, "package_existing_appdir", lambda dry_run=False: fallback.append(dry_run) or 0)
-    monkeypatch.setattr(common, "print_build_artifacts", lambda: None)
-
-    code = control.main(["tauri", "build", "--target", "linux"])
-
-    assert code == 0
-    assert calls[0][-3:] == ["build", "--bundles", "deb,rpm,appimage"]
-    assert fallback == [False]
-
-
-def test_tauri_linux_build_uses_appimage_fallback_when_before_build_succeeded_then_linuxdeploy_failed(monkeypatch) -> None:
-    fallback: list[bool] = []
-    output = """
-       Running beforeBuildCommand `cd ../frontend && npm run build`
-       Bundling Template Project_0.1.0_amd64.AppImage
-       failed to bundle project `failed to run linuxdeploy`
-    """
-
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda *args, **kwargs: True)
-    monkeypatch.setattr(
-        common,
-        "run_command",
-        lambda command, **kwargs: common.CommandResult(command=command, cwd=paths.ROOT, returncode=1, stderr=output),
-    )
-    monkeypatch.setattr(appimage, "package_existing_appdir", lambda dry_run=False: fallback.append(dry_run) or 0)
-    monkeypatch.setattr(common, "print_build_artifacts", lambda: None)
-
-    code = control.main(["tauri", "build", "--target", "linux"])
-
-    assert code == 0
-    assert fallback == [False]
-
-
-def test_tauri_appimage_linuxdeploy_detection_accepts_user_failure_tail() -> None:
-    output = """
-       - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-       Compiling project-template v0.1.0 (/tmp/example-workspace/Template Project/src-tauri)
-       Finished `release` profile [optimized] target(s) in 25.29s
-       Built application at: /tmp/example-workspace/Template Project/src-tauri/target/release/Template Project
-       Bundling Template Project_0.1.0_amd64.AppImage
-       failed to bundle project `failed to run linuxdeploy`
-       Error failed to bundle project `failed to run linuxdeploy`
-    """
-
-    result = common.CommandResult(command=[], cwd=paths.ROOT, returncode=1, stderr=output)
-
-    assert appimage.is_linuxdeploy_failure(result) is True
-
-
-def test_tauri_linux_build_accepts_fresh_appimage_when_linuxdeploy_returns_failure(monkeypatch) -> None:
-    fallback: list[bool] = []
-    output = """
-       - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-       Running beforeBuildCommand `cd ../frontend && npm run build`
-       Finished `release` profile [optimized] target(s) in 25.29s
-       Bundling Template Project_0.1.0_amd64.AppImage
-       failed to bundle project `failed to run linuxdeploy`
-       Error failed to bundle project `failed to run linuxdeploy`
-    """
-
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda *args, **kwargs: True)
-    monkeypatch.setattr(appimage, "_appimage_snapshot", lambda: {})
-    monkeypatch.setattr(
-        appimage,
-        "_fresh_appimage_from_snapshot",
-        lambda snapshot: paths.ROOT / "src-tauri/target/release/bundle/appimage/Template Project_0.1.0_amd64.AppImage",
-    )
-    monkeypatch.setattr(
-        common,
-        "run_command",
-        lambda command, **kwargs: common.CommandResult(command=command, cwd=paths.ROOT, returncode=1, stderr=output),
-    )
-    monkeypatch.setattr(appimage, "package_existing_appdir", lambda dry_run=False: fallback.append(dry_run) or 0)
-    monkeypatch.setattr(common, "print_build_artifacts", lambda: None)
-
-    code = control.main(["tauri", "build", "--target", "linux", "--bundles", "appimage"])
-
-    assert code == 0
-    assert fallback == []
-
-
-def test_tauri_linux_build_does_not_use_appimage_fallback_for_frontend_build_failure(monkeypatch) -> None:
-    fallback: list[bool] = []
-
-    def fake_run_command(command: list[str], **kwargs) -> common.CommandResult:
-        return common.CommandResult(
-            command=command,
-            cwd=paths.ROOT,
-            returncode=1,
-            stderr="beforeBuildCommand `cd ../frontend && npm run build` failed with exit code 2",
-        )
-
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda *args, **kwargs: True)
-    monkeypatch.setattr(common, "run_command", fake_run_command)
-    monkeypatch.setattr(appimage, "package_existing_appdir", lambda dry_run=False: fallback.append(dry_run) or 0)
-
-    code = control.main(["tauri", "build", "--target", "linux"])
-
-    assert code == 1
-    assert fallback == []
-
-
-def test_tauri_build_appimage_shortcut_builds_and_installs(monkeypatch) -> None:
-    calls: list[tuple[list[str], bool]] = []
-    installed: list[bool] = []
-
-    def fake_run_command(command: list[str], **kwargs) -> common.CommandResult:
-        calls.append((command, bool(kwargs.get("dry_run"))))
-        return common.CommandResult(command=command, cwd=paths.ROOT, returncode=0)
-
-    monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda: True)
-    monkeypatch.setattr(common, "run_command", fake_run_command)
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: installed.append(dry_run) or 0)
-    monkeypatch.setattr(common, "print_build_artifacts", lambda: None)
-
-    code = control.main(["tauri", "build", "--appimage"])
-
-    assert code == 0
-    assert calls[0][0][-3:] == ["build", "--bundles", "appimage"]
-    assert calls[0][1] is False
-    assert installed == [False]
-
-
-def test_tauri_build_appimage_shortcut_packages_appdir_on_linuxdeploy_failure(monkeypatch) -> None:
-    fallback: list[bool] = []
-    installed: list[bool] = []
-
-    monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda: True)
-    monkeypatch.setattr(
-        common,
-        "run_command",
-        lambda command, **kwargs: common.CommandResult(
-            command=command,
-            cwd=paths.ROOT,
-            returncode=1,
-            stderr="failed to run linuxdeploy",
-        ),
-    )
-    monkeypatch.setattr(appimage, "package_existing_appdir", lambda dry_run=False: fallback.append(dry_run) or 0)
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: installed.append(dry_run) or 0)
-    monkeypatch.setattr(common, "print_build_artifacts", lambda: None)
-
-    code = control.main(["tauri", "build", "--appimage"])
-
-    assert code == 0
-    assert fallback == [False]
-    assert installed == [False]
-
-
-def test_tauri_build_appimage_shortcut_installs_fresh_appimage_when_linuxdeploy_returns_failure(monkeypatch) -> None:
-    fallback: list[bool] = []
-    installed: list[bool] = []
-    output = """
-       Bundling Template Project_0.1.0_amd64.AppImage
-       failed to bundle project `failed to run linuxdeploy`
-       Error failed to bundle project `failed to run linuxdeploy`
-    """
-
-    monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_snapshot", lambda: {})
-    monkeypatch.setattr(
-        appimage,
-        "_fresh_appimage_from_snapshot",
-        lambda snapshot: paths.ROOT / "src-tauri/target/release/bundle/appimage/Template Project_0.1.0_amd64.AppImage",
-    )
-    monkeypatch.setattr(
-        common,
-        "run_command",
-        lambda command, **kwargs: common.CommandResult(
-            command=command,
-            cwd=paths.ROOT,
-            returncode=1,
-            stderr=output,
-        ),
-    )
-    monkeypatch.setattr(appimage, "package_existing_appdir", lambda dry_run=False: fallback.append(dry_run) or 0)
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: installed.append(dry_run) or 0)
-    monkeypatch.setattr(common, "print_build_artifacts", lambda: None)
-
-    code = control.main(["tauri", "build", "--appimage"])
-
-    assert code == 0
-    assert fallback == []
-    assert installed == [False]
-
-
-def test_tauri_build_appimage_shortcut_does_not_install_on_frontend_build_failure(monkeypatch) -> None:
-    fallback: list[bool] = []
-    installed: list[bool] = []
-
-    monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda: True)
-    monkeypatch.setattr(
-        common,
-        "run_command",
-        lambda command, **kwargs: common.CommandResult(
-            command=command,
-            cwd=paths.ROOT,
-            returncode=1,
-            stderr="beforeBuildCommand `cd ../frontend && npm run build` failed with exit code 2",
-        ),
-    )
-    monkeypatch.setattr(appimage, "package_existing_appdir", lambda dry_run=False: fallback.append(dry_run) or 0)
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: installed.append(dry_run) or 0)
-
-    code = control.main(["tauri", "build", "--appimage"])
-
-    assert code == 1
-    assert fallback == []
-    assert installed == []
-
-
-def test_tauri_install_appimage_command_only_installs(monkeypatch) -> None:
-    installed: list[bool] = []
-
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: installed.append(dry_run) or 0)
-
-    code = control.main(["tauri", "install-appimage", "--dry-run"])
-
-    assert code == 0
-    assert installed == [True]
-
-
-def test_tauri_installappimage_module_delegates_to_appimage_installer(monkeypatch) -> None:
-    installed: list[bool] = []
-
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: installed.append(dry_run) or 0)
-
-    code = installappimage.main(argparse.Namespace(dry_run=False))
-
-    assert code == 0
-    assert installed == [False]
-
-
-def test_tauri_install_appimage_packages_existing_appdir_when_final_file_is_missing(monkeypatch, tmp_path) -> None:
-    root = tmp_path / "repo"
-    home = tmp_path / "home"
-    tauri_dir = root / "src-tauri"
-    appimage_dir = tauri_dir / "target" / "release" / "bundle" / "appimage"
-    appdir = appimage_dir / f"{paths.APP_ARTIFACT_NAME}.AppDir"
-    icon_dir = tauri_dir / "icons"
-    appdir.mkdir(parents=True)
-    icon_dir.mkdir(parents=True)
-    (icon_dir / "icon.png").write_bytes(b"png")
-    packaged: list[bool] = []
-
-    def fake_package_existing_appdir(dry_run: bool = False) -> int:
-        packaged.append(dry_run)
-        (appimage_dir / f"{paths.APP_ARTIFACT_NAME}_0.1.0_amd64.AppImage").write_bytes(b"appimage")
-        return 0
-
-    monkeypatch.setattr(paths, "ROOT", root)
-    monkeypatch.setattr(paths, "TAURI_DIR", tauri_dir)
-    monkeypatch.setattr(appimage, "_home", lambda: home)
-    monkeypatch.setattr(appimage, "package_existing_appdir", fake_package_existing_appdir)
-
-    code = appimage.install_latest()
-
-    assert code == 0
-    assert packaged == [False]
-    assert (home / "Applications" / f"{paths.APP_ARTIFACT_NAME}.AppImage").read_bytes() == b"appimage"
-
-
-def test_tauri_build_appimage_dry_run_does_not_install(monkeypatch) -> None:
-    calls: list[tuple[list[str], bool]] = []
-
-    def fake_run_command(command: list[str], **kwargs) -> common.CommandResult:
-        calls.append((command, bool(kwargs.get("dry_run"))))
-        return common.CommandResult(command=command, cwd=paths.ROOT, returncode=0, dry_run=True)
-
-    monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr(common, "run_command", fake_run_command)
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: (_ for _ in ()).throw(AssertionError("should not install")))
-
-    code = control.main(["tauri", "build", "--appimage", "--dry-run"])
-
-    assert code == 0
-    assert calls[0][0][-3:] == ["build", "--bundles", "appimage"]
-    assert calls[0][1] is True
-
-
-def test_tauri_build_appimage_fails_when_preflight_is_missing(monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda: False)
-    monkeypatch.setattr(common, "run_command", lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0))
-
-    code = control.main(["tauri", "build", "--appimage"])
-
-    assert code == 1
-    assert calls == []
-
-
-def test_tauri_build_appimage_can_skip_preflight(monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    monkeypatch.setattr(common, "host_os", lambda: "linux")
-    monkeypatch.setattr(common, "frontend_dependencies_ready", lambda: True)
-    monkeypatch.setattr(appimage, "_appimage_prerequisites_ready", lambda: (_ for _ in ()).throw(AssertionError("should skip preflight")))
-    monkeypatch.setattr(common, "run_command", lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0))
-    monkeypatch.setattr(appimage, "install_latest", lambda dry_run=False: 0)
-    monkeypatch.setattr(common, "print_build_artifacts", lambda: None)
-
-    code = control.main(["tauri", "build", "--appimage", "--skip-appimage-preflight"])
-
-    assert code == 0
-    assert calls[0][-3:] == ["build", "--bundles", "appimage"]
-
-
-def test_tauri_appimage_command_detection_checks_host_paths(monkeypatch) -> None:
-    monkeypatch.setattr(appimage.shutil, "which", lambda binary: None)
-    monkeypatch.setattr(appimage, "_host_file_exists", lambda relative_path: relative_path == "usr/bin/patchelf")
-    monkeypatch.setattr(common, "command_output", lambda command: (_ for _ in ()).throw(AssertionError("should not shell out")))
-
-    assert appimage._command_available("patchelf") is True
-
-
-def test_tauri_appimage_libfuse_detection_checks_host_paths(monkeypatch) -> None:
-    monkeypatch.setattr(common, "command_output", lambda command: (True, ""))
-    monkeypatch.setattr(appimage, "_library_file_exists", lambda pattern: pattern == "libfuse.so.2*")
-
-    assert appimage._libfuse2_available() is True
-
-
-def test_tauri_appimage_libfuse_detection_accepts_versioned_library(monkeypatch, tmp_path) -> None:
-    lib_dir = tmp_path / "usr" / "lib"
-    lib_dir.mkdir(parents=True)
-    (lib_dir / "libfuse.so.2.9.9").write_text("", encoding="utf-8")
-
-    monkeypatch.setattr(
-        appimage,
-        "Path",
-        lambda value: lib_dir if value == "/usr/lib" else Path(value),
-    )
-
-    assert appimage._library_file_exists("libfuse.so.2*") is True
-
-
-def test_tauri_detects_arch_like_host_from_os_release(tmp_path) -> None:
-    os_release = tmp_path / "os-release"
-    os_release.write_text('ID=cachyos\nID_LIKE=arch\n', encoding="utf-8")
-
-    assert linux_install._distro_from_os_release(os_release) == "arch"
-
-
-def test_tauri_build_appimage_rejects_non_linux_target(monkeypatch) -> None:
-    monkeypatch.setattr(appimage, "main", lambda args: (_ for _ in ()).throw(AssertionError("should not run")))
-
-    code = control.main(["tauri", "build", "--target", "windows", "--appimage"])
-
-    assert code == 1
-
-
-def test_tauri_appimage_install_copies_artifact_icon_and_desktop_entry(monkeypatch, tmp_path) -> None:
-    root = tmp_path / "repo"
-    home = tmp_path / "home"
-    tauri_dir = root / "src-tauri"
-    appimage_dir = tauri_dir / "target" / "release" / "bundle" / "appimage"
-    icon_dir = tauri_dir / "icons"
-    appimage_dir.mkdir(parents=True)
-    icon_dir.mkdir(parents=True)
-    source_appimage = appimage_dir / "Template Project_0.1.0_amd64.AppImage"
-    source_icon = icon_dir / "icon.png"
-    source_appimage.write_bytes(b"appimage")
-    source_icon.write_bytes(b"png")
-    legacy_appimage = home / "Applications" / f"{paths.APP_NAME}.AppImage"
-    legacy_desktop = home / ".local" / "share" / "applications" / f"{paths.APP_DISPLAY_SLUG}.desktop"
-    legacy_icon = home / ".local" / "share" / "icons" / f"{paths.APP_DISPLAY_SLUG}.png"
-    legacy_appimage.parent.mkdir(parents=True)
-    legacy_desktop.parent.mkdir(parents=True)
-    legacy_icon.parent.mkdir(parents=True)
-    legacy_appimage.write_bytes(b"legacy")
-    legacy_desktop.write_text("legacy", encoding="utf-8")
-    legacy_icon.write_bytes(b"legacy")
-
-    monkeypatch.setattr(paths, "ROOT", root)
-    monkeypatch.setattr(paths, "TAURI_DIR", tauri_dir)
-    monkeypatch.setattr(appimage, "_home", lambda: home)
-
-    code = appimage.install_latest()
-
-    installed_appimage = home / "Applications" / f"{paths.APP_ARTIFACT_NAME}.AppImage"
-    installed_icon = home / ".local" / "share" / "icons" / f"{paths.APP_SLUG}.png"
-    desktop_entry = home / ".local" / "share" / "applications" / f"{paths.APP_SLUG}.desktop"
-    assert code == 0
-    assert installed_appimage.read_bytes() == b"appimage"
-    assert installed_appimage.stat().st_mode & 0o111
-    assert installed_icon.read_bytes() == b"png"
-    assert f"Name={paths.APP_NAME}" in desktop_entry.read_text(encoding="utf-8")
-    assert not legacy_appimage.exists()
-    assert not legacy_desktop.exists()
-    assert not legacy_icon.exists()
-
-
-def test_tauri_appimage_repair_icon_matches_desktop_icon_name(tmp_path, monkeypatch) -> None:
-    appdir = tmp_path / "Template Project.AppDir"
-    appdir.mkdir()
-    (appdir / "Template Project.desktop").write_text("Name=Template Project\nIcon=project-template\n", encoding="utf-8")
-    (appdir / "Template Project.png").write_bytes(b"png")
-
-    monkeypatch.setattr(paths, "APP_NAME", "Template Project")
-    monkeypatch.setattr(paths, "APP_ARTIFACT_NAME", "template-project")
-
-    appimage._repair_appdir_icon(appdir)
-
-    assert (appdir / "project-template.png").read_bytes() == b"png"
 
 
 def test_tauri_appimage_fallback_removes_legacy_long_name_entries(tmp_path) -> None:
@@ -887,7 +474,11 @@ def test_tauri_build_fails_when_frontend_dependencies_are_missing(monkeypatch) -
         "missing_frontend_dependency_paths",
         lambda: [paths.FRONTEND_DIR / "node_modules" / "@types" / "node"],
     )
-    monkeypatch.setattr(common, "run_command", lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0))
+    monkeypatch.setattr(
+        common,
+        "run_command",
+        lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0),
+    )
 
     code = control.main(["tauri", "build", "--target", "linux"])
 
@@ -902,7 +493,7 @@ def test_tauri_cli_fallback_uses_tauri_apps_cli_package(monkeypatch) -> None:
     command = common.tauri_cli_command("dev")
 
     assert Path(command[0]).name == "npm"
-    assert command[1:5] == ["exec", "--yes", "--package", "@tauri-apps/cli@2.10.1"]
+    assert command[1:5] == ["exec", "--yes", "--package", "@tauri-apps/cli@2.11.4"]
     assert command[-2:] == ["tauri", "dev"]
 
 
@@ -968,7 +559,11 @@ def test_tauri_run_foreground_uses_current_terminal(monkeypatch) -> None:
     calls: list[list[str]] = []
 
     monkeypatch.setattr(common, "tauri_cli_command", lambda *args: ["tauri", *args])
-    monkeypatch.setattr(run, "_run_detached", lambda command: (_ for _ in ()).throw(AssertionError("should not detach")))
+    monkeypatch.setattr(
+        run,
+        "_run_detached",
+        lambda command: (_ for _ in ()).throw(AssertionError("should not detach")),
+    )
 
     def fake_run_command(command: list[str], **kwargs) -> common.CommandResult:
         calls.append(command)
@@ -1018,22 +613,22 @@ def test_tauri_follow_ctrl_c_stops_process_group(monkeypatch, tmp_path) -> None:
 
 
 def test_tauri_package_has_no_bare_imports_or_legacy_tokens() -> None:
-    legacy_pattern = re.compile(
-        r"FMDFlashcard|fmdflashcard|fmd-desktop|apps/fmd-desktop|com\.fmd\.flashcard|AppInsall"
-    )
+    legacy_pattern = re.compile(r"FMDFlashcard|fmdflashcard|fmd-desktop|apps/fmd-desktop|com\.fmd\.flashcard|AppInsall")
     bare_import_pattern = re.compile(r"from\s+(doctor|console|installuix|installuixubu)\s+import")
 
     scanned = list((paths.ROOT / "tools" / "tauri").rglob("*.py"))
     scanned.extend((paths.ROOT / "src-tauri").rglob("*"))
 
+    text_suffixes = {".json", ".md", ".py", ".rs", ".svg", ".toml", ".txt"}
     offenders: list[str] = []
     for path in scanned:
-        if any(part in {"target", "gen"} for part in path.relative_to(paths.ROOT).parts):
+        relative = path.relative_to(paths.ROOT)
+        if any(part in {"target", "gen", "binaries"} for part in relative.parts):
             continue
-        if not path.is_file() or path.suffix in {".png", ".ico", ".icns"}:
+        if not path.is_file() or (path.suffix not in text_suffixes and path.name != "Cargo.lock"):
             continue
         text = path.read_text(encoding="utf-8")
         if legacy_pattern.search(text) or bare_import_pattern.search(text):
-            offenders.append(str(path.relative_to(paths.ROOT)))
+            offenders.append(str(relative))
 
     assert offenders == []

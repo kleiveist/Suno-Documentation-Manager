@@ -4,6 +4,8 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from tools import control
 from tools.inst import build
 
@@ -38,6 +40,9 @@ def test_web_build_runs_npm_build_and_reports_dist(monkeypatch, tmp_path) -> Non
     web_zip_path = web_artifact_dir / "template-project-web.zip"
     frontend.mkdir(parents=True)
     (frontend / "package.json").write_text("{}", encoding="utf-8")
+    (root / "LICENSE").write_text("product license\n", encoding="utf-8")
+    (root / "NOTICE").write_text("required notice\n", encoding="utf-8")
+    (root / "THIRD_PARTY_NOTICES.md").write_text("third-party notices\n", encoding="utf-8")
     calls: list[tuple[list[str], Path | None]] = []
 
     def fake_run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -59,7 +64,99 @@ def test_web_build_runs_npm_build_and_reports_dist(monkeypatch, tmp_path) -> Non
     assert calls == [(["/usr/bin/npm", "run", "build"], frontend)]
     assert web_zip_path.exists()
     with zipfile.ZipFile(web_zip_path) as archive:
-        assert sorted(archive.namelist()) == ["assets/app.js", "index.html"]
+        assert sorted(archive.namelist()) == [
+            "LICENSE",
+            "NOTICE",
+            "THIRD_PARTY_NOTICES.md",
+            "assets/app.js",
+            "index.html",
+        ]
+        assert archive.read("LICENSE") == b"product license\n"
+        assert archive.read("NOTICE") == b"required notice\n"
+        assert archive.read("THIRD_PARTY_NOTICES.md") == b"third-party notices\n"
+
+
+def test_web_build_fails_when_distribution_notice_is_missing(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "repo"
+    frontend = root / "frontend"
+    dist = frontend / "dist"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text("{}", encoding="utf-8")
+    (root / "LICENSE").write_text("product license\n", encoding="utf-8")
+    (root / "THIRD_PARTY_NOTICES.md").write_text("third-party notices\n", encoding="utf-8")
+
+    def fake_run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        dist.mkdir()
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="built", stderr="")
+
+    monkeypatch.setattr(build, "ROOT", root)
+    monkeypatch.setattr(build, "FRONTEND_DIR", frontend)
+    monkeypatch.setattr(build, "DIST_DIR", dist)
+    monkeypatch.setattr(build, "WEB_ARTIFACT_DIR", root / ".dist" / "web")
+    monkeypatch.setattr(build, "WEB_ZIP_PATH", root / ".dist" / "web" / "sunodm-web.zip")
+    monkeypatch.setattr(build.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(build, "_run", fake_run)
+
+    assert build.main(control._build_parser().parse_args(["build"])) == 1
+    assert not (root / ".dist" / "web" / "sunodm-web.zip").exists()
+
+
+def test_web_build_rejects_portable_legal_filename_collision(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "repo"
+    frontend = root / "frontend"
+    dist = frontend / "dist"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text("{}", encoding="utf-8")
+    for name in build.WEB_LEGAL_FILES:
+        (root / name).write_text(f"{name}\n", encoding="utf-8")
+
+    def fake_run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        dist.mkdir()
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        (dist / "license").write_text("shadow\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="built", stderr="")
+
+    monkeypatch.setattr(build, "ROOT", root)
+    monkeypatch.setattr(build, "FRONTEND_DIR", frontend)
+    monkeypatch.setattr(build, "DIST_DIR", dist)
+    monkeypatch.setattr(build, "WEB_ARTIFACT_DIR", root / ".dist" / "web")
+    monkeypatch.setattr(build, "WEB_ZIP_PATH", root / ".dist" / "web" / "sunodm-web.zip")
+    monkeypatch.setattr(build.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(build, "_run", fake_run)
+
+    assert build.main(control._build_parser().parse_args(["build"])) == 1
+    assert not (root / ".dist" / "web" / "sunodm-web.zip").exists()
+
+
+def test_web_build_rejects_symlinks(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "repo"
+    frontend = root / "frontend"
+    dist = frontend / "dist"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text("{}", encoding="utf-8")
+    for name in build.WEB_LEGAL_FILES:
+        (root / name).write_text(f"{name}\n", encoding="utf-8")
+
+    def fake_run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        dist.mkdir()
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        try:
+            (dist / "outside-link").symlink_to(root / "NOTICE")
+        except OSError:
+            pytest.skip("symbolic links are unavailable on this platform")
+        return subprocess.CompletedProcess(cmd, 0, stdout="built", stderr="")
+
+    monkeypatch.setattr(build, "ROOT", root)
+    monkeypatch.setattr(build, "FRONTEND_DIR", frontend)
+    monkeypatch.setattr(build, "DIST_DIR", dist)
+    monkeypatch.setattr(build, "WEB_ARTIFACT_DIR", root / ".dist" / "web")
+    monkeypatch.setattr(build, "WEB_ZIP_PATH", root / ".dist" / "web" / "sunodm-web.zip")
+    monkeypatch.setattr(build.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(build, "_run", fake_run)
+
+    assert build.main(control._build_parser().parse_args(["build"])) == 1
+    assert not (root / ".dist" / "web" / "sunodm-web.zip").exists()
 
 
 def test_web_build_fails_when_npm_is_missing(monkeypatch, tmp_path) -> None:

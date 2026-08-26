@@ -2,8 +2,13 @@ schema_version = 1
 
 [core]
 paths = [
+  "AGENTS.md",
+  "LICENSE",
+  "NOTICE",
+  "THIRD_PARTY_NOTICES.md",
   "README.md",
   "VERSION",
+  ".gitattributes",
   ".gitignore",
   "config",
   "docs",
@@ -25,6 +30,7 @@ paths = [
   "backend/app/api",
   "backend/app/config",
   "backend/app/main.py",
+  "backend/app/services",
   "backend/pytest.ini",
   "backend/requirements.txt",
   "backend/requirements-production.txt",

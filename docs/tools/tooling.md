@@ -7,7 +7,7 @@
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
-| Last review | 2026-08-13 |
+| Last review | 2026-08-25 |
 | Audience | Contributors and release operators |
 | Related ATP | [ATP-0013: End-to-end offline workflow](../atp/active/ATP-0013-end-to-end-offline-workflow.md) |
 
@@ -17,7 +17,7 @@ This guide explains the retained `tools/control.py` entry point as it applies to
 
 ## Scope
 
-The active product paths are environment diagnostics, dependency installation, frontend and Rust tests, web and desktop builds, Tauri development, version/release checks, reports, and documentation maintenance. Retained generator, backend, database, and container help is upstream template provenance. It does not make those disabled capabilities part of this product. Run every applicable example from the repository root.
+The active product paths are environment diagnostics, dependency installation, quality and architecture checks, frontend/browser/Rust tests, web and desktop builds, Tauri development, lifecycle inspection, version/release checks, reports, and documentation maintenance. Retained generator, backend, database, and container help is upstream template provenance. It does not make those disabled capabilities part of this product. Run every applicable example from the repository root.
 
 Native commands require stable Rust 1.88 or newer, matching `rust-version = "1.88"` in `src-tauri/Cargo.toml`.
 
@@ -50,6 +50,7 @@ python tools/control.py tauri run --foreground
 | `console` | Open the guided interactive interface | `python tools/control.py console --help` |
 | `run` | Start the enabled local services | `python tools/control.py run --help` |
 | `stop` | Stop tracked development services | `python tools/control.py stop --help` |
+| `quality` | Run repository quality and architecture policy | `python tools/control.py quality --help` |
 | `test` | Select test suites and reports | `python tools/control.py test` |
 | `build` | Select a web, desktop, or container build | `python tools/control.py build` |
 | `container` | Diagnose and validate Docker/Compose deployment files | `python tools/control.py container` |
@@ -58,6 +59,7 @@ python tools/control.py tauri run --foreground
 | `config` | Show or validate effective runtime configuration | `python tools/control.py config` |
 | `db` | Diagnose optional database configuration and run Alembic | `python tools/control.py db` |
 | `docs` | Maintain navigation with PyGitIndex | `python tools/control.py docs` |
+| `template` | Inspect, audit, adopt, plan, update, or verify lifecycle state | `python tools/control.py template` |
 | `tauri` | Manage desktop diagnostics, development, and artifacts | `python tools/control.py tauri` |
 
 For this product, `api`, `database`, and `postgres` test suites are disabled and report `SKIP`; `db` and `container` operations reject the inactive capability. This is expected profile behavior, not evidence that a backend or deployment unit exists.
@@ -70,6 +72,7 @@ python tools/control.py container
 python tools/control.py config
 python tools/control.py db
 python tools/control.py docs
+python tools/control.py template
 python tools/control.py test
 python tools/control.py tauri
 python tools/control.py release
@@ -113,10 +116,10 @@ The main menu is divided by intent:
 | --- | --- |
 | Environment and dependency setup | Doctor, complete install, frontend-only install, backend-only install, install help |
 | Development services | Foreground start, detached start, stop, service help |
-| Tests and reports | Quick check, complete suite, individual suite, report generation, report cleanup, test map |
+| Quality, tests, and reports | Quality gate, quick check, complete suite, individual suite, report generation, report cleanup, test map |
 | Web and desktop builds | Web package, desktop dry-run, confirmed platform build, build map |
 | Tauri desktop workflows | Doctor, structure test, full checks, prerequisite preview/install, development run, artifact previews, Tauri map |
-| Documentation indexing | PyGitIndex preview, normal update, compact README update, documentation help |
+| Documentation indexing | PyGitIndex preview, normal update, compact README update, read-only documentation check, documentation help |
 
 Use `b` to return from a section and `q` to close the console. The console requires confirmation before dependency installation, report deletion, real native builds, Tauri prerequisite installation, or documentation updates. Read-only checks and dry-runs execute immediately.
 
@@ -164,6 +167,7 @@ The root `.env.example` is safe to commit. Local `.env` files are ignored and ar
 ```sh
 python tools/control.py test --suite api
 python tools/control.py test --suite frontend
+python tools/control.py test --suite e2e
 python tools/control.py test --suite tools
 python tools/control.py test --suite all
 python tools/control.py test --suite all --report
@@ -175,13 +179,30 @@ python tools/control.py test --suite all --report
 | `schema` | Shared JSON Schema and examples |
 | `database` | SQLAlchemy configuration, engine, and session unit tests |
 | `postgres` | PostgreSQL connection test; skipped without an available `DATABASE_URL_TEST` |
-| `frontend` | Vitest tests |
-| `e2e` | Playwright tests when configured |
+| `frontend` | Vitest tests with the governed coverage thresholds |
+| `e2e` | Playwright Chromium smoke and axe accessibility tests |
 | `tools` | Project CLI and Tauri helper tests |
 | `tauri` | Tauri structure, `cargo check --locked`, and Rust tests |
 | `all` | Every configured suite |
 
 Reports are written under `.report/`. `python tools/control.py test --report done` removes only that generated report directory.
+
+Run `python tools/control.py quality` after structural source changes. `quality --release` additionally promotes configured release-strict findings. The policy is defined in [Code quality](../def/code-quality.md); an error is fixed or reported, not hidden by weakening the rule.
+
+## Template lifecycle
+
+Lifecycle commands use a trusted local Template-Projekte checkout and do not fetch, commit, tag, or publish:
+
+```sh
+python tools/control.py template status
+python tools/control.py template audit --help
+python tools/control.py template adopt --help
+python tools/control.py template plan --help
+python tools/control.py template update --help
+python tools/control.py template verify
+```
+
+The preview forms are read-only. Adoption and update apply require explicit `--apply`, a clean target worktree, and the applicable product approval. Lifecycle state does not authorize a product data or portable-format migration. See [Template lifecycle](../def/template-lifecycle.md).
 
 When the active project profile disables a feature, its affected suites report `SKIP` and return success. Missing tests or source files for an enabled feature report `FAIL`. PostgreSQL reports `SKIP` when `DATABASE_URL_TEST` is absent, but a configured invalid or unreachable test database reports `FAIL`.
 
@@ -276,6 +297,12 @@ Apply the update after adding, moving, renaming, or deleting Markdown files:
 python tools/control.py docs index
 ```
 
+Validate the generated navigation without rewriting files:
+
+```sh
+python tools/control.py docs check
+```
+
 The wrapper searches in this order:
 
 1. the explicit `--script <path>` value;
@@ -316,9 +343,12 @@ python tools/control.py
 python tools/control.py init --profile web-only --dry-run
 python tools/control.py build
 python tools/control.py docs
+python tools/control.py template
 python tools/control.py test
 python tools/control.py tauri
+python tools/control.py quality
 python tools/control.py docs index --dry-run
+python tools/control.py docs check
 python tools/control.py test --suite tools
 python tools/control.py build desktop --dry-run --no-clean
 ```
@@ -330,6 +360,9 @@ python tools/control.py build desktop --dry-run --no-clean
 - [Database Feature](../def/database-feature.md)
 - [Runtime Configuration](../def/configuration.md)
 - [Project Profiles](../def/project-profiles.md)
+- [Code Quality](../def/code-quality.md)
+- [Template Lifecycle](../def/template-lifecycle.md)
+- [Template Migrations](template-migrations.md)
 - [Continuous Integration](ci.md)
 - [Container Builds](container-builds.md)
 - [Release Model](release-model.md)
@@ -339,5 +372,6 @@ python tools/control.py build desktop --dry-run --no-clean
 
 | Date | Change | Author |
 | --- | --- | --- |
+| 2026-08-25 | Added the quality, browser, documentation-check, and template-lifecycle command surfaces for the product-shaped v1.0.3 migration. | Project team |
 | 2026-08-16 | Standardized generated desktop, portable, and web artifact base names on `sunodm` while retaining the full visible product title. | Project team |
 | 2026-08-13 | Scoped retained tooling to the active desktop-local product, documented Rust 1.88 MSRV, and corrected the web artifact name. | Project team |

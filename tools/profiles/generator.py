@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,12 @@ IGNORED_NAMES = {
     "coverage",
     "dist",
     "node_modules",
+    "playwright-report",
     "target",
+    "test-results",
 }
+REQUIRED_SCAFFOLD_ARTIFACTS = (Path("tools/quality/rust_analyzer/dist/rust_quality_analyzer.wasm"),)
+MASTER_ONLY_ROOT_PAGES = ("CODE_OF_CONDUCT.md", "CONTRIBUTING.md")
 
 
 class GenerationError(RuntimeError):
@@ -37,7 +42,15 @@ class ProjectIdentity:
     name: str
     slug: str
     identifier: str
-    customized: bool = False
+    binary: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceIdentity:
+    name: str
+    slug: str
+    binary: str
+    service: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +89,7 @@ def build_scaffold_plan(
     )
 
     _validate_sources(source_paths, root)
+    _validate_required_artifacts(root)
     _validate_target(root, target)
 
     return ScaffoldPlan(
@@ -102,13 +116,13 @@ def scaffold_project(plan: ScaffoldPlan, *, dry_run: bool = False) -> None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
 
-    _remove_master_only_readme_blocks(plan.target_dir)
+    _copy_required_artifacts(plan)
+    _remove_master_only_readme_content(plan.target_dir)
     _write_project_profile(plan.target_dir, plan.profile)
     _write_frontend_profile_module(plan.target_dir, plan.profile)
     _configure_frontend_dependencies(plan.target_dir, plan.profile)
     _configure_env_example(plan.target_dir, plan.env_example)
-    if plan.identity.customized:
-        _configure_project_identity(plan.target_dir, plan.profile, plan.identity)
+    _configure_project_identity(plan.target_dir, plan.profile, plan.identity)
 
 
 def resolve_project_identity(
@@ -120,7 +134,12 @@ def resolve_project_identity(
 ) -> ProjectIdentity:
     customized = any(value is not None for value in (project_name, project_slug, identifier))
     if not customized:
-        return ProjectIdentity("Template Project", "template-project", "com.example.templateproject")
+        return ProjectIdentity(
+            "Template Project",
+            "template-project",
+            "com.example.templateproject",
+            "project-template",
+        )
 
     name = (project_name or "").strip()
     if not name:
@@ -142,7 +161,7 @@ def resolve_project_identity(
         raise GenerationError("Tauri identifier must be a reverse-domain value such as com.customer.app.")
     if not resolved_identifier:
         resolved_identifier = "com.example.templateproject"
-    return ProjectIdentity(name, slug, resolved_identifier, customized=True)
+    return ProjectIdentity(name, slug, resolved_identifier, slug)
 
 
 def _slugify(value: str) -> str:
@@ -223,6 +242,22 @@ def _validate_sources(source_paths: tuple[Path, ...], project_root: Path) -> Non
                 candidate = parent / name
                 if candidate.is_symlink():
                     _validate_symlink(candidate, project_root)
+
+
+def _validate_required_artifacts(project_root: Path) -> None:
+    for relative in REQUIRED_SCAFFOLD_ARTIFACTS:
+        artifact = project_root / relative
+        if not artifact.is_file():
+            raise GenerationError(f"Required scaffold artifact is missing: {relative.as_posix()}.")
+        if artifact.is_symlink():
+            _validate_symlink(artifact, project_root)
+
+
+def _copy_required_artifacts(plan: ScaffoldPlan) -> None:
+    for relative in REQUIRED_SCAFFOLD_ARTIFACTS:
+        destination = plan.target_dir / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(plan.project_root / relative, destination)
 
 
 def _validate_symlink(path: Path, project_root: Path) -> None:
@@ -314,7 +349,7 @@ def _configure_env_example(target_dir: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8", newline="\n")
 
 
-def _remove_master_only_readme_blocks(target_dir: Path) -> None:
+def _remove_master_only_readme_content(target_dir: Path) -> None:
     path = target_dir / "README.md"
     if not path.exists():
         return
@@ -324,14 +359,14 @@ def _remove_master_only_readme_blocks(target_dir: Path) -> None:
         r"^<!-- MASTER-ONLY START -->\n.*?^<!-- MASTER-ONLY END -->\n?",
         flags=re.MULTILINE | re.DOTALL,
     )
-    path.write_text(pattern.sub("", content), encoding="utf-8", newline="\n")
+    content = pattern.sub("", content)
+    for root_page in MASTER_ONLY_ROOT_PAGES:
+        index_entry = re.compile(rf"^- .*\]\({re.escape(root_page)}(?:#[^)]*)?\)\n?", flags=re.MULTILINE)
+        content = index_entry.sub("", content)
+    path.write_text(content, encoding="utf-8", newline="\n")
 
 
-def _configure_project_identity(
-    target_dir: Path,
-    profile: ProjectProfile,
-    identity: ProjectIdentity,
-) -> None:
+def _source_identity(target_dir: Path) -> _SourceIdentity:
     source_name = "Template Project"
     source_slug = "template-project"
     source_binary = "project-template"
@@ -342,24 +377,18 @@ def _configure_project_identity(
         if isinstance(package_name, str) and package_name.endswith("-frontend"):
             source_slug = package_name.removesuffix("-frontend")
 
+    existing_index_path = target_dir / "frontend" / "index.html"
+    if existing_index_path.exists():
+        title_match = re.search(r"<title>([^<]+)</title>", existing_index_path.read_text(encoding="utf-8"))
+        if title_match:
+            source_name = title_match.group(1)
+
     existing_tauri_path = target_dir / "src-tauri" / "tauri.conf.json"
     if existing_tauri_path.exists():
         existing_tauri = _read_json_object(existing_tauri_path)
         product_name = existing_tauri.get("productName")
         binary_name = existing_tauri.get("mainBinaryName")
-        app = existing_tauri.get("app")
-        if isinstance(app, dict):
-            windows = app.get("windows")
-            if isinstance(windows, list):
-                main_window = next(
-                    (window for window in windows if isinstance(window, dict) and window.get("label") == "main"),
-                    None,
-                )
-                if isinstance(main_window, dict):
-                    window_title = main_window.get("title")
-                    if isinstance(window_title, str) and window_title.strip():
-                        source_name = window_title
-        if source_name == "Template Project" and isinstance(product_name, str) and product_name.strip():
+        if isinstance(product_name, str) and product_name.strip():
             source_name = product_name
         if isinstance(binary_name, str) and binary_name.strip():
             source_binary = binary_name
@@ -373,6 +402,15 @@ def _configure_project_identity(
         )
         if service_match:
             source_service = service_match.group(1)
+    return _SourceIdentity(source_name, source_slug, source_binary, source_service)
+
+
+def _configure_project_identity(
+    target_dir: Path,
+    profile: ProjectProfile,
+    identity: ProjectIdentity,
+) -> None:
+    source = _source_identity(target_dir)
 
     package_path = target_dir / "frontend" / "package.json"
     if package_path.exists():
@@ -389,46 +427,47 @@ def _configure_project_identity(
             packages[""]["name"] = f"{identity.slug}-frontend"
         _write_json(lock_path, lock)
 
-    _replace_text(target_dir / "frontend" / "index.html", source_name, identity.name)
-    _replace_text(target_dir / "frontend" / "src" / "main.ts", source_name, identity.name)
+    _replace_text(target_dir / "frontend" / "index.html", source.name, identity.name)
+    _replace_text(target_dir / "frontend" / "src" / "main.ts", source.name, identity.name)
 
     if profile.has_feature("backend"):
-        _replace_text(target_dir / ".env.example", f"{source_name} API", f"{identity.name} API")
-        _replace_text(target_dir / "config" / "environment.toml", f"{source_name} API", f"{identity.name} API")
+        _replace_text(target_dir / ".env.example", f"{source.name} API", f"{identity.name} API")
+        _replace_text(target_dir / "config" / "environment.toml", f"{source.name} API", f"{identity.name} API")
         _replace_text(
             target_dir / "backend" / "app" / "config" / "settings.py",
-            f"{source_name} API",
+            f"{source.name} API",
             f"{identity.name} API",
         )
         _replace_text(
             target_dir / "backend" / "app" / "api" / "health.py",
-            source_service,
+            source.service,
             f"{identity.slug}-backend",
         )
         _replace_text(
             target_dir / "backend" / "tests" / "api" / "test_health.py",
-            source_service,
+            source.service,
             f"{identity.slug}-backend",
         )
 
     _replace_text(
         target_dir / "tools" / "inst" / "build.py",
-        f"{source_slug}-web.zip",
+        f"{source.slug}-web.zip",
         f"{identity.slug}-web.zip",
     )
 
     if profile.has_feature("cloud"):
-        _replace_text(target_dir / "deployment" / "compose.yaml", source_slug, identity.slug)
-        _replace_text(target_dir / "deployment" / "compose.yaml", source_name, identity.name)
+        _replace_text(target_dir / "deployment" / "compose.yaml", source.slug, identity.slug)
+        _replace_text(target_dir / "deployment" / "compose.yaml", source.name, identity.name)
 
     if not profile.has_feature("tauri"):
         return
 
     tauri_path = target_dir / "src-tauri" / "tauri.conf.json"
     tauri = _read_json_object(tauri_path)
-    tauri["productName"] = identity.slug
+    tauri["productName"] = identity.name
     tauri["identifier"] = identity.identifier
-    tauri["mainBinaryName"] = identity.slug
+    tauri["mainBinaryName"] = identity.binary
+    _normalize_wix_upgrade_code(tauri, identity.binary)
     app = tauri.get("app")
     if isinstance(app, dict):
         windows = app.get("windows")
@@ -439,11 +478,23 @@ def _configure_project_identity(
     _write_json(tauri_path, tauri)
 
     cargo_path = target_dir / "src-tauri" / "Cargo.toml"
-    _replace_first(cargo_path, f'name = "{source_binary}"', f'name = "{identity.slug}"')
-    _replace_text(cargo_path, f"{source_name} Contributors", f"{identity.name} Contributors")
+    _replace_first(cargo_path, f'name = "{source.binary}"', f'name = "{identity.binary}"')
+    _replace_text(cargo_path, f"{source.name} Contributors", f"{identity.name} Contributors")
     cargo_lock_path = target_dir / "src-tauri" / "Cargo.lock"
-    _replace_first(cargo_lock_path, f'name = "{source_binary}"', f'name = "{identity.slug}"')
-    _replace_text(target_dir / "src-tauri" / "app-icon.svg", source_name, identity.name)
+    _replace_first(cargo_lock_path, f'name = "{source.binary}"', f'name = "{identity.binary}"')
+    _replace_text(target_dir / "src-tauri" / "app-icon.svg", source.name, identity.name)
+
+
+def _normalize_wix_upgrade_code(tauri: dict[str, Any], binary: str) -> None:
+    bundle = tauri.get("bundle")
+    if not isinstance(bundle, dict):
+        return
+    windows = bundle.get("windows")
+    if not isinstance(windows, dict):
+        return
+    wix = windows.get("wix")
+    if isinstance(wix, dict) and "upgradeCode" in wix:
+        wix["upgradeCode"] = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{binary}.exe.app.x64"))
 
 
 def _replace_text(path: Path, old: str, new: str) -> None:

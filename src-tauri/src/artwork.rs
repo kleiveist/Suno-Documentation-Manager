@@ -127,12 +127,7 @@ fn draw_label(image: DynamicImage, text: &str) -> Result<RgbaImage> {
     }
     let left = output.width() - text_width - padding * 2;
     let top = output.height() - glyph_height - padding * 2;
-    for y in top..output.height() {
-        for x in left..output.width() {
-            let pixel = output.get_pixel_mut(x, y);
-            blend(pixel, Rgba([0, 0, 0, 150]));
-        }
-    }
+    draw_background(&mut output, left, top);
     for (index, character) in text.chars().enumerate() {
         let glyph = font8x8::BASIC_FONTS
             .get(character)
@@ -142,22 +137,49 @@ fn draw_label(image: DynamicImage, text: &str) -> Result<RgbaImage> {
                     "Disclosure character '{character}' is not supported by the local renderer."
                 ))
             })?;
-        for (row, bits) in glyph.iter().enumerate() {
-            for column in 0..8 {
-                if bits & (1 << column) != 0 {
-                    for sy in 0..scale {
-                        for sx in 0..scale {
-                            let x =
-                                left + padding + index as u32 * glyph_width + column * scale + sx;
-                            let y = top + padding + row as u32 * scale + sy;
-                            output.put_pixel(x, y, Rgba([255, 255, 255, 235]));
-                        }
-                    }
-                }
+        let glyph_left = left + padding + index as u32 * glyph_width;
+        let glyph_top = top + padding;
+        draw_glyph(&mut output, &glyph, glyph_left, glyph_top, scale);
+    }
+    Ok(output)
+}
+
+fn draw_background(output: &mut RgbaImage, left: u32, top: u32) {
+    for y in top..output.height() {
+        for x in left..output.width() {
+            let pixel = output.get_pixel_mut(x, y);
+            blend(pixel, Rgba([0, 0, 0, 150]));
+        }
+    }
+}
+
+fn draw_glyph(output: &mut RgbaImage, glyph: &[u8; 8], left: u32, top: u32, scale: u32) {
+    for (row, bits) in glyph.iter().enumerate() {
+        for column in 0..8 {
+            if bits & (1 << column) != 0 {
+                draw_glyph_pixel(output, left, top, column, row as u32, scale);
             }
         }
     }
-    Ok(output)
+}
+
+fn draw_glyph_pixel(
+    output: &mut RgbaImage,
+    left: u32,
+    top: u32,
+    column: u32,
+    row: u32,
+    scale: u32,
+) {
+    for sy in 0..scale {
+        for sx in 0..scale {
+            output.put_pixel(
+                left + column * scale + sx,
+                top + row * scale + sy,
+                Rgba([255, 255, 255, 235]),
+            );
+        }
+    }
 }
 
 fn blend(target: &mut Rgba<u8>, source: Rgba<u8>) {

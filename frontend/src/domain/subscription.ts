@@ -7,21 +7,14 @@ const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
  * is selected. The native layer performs the same calculation authoritatively
  * when the file is registered.
  */
-export function subscriptionCoverageEnd(
-  coverageStart: string,
-  billingCycle: SubscriptionBillingCycle
-): string | null {
+export function subscriptionCoverageEnd(coverageStart: string, billingCycle: SubscriptionBillingCycle): string | null {
   const match = DATE_PATTERN.exec(coverageStart);
   if (!match) return null;
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
   const start = new Date(Date.UTC(year, month - 1, day));
-  if (
-    start.getUTCFullYear() !== year ||
-    start.getUTCMonth() !== month - 1 ||
-    start.getUTCDate() !== day
-  ) return null;
+  if (start.getUTCFullYear() !== year || start.getUTCMonth() !== month - 1 || start.getUTCDate() !== day) return null;
 
   const months = billingCycle === "monthly" ? 1 : 12;
   const targetMonthIndex = month - 1 + months;

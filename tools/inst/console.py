@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ CONTROL = ROOT / "tools" / "control.py"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools import logger
+logger = importlib.import_module("tools.logger")
 
 SUITES = {"schema", "api", "database", "postgres", "frontend", "e2e", "tools", "all"}
 DESKTOP_TARGETS = {"linux", "windows", "windows-portable", "windows-cross-linux", "macos"}
@@ -72,9 +73,7 @@ def _prompt_suite() -> str | None:
 
 
 def _prompt_desktop_target() -> str | None:
-    value = _read(
-        "Target (linux/windows/windows-portable/windows-cross-linux/macos) [linux]: "
-    ) or "linux"
+    value = _read("Target (linux/windows/windows-portable/windows-cross-linux/macos) [linux]: ") or "linux"
     if value not in DESKTOP_TARGETS:
         logger.warn("Unknown desktop target. Open the build map for supported strategies.")
         return None

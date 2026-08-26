@@ -2,9 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAIN_NAVIGATION,
-  canonicalGuidedChoiceArray,
-  canonicalGuidedChoiceList,
-  canonicalGuidedChoiceValue,
   canonicalTrackFieldPatch,
   canCreateTrackRevision,
   documentationAnswerLabel,
@@ -26,16 +23,10 @@ import {
   normalizeGuidedTrackFields,
   operationProgressPercent,
   operationStageLabel,
-  audioScreeningIntensityBand,
-  audioScreeningIntensityEstimate,
-  parseMultiChoiceValue,
   resetWorkspaceScopedUiState,
-  SETTINGS_CATEGORY_DEFINITIONS,
   SUNO_CONTENT_CLASSIFICATION_CHOICES,
-  settingsCategoryNavigationMarkup,
   shouldDiscardLockedDraft,
   shouldIgnoreModalBackdropClick,
-  singleChoiceFieldMarkup,
   SunoDocumentationApp,
   termsMetadataComplete,
   timestampArtifactLabel,
@@ -47,159 +38,27 @@ import {
   visibleExternalAudioScreening,
   visibleLocalAudioScreening,
   externalTimestampStatusLabel,
-  serializeMultiChoiceValue,
   trackSummaryFromDetail,
   trackCheckSummary,
-  type GuidedChoice,
   type WorkspaceScopedUiState,
   workflowUpgradeFinalizationBlocker,
   workflowUpgradePresentation
 } from "./app";
 import { evidenceRoleFileTypes, WORKFLOW_STEPS } from "./domain/workflow";
-import { emptyAudioScreeningSettings, emptyAudioScreeningSummary, emptyEvidenceMetadata, emptyProfile, emptyTimestampSettings, emptyTrackAutomation, emptyTrackFields, type EvidenceItem, type ExternalTimestampRecord, type TrackDetail } from "./domain/types";
-import { resolveTheme, storedTheme, toggledTheme } from "./ui/theme";
-import { translateUiText } from "./ui/i18n";
+import {
+  emptyAudioScreeningSettings,
+  emptyAudioScreeningSummary,
+  emptyEvidenceMetadata,
+  emptyProfile,
+  emptyTimestampSettings,
+  emptyTrackAutomation,
+  emptyTrackFields,
+  type EvidenceItem,
+  type ExternalTimestampRecord,
+  type TrackDetail
+} from "./domain/types";
 
-describe("theme", () => {
-  it("uses a valid saved choice before the operating-system preference", () => {
-    expect(resolveTheme("light", true)).toBe("light");
-    expect(resolveTheme("dark", false)).toBe("dark");
-  });
-
-  it("falls back to the operating-system preference for missing or invalid storage", () => {
-    expect(resolveTheme(null, true)).toBe("dark");
-    expect(resolveTheme("unsupported", false)).toBe("light");
-    expect(storedTheme("unsupported")).toBeNull();
-  });
-
-  it("toggles between both supported themes", () => {
-    expect(toggledTheme("light")).toBe("dark");
-    expect(toggledTheme("dark")).toBe("light");
-  });
-});
-
-describe("ACRCloud screening intensity estimates", () => {
-  it("caps a fixed-reference target at the actual verified track duration", () => {
-    const estimate = audioScreeningIntensityEstimate({
-      intensityPercent: 100,
-      dynamicByTrackDuration: false,
-      referenceDurationSeconds: 600
-    }, 30);
-
-    expect(estimate).toEqual({
-      calculationDurationSeconds: 600,
-      targetDurationSeconds: 30,
-      requestedRequestCount: 3,
-      actualRequestCount: 2,
-      maxUniqueDurationSeconds: 24,
-      capped: true
-    });
-  });
-
-  it("keeps a single bounded sample available for tracks shorter than twelve seconds", () => {
-    const estimate = audioScreeningIntensityEstimate({
-      intensityPercent: 100,
-      dynamicByTrackDuration: true,
-      referenceDurationSeconds: 300
-    }, 5);
-
-    expect(estimate.actualRequestCount).toBe(1);
-    expect(estimate.maxUniqueDurationSeconds).toBe(5);
-  });
-
-  it("uses a shortened final sample to preserve uncapped requested coverage", () => {
-    const estimate = audioScreeningIntensityEstimate({
-      intensityPercent: 25,
-      dynamicByTrackDuration: false,
-      referenceDurationSeconds: 300
-    }, 600);
-
-    expect(estimate.targetDurationSeconds).toBe(75);
-    expect(estimate.actualRequestCount).toBe(7);
-    expect(estimate.maxUniqueDurationSeconds).toBe(75);
-    expect(estimate.capped).toBe(false);
-  });
-
-  it("never promises more than 25 requests or 300 seconds of unique audio", () => {
-    const estimate = audioScreeningIntensityEstimate({
-      intensityPercent: 100,
-      dynamicByTrackDuration: true,
-      referenceDurationSeconds: 300
-    }, 10_000);
-
-    expect(estimate.actualRequestCount).toBe(25);
-    expect(estimate.maxUniqueDurationSeconds).toBe(300);
-    expect(estimate.capped).toBe(true);
-    expect(audioScreeningIntensityBand(16)).toBe("high");
-    expect(audioScreeningIntensityBand(25)).toBe("very_high");
-  });
-});
-
-describe("navigation", () => {
-  it("keeps the three settings categories and their local navigation labels stable", () => {
-    expect(SETTINGS_CATEGORY_DEFINITIONS.map(({ id, label }) => [id, label])).toEqual([
-      ["global", "Globale Angaben"],
-      ["external", "Externe Dienste"],
-      ["files", "Globale Datei-Führung"]
-    ]);
-
-    const markup = settingsCategoryNavigationMarkup();
-    expect(markup).toContain('data-settings-category="global"');
-    expect(markup).toContain('data-settings-category="external"');
-    expect(markup).toContain('data-settings-category="files"');
-    expect(markup).not.toContain('data-action=');
-    expect(settingsCategoryNavigationMarkup("external")).toContain('data-settings-category="external" aria-controls="settings-external" aria-selected="true"');
-    for (const { label } of SETTINGS_CATEGORY_DEFINITIONS) expect(markup).toContain(label);
-  });
-
-  it("uses the certificate language as the app language for shared UI copy", () => {
-    expect(translateUiText("Einstellungen", "en")).toBe("Settings");
-    expect(translateUiText("Einstellungen", "de")).toBe("Einstellungen");
-    expect(translateUiText("Die Nichtanwendung wurde bewusst dokumentiert.", "en"))
-      .toBe("The deliberate non-application has been documented.");
-    expect(translateUiText("Import-Zeitstempel dokumentieren nur den Import in SunoDM und nicht die tatsächliche Erstellungs- oder Bearbeitungsreihenfolge der Artwork-Dateien.", "en"))
-      .toContain("Import timestamps document only the import into SunoDM");
-    expect(settingsCategoryNavigationMarkup("external", "en")).toContain("Global details");
-    expect(settingsCategoryNavigationMarkup("external", "en")).toContain("External services");
-    expect(settingsCategoryNavigationMarkup("external", "en")).toContain("Settings sections");
-  });
-
-  it("stores multiple guided choices deterministically", () => {
-    expect(serializeMultiChoiceValue(["Mixing", "Mastering", "Mixing"])).toBe("Mixing | Mastering");
-    expect(parseMultiChoiceValue("Mixing | Mastering")).toEqual(["Mixing", "Mastering"]);
-  });
-
-  it("stores English values while accepting localized labels and retaining unknown legacy data", () => {
-    const choices: readonly GuidedChoice[] = [
-      ["Timing and cuts", "Timing und Cuts"],
-      ["Loudness adjustment", "Lautheitsanpassung"]
-    ];
-    expect(canonicalGuidedChoiceValue("Timing und Cuts", choices)).toBe("Timing and cuts");
-    expect(canonicalGuidedChoiceList("Timing und Cuts | Lautheitsanpassung", choices)).toBe(
-      "Timing and cuts | Loudness adjustment"
-    );
-    expect(canonicalGuidedChoiceValue("Historischer Freitext", choices)).toBe("Historischer Freitext");
-    expect(canonicalGuidedChoiceArray(["Timing und Cuts", "Historischer Freitext"], choices)).toEqual([
-      "Timing and cuts", "Historischer Freitext"
-    ]);
-  });
-
-  it("renders required single choices as mutually exclusive buttons", () => {
-    const markup = singleChoiceFieldMarkup(
-      "sunoLyricsContentSource",
-      "Content source",
-      "human",
-      [["instrumental", "Instrumental"], ["human", "Menschlich geschrieben"]],
-      true
-    );
-
-    expect(markup).not.toContain("<select");
-    expect(markup.match(/type="radio"/g)).toHaveLength(2);
-    expect(markup.match(/name="sunoLyricsContentSource"/g)).toHaveLength(2);
-    expect(markup).toContain('value="human" data-single-choice checked required');
-    expect(markup).toContain("Wähle genau eine passende Option aus.");
-  });
-
+describe("guided track fields", () => {
   it("normalizes every guided track value before saving", () => {
     const normalized = normalizeGuidedTrackFields({
       ...emptyTrackFields(),
@@ -243,12 +102,7 @@ describe("navigation", () => {
       "EMPTY",
       "OTHER"
     ]);
-    expect(VOCAL_INTENT_CHOICES.map(([value]) => value)).toEqual([
-      "",
-      "VOCAL",
-      "INSTRUMENTAL",
-      "UNSPECIFIED"
-    ]);
+    expect(VOCAL_INTENT_CHOICES.map(([value]) => value)).toEqual(["", "VOCAL", "INSTRUMENTAL", "UNSPECIFIED"]);
   });
 
   it("normalizes EMPTY details without deriving Vocal Intent or classification", () => {
@@ -304,7 +158,9 @@ describe("navigation", () => {
     expect(isAutomaticDateReadonly("user_confirmed_fact")).toBe(false);
     expect(isAutomaticDateReadonly("not_documented")).toBe(false);
   });
+});
 
+describe("timestamp and evidence presentation", () => {
   it("TEST 16 keeps YES, NO, NOT DOCUMENTED and timestamp verification states distinct", () => {
     expect(documentationAnswerLabel("yes")).toBe("YES");
     expect(documentationAnswerLabel("no")).toBe("NO");
@@ -325,17 +181,20 @@ describe("navigation", () => {
   });
 
   it("TEST 04/05 identifies complete Terms core metadata without inventing optional facts", () => {
-    expect(termsMetadataComplete({
-      documentTitle: "Suno Terms of Service",
-      provider: "Suno, Inc.",
-      retrievalDate: "2026-08-17"
-    })).toBe(true);
+    expect(
+      termsMetadataComplete({
+        documentTitle: "Suno Terms of Service",
+        provider: "Suno, Inc.",
+        retrievalDate: "2026-08-17"
+      })
+    ).toBe(true);
     expect(termsMetadataComplete({ documentTitle: "Suno Terms", provider: "", retrievalDate: "" })).toBe(false);
   });
 
   it("TEST 11/12 uses factual external timestamp labels without claiming qualification", () => {
-    expect(externalTimestampTypeLabel("qualified_electronic_timestamp_user_declared"))
-      .toBe("Qualified electronic timestamp – user declared");
+    expect(externalTimestampTypeLabel("qualified_electronic_timestamp_user_declared")).toBe(
+      "Qualified electronic timestamp – user declared"
+    );
     expect(timestampArtifactLabel("evidence_manifest")).toBe("EVIDENCE_MANIFEST.json");
     expect(timestampArtifactLabel("certificate_pdf")).toBe("Certificate PDF (English)");
   });
@@ -345,20 +204,24 @@ describe("navigation", () => {
     expect(externalTimestampStatusLabel("not_recorded")).toBe("NOT RECORDED");
     expect(timestampQualificationStatusLabel("not_verified")).toBe("NOT VERIFIED");
     expect(timestampQualificationStatusLabel("qualified_service_verified")).toBe("QUALIFIED SERVICE VERIFIED");
-    expect(timestampProviderIsReady({
-      ...emptyTimestampSettings,
-      custom: { ...emptyTimestampSettings.custom },
-      enabled: true,
-      provider: "free_tsa",
-      status: "ready"
-    })).toBe(true);
-    expect(timestampProviderIsReady({
-      ...emptyTimestampSettings,
-      custom: { ...emptyTimestampSettings.custom },
-      enabled: false,
-      provider: "free_tsa",
-      status: "ready"
-    })).toBe(false);
+    expect(
+      timestampProviderIsReady({
+        ...emptyTimestampSettings,
+        custom: { ...emptyTimestampSettings.custom },
+        enabled: true,
+        provider: "free_tsa",
+        status: "ready"
+      })
+    ).toBe(true);
+    expect(
+      timestampProviderIsReady({
+        ...emptyTimestampSettings,
+        custom: { ...emptyTimestampSettings.custom },
+        enabled: false,
+        provider: "free_tsa",
+        status: "ready"
+      })
+    ).toBe(false);
   });
 
   it("distinguishes OpenTimestamps from RFC 3161 in provider settings", () => {
@@ -391,7 +254,9 @@ describe("navigation", () => {
       endpointLabel: "Calendar endpoint"
     });
   });
+});
 
+describe("timestamp attachment presentation", () => {
   it("allows a ready RFC 3161 sidecar after OTS while keeping terminal records terminal", () => {
     const ots = {
       provider: "OpenTimestamps",
@@ -405,10 +270,16 @@ describe("navigation", () => {
     expect(externalTimestampAttachmentIsTerminal("attached", ots, "open_timestamps")).toBe(true);
     expect(externalTimestampAttachmentIsTerminal("attached", ots, "free_tsa")).toBe(false);
     expect(externalTimestampAttachmentIsTerminal("verified", ots, "free_tsa")).toBe(true);
-    expect(externalTimestampAttachmentIsTerminal("attached", {
-      ...ots,
-      provenance: "Legacy manually recorded timestamp evidence"
-    }, "free_tsa")).toBe(false);
+    expect(
+      externalTimestampAttachmentIsTerminal(
+        "attached",
+        {
+          ...ots,
+          provenance: "Legacy manually recorded timestamp evidence"
+        },
+        "free_tsa"
+      )
+    ).toBe(false);
   });
 
   it("presents an unrequested ACRCloud check as skipped when global credentials are absent", () => {
@@ -426,27 +297,27 @@ describe("navigation", () => {
 
   it("renders fixed-reference screening summaries with nullable historical durations", () => {
     const app = new SunoDocumentationApp({} as HTMLElement, {} as never);
-    const renderSummary = (referenceDurationSeconds: number | null): string => (
-      app as unknown as {
-        renderAudioScreeningRunSummary(
-          external: typeof emptyAudioScreeningSummary.external,
-          current: boolean
-        ): string;
-      }
-    ).renderAudioScreeningRunSummary({
-      ...emptyAudioScreeningSummary.external,
-      status: "no_match_detected",
-      dynamicByTrackDuration: false,
-      referenceDurationSeconds,
-      plannedRequestCount: 1
-    }, true);
+    const renderSummary = (referenceDurationSeconds: number | null): string =>
+      (
+        app as unknown as {
+          renderAudioScreeningRunSummary(
+            external: typeof emptyAudioScreeningSummary.external,
+            current: boolean
+          ): string;
+        }
+      ).renderAudioScreeningRunSummary(
+        {
+          ...emptyAudioScreeningSummary.external,
+          status: "no_match_detected",
+          dynamicByTrackDuration: false,
+          referenceDurationSeconds,
+          plannedRequestCount: 1
+        },
+        true
+      );
 
-    expect(renderSummary(null)).toContain(
-      "<dt>Calculation mode</dt><dd>Fixed reference length · N/A</dd>"
-    );
-    expect(renderSummary(300)).toContain(
-      "<dt>Calculation mode</dt><dd>Fixed reference length · 300 seconds</dd>"
-    );
+    expect(renderSummary(null)).toContain("<dt>Calculation mode</dt><dd>Fixed reference length · N/A</dd>");
+    expect(renderSummary(300)).toContain("<dt>Calculation mode</dt><dd>Fixed reference length · 300 seconds</dd>");
   });
 
   it("never presents a renamed release file as covered by its earlier local fingerprint", () => {
@@ -474,13 +345,17 @@ describe("navigation", () => {
     expect(localAudioScreeningIsCurrent(local, [release])).toBe(true);
     const renamedRelease = { ...release, relativePath: "01_RELEASE/renamed-release.wav" };
     expect(localAudioScreeningIsCurrent(local, [renamedRelease])).toBe(false);
-    expect(visibleLocalAudioScreening(local, [renamedRelease])).toEqual(expect.objectContaining({
-      status: "stale",
-      message: expect.stringContaining("nicht mehr an die aktuelle finale Release-Datei gebunden")
-    }));
+    expect(visibleLocalAudioScreening(local, [renamedRelease])).toEqual(
+      expect.objectContaining({
+        status: "stale",
+        message: expect.stringContaining("nicht mehr an die aktuelle finale Release-Datei gebunden")
+      })
+    );
     expect(local.status).toBe("fingerprint_generated");
   });
+});
 
+describe("screening freshness presentation", () => {
   it("masks an external catalog result when its release binding is stale", () => {
     const release = {
       id: "release-1",
@@ -513,52 +388,60 @@ describe("navigation", () => {
 
   it("keeps referenced-hash and addendum-integrity results visibly separate", () => {
     expect(externalTimestampMatchLabel(true)).toBe("YES");
-    expect(externalTimestampIntegrityPresentation({
-      integrityVerified: false,
-      integrityIssues: [" Timestamp evidence SHA-256 changed. ", "PDF addendum differs."]
-    })).toEqual({
+    expect(
+      externalTimestampIntegrityPresentation({
+        integrityVerified: false,
+        integrityIssues: [" Timestamp evidence SHA-256 changed. ", "PDF addendum differs."]
+      })
+    ).toEqual({
       label: "FAILED",
       issues: ["Timestamp evidence SHA-256 changed.", "PDF addendum differs."]
     });
-    expect(externalTimestampIntegrityPresentation({
-      integrityVerified: true,
-      integrityIssues: []
-    })).toEqual({ label: "VERIFIED", issues: [] });
+    expect(
+      externalTimestampIntegrityPresentation({
+        integrityVerified: true,
+        integrityIssues: []
+      })
+    ).toEqual({ label: "VERIFIED", issues: [] });
   });
 
   it("does not promote legacy manually recorded timestamp evidence to verified", () => {
     const summary = externalTimestampSummaryFor({
-      externalTimestamps: [{
-        id: "legacy-timestamp",
-        certificateId: "SDM-legacy",
-        provider: "Legacy TSA",
-        timestampType: "electronic_timestamp",
-        timestampValue: "2026-08-17T12:00:00Z",
-        referencedArtifact: "evidence_manifest",
-        referencedArtifactPath: "06_CERTIFICATE/EVIDENCE_MANIFEST.json",
-        referencedSha256: "a".repeat(64),
-        actualSha256: "a".repeat(64),
-        referencedHashMatch: true,
-        externalReferenceId: "",
-        providerVerificationUrl: "",
-        note: "",
-        evidenceFileName: "legacy.tsr",
-        evidenceSha256: "b".repeat(64),
-        importedAt: "2026-08-17T12:00:00Z",
-        provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison",
-        recordRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/TIMESTAMP_RECORD.json",
-        markdownRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/EXTERNAL_TIMESTAMP_ADDENDUM.md",
-        pdfRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/EXTERNAL_TIMESTAMP_ADDENDUM.pdf",
-        hashListRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/TIMESTAMP_RECORD_SHA256.txt",
-        integrityVerified: true,
-        integrityIssues: []
-      }]
+      externalTimestamps: [
+        {
+          id: "legacy-timestamp",
+          certificateId: "SDM-legacy",
+          provider: "Legacy TSA",
+          timestampType: "electronic_timestamp",
+          timestampValue: "2026-08-17T12:00:00Z",
+          referencedArtifact: "evidence_manifest",
+          referencedArtifactPath: "06_CERTIFICATE/EVIDENCE_MANIFEST.json",
+          referencedSha256: "a".repeat(64),
+          actualSha256: "a".repeat(64),
+          referencedHashMatch: true,
+          externalReferenceId: "",
+          providerVerificationUrl: "",
+          note: "",
+          evidenceFileName: "legacy.tsr",
+          evidenceSha256: "b".repeat(64),
+          importedAt: "2026-08-17T12:00:00Z",
+          provenance: "Managed copy; user-confirmed metadata; system-verified SHA-256 comparison",
+          recordRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/TIMESTAMP_RECORD.json",
+          markdownRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/EXTERNAL_TIMESTAMP_ADDENDUM.md",
+          pdfRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/EXTERNAL_TIMESTAMP_ADDENDUM.pdf",
+          hashListRelativePath: "06_CERTIFICATE/EXTERNAL_TIMESTAMPS/legacy/TIMESTAMP_RECORD_SHA256.txt",
+          integrityVerified: true,
+          integrityIssues: []
+        }
+      ]
     });
 
     expect(summary.status).toBe("attached");
     expect(summary.message).toContain("Legacy manually recorded");
   });
+});
 
+describe("workflow summary presentation", () => {
   it("starts the generation plan empty and presents a legacy plan only as historical data", () => {
     const fields = emptyTrackFields({ ...emptyProfile, sunoPlan: "Premier" });
     expect(fields.sunoPlanAtGeneration).toBe("");
@@ -613,29 +496,55 @@ describe("navigation", () => {
 
   it("exposes every required German main view", () => {
     expect(MAIN_NAVIGATION.map((item) => [item.id, item.label])).toEqual([
-      ["dashboard", "Dashboard"], ["tracks", "Tracks"], ["current", "Aktueller Track"],
-      ["workspace", "Workspace"], ["settings", "Einstellungen"]
+      ["dashboard", "Dashboard"],
+      ["tracks", "Tracks"],
+      ["current", "Aktueller Track"],
+      ["workspace", "Workspace"],
+      ["settings", "Einstellungen"]
     ]);
   });
 
   it("prevents creation of an immutable track snapshot from incomplete global data", () => {
-    expect(missingProfileFields(emptyProfile)).toEqual(expect.arrayContaining([
-      "Künstlername", "Suno-Profilname", "Suno-Benutzername", "Suno-Tarif", "Abo-Startdatum", "Standard-KI-Bilddienst"
-    ]));
-    expect(missingProfileFields({
-      ...emptyProfile,
-      artistName: "Artist", sunoProfileName: "Profile", sunoHandle: "@artist", sunoPlan: "Premier",
-      subscriptionStartDate: "2026-01-01", defaultAiImageService: "Local Tool"
-    })).toEqual([]);
+    expect(missingProfileFields(emptyProfile)).toEqual(
+      expect.arrayContaining([
+        "Künstlername",
+        "Suno-Profilname",
+        "Suno-Benutzername",
+        "Suno-Tarif",
+        "Abo-Startdatum",
+        "Standard-KI-Bilddienst"
+      ])
+    );
+    expect(
+      missingProfileFields({
+        ...emptyProfile,
+        artistName: "Artist",
+        sunoProfileName: "Profile",
+        sunoHandle: "@artist",
+        sunoPlan: "Premier",
+        subscriptionStartDate: "2026-01-01",
+        defaultAiImageService: "Local Tool"
+      })
+    ).toEqual([]);
   });
 
   it("makes all ten workflow steps reachable in their declared order", () => {
     expect(WORKFLOW_STEPS.map((step) => step.id)).toEqual([
-      "track", "source", "suno", "human_work", "artwork", "ai_transparency",
-      "release", "evidence_licenses", "integrity", "finalize"
+      "track",
+      "source",
+      "suno",
+      "human_work",
+      "artwork",
+      "ai_transparency",
+      "release",
+      "evidence_licenses",
+      "integrity",
+      "finalize"
     ]);
   });
+});
 
+describe("workspace navigation state", () => {
   it("clears every workspace-scoped selection before entering another workspace", () => {
     const previous: WorkspaceScopedUiState = {
       track: { id: "old-track" } as WorkspaceScopedUiState["track"],
@@ -657,7 +566,13 @@ describe("navigation", () => {
       },
       showCertificatePopup: true,
       termsMetadataDialog: { evidenceId: null, metadata: emptyEvidenceMetadata() },
-      timestampSettings: { ...emptyTimestampSettings, custom: { ...emptyTimestampSettings.custom }, enabled: true, provider: "free_tsa", status: "ready" },
+      timestampSettings: {
+        ...emptyTimestampSettings,
+        custom: { ...emptyTimestampSettings.custom },
+        enabled: true,
+        provider: "free_tsa",
+        status: "ready"
+      },
       timestampProviderTest: {
         provider: "free_tsa",
         status: "ready",
@@ -728,34 +643,44 @@ describe("navigation", () => {
     expect(shouldIgnoreModalBackdropClick(true, true)).toBe(false);
     expect(shouldIgnoreModalBackdropClick(false, false)).toBe(false);
   });
+});
 
+describe("finalized snapshot navigation", () => {
   it("keeps finalized snapshots navigable while requiring an explicit revision for edits", () => {
-    expect(finalizedTrackPresentation({
-      status: "FINALIZED",
-      certificate: { valid: true, certificateId: "SDM-2026-TEST" }
-    })).toEqual({
+    expect(
+      finalizedTrackPresentation({
+        status: "FINALIZED",
+        certificate: { valid: true, certificateId: "SDM-2026-TEST" }
+      })
+    ).toEqual({
       title: "Finalisierter Snapshot – nur lesbar",
       message: expect.stringContaining("Navigation und reine Prüfungen bleiben verfügbar"),
       actionLabel: "Neue Revision anlegen und bearbeiten",
       invalid: false
     });
-    expect(finalizedTrackPresentation({
-      status: "FINALIZED",
-      certificate: { valid: false, certificateId: "SDM-2026-TEST" }
-    })).toEqual(expect.objectContaining({
-      actionLabel: "Neue Revision anlegen und bearbeiten",
-      invalid: true
-    }));
+    expect(
+      finalizedTrackPresentation({
+        status: "FINALIZED",
+        certificate: { valid: false, certificateId: "SDM-2026-TEST" }
+      })
+    ).toEqual(
+      expect.objectContaining({
+        actionLabel: "Neue Revision anlegen und bearbeiten",
+        invalid: true
+      })
+    );
     expect(finalizedTrackPresentation({ status: "ACTIVE", certificate: { valid: false } })).toBeNull();
 
     const superseded = finalizedTrackPresentation({
       status: "SUPERSEDED",
       certificate: { valid: true, certificateId: "SDM-2026-OLD" }
     });
-    expect(superseded).toEqual(expect.objectContaining({
-      title: "Ersetzter Snapshot – nur lesbar",
-      message: expect.stringContaining("Navigation und reine Prüfungen bleiben verfügbar")
-    }));
+    expect(superseded).toEqual(
+      expect.objectContaining({
+        title: "Ersetzter Snapshot – nur lesbar",
+        message: expect.stringContaining("Navigation und reine Prüfungen bleiben verfügbar")
+      })
+    );
     expect(superseded).not.toHaveProperty("actionLabel");
 
     expect(isTrackContentLocked("FINALIZED")).toBe(true);
@@ -769,48 +694,116 @@ describe("navigation", () => {
     expect(shouldDiscardLockedDraft("SUPERSEDED", false)).toBe(false);
     expect(shouldDiscardLockedDraft("ACTIVE", true)).toBe(false);
   });
+});
 
+describe("native operation progress", () => {
   it("maps real native work counters into honest operation progress", () => {
-    expect(operationProgressPercent("hashes", {
-      stage: "hashing", processedBytes: 500, totalBytes: 1_000, processedFiles: 1, totalFiles: 2
-    })).toBe(29);
-    expect(operationProgressPercent("hashes", {
-      stage: "verifying", processedBytes: 500, totalBytes: 1_000, processedFiles: 1, totalFiles: 2
-    })).toBe(78);
-    expect(operationProgressPercent("verification", {
-      stage: "verifying", processedBytes: 750, totalBytes: 1_000, processedFiles: 3, totalFiles: 4
-    })).toBe(72);
-    expect(operationProgressPercent("documents", {
-      stage: "writing_documents", processedBytes: 0, totalBytes: 0, processedFiles: 4, totalFiles: 8
-    })).toBe(56);
-    expect(operationProgressPercent("documents", {
-      stage: "complete", processedBytes: 0, totalBytes: 0, processedFiles: 8, totalFiles: 8
-    })).toBe(100);
-    expect(operationProgressPercent("finalization", {
-      stage: "verifying", processedBytes: 500, totalBytes: 1_000, processedFiles: 5, totalFiles: 10
-    })).toBe(76);
-    expect(operationProgressPercent("finalization", {
-      stage: "saving_final_snapshot", processedBytes: 1_000, totalBytes: 1_000, processedFiles: 10, totalFiles: 10
-    })).toBe(97);
-    expect(operationProgressPercent("audio_screening", {
-      stage: "fingerprinting_audio", processedBytes: 500, totalBytes: 1_000, processedFiles: 0, totalFiles: 1
-    })).toBe(30);
-    expect(operationProgressPercent("audio_screening", {
-      stage: "saving_screening_result", processedBytes: 1_000, totalBytes: 1_000, processedFiles: 1, totalFiles: 1
-    })).toBe(96);
+    expect(
+      operationProgressPercent("hashes", {
+        stage: "hashing",
+        processedBytes: 500,
+        totalBytes: 1_000,
+        processedFiles: 1,
+        totalFiles: 2
+      })
+    ).toBe(29);
+    expect(
+      operationProgressPercent("hashes", {
+        stage: "verifying",
+        processedBytes: 500,
+        totalBytes: 1_000,
+        processedFiles: 1,
+        totalFiles: 2
+      })
+    ).toBe(78);
+    expect(
+      operationProgressPercent("verification", {
+        stage: "verifying",
+        processedBytes: 750,
+        totalBytes: 1_000,
+        processedFiles: 3,
+        totalFiles: 4
+      })
+    ).toBe(72);
+    expect(
+      operationProgressPercent("documents", {
+        stage: "writing_documents",
+        processedBytes: 0,
+        totalBytes: 0,
+        processedFiles: 4,
+        totalFiles: 8
+      })
+    ).toBe(56);
+    expect(
+      operationProgressPercent("documents", {
+        stage: "complete",
+        processedBytes: 0,
+        totalBytes: 0,
+        processedFiles: 8,
+        totalFiles: 8
+      })
+    ).toBe(100);
+    expect(
+      operationProgressPercent("finalization", {
+        stage: "verifying",
+        processedBytes: 500,
+        totalBytes: 1_000,
+        processedFiles: 5,
+        totalFiles: 10
+      })
+    ).toBe(76);
+    expect(
+      operationProgressPercent("finalization", {
+        stage: "saving_final_snapshot",
+        processedBytes: 1_000,
+        totalBytes: 1_000,
+        processedFiles: 10,
+        totalFiles: 10
+      })
+    ).toBe(97);
+    expect(
+      operationProgressPercent("audio_screening", {
+        stage: "fingerprinting_audio",
+        processedBytes: 500,
+        totalBytes: 1_000,
+        processedFiles: 0,
+        totalFiles: 1
+      })
+    ).toBe(30);
+    expect(
+      operationProgressPercent("audio_screening", {
+        stage: "saving_screening_result",
+        processedBytes: 1_000,
+        totalBytes: 1_000,
+        processedFiles: 1,
+        totalFiles: 1
+      })
+    ).toBe(96);
     expect(operationStageLabel("comparing_hashes")).toBe("Ergebnisse werden verglichen");
     expect(operationStageLabel("generating_certificate")).toBe("Zertifikat und Manifest entstehen");
     expect(operationStageLabel("preparing_audio", "audio_screening")).toBe("Audio wird vorbereitet");
-    expect(operationStageLabel("fingerprinting_audio", "audio_screening")).toBe("Lokaler Audio-Fingerprint wird erzeugt");
-    expect(operationStageLabel("fingerprint_complete", "audio_screening")).toBe("Chromaprint-Fingerprint abgeschlossen");
-    expect(operationStageLabel("preparing_external_check", "audio_screening")).toBe("Externe Katalogprüfung wird vorbereitet");
+    expect(operationStageLabel("fingerprinting_audio", "audio_screening")).toBe(
+      "Lokaler Audio-Fingerprint wird erzeugt"
+    );
+    expect(operationStageLabel("fingerprint_complete", "audio_screening")).toBe(
+      "Chromaprint-Fingerprint abgeschlossen"
+    );
+    expect(operationStageLabel("preparing_external_check", "audio_screening")).toBe(
+      "Externe Katalogprüfung wird vorbereitet"
+    );
     expect(operationStageLabel("sending_provider_request", "audio_screening")).toBe("Audioausschnitt wird übertragen");
     expect(operationStageLabel("waiting_provider_response", "audio_screening")).toBe("ACRCloud-Ergebnis wird erwartet");
-    expect(operationStageLabel("processing_provider_response", "audio_screening")).toBe("Provider-Ergebnis wird geprüft");
-    expect(operationStageLabel("saving_screening_result", "audio_screening")).toBe("Prüfergebnis wird lokal dokumentiert");
+    expect(operationStageLabel("processing_provider_response", "audio_screening")).toBe(
+      "Provider-Ergebnis wird geprüft"
+    );
+    expect(operationStageLabel("saving_screening_result", "audio_screening")).toBe(
+      "Prüfergebnis wird lokal dokumentiert"
+    );
     expect(operationStageLabel("complete", "audio_screening")).toBe("Prüfung abgeschlossen");
   });
+});
 
+describe("track update behavior", () => {
   it("keeps a changed library assignment when applying a track detail", () => {
     const summary = trackSummaryFromDetail({
       id: "track-1",
@@ -845,25 +838,29 @@ describe("navigation", () => {
       message: "Finalized with workflow suno-track 1.0 / Current workflow suno-track 1.7",
       action: "re-evaluate-track"
     });
-    expect(workflowUpgradePresentation(
-      {
-        status: "FINALIZED",
-        workflowId: "suno-track",
-        workflowVersion: "1.7",
-        certificate: { valid: true, workflowVersion: "1.7" }
-      },
-      { id: "suno-track", version: "1.7" }
-    )).toBeNull();
+    expect(
+      workflowUpgradePresentation(
+        {
+          status: "FINALIZED",
+          workflowId: "suno-track",
+          workflowVersion: "1.7",
+          certificate: { valid: true, workflowVersion: "1.7" }
+        },
+        { id: "suno-track", version: "1.7" }
+      )
+    ).toBeNull();
 
-    expect(workflowUpgradePresentation(
-      {
-        status: "SUPERSEDED",
-        workflowId: "suno-track",
-        workflowVersion: "1.0",
-        certificate: { valid: true, workflowVersion: "1.0" }
-      },
-      { id: "suno-track", version: "1.7" }
-    )).toEqual({
+    expect(
+      workflowUpgradePresentation(
+        {
+          status: "SUPERSEDED",
+          workflowId: "suno-track",
+          workflowVersion: "1.0",
+          certificate: { valid: true, workflowVersion: "1.0" }
+        },
+        { id: "suno-track", version: "1.7" }
+      )
+    ).toEqual({
       message: "Superseded snapshot uses workflow suno-track 1.0 / Current workflow suno-track 1.7"
     });
   });
@@ -876,11 +873,11 @@ describe("navigation", () => {
       certificate: { valid: false }
     };
 
-    expect(workflowUpgradeFinalizationBlocker(track, { id: "suno-track", version: "1.7" }))
-      .toContain("ausdrücklich mit dem aktuellen Workflow neu bewertet");
-    expect(workflowUpgradeFinalizationBlocker(
-      { ...track, workflowVersion: "1.7" },
-      { id: "suno-track", version: "1.7" }
-    )).toBeNull();
+    expect(workflowUpgradeFinalizationBlocker(track, { id: "suno-track", version: "1.7" })).toContain(
+      "ausdrücklich mit dem aktuellen Workflow neu bewertet"
+    );
+    expect(
+      workflowUpgradeFinalizationBlocker({ ...track, workflowVersion: "1.7" }, { id: "suno-track", version: "1.7" })
+    ).toBeNull();
   });
 });

@@ -21,7 +21,7 @@ from tools.config import (
     is_server_only_name,
     load_runtime_config,
 )
-from tools.process import prepare_command
+from tools.process import prepare_command, process_start_token
 from tools.profiles import runtime as profile_runtime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -108,91 +108,121 @@ def _backend_process_environment(config: RuntimeConfig) -> dict[str, str]:
     return environment
 
 
+def _frontend_service(config: RuntimeConfig) -> tuple[ServiceDef | None, list[str]]:
+    errors: list[str] = []
+    frontend_dir = ROOT / "frontend"
+    assert config.frontend_host is not None
+    assert config.frontend_port is not None
+    if not (frontend_dir / "package.json").exists():
+        errors.append("Missing frontend/package.json")
+
+    npm = shutil.which("npm")
+    if npm is None:
+        errors.append("npm not found. Action: install Node.js and npm.")
+        return None, errors
+
+    service = ServiceDef(
+        name="frontend",
+        command=[
+            npm,
+            "run",
+            "dev",
+            "--",
+            "--host",
+            config.frontend_host,
+            "--port",
+            str(config.frontend_port),
+        ],
+        cwd=frontend_dir,
+        port=config.frontend_port,
+        host=config.frontend_host,
+        env=_frontend_process_environment(config),
+    )
+    return service, errors
+
+
+def _backend_executable(backend_dir: Path) -> Path | None:
+    backend_python = _venv_python(backend_dir)
+    if backend_python.exists():
+        return backend_python
+    fallback = shutil.which("python3") or shutil.which("python")
+    return Path(fallback) if fallback else None
+
+
+def _backend_runtime_error(backend_python: Path) -> str | None:
+    try:
+        probe = subprocess.run(
+            [str(backend_python), "-c", "import pydantic_settings, uvicorn"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return str(exc)
+    if probe.returncode == 0:
+        return None
+    details = ((probe.stderr or "") + "\n" + (probe.stdout or "")).strip()
+    return details or f"exit code {probe.returncode}"
+
+
+def _backend_service(config: RuntimeConfig) -> tuple[ServiceDef | None, list[str]]:
+    errors: list[str] = []
+    backend_dir = ROOT / "backend"
+    assert config.backend_host is not None
+    assert config.backend_port is not None
+    if not (backend_dir / "app" / "main.py").exists():
+        errors.append("Missing backend/app/main.py")
+
+    backend_python = _backend_executable(backend_dir)
+    if backend_python is None:
+        errors.append("Python executable not found for backend service.")
+        return None, errors
+
+    runtime_error = _backend_runtime_error(backend_python)
+    if runtime_error is not None:
+        errors.append(
+            "Backend runtime is not executable. Action: run "
+            "'python tools/control.py install --skip-frontend --skip-playwright'. "
+            f"Details: {runtime_error}"
+        )
+        return None, errors
+
+    service = ServiceDef(
+        name="backend",
+        command=[
+            str(backend_python),
+            "-m",
+            "uvicorn",
+            "app.main:app",
+            "--host",
+            config.backend_host,
+            "--port",
+            str(config.backend_port),
+        ],
+        cwd=backend_dir,
+        port=config.backend_port,
+        host=config.backend_host,
+        env=_backend_process_environment(config),
+    )
+    return service, errors
+
+
 def _build_service_defs(config: RuntimeConfig) -> tuple[list[ServiceDef], list[str]]:
     errors: list[str] = []
     services: list[ServiceDef] = []
     profile = profile_runtime.active_profile(ROOT)
 
-    frontend_dir = ROOT / "frontend"
-    backend_dir = ROOT / "backend"
-
+    builders = []
     if profile.has_feature("frontend"):
-        assert config.frontend_host is not None
-        assert config.frontend_port is not None
-        if not (frontend_dir / "package.json").exists():
-            errors.append("Missing frontend/package.json")
-
-        npm = shutil.which("npm")
-        if npm is None:
-            errors.append("npm not found. Action: install Node.js and npm.")
-        else:
-            services.append(
-                ServiceDef(
-                    name="frontend",
-                    command=[
-                        npm,
-                        "run",
-                        "dev",
-                        "--",
-                        "--host",
-                        config.frontend_host,
-                        "--port",
-                        str(config.frontend_port),
-                    ],
-                    cwd=frontend_dir,
-                    port=config.frontend_port,
-                    host=config.frontend_host,
-                    env=_frontend_process_environment(config),
-                )
-            )
-
+        builders.append(_frontend_service)
     if profile.has_feature("backend"):
-        assert config.backend_host is not None
-        assert config.backend_port is not None
-        if not (backend_dir / "app" / "main.py").exists():
-            errors.append("Missing backend/app/main.py")
+        builders.append(_backend_service)
 
-        backend_python = _venv_python(backend_dir)
-        if not backend_python.exists():
-            backend_python = Path(shutil.which("python3") or shutil.which("python") or "")
-        if not backend_python.exists():
-            errors.append("Python executable not found for backend service.")
-        else:
-            probe = subprocess.run(
-                [str(backend_python), "-c", "import pydantic_settings, uvicorn"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if probe.returncode != 0:
-                details = ((probe.stderr or "") + "\n" + (probe.stdout or "")).strip()
-                if not details:
-                    details = f"exit code {probe.returncode}"
-                errors.append(
-                    "Backend runtime is not executable. Action: run "
-                    "'python tools/control.py install --skip-frontend --skip-playwright'. "
-                    f"Details: {details}"
-                )
-            else:
-                services.append(
-                    ServiceDef(
-                        name="backend",
-                        command=[
-                            str(backend_python),
-                            "-m",
-                            "uvicorn",
-                            "app.main:app",
-                            "--host",
-                            config.backend_host,
-                            "--port",
-                            str(config.backend_port),
-                        ],
-                        cwd=backend_dir,
-                        port=config.backend_port,
-                        host=config.backend_host,
-                        env=_backend_process_environment(config),
-                    )
-                )
+    for builder in builders:
+        service, service_errors = builder(config)
+        errors.extend(service_errors)
+        if service is not None:
+            services.append(service)
 
     if errors:
         return services, errors
@@ -289,6 +319,18 @@ def _preflight(config: RuntimeConfig) -> list[str]:
     return errors
 
 
+def _service_state(service: ServiceDef, process: subprocess.Popen, log_file: str | None) -> dict:
+    return {
+        "name": service.name,
+        "pid": process.pid,
+        "port": service.port,
+        "command": service.command,
+        "process_start_token": process_start_token(process.pid),
+        "process_group_id": process.pid,
+        "log_file": log_file,
+    }
+
+
 def _start_detached(services: list[ServiceDef]) -> tuple[list[subprocess.Popen], dict]:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -310,15 +352,7 @@ def _start_detached(services: list[ServiceDef]) -> tuple[list[subprocess.Popen],
         )
         log_file.close()
         processes.append(process)
-        payload["services"].append(
-            {
-                "name": service.name,
-                "pid": process.pid,
-                "port": service.port,
-                "command": service.command,
-                "log_file": str(log_path.relative_to(ROOT)),
-            }
-        )
+        payload["services"].append(_service_state(service, process, str(log_path.relative_to(ROOT))))
 
     _write_state(payload)
     return processes, payload
@@ -340,15 +374,7 @@ def _start_foreground(services: list[ServiceDef]) -> tuple[list[subprocess.Popen
             start_new_session=True,
         )
         processes.append(process)
-        payload["services"].append(
-            {
-                "name": service.name,
-                "pid": process.pid,
-                "port": service.port,
-                "command": service.command,
-                "log_file": None,
-            }
-        )
+        payload["services"].append(_service_state(service, process, None))
 
     _write_state(payload)
     return processes, payload
@@ -363,7 +389,7 @@ def _stream_foreground(payload: dict, processes: list[subprocess.Popen]) -> int:
             q.put((name, line.rstrip()))
 
     threads = []
-    for item, process in zip(payload["services"], processes):
+    for item, process in zip(payload["services"], processes, strict=True):
         t = threading.Thread(target=reader, args=(item["name"], process), daemon=True)
         t.start()
         threads.append(t)
@@ -377,7 +403,7 @@ def _stream_foreground(payload: dict, processes: list[subprocess.Popen]) -> int:
         except queue.Empty:
             pass
 
-        for item, process in zip(payload["services"], processes):
+        for item, process in zip(payload["services"], processes, strict=True):
             code = process.poll()
             if code is not None:
                 if code == 0:
@@ -420,7 +446,7 @@ def run_command(args: argparse.Namespace) -> int:
         processes, payload = _start_detached(services)
         time.sleep(2)
 
-        for item, process in zip(payload["services"], processes):
+        for item, process in zip(payload["services"], processes, strict=True):
             code = process.poll()
             if code is not None:
                 logger.fail(f"Service failed early: {item['name']} (code={code})")
@@ -429,9 +455,7 @@ def run_command(args: argparse.Namespace) -> int:
 
         logger.ok("Services started in detached mode")
         for item in payload["services"]:
-            logger.ok(
-                f"service:{item['name']:<9} pid={item['pid']} port={item['port']} log={item['log_file']}"
-            )
+            logger.ok(f"service:{item['name']:<9} pid={item['pid']} port={item['port']} log={item['log_file']}")
         return 0
 
     processes, payload = _start_foreground(services)

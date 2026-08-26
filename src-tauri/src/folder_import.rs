@@ -205,15 +205,26 @@ fn classify_file(source: PathBuf) -> ClassifiedFile {
     let extension = extension(&source);
     let mut roles = Vec::new();
 
+    add_media_roles(&source, &name, &extension, &mut roles);
+    add_image_role(&name, &extension, &mut roles);
+    if matches!(extension.as_str(), "rb" | "py" | "js" | "ts") {
+        roles.push(EvidenceRole::SourceCodeFile);
+    }
+    add_text_role(&source, &name, &extension, &mut roles);
+
+    ClassifiedFile { source, roles }
+}
+
+fn add_media_roles(source: &Path, name: &str, extension: &str, roles: &mut Vec<EvidenceRole>) {
     if extension == "mp3" {
         roles.push(EvidenceRole::ReleaseMp3);
     }
-    if matches!(extension.as_str(), "mp4" | "m4v") {
+    if matches!(extension, "mp4" | "m4v") {
         roles.push(EvidenceRole::ReleaseMp4);
     }
     if extension == "wav" {
         roles.push(EvidenceRole::ReleaseWav);
-        if audio_metadata::inspect_wav(&source)
+        if audio_metadata::inspect_wav(source)
             .ok()
             .flatten()
             .is_some_and(|metadata| metadata.suno_studio_detected)
@@ -221,38 +232,38 @@ fn classify_file(source: PathBuf) -> ClassifiedFile {
             roles.push(EvidenceRole::SunoFinalExport);
         }
     }
-    if extension == "zip" && fuzzy_token(&name, "stems") {
+    if extension == "zip" && fuzzy_token(name, "stems") {
         roles.push(EvidenceRole::SunoProjectZip);
     }
+}
 
-    let screenshot =
-        is_screenshot(&name) && matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp");
+fn add_image_role(name: &str, extension: &str, roles: &mut Vec<EvidenceRole>) {
+    let screenshot = is_screenshot(name) && matches!(extension, "png" | "jpg" | "jpeg" | "webp");
     if screenshot {
         roles.push(EvidenceRole::SunoScreenshot);
-    } else if is_image(&extension) {
+    } else if is_image(extension) {
         // Specific AI roles must win before the general human-edit marker.
-        if has_ai_edited(&name) {
+        if has_ai_edited(name) {
             roles.push(EvidenceRole::AiArtworkEdited);
-        } else if has_ai_original(&name) {
+        } else if has_ai_original(name) {
             roles.push(EvidenceRole::AiArtworkOriginal);
-        } else if has_human_edit(&name) {
+        } else if has_human_edit(name) {
             roles.push(EvidenceRole::HumanEditedArtwork);
-        } else if matches!(extension.as_str(), "jpg" | "jpeg") {
+        } else if matches!(extension, "jpg" | "jpeg") {
             roles.push(EvidenceRole::ArtworkSunoOriginal);
         }
     }
+}
 
-    if matches!(extension.as_str(), "rb" | "py" | "js" | "ts") {
-        roles.push(EvidenceRole::SourceCodeFile);
-    }
-    if matches!(extension.as_str(), "txt" | "md") {
-        let lyrics_name = fuzzy_any(&name, &["lyrics", "lyric", "songtext"]);
-        let style_name = fuzzy_any(&name, &["style", "stil", "prompt", "sunostyle"]);
+fn add_text_role(source: &Path, name: &str, extension: &str, roles: &mut Vec<EvidenceRole>) {
+    if matches!(extension, "txt" | "md") {
+        let lyrics_name = fuzzy_any(name, &["lyrics", "lyric", "songtext"]);
+        let style_name = fuzzy_any(name, &["style", "stil", "prompt", "sunostyle"]);
         match (lyrics_name, style_name) {
             (true, false) => roles.push(EvidenceRole::Lyrics),
             (false, true) => roles.push(EvidenceRole::Style),
             (false, false) => {
-                if let Some(role) = text_content_role(&source) {
+                if let Some(role) = text_content_role(source) {
                     roles.push(role);
                 }
             }
@@ -260,8 +271,6 @@ fn classify_file(source: PathBuf) -> ClassifiedFile {
             (true, true) => {}
         }
     }
-
-    ClassifiedFile { source, roles }
 }
 
 fn unique_assignments(classified: &[ClassifiedFile]) -> Vec<ImportAssignment> {

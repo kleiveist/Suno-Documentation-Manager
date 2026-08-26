@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tools import logger
+from tools.inst.tooling_runtime import TOOLING_RUNTIME_PROBE
 from tools.process import prepare_command
 from tools.profiles import runtime as profile_runtime
 
@@ -107,6 +108,8 @@ def _install_backend_with_uv(
 
 
 def _select_venv_seed_python() -> str:
+    if sys.platform == "win32":
+        return sys.executable
     python3 = shutil.which("python3")
     if python3:
         return python3
@@ -181,17 +184,11 @@ def _inspect_backend_venv(py: Path, venv_dir: Path) -> tuple[bool, str]:
 
     configured_version = _read_venv_version(venv_dir)
     if configured_version and not configured_version.startswith(f"{runtime}."):
-        return False, (
-            f"venv interpreter mismatch: pyvenv.cfg version={configured_version}, "
-            f"runtime={runtime}"
-        )
+        return False, (f"venv interpreter mismatch: pyvenv.cfg version={configured_version}, runtime={runtime}")
 
     runtime_prefix = Path(str(state.get("prefix", ""))).resolve()
     if runtime_prefix != venv_dir.resolve():
-        return False, (
-            "venv prefix mismatch: "
-            f"expected={venv_dir.resolve()}, runtime={runtime_prefix}"
-        )
+        return False, (f"venv prefix mismatch: expected={venv_dir.resolve()}, runtime={runtime_prefix}")
 
     if not site_packages:
         return False, "venv probe did not return a site-packages directory"
@@ -280,7 +277,10 @@ def _install_backend_with_pip(backend_dir: Path, requirements: list[Path]) -> tu
     pip_upgrade = _run([str(py), "-m", "pip", "install", "--upgrade", "pip"], cwd=ROOT)
     elapsed = time.monotonic() - started
     if pip_upgrade.returncode != 0:
-        return False, f"pip upgrade failed after {elapsed:.1f}s: {_tail((pip_upgrade.stdout or '') + (pip_upgrade.stderr or ''))}"
+        return (
+            False,
+            f"pip upgrade failed after {elapsed:.1f}s: {_tail((pip_upgrade.stdout or '') + (pip_upgrade.stderr or ''))}",
+        )
     logger.info(f"pip upgrade completed in {elapsed:.1f}s")
 
     logger.info("Installing backend requirements")
@@ -291,7 +291,10 @@ def _install_backend_with_pip(backend_dir: Path, requirements: list[Path]) -> tu
     )
     elapsed = time.monotonic() - started
     if pip_install.returncode != 0:
-        return False, f"pip install failed after {elapsed:.1f}s: {_tail((pip_install.stdout or '') + (pip_install.stderr or ''))}"
+        return (
+            False,
+            f"pip install failed after {elapsed:.1f}s: {_tail((pip_install.stdout or '') + (pip_install.stderr or ''))}",
+        )
     logger.info(f"Backend requirements installed in {elapsed:.1f}s")
 
     return True, "pip/venv backend install completed"
@@ -335,25 +338,23 @@ def _install_backend() -> StepResult:
     logger.info("uv not found; using pip/venv fallback for backend installation")
     pip_ok, pip_msg = _install_backend_with_pip(backend_dir, requirements)
     if pip_ok:
-        return StepResult("backend", "OK", "installed dependencies with the supported pip/venv fallback (uv is optional)")
+        return StepResult(
+            "backend", "OK", "installed dependencies with the supported pip/venv fallback (uv is optional)"
+        )
     return StepResult("backend", "FAIL", f"backend install failed without uv: {pip_msg}")
 
 
-def _runtime_imports(python: Path, modules: str) -> bool:
+def _tooling_runtime_ready(python: Path) -> bool:
     if not python.exists():
         return False
-    completed = _run([str(python), "-c", f"import {modules}"], cwd=ROOT)
+    completed = _run([str(python), "-c", TOOLING_RUNTIME_PROBE], cwd=ROOT)
     return completed.returncode == 0
 
 
 def _install_tooling_runtime() -> StepResult:
     tooling_python = _venv_python(TOOLS_VENV)
-    if _runtime_imports(tooling_python, "pytest"):
-        return StepResult("tooling", "OK", "tools/.venv already provides pytest")
-
-    backend_python = _venv_python(ROOT / "backend" / ".venv")
-    if not TOOLS_VENV.exists() and _runtime_imports(backend_python, "pytest"):
-        return StepResult("tooling", "OK", "pytest provided by backend virtualenv")
+    if _tooling_runtime_ready(tooling_python):
+        return StepResult("tooling", "OK", "tools/.venv already provides quality and test dependencies")
 
     if not TOOLS_REQUIREMENTS.exists():
         return StepResult("tooling", "FAIL", "missing tools/requirements.txt")

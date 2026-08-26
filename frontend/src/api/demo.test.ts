@@ -9,9 +9,11 @@ async function settle<T>(promise: Promise<T>): Promise<T> {
 }
 
 async function finalizeGravity(api: ReturnType<typeof createDemoApi>) {
-  await settle(api.updateTrack("gravity", {
-    sunoExportFilenameDifferenceConfirmed: true
-  }));
+  await settle(
+    api.updateTrack("gravity", {
+      sunoExportFilenameDifferenceConfirmed: true
+    })
+  );
   await settle(api.generateDocuments("gravity", false));
   await settle(api.calculateHashes("gravity"));
   await settle(api.verifyHashes("gravity"));
@@ -20,33 +22,39 @@ async function finalizeGravity(api: ReturnType<typeof createDemoApi>) {
 
 async function configureFreeTsa(api: ReturnType<typeof createDemoApi>, autoAfterFinalization = false) {
   const settings = await settle(api.getTimestampSettings());
-  return settle(api.updateTimestampSettings({
-    ...settings,
-    custom: { ...settings.custom, caCertificatePath: "/demo/tsa-root.pem" },
-    enabled: true,
-    provider: "free_tsa",
-    autoAfterFinalization
-  }));
+  return settle(
+    api.updateTimestampSettings({
+      ...settings,
+      custom: { ...settings.custom, caCertificatePath: "/demo/tsa-root.pem" },
+      enabled: true,
+      provider: "free_tsa",
+      autoAfterFinalization
+    })
+  );
 }
 
 async function configureOpenTimestamps(api: ReturnType<typeof createDemoApi>, autoAfterFinalization = false) {
   const settings = await settle(api.getTimestampSettings());
-  return settle(api.updateTimestampSettings({
-    ...settings,
-    enabled: true,
-    provider: "open_timestamps",
-    autoAfterFinalization
-  }));
+  return settle(
+    api.updateTimestampSettings({
+      ...settings,
+      enabled: true,
+      provider: "open_timestamps",
+      autoAfterFinalization
+    })
+  );
 }
 
 async function configureDemoAcrCloud(api: ReturnType<typeof createDemoApi>) {
   const settings = await settle(api.getAudioScreeningSettings());
-  await settle(api.updateAudioScreeningSettings({
-    ...settings,
-    enabled: true,
-    host: "identify-eu-west-1.acrcloud.com",
-    timeoutSeconds: 30
-  }));
+  await settle(
+    api.updateAudioScreeningSettings({
+      ...settings,
+      enabled: true,
+      host: "identify-eu-west-1.acrcloud.com",
+      timeoutSeconds: 30
+    })
+  );
   await settle(api.updateAudioScreeningSecret({ accessKey: "demo-key", accessSecret: "demo-secret" }));
 }
 
@@ -58,24 +66,28 @@ describe("demo track library", () => {
     const api = createDemoApi();
     await settle(api.openWorkspace());
 
-    const mixed = await settle(api.updateTrack("gravity", {
-      sunoContentClassification: "MIXED",
-      vocalIntent: "INSTRUMENTAL",
-      vocalLyricsPresent: true
-    }));
+    const mixed = await settle(
+      api.updateTrack("gravity", {
+        sunoContentClassification: "MIXED",
+        vocalIntent: "INSTRUMENTAL",
+        vocalLyricsPresent: true
+      })
+    );
     expect(mixed.fields.sunoContentClassification).toBe("MIXED");
     expect(mixed.fields.vocalIntent).toBe("INSTRUMENTAL");
     expect(mixed.fields.vocalLyricsPresent).toBe(true);
     expect(mixed.fields.sunoLyricsFieldContent).toBeNull();
     expect(mixed.fields.sunoLyricsContentTypes).toEqual([]);
 
-    const empty = await settle(api.updateTrack("gravity", {
-      sunoContentClassification: "EMPTY",
-      vocalIntent: "UNSPECIFIED",
-      sunoLyricsContentSource: "mixed",
-      sunoLyricsFieldText: "stale text",
-      sunoLyricsOtherContentType: "stale label"
-    }));
+    const empty = await settle(
+      api.updateTrack("gravity", {
+        sunoContentClassification: "EMPTY",
+        vocalIntent: "UNSPECIFIED",
+        sunoLyricsContentSource: "mixed",
+        sunoLyricsFieldText: "stale text",
+        sunoLyricsOtherContentType: "stale label"
+      })
+    );
     expect(empty.fields.sunoLyricsContentSource).toBeNull();
     expect(empty.fields.sunoLyricsFieldText).toBe("");
     expect(empty.fields.sunoLyricsOtherContentType).toBe("");
@@ -131,10 +143,12 @@ describe("demo track library", () => {
 
     const finalized = await finalizeGravity(api);
 
-    expect(finalized.track?.certificate).toEqual(expect.objectContaining({
-      certificateLanguage: "de",
-      bilingual: true
-    }));
+    expect(finalized.track?.certificate).toEqual(
+      expect.objectContaining({
+        certificateLanguage: "de",
+        bilingual: true
+      })
+    );
   });
 
   it("does not prefill a new track's generation plan from the global profile", async () => {
@@ -142,18 +156,22 @@ describe("demo track library", () => {
     const api = createDemoApi();
     await settle(api.openWorkspace());
 
-    const created = await settle(api.createTrack({
-      title: "Fresh Plan",
-      productionStartDate: "2026-08-17",
-      commercialUseIntended: false,
-      library: { section: "single" }
-    }));
+    const created = await settle(
+      api.createTrack({
+        title: "Fresh Plan",
+        productionStartDate: "2026-08-17",
+        commercialUseIntended: false,
+        library: { section: "single" }
+      })
+    );
 
     expect(created.profileSnapshot.sunoPlan).toBe("Premier");
     expect(created.fields.sunoPlanAtGeneration).toBe("");
     expect(created.fields.legacySunoPlanAtCreation).toBe("");
   });
+});
 
+describe("demo album library", () => {
   it("creates and renames an album before it contains a track", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -172,12 +190,18 @@ describe("demo track library", () => {
     await settle(api.openWorkspace());
     const before = await settle(api.loadTrack("gravity"));
 
-    const updated = await settle(api.updateTrackLibrary("gravity", {
-      section: "album",
-      albumTitle: "  Northern Lights  "
-    }));
+    const updated = await settle(
+      api.updateTrackLibrary("gravity", {
+        section: "album",
+        albumTitle: "  Northern Lights  "
+      })
+    );
     const { library: _beforeLibrary, relativePath: _beforePath, ...beforeState } = before;
     const { library: _updatedLibrary, relativePath: _updatedPath, ...updatedState } = updated;
+    void _beforeLibrary;
+    void _beforePath;
+    void _updatedLibrary;
+    void _updatedPath;
 
     expect(updated.library).toEqual({ section: "album", albumTitle: "Northern Lights" });
     expect(updated.relativePath).toBe("Northern Lights/Gravity");
@@ -220,16 +244,20 @@ describe("demo pre-release audio screening", () => {
     const settings = await settle(api.getAudioScreeningSettings());
     const track = await settle(api.loadTrack("gravity"));
 
-    expect(settings).toEqual(expect.objectContaining({
-      enabled: false,
-      credentialsConfigured: false,
-      status: "disabled"
-    }));
-    expect(track.audioScreening.external).toEqual(expect.objectContaining({
-      provider: "ACRCloud",
-      status: "skipped_not_configured",
-      matches: []
-    }));
+    expect(settings).toEqual(
+      expect.objectContaining({
+        enabled: false,
+        credentialsConfigured: false,
+        status: "disabled"
+      })
+    );
+    expect(track.audioScreening.external).toEqual(
+      expect.objectContaining({
+        provider: "ACRCloud",
+        status: "skipped_not_configured",
+        matches: []
+      })
+    );
   });
 
   it("normalizes configurable intensity values to the same safe UI bounds", async () => {
@@ -238,18 +266,22 @@ describe("demo pre-release audio screening", () => {
     await settle(api.openWorkspace());
     const settings = await settle(api.getAudioScreeningSettings());
 
-    const normalized = await settle(api.updateAudioScreeningSettings({
-      ...settings,
-      intensityPercent: 125.9,
-      dynamicByTrackDuration: false,
-      referenceDurationSeconds: 9_999
-    }));
+    const normalized = await settle(
+      api.updateAudioScreeningSettings({
+        ...settings,
+        intensityPercent: 125.9,
+        dynamicByTrackDuration: false,
+        referenceDurationSeconds: 9_999
+      })
+    );
 
-    expect(normalized).toEqual(expect.objectContaining({
-      intensityPercent: 100,
-      dynamicByTrackDuration: false,
-      referenceDurationSeconds: 3_600
-    }));
+    expect(normalized).toEqual(
+      expect.objectContaining({
+        intensityPercent: 100,
+        dynamicByTrackDuration: false,
+        referenceDurationSeconds: 3_600
+      })
+    );
   });
 
   it("labels local demo presentation and never fabricates an external provider match", async () => {
@@ -271,25 +303,29 @@ describe("demo pre-release audio screening", () => {
     const api = createDemoApi();
     await settle(api.openWorkspace());
     const settings = await settle(api.getAudioScreeningSettings());
-    await settle(api.updateAudioScreeningSettings({
-      ...settings,
-      enabled: true,
-      host: "identify-eu-west-1.acrcloud.com",
-      intensityPercent: 100,
-      dynamicByTrackDuration: true
-    }));
+    await settle(
+      api.updateAudioScreeningSettings({
+        ...settings,
+        enabled: true,
+        host: "identify-eu-west-1.acrcloud.com",
+        intensityPercent: 100,
+        dynamicByTrackDuration: true
+      })
+    );
     await settle(api.updateAudioScreeningSecret({ accessKey: "demo-key", accessSecret: "demo-secret" }));
 
     const result = await settle(api.runExternalAudioScreening("gravity"));
-    expect(result.track!.audioScreening.external).toEqual(expect.objectContaining({
-      screeningMode: "multi_sample",
-      requestedIntensityPercent: 100,
-      executedRequestCount: 0,
-      uniqueSampleCount: 0,
-      duplicateSampleCount: 0,
-      overlappingSampleCount: 0,
-      samples: []
-    }));
+    expect(result.track!.audioScreening.external).toEqual(
+      expect.objectContaining({
+        screeningMode: "multi_sample",
+        requestedIntensityPercent: 100,
+        executedRequestCount: 0,
+        uniqueSampleCount: 0,
+        duplicateSampleCount: 0,
+        overlappingSampleCount: 0,
+        samples: []
+      })
+    );
     expect(result.track!.audioScreening.external.plannedRequestCount).toBeGreaterThan(1);
   });
 
@@ -320,35 +356,41 @@ describe("demo evidence controls", () => {
     const updated = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
     const suno = updated!.evidence.find((item) => item.role === "suno_final_export")!;
 
-    expect(suno.metadata).toEqual(expect.objectContaining({
-      sunoStudioDetected: true,
-      sunoCreatedTimestamp: "2026-08-17T06:38:06Z",
-      sunoCreatedDate: "2026-08-17",
-      sunoId: "6c8a40fd-32bf-4c7b-ab59-23579ff95828"
-    }));
+    expect(suno.metadata).toEqual(
+      expect.objectContaining({
+        sunoStudioDetected: true,
+        sunoCreatedTimestamp: "2026-08-17T06:38:06Z",
+        sunoCreatedDate: "2026-08-17",
+        sunoId: "6c8a40fd-32bf-4c7b-ab59-23579ff95828"
+      })
+    );
     expect(updated!.fields.sunoFinalGenerationDate).toBe("2026-08-17");
     expect(updated!.fields.sunoFinalGenerationId).toBe("6c8a40fd-32bf-4c7b-ab59-23579ff95828");
     expect(updated!.fields.productionEndDate).toBe("2026-08-17");
     expect(updated!.fields.sunoDownloadExportDate).toBe("2026-08-17");
     expect(updated!.fields.finalExportDate).toBe("2026-08-17");
-    expect(updated!.automation).toEqual(expect.objectContaining({
-      finalGenerationIdOrigin: "evidence_derived_metadata",
-      finalGenerationOrigin: "evidence_derived_metadata",
-      productionEndOrigin: "evidence_derived_metadata",
-      downloadExportOrigin: "evidence_derived_metadata",
-      finalExportOrigin: "evidence_derived_metadata",
-      sunoMetadataDetected: true,
-      releaseIdenticalToSunoExport: true
-    }));
+    expect(updated!.automation).toEqual(
+      expect.objectContaining({
+        finalGenerationIdOrigin: "evidence_derived_metadata",
+        finalGenerationOrigin: "evidence_derived_metadata",
+        productionEndOrigin: "evidence_derived_metadata",
+        downloadExportOrigin: "evidence_derived_metadata",
+        finalExportOrigin: "evidence_derived_metadata",
+        sunoMetadataDetected: true,
+        releaseIdenticalToSunoExport: true
+      })
+    );
   });
 
   it("never replaces a pre-existing manual final generation ID", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
-    await settle(api.updateTrack("cosmic-pulse", {
-      sunoFinalGenerationId: "manual-generation-id"
-    }));
+    await settle(
+      api.updateTrack("cosmic-pulse", {
+        sunoFinalGenerationId: "manual-generation-id"
+      })
+    );
 
     const imported = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
 
@@ -363,36 +405,44 @@ describe("demo evidence controls", () => {
     await settle(api.updateTrack("cosmic-pulse", { postExportEditingPerformed: false }));
     await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
 
-    const edited = await settle(api.updateTrack("cosmic-pulse", {
-      postExportEditingPerformed: true,
-      postExportEditingDetails: "Mastering",
-      finalExportDate: "2026-08-19"
-    }));
+    const edited = await settle(
+      api.updateTrack("cosmic-pulse", {
+        postExportEditingPerformed: true,
+        postExportEditingDetails: "Mastering",
+        finalExportDate: "2026-08-19"
+      })
+    );
 
     expect(edited.fields.finalExportDate).toBe("2026-08-19");
     expect(edited.automation.finalExportOrigin).toBe("user_confirmed_fact");
     expect(edited.fields.sunoDownloadExportDate).toBe("2026-08-17");
     expect(edited.automation.downloadExportOrigin).toBe("evidence_derived_metadata");
   });
+});
 
+describe("demo evidence-derived dates", () => {
   it("replaces fallback dates with metadata and keeps both dates automatic after editing", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
-    await settle(api.updateTrack("cosmic-pulse", {
-      sunoFinalGenerationDate: "2026-08-16",
-      postExportEditingPerformed: false
-    }));
+    await settle(
+      api.updateTrack("cosmic-pulse", {
+        sunoFinalGenerationDate: "2026-08-16",
+        postExportEditingPerformed: false
+      })
+    );
     const imported = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
 
     expect(imported!.fields.sunoFinalGenerationDate).toBe("2026-08-17");
     expect(imported!.fields.productionEndDate).toBe("2026-08-17");
     expect(imported!.automation.consistencyIssues).toEqual([]);
 
-    const edited = await settle(api.updateTrack("cosmic-pulse", {
-      postExportEditingPerformed: true,
-      postExportEditingDetails: "Mastering"
-    }));
+    const edited = await settle(
+      api.updateTrack("cosmic-pulse", {
+        postExportEditingPerformed: true,
+        postExportEditingDetails: "Mastering"
+      })
+    );
     expect(edited.fields.productionEndDate).toBe("2026-08-17");
     expect(edited.automation.productionEndOrigin).toBe("evidence_derived_metadata");
   });
@@ -404,10 +454,12 @@ describe("demo evidence controls", () => {
     await settle(api.updateTrack("cosmic-pulse", { postExportEditingPerformed: false }));
     await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
 
-    const patched = await settle(api.updateTrack("cosmic-pulse", {
-      sunoFinalGenerationDate: "2026-08-16",
-      productionEndDate: "2026-08-18"
-    }));
+    const patched = await settle(
+      api.updateTrack("cosmic-pulse", {
+        sunoFinalGenerationDate: "2026-08-16",
+        productionEndDate: "2026-08-18"
+      })
+    );
 
     expect(patched.fields.sunoFinalGenerationDate).toBe("2026-08-17");
     expect(patched.fields.productionEndDate).toBe("2026-08-17");
@@ -415,11 +467,13 @@ describe("demo evidence controls", () => {
     expect(patched.automation.productionEndOrigin).toBe("evidence_derived_metadata");
     expect(patched.automation.consistencyIssues).toEqual([]);
 
-    const edited = await settle(api.updateTrack("cosmic-pulse", {
-      postExportEditingPerformed: true,
-      postExportEditingDetails: "Mastering",
-      productionEndDate: "2026-08-19"
-    }));
+    const edited = await settle(
+      api.updateTrack("cosmic-pulse", {
+        postExportEditingPerformed: true,
+        postExportEditingDetails: "Mastering",
+        productionEndDate: "2026-08-19"
+      })
+    );
     expect(edited.fields.productionEndDate).toBe("2026-08-17");
     expect(edited.automation.productionEndOrigin).toBe("evidence_derived_metadata");
   });
@@ -432,9 +486,11 @@ describe("demo evidence controls", () => {
     const imported = await settle(api.importEvidence("cosmic-pulse", "suno_final_export"));
     expect(imported!.automation.productionEndOrigin).toBe("evidence_derived_metadata");
 
-    const updated = await settle(api.updateTrack("cosmic-pulse", {
-      productionStartDate: "2026-08-10"
-    }));
+    const updated = await settle(
+      api.updateTrack("cosmic-pulse", {
+        productionStartDate: "2026-08-10"
+      })
+    );
 
     expect(updated.fields.productionEndDate).toBe("2026-08-17");
     expect(updated.automation.productionEndOrigin).toBe("evidence_derived_metadata");
@@ -445,17 +501,21 @@ describe("demo evidence controls", () => {
     const api = createDemoApi();
     await settle(api.openWorkspace());
 
-    const updated = await settle(api.updateTrack("cosmic-pulse", {
-      sunoFinalGenerationDate: "2026-08-16",
-      productionEndDate: "2026-08-18"
-    }));
+    const updated = await settle(
+      api.updateTrack("cosmic-pulse", {
+        sunoFinalGenerationDate: "2026-08-16",
+        productionEndDate: "2026-08-18"
+      })
+    );
 
     expect(updated.fields.sunoFinalGenerationDate).toBe("2026-08-16");
     expect(updated.fields.productionEndDate).toBe("2026-08-18");
     expect(updated.automation.finalGenerationOrigin).toBe("user_confirmed_fact");
     expect(updated.automation.productionEndOrigin).toBe("user_confirmed_fact");
   });
+});
 
+describe("demo evidence management", () => {
   it("replaces one selected record and previews present image evidence", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -476,50 +536,59 @@ describe("demo evidence controls", () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
-    const created = await settle(api.createTrack({
-      title: "My Track",
-      productionStartDate: "2026-08-17",
-      commercialUseIntended: false,
-      library: { section: "single" }
-    }));
+    const created = await settle(
+      api.createTrack({
+        title: "My Track",
+        productionStartDate: "2026-08-17",
+        commercialUseIntended: false,
+        library: { section: "single" }
+      })
+    );
 
     const updated = await settle(api.importEvidence(created.id, "human_edited_artwork"));
-    expect(updated!.evidence.find((item) => item.role === "human_edited_artwork")?.fileName)
-      .toBe("MY_TRACK_HUMAN_EDITED.png");
+    expect(updated!.evidence.find((item) => item.role === "human_edited_artwork")?.fileName).toBe(
+      "MY_TRACK_HUMAN_EDITED.png"
+    );
   });
 
   it("registers Suno terms globally and copies them into existing and new projects", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
     await settle(api.openWorkspace());
-    const global = await settle(api.importGlobalTermsEvidence({
-      documentTitle: "Suno Terms of Service",
-      provider: "Suno, Inc.",
-      retrievalDate: "2026-08-17",
-      sourceUrl: "https://suno.com/terms"
-    }));
+    const global = await settle(
+      api.importGlobalTermsEvidence({
+        documentTitle: "Suno Terms of Service",
+        provider: "Suno, Inc.",
+        retrievalDate: "2026-08-17",
+        sourceUrl: "https://suno.com/terms"
+      })
+    );
     const existing = await settle(api.loadTrack("gravity"));
-    const created = await settle(api.createTrack({
-      title: "Later Project",
-      productionStartDate: "2026-08-16",
-      commercialUseIntended: false,
-      library: { section: "single" }
-    }));
+    const created = await settle(
+      api.createTrack({
+        title: "Later Project",
+        productionStartDate: "2026-08-16",
+        commercialUseIntended: false,
+        library: { section: "single" }
+      })
+    );
 
     for (const track of [existing, created]) {
-      expect(track.evidence).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          role: "suno_terms_rights",
-          sourceGlobalEvidenceId: global!.id,
-          provenance: "global_copy",
-          metadata: expect.objectContaining({
-            originalFileName: "suno_terms.pdf",
-            documentTitle: "Suno Terms of Service",
-            provider: "Suno, Inc.",
-            retrievalDate: "2026-08-17"
+      expect(track.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "suno_terms_rights",
+            sourceGlobalEvidenceId: global!.id,
+            provenance: "global_copy",
+            metadata: expect.objectContaining({
+              originalFileName: "suno_terms.pdf",
+              documentTitle: "Suno Terms of Service",
+              provider: "Suno, Inc.",
+              retrievalDate: "2026-08-17"
+            })
           })
-        })
-      ]));
+        ])
+      );
     }
   });
 
@@ -528,26 +597,32 @@ describe("demo evidence controls", () => {
     const api = createDemoApi();
     await settle(api.openWorkspace());
 
-    const rejected = expect(api.importGlobalTermsEvidence({ documentTitle: "", provider: "", retrievalDate: "" }))
-      .rejects.toThrow("Dokumenttitel");
+    const rejected = expect(
+      api.importGlobalTermsEvidence({ documentTitle: "", provider: "", retrievalDate: "" })
+    ).rejects.toThrow("Dokumenttitel");
     await vi.runAllTimersAsync();
     await rejected;
 
-    const global = await settle(api.importGlobalTermsEvidence({
-      documentTitle: "Suno Terms",
-      provider: "Suno",
-      retrievalDate: "2026-08-17"
-    }));
-    await settle(api.updateGlobalTermsEvidenceMetadata(global!.id, {
-      documentTitle: "Suno Terms of Service",
-      provider: "Suno, Inc.",
-      retrievalDate: "2026-08-17",
-      applicableProductionPeriod: "2026"
-    }));
+    const global = await settle(
+      api.importGlobalTermsEvidence({
+        documentTitle: "Suno Terms",
+        provider: "Suno",
+        retrievalDate: "2026-08-17"
+      })
+    );
+    await settle(
+      api.updateGlobalTermsEvidenceMetadata(global!.id, {
+        documentTitle: "Suno Terms of Service",
+        provider: "Suno, Inc.",
+        retrievalDate: "2026-08-17",
+        applicableProductionPeriod: "2026"
+      })
+    );
 
     const updated = await settle(api.loadTrack("gravity"));
-    expect(updated.evidence.find((item) => item.sourceGlobalEvidenceId === global!.id)?.metadata)
-      .toEqual(expect.objectContaining({ documentTitle: "Suno Terms of Service", applicableProductionPeriod: "2026" }));
+    expect(updated.evidence.find((item) => item.sourceGlobalEvidenceId === global!.id)?.metadata).toEqual(
+      expect.objectContaining({ documentTitle: "Suno Terms of Service", applicableProductionPeriod: "2026" })
+    );
   });
 });
 
@@ -558,20 +633,24 @@ describe("demo external timestamp attachment", () => {
     await settle(api.openWorkspace());
 
     const settings = await configureOpenTimestamps(api);
-    expect(settings).toEqual(expect.objectContaining({
-      status: "ready",
-      statusMessage: expect.stringContaining("not RFC 3161")
-    }));
-    const tested = await settle(api.testTimestampProvider());
-    expect(tested).toEqual(expect.objectContaining({
-      status: "ready",
-      message: expect.stringContaining("not RFC 3161"),
-      capabilities: expect.objectContaining({
-        rfc3161: false,
-        openTimestamps: true,
-        returnsSignedTimestamp: false
+    expect(settings).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        statusMessage: expect.stringContaining("not RFC 3161")
       })
-    }));
+    );
+    const tested = await settle(api.testTimestampProvider());
+    expect(tested).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        message: expect.stringContaining("not RFC 3161"),
+        capabilities: expect.objectContaining({
+          rfc3161: false,
+          openTimestamps: true,
+          returnsSignedTimestamp: false
+        })
+      })
+    );
   });
 
   it("uses the configured provider and evidence-manifest anchor for an explicit later attachment", async () => {
@@ -619,42 +698,48 @@ describe("demo external timestamp attachment", () => {
 
     const record = timestamped.externalTimestamps[0];
     const sidecarDirectory = `06_CERTIFICATE/EXTERNAL_TIMESTAMPS/${record.id}`;
-    expect(record).toEqual(expect.objectContaining({
-      certificateId: finalized.track!.certificate.certificateId,
-      provider: "FreeTSA",
-      timestampType: "external_integrity_timestamp",
-      referencedArtifact: "evidence_manifest",
-      referencedHashMatch: true,
-      actualSha256: anchor.sha256,
-      provenance: "Automatic provider response; structural and digest checks",
-      recordRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD.json`,
-      markdownRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.md`,
-      pdfRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.pdf`,
-      hashListRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD_SHA256.txt`,
-      integrityVerified: true,
-      integrityIssues: [],
-      providerMetadata: expect.objectContaining({
-        protocol: "RFC 3161",
-        providerResponseFileName: "TIMESTAMP_RESPONSE.tsr",
-        providerResponseSha256: "f".repeat(64),
-        providerDigestMatch: true,
-        verificationResult: "attached",
-        signatureVerified: null,
-        trustChainVerified: null
+    expect(record).toEqual(
+      expect.objectContaining({
+        certificateId: finalized.track!.certificate.certificateId,
+        provider: "FreeTSA",
+        timestampType: "external_integrity_timestamp",
+        referencedArtifact: "evidence_manifest",
+        referencedHashMatch: true,
+        actualSha256: anchor.sha256,
+        provenance: "Automatic provider response; structural and digest checks",
+        recordRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD.json`,
+        markdownRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.md`,
+        pdfRelativePath: `${sidecarDirectory}/EXTERNAL_TIMESTAMP_ADDENDUM.pdf`,
+        hashListRelativePath: `${sidecarDirectory}/TIMESTAMP_RECORD_SHA256.txt`,
+        integrityVerified: true,
+        integrityIssues: [],
+        providerMetadata: expect.objectContaining({
+          protocol: "RFC 3161",
+          providerResponseFileName: "TIMESTAMP_RESPONSE.tsr",
+          providerResponseSha256: "f".repeat(64),
+          providerDigestMatch: true,
+          verificationResult: "attached",
+          signatureVerified: null,
+          trustChainVerified: null
+        })
       })
-    }));
-    expect(timestamped.externalTimestampSummary).toEqual(expect.objectContaining({
-      status: "attached",
-      provider: "FreeTSA",
-      recordId: record.id
-    }));
+    );
+    expect(timestamped.externalTimestampSummary).toEqual(
+      expect.objectContaining({
+        status: "attached",
+        provider: "FreeTSA",
+        recordId: record.id
+      })
+    );
 
     const revision = await settle(api.createRevision("gravity"));
     expect(revision.track!.externalTimestamps).toEqual([]);
     expect(revision.track!.externalTimestampSummary).toEqual(expect.objectContaining({ status: "not_recorded" }));
     expect(revision.track!.finalizationAnchors).toEqual([]);
   });
+});
 
+describe("demo timestamp finalization", () => {
   it("keeps technical finalization complete when no provider is configured", async () => {
     vi.useFakeTimers();
     const api = createDemoApi();
@@ -695,19 +780,23 @@ describe("demo external timestamp attachment", () => {
 
     const otsAttached = await settle(api.attachExternalTimestamp(finalized.track!.id));
     expect(otsAttached.externalTimestamps).toHaveLength(1);
-    expect(otsAttached.externalTimestampSummary).toEqual(expect.objectContaining({
-      status: "attached",
-      provider: "OpenTimestamps"
-    }));
-    expect(otsAttached.externalTimestamps[0]).toEqual(expect.objectContaining({
-      timestampValue: "",
-      providerVerificationUrl: "https://a.pool.opentimestamps.org/digest",
-      providerMetadata: expect.objectContaining({
-        protocol: expect.stringContaining("Bitcoin anchoring pending"),
-        signatureVerified: null,
-        trustChainVerified: null
+    expect(otsAttached.externalTimestampSummary).toEqual(
+      expect.objectContaining({
+        status: "attached",
+        provider: "OpenTimestamps"
       })
-    }));
+    );
+    expect(otsAttached.externalTimestamps[0]).toEqual(
+      expect.objectContaining({
+        timestampValue: "",
+        providerVerificationUrl: "https://a.pool.opentimestamps.org/digest",
+        providerMetadata: expect.objectContaining({
+          protocol: expect.stringContaining("Bitcoin anchoring pending"),
+          signatureVerified: null,
+          trustChainVerified: null
+        })
+      })
+    );
 
     const sameProviderRetry = await settle(api.attachExternalTimestamp(finalized.track!.id));
     expect(sameProviderRetry.externalTimestamps).toHaveLength(1);
@@ -715,15 +804,14 @@ describe("demo external timestamp attachment", () => {
     await configureFreeTsa(api);
     const rfcAttached = await settle(api.attachExternalTimestamp(finalized.track!.id));
     expect(rfcAttached.externalTimestamps).toHaveLength(2);
-    expect(rfcAttached.externalTimestamps.map((record) => record.provider)).toEqual([
-      "OpenTimestamps",
-      "FreeTSA"
-    ]);
-    expect(rfcAttached.externalTimestampSummary).toEqual(expect.objectContaining({
-      status: "attached",
-      provider: "FreeTSA",
-      recordId: rfcAttached.externalTimestamps[1].id
-    }));
+    expect(rfcAttached.externalTimestamps.map((record) => record.provider)).toEqual(["OpenTimestamps", "FreeTSA"]);
+    expect(rfcAttached.externalTimestampSummary).toEqual(
+      expect.objectContaining({
+        status: "attached",
+        provider: "FreeTSA",
+        recordId: rfcAttached.externalTimestamps[1].id
+      })
+    );
   });
 });
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from tools import logger
 from tools.config import ConfigLoadError, resolve_configuration, validate_configuration
+from tools.process import process_start_token
 from tools.profiles import runtime as profile_runtime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,11 +22,26 @@ STATE_FILE = RUNTIME_DIR / "run_state.json"
 
 
 def _is_process_alive(pid: int) -> bool:
+    if _is_zombie_process(pid):
+        return False
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         return False
+
+
+def _is_zombie_process(pid: int) -> bool:
+    if os.name == "nt":
+        return False
+    try:
+        stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    parts = stat.rsplit(") ", 1)
+    if len(parts) != 2:
+        return False
+    return parts[1].split(maxsplit=1)[0] == "Z"
 
 
 def _terminate_pid(pid: int, timeout_seconds: int = 8) -> bool:
@@ -66,14 +83,58 @@ def _clear_state() -> None:
         pass
 
 
-def _read_cmdline(pid: int) -> str:
+def _read_proc_cmdline_tokens(pid: int) -> tuple[str, ...] | None:
     path = Path("/proc") / str(pid) / "cmdline"
     try:
         raw = path.read_bytes()
     except OSError:
-        return "(unreadable)"
-    text = raw.replace(b"\x00", b" ").decode(errors="replace").strip()
-    return text or "(empty)"
+        return None
+    tokens = tuple(part.decode(errors="replace") for part in raw.split(b"\x00") if part)
+    if len(tokens) != 1:
+        return tokens or None
+    try:
+        expanded = tuple(shlex.split(tokens[0], posix=os.name != "nt"))
+    except ValueError:
+        return None
+    return expanded or None
+
+
+def _cmdline_query(pid: int) -> list[str] | None:
+    if os.name == "nt":
+        powershell = shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
+        if powershell is None:
+            return None
+        script = f'(Get-CimInstance Win32_Process -Filter "ProcessId = {pid}").CommandLine'
+        return [powershell, "-NoProfile", "-NonInteractive", "-Command", script]
+
+    ps = shutil.which("ps")
+    return [ps, "-p", str(pid), "-o", "command="] if ps is not None else None
+
+
+def _read_cmdline_tokens(pid: int) -> tuple[str, ...] | None:
+    tokens = _read_proc_cmdline_tokens(pid)
+    if tokens is not None:
+        return tokens
+
+    query = _cmdline_query(pid)
+    if query is None:
+        return None
+    try:
+        completed = subprocess.run(query, text=True, capture_output=True, check=False)
+    except OSError:
+        return None
+    text = completed.stdout.strip()
+    if completed.returncode != 0 or not text:
+        return None
+    try:
+        return tuple(shlex.split(text, posix=os.name != "nt"))
+    except ValueError:
+        return None
+
+
+def _read_cmdline(pid: int) -> str:
+    tokens = _read_cmdline_tokens(pid)
+    return " ".join(tokens) if tokens else "(unreadable)"
 
 
 def _listener_inode_to_port(ports: set[int]) -> dict[str, int]:
@@ -256,6 +317,137 @@ def _port_is_free(port: int) -> bool:
             return False
 
 
+def _normalized_executable_name(value: str) -> str:
+    name = Path(value.strip('"')).name.lower()
+    for suffix in (".cmd", ".bat", ".exe"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name
+
+
+def _launcher_matches(expected: str, current: tuple[str, ...]) -> bool:
+    expected_name = _normalized_executable_name(expected)
+    current_names = {_normalized_executable_name(token) for token in current}
+    if expected_name in current_names:
+        return True
+    return expected_name in {"npm", "npx"} and f"{expected_name}-cli.js" in current_names
+
+
+def _contains_token_sequence(tokens: tuple[str, ...], expected: tuple[str, ...]) -> bool:
+    if not expected or len(expected) > len(tokens):
+        return False
+    return any(tokens[index : index + len(expected)] == expected for index in range(len(tokens) - len(expected) + 1))
+
+
+def _command_arguments_match(expected: tuple[str, ...], current: tuple[str, ...]) -> bool:
+    arguments = expected[1:]
+    if _normalized_executable_name(expected[0]) in {"npm", "npx"}:
+        arguments = tuple(token for token in arguments if token != "--")
+        current = tuple(token for token in current if token != "--")
+    return _contains_token_sequence(current, arguments)
+
+
+def _tracked_identity_matches(service: dict, pid: int) -> tuple[bool, str]:
+    raw_command = service.get("command")
+    raw_port = service.get("port")
+    stored_start_token = service.get("process_start_token")
+    if not isinstance(stored_start_token, str) or not stored_start_token:
+        return False, "stored process start identity is missing or invalid"
+    current_start_token = process_start_token(pid)
+    if current_start_token is None:
+        return False, "current process start identity is unavailable"
+    if current_start_token != stored_start_token:
+        return False, "process start identity does not match tracked service"
+    if (
+        not isinstance(raw_command, list)
+        or len(raw_command) < 2
+        or not all(isinstance(item, str) for item in raw_command)
+    ):
+        return False, "stored command identity is missing or invalid"
+    if not isinstance(raw_port, int) or isinstance(raw_port, bool) or not 1 <= raw_port <= 65535:
+        return False, "stored port identity is missing or invalid"
+
+    current = _read_cmdline_tokens(pid)
+    if current is None:
+        return False, "current process command line is unavailable"
+    expected = tuple(raw_command)
+    if not _launcher_matches(expected[0], current):
+        return False, "process launcher does not match tracked service"
+    if not _command_arguments_match(expected, current):
+        return False, "process command does not match tracked service"
+    if not _cmdline_matches_port(list(expected), raw_port) or not _cmdline_matches_port(list(current), raw_port):
+        return False, "process port does not match tracked service"
+    return True, "tracked command and port match"
+
+
+def _process_group_alive(group_id: int) -> bool:
+    if os.name != "nt" and not _process_group_has_live_member(group_id):
+        return False
+    try:
+        os.killpg(group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _process_group_has_live_member(group_id: int) -> bool:
+    for pid_name in os.listdir("/proc"):
+        if not pid_name.isdigit():
+            continue
+        try:
+            pid = int(pid_name)
+            if os.getpgid(pid) == group_id and not _is_zombie_process(pid):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _terminate_process_group(group_id: int, timeout_seconds: int = 8) -> bool:
+    try:
+        os.killpg(group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if not _process_group_alive(group_id):
+            return True
+        time.sleep(0.2)
+    try:
+        os.killpg(group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return not _process_group_alive(group_id)
+
+
+def _terminate_tracked_service(service: dict, pid: int) -> bool:
+    group_id = service.get("process_group_id")
+    if not isinstance(group_id, int) or isinstance(group_id, bool) or group_id <= 0:
+        return False
+    if os.name == "nt":
+        taskkill = shutil.which("taskkill.exe") or shutil.which("taskkill")
+        if taskkill is None:
+            return False
+        completed = subprocess.run(
+            [taskkill, "/PID", str(pid), "/T", "/F"], text=True, capture_output=True, check=False
+        )
+        return completed.returncode == 0 or not _is_process_alive(pid)
+    try:
+        if os.getpgid(pid) != group_id:
+            return False
+    except OSError:
+        return False
+    return _terminate_process_group(group_id)
+
+
 def _stop_tracked_processes() -> tuple[set[int], int]:
     state = _read_state()
     stopped_pids: set[int] = set()
@@ -271,8 +463,22 @@ def _stop_tracked_processes() -> tuple[set[int], int]:
         name = str(service.get("name", "unknown"))
         if pid <= 0:
             continue
-        ok = _terminate_pid(pid)
         stopped_pids.add(pid)
+        if not _is_process_alive(pid):
+            logger.ok(f"Tracked service is no longer running: {name} pid={pid}")
+            continue
+        identity_matches, identity_detail = _tracked_identity_matches(service, pid)
+        if not identity_matches:
+            logger.status(
+                "FAIL",
+                f"stop:stale:{name:<8} pid={pid} ({identity_detail}); process was not signaled",
+            )
+            failures += 1
+            continue
+        ok = _terminate_tracked_service(service, pid)
+        raw_port = service.get("port")
+        if ok and isinstance(raw_port, int) and not isinstance(raw_port, bool):
+            ok = _port_is_free(raw_port)
         logger.status("OK" if ok else "FAIL", f"stop:tracked:{name:<8} pid={pid}")
         if not ok:
             failures += 1

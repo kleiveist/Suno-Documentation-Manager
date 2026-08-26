@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -78,12 +79,12 @@ def test_invalid_feature_dependencies_are_detected(tmp_path) -> None:
                 "[features.frontend]",
                 'name = "Frontend"',
                 'description = "Frontend runtime"',
-                'paths = []',
+                "paths = []",
                 "",
                 "[features.tauri]",
                 'name = "Tauri"',
                 'description = "Desktop shell"',
-                'paths = []',
+                "paths = []",
                 'requires = ["frontend"]',
                 "",
             ]
@@ -179,13 +180,13 @@ def test_profile_configuration_can_be_extended_without_breaking_loading(tmp_path
                 "[features.frontend]",
                 'name = "Frontend"',
                 'description = "Frontend runtime"',
-                'paths = []',
+                "paths = []",
                 'future_flag = "safe-to-ignore"',
                 "",
                 "[features.monitoring]",
                 'name = "Monitoring"',
                 'description = "Optional monitoring integration"',
-                'paths = []',
+                "paths = []",
                 'requires = ["frontend"]',
                 "",
             ]
@@ -263,7 +264,7 @@ def test_scaffold_plan_uses_only_profile_feature_paths(
 
     assert all(any(item == prefix or item.startswith(f"{prefix}/") for item in selected) for prefix in expected)
     assert all(not any(item == prefix or item.startswith(f"{prefix}/") for item in selected) for prefix in excluded)
-    assert {"README.md", "docs", "profiles", "shared", "tools"} <= selected
+    assert {"AGENTS.md", "README.md", "docs", "profiles", "shared", "tools"} <= selected
 
 
 def test_catalog_rejects_paths_outside_repository(tmp_path: Path) -> None:
@@ -281,7 +282,7 @@ def test_catalog_rejects_paths_outside_repository(tmp_path: Path) -> None:
                 "[features.frontend]",
                 'name = "Frontend"',
                 'description = "Frontend runtime"',
-                'paths = []',
+                "paths = []",
                 "",
             ]
         ),
@@ -320,13 +321,13 @@ def test_catalog_rejects_unknown_dependencies_and_cycles(tmp_path: Path) -> None
                 "[features.alpha]",
                 'name = "Alpha"',
                 'description = "Alpha feature"',
-                'paths = []',
+                "paths = []",
                 'requires = ["beta", "missing"]',
                 "",
                 "[features.beta]",
                 'name = "Beta"',
                 'description = "Beta feature"',
-                'paths = []',
+                "paths = []",
                 'requires = ["alpha"]',
                 "",
             ]
@@ -371,7 +372,7 @@ def test_generated_profile_serialization_escapes_metadata() -> None:
     assert parsed["description"] == "First line\nSecond line"
 
 
-def test_scaffold_removes_master_only_readme_blocks(tmp_path: Path) -> None:
+def test_scaffold_removes_master_only_readme_content(tmp_path: Path) -> None:
     target = tmp_path / "generated"
     target.mkdir()
     (target / "README.md").write_text(
@@ -380,17 +381,23 @@ def test_scaffold_removes_master_only_readme_blocks(tmp_path: Path) -> None:
         "<!-- MASTER-ONLY START -->\n"
         "[Master case study](case-study/README.md)\n"
         "<!-- MASTER-ONLY END -->\n\n"
-        "Visible after.\n",
+        "Visible after.\n\n"
+        "- [Conduct](CODE_OF_CONDUCT.md)\n"
+        "- [Contributing](CONTRIBUTING.md)\n"
+        "- [License](LICENSE)\n",
         encoding="utf-8",
     )
 
-    generator._remove_master_only_readme_blocks(target)
+    generator._remove_master_only_readme_content(target)
 
     generated_readme = (target / "README.md").read_text(encoding="utf-8")
     assert "Visible before." in generated_readme
     assert "Visible after." in generated_readme
     assert "MASTER-ONLY" not in generated_readme
     assert "case-study/README.md" not in generated_readme
+    assert "CODE_OF_CONDUCT.md" not in generated_readme
+    assert "CONTRIBUTING.md" not in generated_readme
+    assert "LICENSE" in generated_readme
 
 
 def test_master_readme_case_study_links_are_removed_from_scaffold(tmp_path: Path) -> None:
@@ -410,19 +417,91 @@ def test_master_readme_case_study_links_are_removed_from_scaffold(tmp_path: Path
     assert "MASTER-ONLY" not in generated_readme
 
 
+def test_scaffold_copies_the_pinned_rust_analyzer_runtime(tmp_path: Path) -> None:
+    catalog = loader.load_catalog(PROFILES_DIR, validate_paths=False)
+    target = tmp_path / "web-only"
+    plan = generator.build_scaffold_plan(
+        catalog,
+        project_root=ROOT,
+        target_dir=target,
+        profile_id="web-only",
+    )
+
+    generator.scaffold_project(plan)
+
+    analyzer = Path("tools/quality/rust_analyzer")
+    artifact = analyzer / "dist/rust_quality_analyzer.wasm"
+    provenance = analyzer / "provenance.json"
+    assert (target / artifact).read_bytes() == (ROOT / artifact).read_bytes()
+    assert (target / provenance).read_text(encoding="utf-8") == (ROOT / provenance).read_text(encoding="utf-8")
+    requirements = (target / "tools/requirements.txt").read_text(encoding="utf-8")
+    assert "wasmtime==47.0.1" in requirements.splitlines()
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert (target / ".gitattributes").read_text(encoding="utf-8") == attributes
+    assert "/tools/quality/rust_analyzer/Cargo.lock text eol=lf" in attributes
+    assert "/tools/quality/rust_analyzer/src/** text eol=lf" in attributes
+    assert "/tools/quality/rust_analyzer/dist/*.wasm binary" in attributes
+    assert generator._ignore_transient_content(
+        "frontend",
+        ["dist", "playwright-report", "src", "test-results"],
+    ) == ["dist", "playwright-report", "test-results"]
+
+
+def test_scaffold_copy_excludes_playwright_runtime_outputs(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    (source / "src").mkdir(parents=True)
+    (source / "src/main.ts").write_text("export {};\n", encoding="utf-8")
+    (source / "playwright-report").mkdir()
+    (source / "playwright-report/index.html").write_text("transient\n", encoding="utf-8")
+    (source / "test-results").mkdir()
+    (source / "test-results/.last-run.json").write_text("{}\n", encoding="utf-8")
+
+    destination = tmp_path / "destination"
+    shutil.copytree(source, destination, ignore=generator._ignore_transient_content)
+
+    assert (destination / "src/main.ts").is_file()
+    assert not (destination / "playwright-report").exists()
+    assert not (destination / "test-results").exists()
+
+
+def test_missing_required_scaffold_artifact_fails_before_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    catalog = loader.load_catalog(PROFILES_DIR, validate_paths=False)
+    target = tmp_path / "web-only"
+    monkeypatch.setattr(
+        generator,
+        "REQUIRED_SCAFFOLD_ARTIFACTS",
+        (Path("tools/quality/rust_analyzer/dist/missing.wasm"),),
+    )
+
+    with pytest.raises(generator.GenerationError, match="Required scaffold artifact is missing"):
+        generator.build_scaffold_plan(
+            catalog,
+            project_root=ROOT,
+            target_dir=target,
+            profile_id="web-only",
+        )
+
+    assert not target.exists()
+
+
 @pytest.mark.skipif(not HAS_TAURI_SOURCE, reason="Tauri source is absent in this derived project")
 def test_init_command_scaffolds_selected_profile(tmp_path: Path) -> None:
     target = tmp_path / "desktop-local-project"
 
-    assert control.main(
-        [
-            "init",
-            "--profile",
-            "desktop-local",
-            "--target-dir",
-            str(target),
-        ]
-    ) == 0
+    assert (
+        control.main(
+            [
+                "init",
+                "--profile",
+                "desktop-local",
+                "--target-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
 
     assert (target / "frontend").exists()
     assert (target / "src-tauri").exists()
@@ -430,6 +509,7 @@ def test_init_command_scaffolds_selected_profile(tmp_path: Path) -> None:
     assert (target / "docs").exists()
     assert (target / "shared").exists()
     assert (target / "profiles").exists()
+    assert (target / "AGENTS.md").is_file()
     assert not (target / "backend").exists()
     assert 'id = "desktop-local"' in (target / "project-profile.toml").read_text(encoding="utf-8")
     frontend_profile = (target / "frontend" / "src" / "project-profile.ts").read_text(encoding="utf-8")
@@ -451,59 +531,6 @@ def test_init_command_scaffolds_selected_profile(tmp_path: Path) -> None:
     assert active.features == ("frontend", "tauri")
 
 
-@pytest.mark.skipif(
-    not HAS_TAURI_SOURCE or not HAS_BACKEND_SOURCE or not HAS_CLOUD_SOURCE,
-    reason="Complete desktop-cloud sources are absent in this derived project",
-)
-def test_init_command_applies_complete_release_identity(tmp_path: Path) -> None:
-    target = tmp_path / "customer-app"
-
-    assert control.main(
-        [
-            "init",
-            "--profile",
-            "desktop-cloud",
-            "--name",
-            "CustomerApp",
-            "--identifier",
-            "com.customer.app",
-            "--target-dir",
-            str(target),
-        ]
-    ) == 0
-
-    package = json.loads((target / "frontend" / "package.json").read_text(encoding="utf-8"))
-    package_lock = json.loads((target / "frontend" / "package-lock.json").read_text(encoding="utf-8"))
-    tauri = json.loads((target / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-    assert package["name"] == "customer-app-frontend"
-    assert package_lock["name"] == "customer-app-frontend"
-    assert tauri["productName"] == "customer-app"
-    assert tauri["identifier"] == "com.customer.app"
-    assert tauri["mainBinaryName"] == "customer-app"
-    assert tauri["app"]["windows"][0]["title"] == "CustomerApp"
-    assert 'name = "customer-app"' in (target / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
-    assert "CustomerApp Contributors" in (target / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
-    assert 'name = "customer-app"' in (target / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")
-    assert "name: customer-app" in (target / "deployment" / "compose.yaml").read_text(encoding="utf-8")
-    assert "APP_NAME=CustomerApp API" in (target / ".env.example").read_text(encoding="utf-8")
-    assert "customer-app-backend" in (target / "backend" / "app" / "api" / "health.py").read_text(encoding="utf-8")
-    assert "customer-app-web.zip" in (target / "tools" / "inst" / "build.py").read_text(encoding="utf-8")
-
-
-def test_init_requires_identifier_for_custom_tauri_identity(tmp_path: Path) -> None:
-    assert control.main(
-        [
-            "init",
-            "--profile",
-            "desktop-local",
-            "--name",
-            "Customer App",
-            "--target-dir",
-            str(tmp_path / "customer-app"),
-        ]
-    ) == 1
-
-
 def test_init_command_supports_interactive_profile_selection(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "web-only-project"
     monkeypatch.setattr("builtins.input", lambda _prompt="": "1")
@@ -516,16 +543,19 @@ def test_init_command_supports_interactive_profile_selection(monkeypatch, tmp_pa
 def test_init_command_dry_run_does_not_write_files(tmp_path: Path) -> None:
     target = tmp_path / "web-cloud-project"
 
-    assert control.main(
-        [
-            "init",
-            "--profile",
-            "web-cloud",
-            "--target-dir",
-            str(target),
-            "--dry-run",
-        ]
-    ) == 0
+    assert (
+        control.main(
+            [
+                "init",
+                "--profile",
+                "web-cloud",
+                "--target-dir",
+                str(target),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
 
     assert not target.exists()
 
@@ -642,9 +672,7 @@ def test_desktop_cloud_scaffold_includes_public_api_config_only(tmp_path: Path) 
 def test_web_cloud_with_postgres_scaffolds_database_capability(tmp_path: Path) -> None:
     target = tmp_path / "web-cloud-postgres"
 
-    assert control.main(
-        ["init", "--profile", "web-cloud", "--with", "postgres", "--target-dir", str(target)]
-    ) == 0
+    assert control.main(["init", "--profile", "web-cloud", "--with", "postgres", "--target-dir", str(target)]) == 0
 
     assert (target / "backend" / "app" / "db" / "base.py").exists()
     assert (target / "backend" / "alembic.ini").exists()
@@ -665,12 +693,17 @@ def test_web_cloud_with_postgres_scaffolds_database_capability(tmp_path: Path) -
     assert active.has_feature("postgres")
 
 
-def test_init_with_postgres_rejects_web_only_cleanly(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile_id", ["web-only", "desktop-local"])
+def test_init_with_postgres_rejects_profiles_without_backend_cleanly(
+    monkeypatch,
+    tmp_path: Path,
+    profile_id: str,
+) -> None:
     messages: list[str] = []
     monkeypatch.setattr("tools.profiles.cli.logger.fail", messages.append)
 
     code = control.main(
-        ["init", "--profile", "web-only", "--with", "postgres", "--target-dir", str(tmp_path / "invalid")]
+        ["init", "--profile", profile_id, "--with", "postgres", "--target-dir", str(tmp_path / "invalid")]
     )
 
     assert code == 1

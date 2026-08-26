@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "sunodm",
+  "productName": "Suno Documentation Manager",
   "version": "0.1.0",
   "identifier": "com.grav0id.sunodoc",
   "mainBinaryName": "sunodm",
@@ -30,17 +30,31 @@
   },
   "bundle": {
     "active": true,
+    "copyright": "Copyright (c) 2026 Blobbite.com",
+    "licenseFile": "../LICENSE",
     "targets": "all",
     "externalBin": [
       "binaries/fpcalc"
     ],
-    "resources": [
-      "binaries/CHROMAPRINT-1.6.1-PROVENANCE.md",
-      "binaries/CHROMAPRINT-LICENSE.md"
-    ],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../NOTICE": "NOTICE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "binaries/CHROMAPRINT-1.6.1-PROVENANCE.md": "third-party/CHROMAPRINT-1.6.1-PROVENANCE.md",
+      "binaries/CHROMAPRINT-LICENSE.md": "third-party/CHROMAPRINT-LICENSE.md",
+      "binaries/LGPL-2.1.txt": "third-party/LGPL-2.1.txt",
+      "assets/fonts/LICENSE-DejaVu.txt": "third-party/LICENSE-DejaVu.txt",
+      "vendor/sigstore-tsa/LICENSE": "third-party/sigstore-tsa/LICENSE",
+      "vendor/sigstore-tsa/README-SUNODM.md": "third-party/sigstore-tsa/README-SUNODM.md"
+    },
     "category": "Music",
     "shortDescription": "Offline documentation and integrity manager for music tracks",
     "longDescription": "A local desktop application for guided track documentation, evidence management, integrity verification, and completion certificates.",
+    "windows": {
+      "wix": {
+        "upgradeCode": "54c9e875-02fa-5312-b9c4-14f17c9e3c61"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

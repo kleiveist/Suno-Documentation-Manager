@@ -5,9 +5,10 @@ import os
 import re
 import shutil
 import stat
-import tomllib
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
+
+import tomllib
 
 from tools import logger
 from tools.tauri import common, paths
@@ -65,13 +66,16 @@ def main(args: argparse.Namespace) -> int:
         fresh_appimage = _fresh_appimage_from_snapshot(appimage_snapshot)
         if fresh_appimage is not None:
             logger.warn(
-                "Tauri linuxdeploy failed, but it produced "
-                f"{fresh_appimage.name}; continuing with that AppImage."
+                f"Tauri linuxdeploy failed, but it produced {fresh_appimage.name}; continuing with that AppImage."
             )
         else:
             fallback_code = package_existing_appdir(dry_run=dry_run)
             if fallback_code != 0:
-                common.print_result(result, "Linux AppImage build completed", "Linux AppImage build failed")
+                common.print_result(
+                    result,
+                    "Linux AppImage build completed",
+                    "Linux AppImage build failed",
+                )
                 return code
             logger.warn("Tauri linuxdeploy failed, but AppImage was packaged from the generated AppDir.")
     else:
@@ -140,7 +144,11 @@ def package_existing_appdir(*, dry_run: bool = False) -> int:
         cwd=_appimage_dir(),
         env=appimage_build_env(),
     )
-    code = common.print_result(result, "Fallback AppImage packaging completed", "Fallback AppImage packaging failed")
+    code = common.print_result(
+        result,
+        "Fallback AppImage packaging completed",
+        "Fallback AppImage packaging failed",
+    )
     if code != 0:
         return code
 
@@ -219,11 +227,17 @@ def _appimage_prerequisite_problems() -> list[str]:
 def _libfuse2_available() -> bool:
     if _library_file_exists("libfuse.so.2*"):
         return True
-    ok, output = common.command_output(["ldconfig", "-p"])
-    if ok and "libfuse.so.2" in output:
+    if _command_output_contains(["ldconfig", "-p"], "libfuse.so.2"):
         return True
-    ok, output = common.command_output(["flatpak-spawn", "--host", "ldconfig", "-p"])
-    return ok and "libfuse.so.2" in output
+    return _command_output_contains(
+        ["flatpak-spawn", "--host", "ldconfig", "-p"],
+        "libfuse.so.2",
+    )
+
+
+def _command_output_contains(command: list[str], expected: str) -> bool:
+    result = common.run_command(command)
+    return result.returncode == 0 and expected in f"{result.stdout}\n{result.stderr}"
 
 
 def _command_available(binary: str) -> bool:
@@ -240,7 +254,14 @@ def _host_file_exists(relative_path: str) -> bool:
 
 
 def _library_file_exists(pattern: str) -> bool:
-    roots = [
+    return any(
+        root.exists() and (any(root.glob(pattern)) or any(root.glob(f"*/{pattern}")))
+        for root in _library_search_roots()
+    )
+
+
+def _library_search_roots() -> tuple[Path, ...]:
+    return (
         Path("/usr/lib"),
         Path("/usr/lib64"),
         Path("/lib"),
@@ -249,8 +270,7 @@ def _library_file_exists(pattern: str) -> bool:
         Path("/run/host/usr/lib64"),
         Path("/run/host/lib"),
         Path("/run/host/lib64"),
-    ]
-    return any(root.exists() and any(root.glob(pattern)) for root in roots)
+    )
 
 
 def install_latest(*, dry_run: bool = False) -> int:
@@ -392,7 +412,12 @@ def _desktop_icon_name(desktop_file: Path) -> str | None:
 
 
 def _find_appdir_icon_source(appdir: Path) -> Path | None:
-    preferred_names = [f"{paths.APP_ARTIFACT_NAME}.png", f"{paths.APP_NAME}.png", "icon.png", "128x128.png"]
+    preferred_names = [
+        f"{paths.APP_ARTIFACT_NAME}.png",
+        f"{paths.APP_NAME}.png",
+        "icon.png",
+        "128x128.png",
+    ]
     by_lower_name = {path.name.lower(): path for path in _collect_files(appdir, PNG_PATTERNS)}
     for name in preferred_names:
         candidate = by_lower_name.get(name.lower())
@@ -401,7 +426,7 @@ def _find_appdir_icon_source(appdir: Path) -> Path | None:
 
     candidates = _collect_files(appdir, PNG_PATTERNS)
     if candidates:
-        return sorted(candidates, key=lambda path: (_extract_size_hint(path), path.name.lower()), reverse=True)[0]
+        return max(candidates, key=lambda path: (_extract_size_hint(path), path.name.lower()))
     return None
 
 
@@ -435,7 +460,13 @@ def _tauri_version() -> str:
             return version
     except (OSError, tomllib.TOMLDecodeError):
         pass
-    return "0.1.0"
+    try:
+        version = (paths.ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise AppImageInstallError("Could not determine the AppImage version from Cargo.toml or VERSION") from exc
+    if not version:
+        raise AppImageInstallError("Could not determine the AppImage version from Cargo.toml or VERSION")
+    return version
 
 
 def _data_home() -> Path:
@@ -505,16 +536,19 @@ def _select_icon(icon_dir: Path) -> Path:
             candidate = by_name.get(name)
             if candidate:
                 return candidate
-        return sorted(
+        return max(
             png_files,
-            key=lambda path: (_extract_size_hint(path), path.stat().st_mtime_ns, path.name.lower()),
-            reverse=True,
-        )[0]
+            key=lambda path: (
+                _extract_size_hint(path),
+                path.stat().st_mtime_ns,
+                path.name.lower(),
+            ),
+        )
 
     svg_files = _collect_files(icon_dir, SVG_PATTERNS)
     if svg_files:
         preferred = next((path for path in svg_files if path.name.lower() == "icon.svg"), None)
-        return preferred or sorted(svg_files, key=lambda path: path.name.lower())[0]
+        return preferred or min(svg_files, key=lambda path: path.name.lower())
 
     raise AppImageInstallError(f"Icon missing: no PNG or SVG files found in {icon_dir}")
 
@@ -565,10 +599,7 @@ def _cleanup_legacy_install(keep_paths: set[Path], *, dry_run: bool) -> None:
     candidates = {
         _home() / "Applications" / f"{paths.APP_NAME}.AppImage",
         _data_home() / "applications" / f"{paths.APP_DISPLAY_SLUG}.desktop",
-        *{
-            _target_icon_dir() / f"{paths.APP_DISPLAY_SLUG}{extension}"
-            for extension in ICON_EXTENSIONS
-        },
+        *{_target_icon_dir() / f"{paths.APP_DISPLAY_SLUG}{extension}" for extension in ICON_EXTENSIONS},
     }
     for candidate in sorted(candidates):
         if candidate in keep_paths or not candidate.exists():

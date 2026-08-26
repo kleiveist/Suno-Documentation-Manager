@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -53,6 +54,59 @@ def _valid_origin(value: str) -> bool:
     return parsed.scheme in {"http", "https", "tauri"} and bool(parsed.hostname) and value != "*"
 
 
+def _port_issue(name: str, value: str) -> ConfigIssue | None:
+    try:
+        port = int(value)
+    except ValueError:
+        return ConfigIssue(name, "must be an integer between 1 and 65535")
+    if not 1 <= port <= 65535:
+        return ConfigIssue(name, "must be between 1 and 65535")
+    return None
+
+
+def _origins_issue(name: str, value: str) -> ConfigIssue | None:
+    origins = [item.strip() for item in value.split(",") if item.strip()]
+    if not origins or any(not _valid_origin(origin) for origin in origins):
+        return ConfigIssue(
+            name,
+            "must contain comma-separated explicit HTTP(S) or Tauri origins",
+        )
+    return None
+
+
+def _database_url_issue(name: str, value: str, features: Collection[str]) -> ConfigIssue | None:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        parsed = None
+    if parsed is None or not parsed.scheme:
+        return ConfigIssue(name, "must be a database URL with a driver scheme")
+    if "postgres" in features and parsed.scheme != "postgresql+psycopg":
+        return ConfigIssue(name, "postgres requires the postgresql+psycopg driver scheme")
+    return None
+
+
+def _value_issue(
+    name: str,
+    kind: str,
+    value: str,
+    features: Collection[str],
+) -> ConfigIssue | None:
+    if kind == "environment" and value not in ENVIRONMENTS:
+        return ConfigIssue(name, "must be development, test, or production")
+    if kind == "port":
+        return _port_issue(name, value)
+    if kind == "host" and not _valid_host(value):
+        return ConfigIssue(name, "must be a valid IP address or host name")
+    if kind == "public-url" and not _valid_public_url(value):
+        return ConfigIssue(name, "must be an HTTP(S) URL without credentials")
+    if kind == "origins":
+        return _origins_issue(name, value)
+    if kind == "database-url":
+        return _database_url_issue(name, value, features)
+    return None
+
+
 def validate_configuration(resolved: ResolvedConfiguration) -> tuple[ConfigIssue, ...]:
     issues: list[ConfigIssue] = []
     for variable in resolved.contract.variables:
@@ -62,38 +116,9 @@ def validate_configuration(resolved: ResolvedConfiguration) -> tuple[ConfigIssue
         if value is None or not value.strip():
             issues.append(ConfigIssue(variable.name, "required by the active project features but not set"))
             continue
-        if variable.kind == "environment" and value not in ENVIRONMENTS:
-            issues.append(ConfigIssue(variable.name, "must be development, test, or production"))
-        elif variable.kind == "port":
-            try:
-                port = int(value)
-            except ValueError:
-                issues.append(ConfigIssue(variable.name, "must be an integer between 1 and 65535"))
-            else:
-                if not 1 <= port <= 65535:
-                    issues.append(ConfigIssue(variable.name, "must be between 1 and 65535"))
-        elif variable.kind == "host" and not _valid_host(value):
-            issues.append(ConfigIssue(variable.name, "must be a valid IP address or host name"))
-        elif variable.kind == "public-url" and not _valid_public_url(value):
-            issues.append(ConfigIssue(variable.name, "must be an HTTP(S) URL without credentials"))
-        elif variable.kind == "origins":
-            origins = [item.strip() for item in value.split(",") if item.strip()]
-            if not origins or any(not _valid_origin(origin) for origin in origins):
-                issues.append(
-                    ConfigIssue(
-                        variable.name,
-                        "must contain comma-separated explicit HTTP(S) or Tauri origins",
-                    )
-                )
-        elif variable.kind == "database-url":
-            try:
-                parsed = urlsplit(value)
-            except ValueError:
-                parsed = None
-            if parsed is None or not parsed.scheme:
-                issues.append(ConfigIssue(variable.name, "must be a database URL with a driver scheme"))
-            elif "postgres" in resolved.features and parsed.scheme != "postgresql+psycopg":
-                issues.append(ConfigIssue(variable.name, "postgres requires the postgresql+psycopg driver scheme"))
+        issue = _value_issue(variable.name, variable.kind, value, resolved.features)
+        if issue is not None:
+            issues.append(issue)
     return tuple(issues)
 
 

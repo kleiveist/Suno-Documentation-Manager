@@ -3,15 +3,23 @@ from __future__ import annotations
 import json
 import os
 import re
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import tomllib
 
 from tools.config.masking import is_secret_name
-from tools.config.model import ConfigContract, ResolvedConfiguration, RuntimeConfig, VariableDefinition
+from tools.config.model import (
+    ConfigContract,
+    ResolvedConfiguration,
+    RuntimeConfig,
+    VariableDefinition,
+)
 from tools.config.validation import to_runtime_config
-from tools.profiles.model import ProjectProfile
+
+if TYPE_CHECKING:
+    from tools.profiles.model import ProjectProfile
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONTRACT_PATH = ROOT / "config" / "environment.toml"
@@ -60,6 +68,95 @@ def _string_list(value: Any, *, context: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(result))
 
 
+def _variable_name(payload: Mapping[str, Any], *, context: str, seen: set[str]) -> str:
+    name = _require_string(payload, "name", context=context)
+    if not KEY_PATTERN.fullmatch(name):
+        raise ConfigLoadError(f"{context} name '{name}' must use UPPER_SNAKE_CASE.")
+    if name in seen:
+        raise ConfigLoadError(f"Duplicate configuration variable '{name}'.")
+    return name
+
+
+def _secret_flag(payload: Mapping[str, Any], *, context: str) -> bool:
+    secret = payload.get("secret", False)
+    if not isinstance(secret, bool):
+        raise ConfigLoadError(f"{context} 'secret' must be a boolean.")
+    return secret
+
+
+def _validate_supported_definition(
+    *,
+    context: str,
+    kind: str,
+    derived: str | None,
+) -> None:
+    if kind not in SUPPORTED_KINDS:
+        raise ConfigLoadError(f"{context} uses unsupported kind '{kind}'.")
+    if derived is not None and derived not in SUPPORTED_DERIVATIONS:
+        raise ConfigLoadError(f"{context} uses unsupported derivation '{derived}'.")
+
+
+def _validate_secret_definition(
+    *,
+    context: str,
+    name: str,
+    scope: str,
+    secret: bool,
+    default: str | None,
+) -> None:
+    if secret and default is not None:
+        raise ConfigLoadError(f"{context} secret variables must not define runtime defaults.")
+    if secret and name.startswith("VITE_"):
+        raise ConfigLoadError(f"{context} secret variables must not use the public VITE_ prefix.")
+    if is_secret_name(name) and not secret:
+        raise ConfigLoadError(f"{context} variable '{name}' must be marked secret.")
+    if scope == "public-client" and not name.startswith("VITE_"):
+        raise ConfigLoadError(f"{context} public client variables must use the VITE_ prefix.")
+
+
+def _parse_variable_definition(
+    raw: object,
+    *,
+    context: str,
+    seen: set[str],
+) -> VariableDefinition:
+    if not isinstance(raw, dict):
+        raise ConfigLoadError(f"{context} must be a TOML table.")
+    name = _variable_name(raw, context=context, seen=seen)
+    secret = _secret_flag(raw, context=context)
+    scope = _require_string(raw, "scope", context=context)
+    kind = _require_string(raw, "kind", context=context)
+    default = _optional_string(raw, "default")
+    derived = _optional_string(raw, "derived")
+    _validate_supported_definition(
+        context=context,
+        kind=kind,
+        derived=derived,
+    )
+    _validate_secret_definition(
+        context=context,
+        name=name,
+        scope=scope,
+        secret=secret,
+        default=default,
+    )
+    return VariableDefinition(
+        name=name,
+        section=_require_string(raw, "section", context=context),
+        description=_require_string(raw, "description", context=context),
+        scope=scope,
+        kind=kind,
+        required_features=_string_list(
+            raw.get("required_features", []),
+            context=f"{context} required_features",
+        ),
+        secret=secret,
+        default=default,
+        example=_optional_string(raw, "example"),
+        derived=derived,
+    )
+
+
 def load_contract(path: Path | None = None) -> ConfigContract:
     contract_path = (path or DEFAULT_CONTRACT_PATH).resolve()
     try:
@@ -81,50 +178,9 @@ def load_contract(path: Path | None = None) -> ConfigContract:
     seen: set[str] = set()
     for index, raw in enumerate(raw_variables, start=1):
         context = f"{contract_path}: variables entry {index}"
-        if not isinstance(raw, dict):
-            raise ConfigLoadError(f"{context} must be a TOML table.")
-        name = _require_string(raw, "name", context=context)
-        if not KEY_PATTERN.fullmatch(name):
-            raise ConfigLoadError(f"{context} name '{name}' must use UPPER_SNAKE_CASE.")
-        if name in seen:
-            raise ConfigLoadError(f"Duplicate configuration variable '{name}'.")
-        secret = raw.get("secret", False)
-        if not isinstance(secret, bool):
-            raise ConfigLoadError(f"{context} 'secret' must be a boolean.")
-        scope = _require_string(raw, "scope", context=context)
-        kind = _require_string(raw, "kind", context=context)
-        default = _optional_string(raw, "default")
-        derived = _optional_string(raw, "derived")
-        if kind not in SUPPORTED_KINDS:
-            raise ConfigLoadError(f"{context} uses unsupported kind '{kind}'.")
-        if derived is not None and derived not in SUPPORTED_DERIVATIONS:
-            raise ConfigLoadError(f"{context} uses unsupported derivation '{derived}'.")
-        if secret and default is not None:
-            raise ConfigLoadError(f"{context} secret variables must not define runtime defaults.")
-        if secret and name.startswith("VITE_"):
-            raise ConfigLoadError(f"{context} secret variables must not use the public VITE_ prefix.")
-        if is_secret_name(name) and not secret:
-            raise ConfigLoadError(f"{context} variable '{name}' must be marked secret.")
-        if scope == "public-client" and not name.startswith("VITE_"):
-            raise ConfigLoadError(f"{context} public client variables must use the VITE_ prefix.")
-        variables.append(
-            VariableDefinition(
-                name=name,
-                section=_require_string(raw, "section", context=context),
-                description=_require_string(raw, "description", context=context),
-                scope=scope,
-                kind=kind,
-                required_features=_string_list(
-                    raw.get("required_features", []),
-                    context=f"{context} required_features",
-                ),
-                secret=secret,
-                default=default,
-                example=_optional_string(raw, "example"),
-                derived=derived,
-            )
-        )
-        seen.add(name)
+        variable = _parse_variable_definition(raw, context=context, seen=seen)
+        variables.append(variable)
+        seen.add(variable.name)
     return ConfigContract(schema_version=1, variables=tuple(variables))
 
 

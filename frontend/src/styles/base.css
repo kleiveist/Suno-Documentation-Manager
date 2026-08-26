@@ -1,0 +1,263 @@
+:root {
+  color: #1d1d1b;
+  background: #f4f2ed;
+  color-scheme: light;
+  font-family: Inter, "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --ink: #1c1d1b;
+  --ink-soft: #393a36;
+  --cream: #f4f2ed;
+  --paper: #fbfaf7;
+  --white: #fff;
+  --line: #dfddd6;
+  --muted: #73736d;
+  --muted-light: #a2a198;
+  --accent: #dc654b;
+  --accent-dark: #b94c38;
+  --accent-soft: #f8ded7;
+  --green: #3f7b62;
+  --green-soft: #deebe4;
+  --amber: #ae7228;
+  --amber-soft: #f5e7cf;
+  --blue: #416e89;
+  --blue-soft: #dce9ef;
+  --danger: #a83e36;
+  --danger-soft: #f6dedb;
+  --shadow: 0 16px 40px rgb(44 42 35 / 7%);
+  --shadow-large: 0 30px 90px rgb(23 23 20 / 16%);
+  --radius: 16px;
+}
+.modal-import-button {
+  margin-right: auto;
+}
+.folder-import-preview {
+  display: grid;
+  gap: 7px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--paper) 85%, var(--accent) 15%);
+}
+.folder-import-preview > small,
+.folder-import-tracks small {
+  color: var(--muted);
+}
+.folder-import-tracks {
+  display: grid;
+  gap: 7px;
+}
+.folder-import-tracks > div {
+  display: grid;
+  gap: 2px;
+}
+.folder-import-preview .warning {
+  color: #9b5d00;
+}
+
+* {
+  box-sizing: border-box;
+}
+html {
+  min-width: 320px;
+  min-height: 100%;
+}
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: var(--cream);
+}
+body,
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+button,
+input,
+select,
+textarea {
+  color: inherit;
+}
+button {
+  border: 0;
+}
+button:not(:disabled),
+select {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgb(220 101 75 / 28%);
+  outline-offset: 2px;
+}
+h1,
+h2,
+h3,
+h4,
+p {
+  margin-top: 0;
+}
+h1,
+h2,
+h3,
+h4 {
+  color: var(--ink);
+  letter-spacing: -0.035em;
+}
+p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+code {
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  background: #ece9e1;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.88em;
+}
+.icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+.sr-only,
+.sr-only:not(:focus):not(:active) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.overline {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.muted {
+  color: var(--muted);
+}
+
+.button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 750;
+  transition:
+    transform 0.16s ease,
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+.button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+.button--primary {
+  color: #fff;
+  background: var(--accent-dark);
+  box-shadow: 0 7px 18px rgb(220 101 75 / 23%);
+}
+.button--primary:hover {
+  background: #963c2d;
+}
+.button--secondary {
+  border-color: var(--line);
+  background: var(--paper);
+}
+.button--secondary:hover {
+  border-color: #c6c3bb;
+  background: #fff;
+}
+.button--dark {
+  color: #fff;
+  background: var(--ink);
+}
+.button--accent {
+  color: #fff;
+  background: var(--accent);
+}
+.button--danger {
+  color: #fff;
+  background: var(--danger);
+}
+.button--danger-soft {
+  color: var(--danger);
+  border-color: #e8bcb7;
+  background: var(--danger-soft);
+}
+.button--wide {
+  width: 100%;
+}
+.button--large {
+  min-height: 54px;
+  padding: 14px 22px;
+  font-size: 14px;
+}
+.button--small {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px;
+  color: var(--accent);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 750;
+}
+.text-button .icon {
+  width: 15px;
+}
+.icon-button {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+}
+.icon-button:hover {
+  color: var(--ink);
+  background: rgb(0 0 0 / 5%);
+}
+.icon-button.danger:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.theme-toggle {
+  border: 1px solid var(--line);
+  color: var(--amber);
+  background: var(--paper);
+}
+.theme-toggle:hover {
+  color: var(--amber);
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}

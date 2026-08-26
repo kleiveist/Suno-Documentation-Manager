@@ -26,34 +26,36 @@ describe("track library grouping", () => {
   });
 
   it("keeps physical albums visible before their first track is created", () => {
-    expect(groupTrackLibrary([], {}, ["  Gravity Drift  ", "Gravity Drift", "Second Album"]))
-      .toEqual({
-        albums: [
-          { title: "Gravity Drift", tracks: [] },
-          { title: "Second Album", tracks: [] }
-        ],
-        singles: []
-      });
-    expect(groupTrackLibrary([], { query: "second" }, ["Gravity Drift", "Second Album"]).albums)
-      .toEqual([{ title: "Second Album", tracks: [] }]);
+    expect(groupTrackLibrary([], {}, ["  Gravity Drift  ", "Gravity Drift", "Second Album"])).toEqual({
+      albums: [
+        { title: "Gravity Drift", tracks: [] },
+        { title: "Second Album", tracks: [] }
+      ],
+      singles: []
+    });
+    expect(groupTrackLibrary([], { query: "second" }, ["Gravity Drift", "Second Album"]).albums).toEqual([
+      { title: "Second Album", tracks: [] }
+    ]);
   });
 
   it("does not load hidden folders or tracks into the rendered library", () => {
-    const grouped = groupTrackLibrary([
-      {
-        ...track("hidden-album", "Archived", { section: "album", albumTitle: ".archive" }),
-        relativePath: ".archive/Archived"
-      },
-      {
-        ...track("hidden-track", "Draft", { section: "album", albumTitle: "Visible" }),
-        relativePath: "Visible/.draft"
-      },
-      track("visible", "Current", { section: "album", albumTitle: "Visible" })
-    ], {}, [".archive", ".cache", "Visible"]);
+    const grouped = groupTrackLibrary(
+      [
+        {
+          ...track("hidden-album", "Archived", { section: "album", albumTitle: ".archive" }),
+          relativePath: ".archive/Archived"
+        },
+        {
+          ...track("hidden-track", "Draft", { section: "album", albumTitle: "Visible" }),
+          relativePath: "Visible/.draft"
+        },
+        track("visible", "Current", { section: "album", albumTitle: "Visible" })
+      ],
+      {},
+      [".archive", ".cache", "Visible"]
+    );
 
-    expect(grouped.albums).toEqual([
-      { title: "Visible", tracks: [expect.objectContaining({ id: "visible" })] }
-    ]);
+    expect(grouped.albums).toEqual([{ title: "Visible", tracks: [expect.objectContaining({ id: "visible" })] }]);
     expect(grouped.singles).toEqual([]);
   });
 
@@ -109,12 +111,15 @@ describe("track library grouping", () => {
   });
 
   it("applies the status filter inside album and single groups", () => {
-    const grouped = groupTrackLibrary([
-      track("album-open", "Open", { section: "album", albumTitle: "Record" }, "DRAFT"),
-      track("album-ready", "Ready", { section: "album", albumTitle: "Record" }, "READY"),
-      track("single-open", "Single Open", { section: "single" }, "ACTIVE"),
-      track("single-final", "Single Final", { section: "single" }, "FINALIZED")
-    ], { status: "open" });
+    const grouped = groupTrackLibrary(
+      [
+        track("album-open", "Open", { section: "album", albumTitle: "Record" }, "DRAFT"),
+        track("album-ready", "Ready", { section: "album", albumTitle: "Record" }, "READY"),
+        track("single-open", "Single Open", { section: "single" }, "ACTIVE"),
+        track("single-final", "Single Final", { section: "single" }, "FINALIZED")
+      ],
+      { status: "open" }
+    );
 
     expect(grouped.albums[0].tracks.map((item) => item.id)).toEqual(["album-open"]);
     expect(grouped.singles.map((item) => item.id)).toEqual(["single-open"]);

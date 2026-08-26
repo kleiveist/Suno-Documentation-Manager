@@ -4,16 +4,16 @@ import os
 import platform
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from tools import logger
 from tools.config import is_server_only_name
 from tools.process import prepare_command
 from tools.tauri import paths
 
-TAURI_CLI_PACKAGE = "@tauri-apps/cli@2.10.1"
+TAURI_CLI_PACKAGE = "@tauri-apps/cli@2.11.4"
 
 
 @dataclass(slots=True)
@@ -76,9 +76,12 @@ def find_build_artifacts(*, include_dist: bool = True) -> list[Path]:
         if not root.exists():
             continue
         for item in root.rglob("*"):
-            if item.is_file() and item.suffix.lower() in {".appimage", ".deb", ".rpm", ".dmg", ".msi", ".exe", ".zip"}:
-                artifacts.append(item)
-            elif item.is_dir() and item.suffix.lower() == ".app":
+            if (
+                item.is_file()
+                and item.suffix.lower() in {".appimage", ".deb", ".rpm", ".dmg", ".msi", ".exe", ".zip"}
+                or item.is_dir()
+                and item.suffix.lower() == ".app"
+            ):
                 artifacts.append(item)
     return sorted(set(artifacts))
 
@@ -108,11 +111,7 @@ def run_command(
         return CommandResult(command=command, cwd=resolved_cwd, returncode=0, dry_run=True)
 
     try:
-        environment = {
-            name: value
-            for name, value in os.environ.items()
-            if not is_server_only_name(name)
-        }
+        environment = {name: value for name, value in os.environ.items() if not is_server_only_name(name)}
         for name in remove_env or set():
             environment.pop(name, None)
         environment.update(env or {})
@@ -138,7 +137,11 @@ def run_command(
 def command_output(command: list[str], *, cwd: Path | None = None) -> tuple[bool, str]:
     try:
         completed = subprocess.run(
-            prepare_command(command), cwd=cwd, capture_output=True, text=True, check=False
+            prepare_command(command),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except OSError as exc:
         return False, str(exc)
@@ -199,8 +202,15 @@ def print_result(result: CommandResult, success_message: str, failure_message: s
         logger.ok(success_message)
         return 0
 
-    details = tail(result.stdout + "\n" + result.stderr)
-    logger.fail(f"{failure_message}: {details}")
+    details = "\n".join(
+        (
+            f"command: {command_to_string(result.command)}",
+            f"stdout: {tail(result.stdout, limit=40)}",
+            f"stderr: {tail(result.stderr, limit=40)}",
+        )
+    )
+    logger.fail(f"{failure_message}:\n{details}")
+    _emit_github_actions_error(failure_message, details)
     return result.returncode
 
 
@@ -209,6 +219,15 @@ def tail(text: str, *, limit: int = 8) -> str:
     if not lines:
         return "(no output)"
     return " | ".join(lines[-limit:])
+
+
+def _emit_github_actions_error(title: str, details: str) -> None:
+    """Expose captured subprocess failures through the Checks annotation API."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    message = f"{title}:\n{details}"
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error title=Captured command failure::{escaped}")
 
 
 def ensure_directory(path: Path, *, dry_run: bool = False) -> None:

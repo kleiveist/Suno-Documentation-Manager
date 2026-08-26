@@ -1,7 +1,4 @@
-import type {
-  TrackLibraryAssignment,
-  TrackStatus
-} from "./types";
+import type { TrackLibraryAssignment, TrackStatus } from "./types";
 
 export type TrackLibraryStatusFilter = "all" | "open" | "ready" | "finalized";
 
@@ -35,22 +32,24 @@ function normalizedText(value: string): string {
 }
 
 function compareTracks(left: TrackLibrarySource, right: TrackLibrarySource): number {
-  return germanCollator.compare(left.title, right.title)
-    || germanCollator.compare(left.relativePath, right.relativePath)
-    || left.id.localeCompare(right.id);
+  return (
+    germanCollator.compare(left.title, right.title) ||
+    germanCollator.compare(left.relativePath, right.relativePath) ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 function matchesStatus(status: TrackStatus, filter: TrackLibraryStatusFilter): boolean {
-  return filter === "all"
-    || (filter === "open" && (status === "DRAFT" || status === "ACTIVE"))
-    || (filter === "ready" && status === "READY")
-    || (filter === "finalized" && status === "FINALIZED");
+  return (
+    filter === "all" ||
+    (filter === "open" && (status === "DRAFT" || status === "ACTIVE")) ||
+    (filter === "ready" && status === "READY") ||
+    (filter === "finalized" && status === "FINALIZED")
+  );
 }
 
 function matchesTrackQuery(track: TrackLibrarySource, query: string): boolean {
-  return !query
-    || normalizedText(track.title).includes(query)
-    || normalizedText(track.relativePath).includes(query);
+  return !query || normalizedText(track.title).includes(query) || normalizedText(track.relativePath).includes(query);
 }
 
 function startsWithHiddenDirectory(value: string): boolean {
@@ -64,17 +63,67 @@ function hasHiddenPathComponent(relativePath: string): boolean {
     .some((component) => component.startsWith("."));
 }
 
+function addDeclaredAlbum<T extends TrackLibrarySource>(
+  albums: Map<string, AlbumTrackGroup<T>>,
+  rawTitle: string
+): void {
+  const title = rawTitle.trim();
+  if (!title || startsWithHiddenDirectory(title)) return;
+  const key = normalizedText(title);
+  if (!albums.has(key)) albums.set(key, { title, tracks: [] });
+}
+
+function hiddenTrack(track: TrackLibrarySource): boolean {
+  return (
+    hasHiddenPathComponent(track.relativePath) ||
+    (track.library?.section === "album" && startsWithHiddenDirectory(track.library.albumTitle ?? ""))
+  );
+}
+
+function albumGroup<T extends TrackLibrarySource>(
+  albums: Map<string, AlbumTrackGroup<T>>,
+  title: string
+): AlbumTrackGroup<T> {
+  const key = normalizedText(title);
+  const existing = albums.get(key);
+  if (existing) return existing;
+  const created = { title, tracks: [] as T[] };
+  albums.set(key, created);
+  return created;
+}
+
+function classifyVisibleTrack<T extends TrackLibrarySource>(
+  track: T,
+  status: TrackLibraryStatusFilter,
+  query: string,
+  albums: Map<string, AlbumTrackGroup<T>>,
+  singles: T[]
+): void {
+  if (hiddenTrack(track) || !matchesStatus(track.status, status)) return;
+  const library = normalizedTrackLibrary(track.library);
+  if (library.section === "single") {
+    if (matchesTrackQuery(track, query)) singles.push(track);
+    return;
+  }
+
+  const title = library.albumTitle!;
+  const group = albumGroup(albums, title);
+  if (!query || normalizedText(title).includes(query) || matchesTrackQuery(track, query)) {
+    group.tracks.push(track);
+  }
+}
+
+function visibleAlbum<T extends TrackLibrarySource>(group: AlbumTrackGroup<T>, query: string): boolean {
+  return !query || normalizedText(group.title).includes(query) || group.tracks.length > 0;
+}
+
 /**
  * Normalizes persisted and legacy values for presentation. Invalid or absent
  * album assignments remain visible by falling back to the Singles section.
  */
-export function normalizedTrackLibrary(
-  library: TrackLibraryAssignment | undefined
-): TrackLibraryAssignment {
+export function normalizedTrackLibrary(library: TrackLibraryAssignment | undefined): TrackLibraryAssignment {
   const albumTitle = library?.albumTitle?.trim();
-  return library?.section === "album" && albumTitle
-    ? { section: "album", albumTitle }
-    : { section: "single" };
+  return library?.section === "album" && albumTitle ? { section: "album", albumTitle } : { section: "single" };
 }
 
 /**
@@ -91,61 +140,34 @@ export function groupTrackLibrary<T extends TrackLibrarySource>(
   const singles: T[] = [];
   const albums = new Map<string, AlbumTrackGroup<T>>();
 
-  for (const rawTitle of albumTitles) {
-    const title = rawTitle.trim();
-    if (!title || startsWithHiddenDirectory(title)) continue;
-    const key = normalizedText(title);
-    if (!albums.has(key)) albums.set(key, { title, tracks: [] });
-  }
+  for (const rawTitle of albumTitles) addDeclaredAlbum(albums, rawTitle);
 
   for (const track of tracks) {
-    if (hasHiddenPathComponent(track.relativePath)
-      || (track.library?.section === "album"
-        && startsWithHiddenDirectory(track.library.albumTitle ?? ""))) {
-      continue;
-    }
-    if (!matchesStatus(track.status, status)) continue;
-    const library = normalizedTrackLibrary(track.library);
-    if (library.section === "single") {
-      if (matchesTrackQuery(track, query)) singles.push(track);
-      continue;
-    }
-
-    const title = library.albumTitle!;
-    const key = normalizedText(title);
-    let group = albums.get(key);
-    if (!group) {
-      group = { title, tracks: [] };
-      albums.set(key, group);
-    }
-    if (!query || key.includes(query) || matchesTrackQuery(track, query)) {
-      group.tracks.push(track);
-    }
+    classifyVisibleTrack(track, status, query, albums, singles);
   }
 
   return {
     albums: [...albums.values()]
-      .filter((group) => !query || normalizedText(group.title).includes(query) || group.tracks.length > 0)
+      .filter((group) => visibleAlbum(group, query))
       .map((group) => ({ ...group, tracks: group.tracks.sort(compareTracks) }))
       .sort((left, right) => germanCollator.compare(left.title, right.title)),
     singles: singles.sort(compareTracks)
   };
 }
 
-export function trackLibraryAssignment(
-  section: string,
-  albumTitle: string
-): TrackLibraryAssignment | null {
+export function trackLibraryAssignment(section: string, albumTitle: string): TrackLibraryAssignment | null {
   if (section === "single") return { section: "single" };
   if ([...albumTitle].some((character) => /\p{Cc}/u.test(character)) || /[\\/]/.test(albumTitle)) {
     return null;
   }
   const normalizedTitle = albumTitle.trim();
-  if (section === "album"
-    && normalizedTitle
-    && !normalizedTitle.startsWith(".")
-    && normalizedTitle.toLocaleLowerCase("de-DE") !== "singles"
-    && [...normalizedTitle].length <= 200) {
+  if (
+    section === "album" &&
+    normalizedTitle &&
+    !normalizedTitle.startsWith(".") &&
+    normalizedTitle.toLocaleLowerCase("de-DE") !== "singles" &&
+    [...normalizedTitle].length <= 200
+  ) {
     return { section: "album", albumTitle: normalizedTitle };
   }
   return null;

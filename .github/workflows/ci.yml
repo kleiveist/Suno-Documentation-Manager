@@ -1,0 +1,218 @@
+name: SunoDM CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quality:
+    name: Core / Code Quality & Architecture
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Set up Rust 1.97.1 with quality and WASI components
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy --target wasm32-wasip1
+          rustup default 1.97.1
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+            tools/quality/rust_analyzer/target
+          key: ${{ runner.os }}-cargo-quality-${{ hashFiles('src-tauri/Cargo.lock', 'tools/quality/rust_analyzer/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-quality-
+            ${{ runner.os }}-cargo-
+      - name: Install quality dependencies
+        run: python tools/control.py install --skip-backend --skip-playwright
+      - name: Verify the pinned Rust WASI analyzer build
+        run: |
+          cargo fmt --manifest-path tools/quality/rust_analyzer/Cargo.toml -- --check
+          cargo clippy --manifest-path tools/quality/rust_analyzer/Cargo.toml --locked --all-targets --all-features -- -D warnings
+          cargo check --manifest-path tools/quality/rust_analyzer/Cargo.toml --locked --all-targets --all-features
+          cargo test --manifest-path tools/quality/rust_analyzer/Cargo.toml --locked --all-targets --all-features
+          python tools/quality/rust_analyzer/build.py --check
+          tools/.venv/bin/python -m pytest -q \
+            tools/tests/quality/test_rust_syntax.py \
+            tools/tests/quality/test_rust_payload.py \
+            tools/tests/quality/test_rust_wasi_host.py
+      - name: Install native Tauri prerequisites
+        run: python tools/control.py tauri install --skip-rust --skip-node --skip-frontend
+      - name: Run code quality and architecture gate
+        run: python tools/control.py quality
+      - name: Exercise the real TypeScript AST architecture path
+        run: tools/.venv/bin/python -m pytest -q tools/tests/quality/test_typescript_ast.py
+      - name: Verify repository files are unchanged
+        run: git diff --exit-code
+
+  tooling:
+    name: Core / Tooling & Configuration
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+      - name: Install tooling dependencies
+        run: python tools/control.py install --skip-frontend --skip-backend --skip-playwright
+      - name: Validate desktop-local runtime configuration
+        run: python tools/control.py config doctor
+      - name: Run tooling, profile, and configuration tests
+        run: python tools/control.py test --suite tools
+      - name: Verify repository files are unchanged
+        run: git diff --exit-code
+
+  documentation:
+    name: Core / Documentation Check
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+      - name: Install documentation test dependencies
+        run: python tools/control.py install --skip-frontend --skip-backend --skip-playwright
+      - name: Run documentation maintenance tests
+        run: |
+          python tools/control.py docs check
+          tools/.venv/bin/python -m pytest -q tools/tests/test_docs_index.py
+      - name: Verify repository files are unchanged
+        run: git diff --exit-code
+
+  frontend:
+    name: Core / Frontend Tests & Web Build
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: python tools/control.py install --skip-backend --skip-tooling --skip-playwright
+      - name: Run frontend tests
+        run: python tools/control.py test --suite frontend
+      - name: Build production web bundle
+        run: python tools/control.py build web
+      - name: Verify repository files are unchanged
+        run: git diff --exit-code
+
+  e2e:
+    name: Core / Browser Smoke & Accessibility
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: python tools/control.py install --skip-backend --skip-tooling --skip-playwright
+      - name: Install Playwright Chromium and system dependencies
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Start the local frontend
+        run: python tools/control.py run --detach
+      - name: Run browser smoke and accessibility tests
+        run: python tools/control.py test --suite e2e
+      - name: Stop the local frontend
+        if: always()
+        run: python tools/control.py stop
+      - name: Verify repository files are unchanged
+        if: always()
+        run: git diff --exit-code
+
+  msrv:
+    name: Core / Rust 1.88 MSRV
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+      - name: Set up Rust 1.88.0
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-msrv-1.88-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msrv-1.88-
+            ${{ runner.os }}-cargo-
+      - name: Install portable tooling runtime
+        run: python tools/control.py install --skip-backend --skip-frontend --skip-playwright
+      - name: Install native Tauri prerequisites
+        run: python tools/control.py tauri install --skip-rust --skip-node --skip-frontend
+      - name: Check all native targets at the declared MSRV
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets
+      - name: Verify repository files are unchanged
+        run: git diff --exit-code

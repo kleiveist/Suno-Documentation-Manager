@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "limits": {
+    "entryHtmlBytes": 16384,
+    "javascriptBytes": 524288,
+    "stylesheetBytes": 114688,
+    "totalBytes": 638976
+  }
+}
