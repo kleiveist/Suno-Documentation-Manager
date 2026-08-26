@@ -219,9 +219,9 @@ fn verify_sidecar_hash_list(
     let previous_v2_hash_list = (sidecar_format_version == SIDECAR_FORMAT_VERSION)
         .then(|| render_hash_list_with_header(HASH_LIST_V2_HEADER, hashes));
     if hash_list != expected_hash_list.as_bytes()
-        && !previous_v2_hash_list
+        && previous_v2_hash_list
             .as_ref()
-            .is_some_and(|legacy| hash_list == legacy.as_bytes())
+            .is_none_or(|legacy| hash_list != legacy.as_bytes())
     {
         return Err(AppError::Validation(
             "Timestamp sidecar SHA-256 list is incomplete or no longer matches.".into(),

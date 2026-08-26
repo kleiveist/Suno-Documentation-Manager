@@ -18,6 +18,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_linux_bundle_preparation(monkeypatch) -> None:
+    monkeypatch.setattr(linux, "_prepare_outputs", lambda _requested, *, no_clean: None)
+
+
 def test_tauri_build_artifacts_print_with_icons(monkeypatch, tmp_path) -> None:
     messages: list[str] = []
     monkeypatch.setattr(common.logger, "info", messages.append)
@@ -421,7 +426,7 @@ def test_tauri_install_appimage_packages_existing_appdir_when_final_file_is_miss
     home = tmp_path / "home"
     tauri_dir = root / "src-tauri"
     appimage_dir = tauri_dir / "target" / "release" / "bundle" / "appimage"
-    appdir = appimage_dir / f"{paths.APP_ARTIFACT_NAME}.AppDir"
+    appdir = appimage_dir / f"{paths.APP_NAME}.AppDir"
     icon_dir = tauri_dir / "icons"
     appdir.mkdir(parents=True)
     icon_dir.mkdir(parents=True)
@@ -443,6 +448,37 @@ def test_tauri_install_appimage_packages_existing_appdir_when_final_file_is_miss
     assert code == 0
     assert packaged == [False]
     assert (home / "Applications" / f"{paths.APP_ARTIFACT_NAME}.AppImage").read_bytes() == b"appimage"
+
+
+def test_tauri_appimage_fallback_uses_product_named_appdir_and_repairs_icon(monkeypatch, tmp_path) -> None:
+    tauri_dir = tmp_path / "src-tauri"
+    appdir = tauri_dir / "target" / "release" / "bundle" / "appimage" / f"{paths.APP_NAME}.AppDir"
+    appdir.mkdir(parents=True)
+    product_desktop = appdir / f"{paths.APP_NAME}.desktop"
+    product_icon = appdir / f"{paths.APP_NAME}.png"
+    product_desktop.write_text(f"[Desktop Entry]\nIcon={paths.APP_ARTIFACT_NAME}\n", encoding="utf-8")
+    product_icon.write_bytes(b"product-icon")
+    plugin = tmp_path / "linuxdeploy-plugin-appimage.AppImage"
+    plugin.write_bytes(b"plugin")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(paths, "TAURI_DIR", tauri_dir)
+    monkeypatch.setattr(appimage, "_appimage_plugin", lambda: plugin)
+    monkeypatch.setattr(
+        common,
+        "run_command",
+        lambda command, **_kwargs: (
+            calls.append(command) or common.CommandResult(command=command, cwd=appimage._appimage_dir(), returncode=0)
+        ),
+    )
+
+    code = appimage.package_existing_appdir()
+
+    assert code == 0
+    assert calls == [[str(plugin), "--appdir", str(appdir)]]
+    assert (appdir / f"{paths.APP_ARTIFACT_NAME}.png").read_bytes() == b"product-icon"
+    assert product_desktop.is_file()
+    assert product_icon.is_file()
 
 
 def test_tauri_build_appimage_dry_run_does_not_install(monkeypatch) -> None:

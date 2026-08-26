@@ -50,6 +50,16 @@ def appimage_install_hint() -> str:
     return "Install patchelf, squashfs-tools, desktop-file-utils, file and libfuse2/fuse2 for your distribution."
 
 
+def nsis_install_hint() -> str:
+    distribution = _detect_distribution()
+    distro = distribution.distro_id if distribution else None
+    if distro in {"arch", "manjaro"}:
+        return "paru -S --needed nsis"
+    if distro in {"ubuntu", "debian"}:
+        return "sudo apt-get install -y nsis"
+    return "Install the native NSIS package for your distribution and ensure makensis is on PATH."
+
+
 def _detect_distro() -> str | None:
     distribution = _detect_distribution()
     return distribution.distro_id if distribution else None

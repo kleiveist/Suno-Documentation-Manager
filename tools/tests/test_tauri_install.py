@@ -33,6 +33,23 @@ def test_ubuntu_release_detection_preserves_version_for_dependency_mapping(tmp_p
 
 
 @pytest.mark.parametrize(
+    ("distro_id", "expected_hint"),
+    [
+        ("arch", "paru -S --needed nsis"),
+        ("ubuntu", "sudo apt-get install -y nsis"),
+    ],
+)
+def test_nsis_install_hint_matches_distribution(monkeypatch, distro_id: str, expected_hint: str) -> None:
+    monkeypatch.setattr(
+        linux_install,
+        "_detect_distribution",
+        lambda: linux_install.LinuxDistribution(distro_id),
+    )
+
+    assert linux_install.nsis_install_hint() == expected_hint
+
+
+@pytest.mark.parametrize(
     ("distro_id", "version_id", "expected_fuse"),
     [
         ("ubuntu", "22.04", "libfuse2"),

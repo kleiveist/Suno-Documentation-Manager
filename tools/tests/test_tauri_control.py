@@ -13,7 +13,7 @@ from tools import control
 from tools.profiles import runtime as profile_runtime
 from tools.tauri import common, doctor, paths, run
 from tools.tauri import test as tauri_test
-from tools.tauri.build import appimage, windows_portable
+from tools.tauri.build import appimage, windows_cross_linux, windows_portable
 from tools.tauri.linux import install_arch
 
 pytestmark = pytest.mark.skipif(
@@ -444,23 +444,72 @@ def test_tauri_windows_cross_dry_run_requires_linux_host(monkeypatch) -> None:
     assert any("Windows cross-build is supported from Linux hosts only" in message for message in messages)
 
 
+def test_tauri_windows_cross_build_requires_nsis_before_compiling(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    failures: list[str] = []
+    information: list[str] = []
+
+    monkeypatch.setattr(common, "host_os", lambda: "linux")
+    monkeypatch.setattr(
+        windows_cross_linux.shutil,
+        "which",
+        lambda name: "/usr/bin/cargo-xwin" if name == "cargo-xwin" else None,
+    )
+    monkeypatch.setattr(windows_cross_linux.linux_install, "nsis_install_hint", lambda: "paru -S --needed nsis")
+    monkeypatch.setattr(windows_cross_linux.logger, "fail", failures.append)
+    monkeypatch.setattr(windows_cross_linux.logger, "info", information.append)
+    monkeypatch.setattr(
+        common,
+        "run_command",
+        lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0),
+    )
+
+    code = control.main(["tauri", "build", "--target", "windows-cross-linux"])
+
+    assert code == 1
+    assert calls == []
+    assert failures == ["makensis not found. NSIS is required to create a Windows installer on Linux."]
+    assert information == ["Install it with: paru -S --needed nsis"]
+
+
+def test_tauri_windows_cross_build_requests_only_nsis(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(common, "host_os", lambda: "linux")
+    monkeypatch.setattr(windows_cross_linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        common,
+        "run_command",
+        lambda command, **kwargs: calls.append(command) or common.CommandResult(command, paths.ROOT, 0),
+    )
+
+    code = control.main(["tauri", "build", "--target", "windows-cross-linux"])
+
+    assert code == 0
+    assert len(calls) == 1
+    assert calls[0][-2:] == ["--bundles", "nsis"]
+
+
 def test_tauri_appimage_fallback_removes_legacy_long_name_entries(tmp_path) -> None:
-    appdir = tmp_path / "sunodm.AppDir"
+    appdir = tmp_path / f"{paths.APP_NAME}.AppDir"
     current_binary = appdir / "usr" / "bin" / paths.APP_ARTIFACT_NAME
     legacy_binary = appdir / "usr" / "bin" / paths.APP_DISPLAY_SLUG
     current_desktop = appdir / "usr" / "share" / "applications" / f"{paths.APP_ARTIFACT_NAME}.desktop"
-    legacy_desktop = appdir / "usr" / "share" / "applications" / f"{paths.APP_NAME}.desktop"
+    product_desktop = appdir / "usr" / "share" / "applications" / f"{paths.APP_NAME}.desktop"
+    legacy_desktop = appdir / "usr" / "share" / "applications" / f"{paths.APP_DISPLAY_SLUG}.desktop"
     current_binary.parent.mkdir(parents=True)
     current_desktop.parent.mkdir(parents=True)
     current_binary.write_bytes(b"current")
     legacy_binary.write_bytes(b"legacy")
     current_desktop.write_text("current", encoding="utf-8")
+    product_desktop.write_text("product", encoding="utf-8")
     legacy_desktop.write_text("legacy", encoding="utf-8")
 
     appimage._cleanup_legacy_appdir(appdir)
 
     assert current_binary.read_bytes() == b"current"
     assert current_desktop.read_text(encoding="utf-8") == "current"
+    assert product_desktop.read_text(encoding="utf-8") == "product"
     assert not legacy_binary.exists()
     assert not legacy_desktop.exists()
 

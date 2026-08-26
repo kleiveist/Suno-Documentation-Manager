@@ -349,7 +349,7 @@ def _appimage_dir() -> Path:
 
 
 def _appdir() -> Path:
-    return _appimage_dir() / f"{paths.APP_ARTIFACT_NAME}.AppDir"
+    return _appimage_dir() / f"{paths.APP_NAME}.AppDir"
 
 
 def _appimage_plugin() -> Path:
@@ -383,10 +383,7 @@ def _cleanup_legacy_appdir(appdir: Path) -> None:
     if paths.APP_DISPLAY_SLUG == paths.APP_SLUG:
         return
 
-    legacy_names = {
-        paths.APP_NAME,
-        paths.APP_DISPLAY_SLUG,
-    }
+    legacy_names = {paths.APP_DISPLAY_SLUG}
     candidates = {
         appdir / "usr" / "bin" / paths.APP_DISPLAY_SLUG,
         *{appdir / f"{name}.desktop" for name in legacy_names},

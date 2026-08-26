@@ -5,6 +5,9 @@ import shutil
 
 from tools import logger
 from tools.tauri import common, paths
+from tools.tauri.linux import install as linux_install
+
+WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 
 
 def main(args: argparse.Namespace) -> int:
@@ -15,8 +18,20 @@ def main(args: argparse.Namespace) -> int:
     if shutil.which("cargo-xwin") is None and not dry_run:
         logger.fail("cargo-xwin not found. Action: install cargo-xwin before cross-building.")
         return 1
-    command = common.tauri_cli_command("build", "--runner", "cargo-xwin", "--target", "x86_64-pc-windows-msvc")
-    common.print_build_plan("windows-cross-linux", command, dry_run=dry_run)
+    if shutil.which("makensis") is None and not dry_run:
+        logger.fail("makensis not found. NSIS is required to create a Windows installer on Linux.")
+        logger.info(f"Install it with: {linux_install.nsis_install_hint()}")
+        return 1
+    command = common.tauri_cli_command(
+        "build",
+        "--runner",
+        "cargo-xwin",
+        "--target",
+        WINDOWS_TARGET,
+        "--bundles",
+        "nsis",
+    )
+    common.print_build_plan("windows-cross-linux", command, dry_run=dry_run, bundles="nsis")
     result = common.run_command(command, cwd=paths.ROOT, dry_run=dry_run)
     code = common.print_result(result, "Windows cross-build completed", "Windows cross-build failed")
     if code == 0 and dry_run:
