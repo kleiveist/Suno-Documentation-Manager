@@ -47,7 +47,7 @@ The preparation copy is therefore *ready for the supported automatic part of the
 Replace the three placeholders, start Codex CLI with access to both folders, and paste the following prompt. The prepared folder must not be inside the source folder or the SunoDM workspace.
 
 ~~~text
-Prepare a safe, import-ready copy of a music folder for Suno Documentation Manager's "Import folder" action.
+Prepare a safe, import-ready copy of a music folder for sunodm's "Import folder" action.
 
 Inputs
 - Original source folder (read-only): <SOURCE_FOLDER>
@@ -130,7 +130,7 @@ python tools/control.py test --suite tauri
 
 - [Legacy track import and managed-document adoption](legacy-track-import.md)
 - [Track documentation model](../def/track-documentation-model.md)
-- [Getting started with Suno Documentation Manager](../usr/getting-started.md)
+- [Getting started with sunodm](../usr/getting-started.md)
 - [Documentation Standard](../README.md)
 
 ## Change log

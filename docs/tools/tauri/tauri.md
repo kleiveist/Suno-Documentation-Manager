@@ -13,7 +13,7 @@
 
 ## Purpose
 
-This page defines the supported native development and packaging entry points for the active `desktop-local` Suno Documentation Manager product.
+This page defines the supported native development and packaging entry points for the active `desktop-local` sunodm product.
 
 ## Scope
 
@@ -66,7 +66,7 @@ Use `python tools/control.py build desktop --help` for target and bundle options
 
 ## Artifact names
 
-`src-tauri/tauri.conf.json` defines the shared technical artifact base as `sunodm` through both `productName` and `mainBinaryName`. The full product label, `Suno Documentation Manager`, remains the main-window title and is kept separate from filenames.
+`src-tauri/tauri.conf.json` defines the shared technical artifact base as `sunodm` through both `productName` and `mainBinaryName`. The full product label, `sunodm`, remains the main-window title and is kept separate from filenames.
 
 All generated native outputs therefore use the short base name: `sunodm` or `sunodm.exe` for binaries and `sunodm…` for DEB, RPM, AppImage, MSI, NSIS/EXE, DMG, and application bundles. Package formats may append their required version, architecture, or installer suffixes. The stable local Linux install is `~/Applications/sunodm.AppImage`; collected web and Windows portable archives are `sunodm-web.zip` and `sunodm-windows-portable.zip`.
 

@@ -36,7 +36,7 @@ Generic template, backend, CI, database, container, and deployment pages retaine
 - 📝 [Provider-neutral persistence architecture — inherited template reference](def/persistence-architecture.md)
 - 📝 [Local persistence and recovery](def/persistence.md)
 - 📝 [Pre-release audio screening](def/pre-release-audio-screening.md)
-- 📝 [Suno Documentation Manager product architecture](def/product-architecture.md)
+- 📝 [sunodm product architecture](def/product-architecture.md)
 - 📝 [Project profiles — inherited template reference](def/project-profiles.md)
 - 📝 [Track documentation model](def/track-documentation-model.md)
 - 📝 [Track library organization model](def/track-library-model.md)
@@ -60,6 +60,6 @@ Generic template, backend, CI, database, container, and deployment pages retaine
 ## 📁 USR
 - 🗂️ [Overview](usr/usr.md)
 - 📝 [Finalizing a track](usr/finalizing-a-track.md)
-- 📝 [Getting started with Suno Documentation Manager](usr/getting-started.md)
+- 📝 [Getting started with sunodm](usr/getting-started.md)
 
 <!-- AUTO-GENERATED:docs-index END -->

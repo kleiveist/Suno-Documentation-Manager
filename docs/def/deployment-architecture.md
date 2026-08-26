@@ -11,7 +11,7 @@
 | Audience | Developers, operators, and architects |
 | Related ATP | N/A — template-level deployment baseline |
 
-> **Unavailable in this product:** This page is retained solely as upstream template provenance. Suno Documentation Manager contains no `deployment/` or `backend/` directory, container images, Compose model, cloud runtime, FastAPI service, or PostgreSQL deployment unit. Product delivery is a local Tauri package as documented in the [release model](../tools/release-model.md); commands and paths below are not available product operations.
+> **Unavailable in this product:** This page is retained solely as upstream template provenance. sunodm contains no `deployment/` or `backend/` directory, container images, Compose model, cloud runtime, FastAPI service, or PostgreSQL deployment unit. Product delivery is a local Tauri package as documented in the [release model](../tools/release-model.md); commands and paths below are not available product operations.
 
 ## Purpose
 

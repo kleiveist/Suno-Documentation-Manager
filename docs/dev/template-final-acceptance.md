@@ -3,7 +3,7 @@
 <!-- AUTO-GENERATED:backlink END -->
 # Upstream template final acceptance — historical reference
 
-> **Inherited and unavailable reference:** This page was copied from the upstream master template and records that repository's historical acceptance only. Its commits, hashes, workflow links, environments, matrices, and decisions are not available Suno Documentation Manager evidence and must not be included in a product acceptance decision. Product acceptance is tracked in the [product ATP index](../atp/atp.md) and [product acceptance report](acceptance-report.md).
+> **Inherited and unavailable reference:** This page was copied from the upstream master template and records that repository's historical acceptance only. Its commits, hashes, workflow links, environments, matrices, and decisions are not available sunodm evidence and must not be included in a product acceptance decision. Product acceptance is tracked in the [product ATP index](../atp/atp.md) and [product acceptance report](acceptance-report.md).
 
 | Field | Value |
 | --- | --- |

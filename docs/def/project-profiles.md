@@ -11,7 +11,7 @@
 | Audience | Developers and architects |
 | Related ATP | N/A — template-level profile model |
 
-> **Template provenance:** The profile catalog and generator descriptions below are retained developer reference. This product is already generated and its active `project-profile.toml` is fixed to `desktop-local` with `frontend` and `tauri`. Other profiles do not describe available Suno Documentation Manager runtime units.
+> **Template provenance:** The profile catalog and generator descriptions below are retained developer reference. This product is already generated and its active `project-profile.toml` is fixed to `desktop-local` with `frontend` and `tauri`. Other profiles do not describe available sunodm runtime units.
 
 ## Purpose
 

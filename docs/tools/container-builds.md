@@ -11,7 +11,7 @@
 | Audience | Developers and operators |
 | Related ATP | N/A — provider-neutral operations baseline |
 
-> **Unavailable in this product:** This guide is retained from the upstream cloud-capable template. Suno Documentation Manager uses the `desktop-local` profile and has no backend, `deployment/` tree, Dockerfiles, Compose model, PostgreSQL capability, or container build target. The commands below are provenance examples and are not product procedures.
+> **Unavailable in this product:** This guide is retained from the upstream cloud-capable template. sunodm uses the `desktop-local` profile and has no backend, `deployment/` tree, Dockerfiles, Compose model, PostgreSQL capability, or container build target. The commands below are provenance examples and are not product procedures.
 
 ## Purpose
 

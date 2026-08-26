@@ -11,7 +11,7 @@
 | Audience | Contributors and repository maintainers |
 | Related ATP | N/A - automated evidence supports, but does not replace, feature ATPs |
 
-> **Unavailable in this product:** This page describes the upstream master template's GitHub Actions design. The generated Suno Documentation Manager source tree contains no `.github/workflows/` directory, so none of the workflow names, matrices, remote checks, artifacts, or branch-protection recommendations below is current product CI evidence. Use the local verification commands and product ATP records until product-specific CI is added and executed.
+> **Unavailable in this product:** This page describes the upstream master template's GitHub Actions design. The generated sunodm source tree contains no `.github/workflows/` directory, so none of the workflow names, matrices, remote checks, artifacts, or branch-protection recommendations below is current product CI evidence. Use the local verification commands and product ATP records until product-specific CI is added and executed.
 
 ## Purpose
 

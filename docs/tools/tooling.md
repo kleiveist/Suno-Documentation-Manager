@@ -13,7 +13,7 @@
 
 ## Purpose
 
-This guide explains the retained `tools/control.py` entry point as it applies to Suno Documentation Manager. The project was generated from the upstream `desktop-local` profile and enables only `frontend` and `tauri`; no backend, server database, cloud, or container product unit is available.
+This guide explains the retained `tools/control.py` entry point as it applies to sunodm. The project was generated from the upstream `desktop-local` profile and enables only `frontend` and `tauri`; no backend, server database, cloud, or container product unit is available.
 
 ## Scope
 
@@ -187,7 +187,7 @@ When the active project profile disables a feature, its affected suites report `
 
 ## Database diagnostics and migrations — unavailable in this product
 
-This section is inherited template provenance. Suno Documentation Manager has no server `database` capability, FastAPI backend, SQLAlchemy, Alembic, or PostgreSQL. Database commands return `Database feature is not enabled for this project.` and no traceback. The product's native workspace SQLite schema is owned internally by Rust and is documented under [Local persistence and recovery](../def/persistence.md); it is not managed with these `db` commands.
+This section is inherited template provenance. sunodm has no server `database` capability, FastAPI backend, SQLAlchemy, Alembic, or PostgreSQL. Database commands return `Database feature is not enabled for this project.` and no traceback. The product's native workspace SQLite schema is owned internally by Rust and is documented under [Local persistence and recovery](../def/persistence.md); it is not managed with these `db` commands.
 
 Set `DATABASE_URL` in the server process environment or root `.env`, then run the read-only diagnostics:
 

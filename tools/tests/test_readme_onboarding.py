@@ -18,7 +18,7 @@ def _readme() -> str:
 def test_readme_is_product_onboarding() -> None:
     content = _readme()
 
-    assert content.startswith("# Suno Documentation Manager\n")
+    assert content.startswith("# sunodm\n")
     assert content.index("## Development quick start") < content.index("## Detailed documentation")
     assert "python tools/control.py tauri run --foreground" in content
     assert "Track Documentation Completion Certificate" in content

@@ -321,7 +321,7 @@ def test_report_writer_creates_markdown_and_json(tmp_path) -> None:
     markdown = next(path for path in paths if path.suffix == ".md").read_text(encoding="utf-8")
     json_report = next(path for path in paths if path.suffix == ".json").read_text(encoding="utf-8")
 
-    assert "# 🧪 Suno Documentation Manager Test Report" in markdown
+    assert "# 🧪 sunodm Test Report" in markdown
     assert "## 📋 Summary" in markdown
     assert "full stdout content" in markdown
     assert "full stderr content" in markdown

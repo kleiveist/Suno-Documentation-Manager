@@ -12,6 +12,6 @@
 
 ## 📄 Pages
 - 📝 [Finalizing a track](finalizing-a-track.md)
-- 📝 [Getting started with Suno Documentation Manager](getting-started.md)
+- 📝 [Getting started with sunodm](getting-started.md)
 
 <!-- AUTO-GENERATED:docs-index END -->

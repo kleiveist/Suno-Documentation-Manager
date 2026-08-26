@@ -5,7 +5,7 @@
 
 | Field | Value |
 | --- | --- |
-| Product | Suno Documentation Manager |
+| Product | sunodm |
 | Product version | `0.1.0` |
 | Execution | 2026-08-13 through 2026-08-14 |
 | Source identification | Collapsible-library implementation commit `87b9338b24ecfda31f5abec97d42747aeef91d23` (`🌲 Make track library folders collapsible`), based on track-library commit `65a43673b14411463b360ff91e92365cd5347a9a` and regression ancestor `b7e9797b277f0bcac58d4503049002e354cb93fb`; retained DEB/RPM packages still identify stabilization commit `af7d4846ffc329943fd33fed6d31e0cc372de571` |
@@ -114,8 +114,8 @@ Retained pre-regression artifact digests:
 
 ```text
 087cf97b51b1e57004176911194f8e755873de265779c010590e29a3b06d4df8  .dist/web/suno-documentation-manager-web.zip
-8727557121c7ada5c88b143b765406375d627e7c7f1ec639852cb64ccd1812e2  .report/packages/Suno Documentation Manager_0.1.0_amd64.deb
-ebb83d3237ecfa3b6fbadf91c33cb13048087f960149ba661152dad2f1d0b41c  .report/packages/Suno Documentation Manager-0.1.0-1.x86_64.rpm
+8727557121c7ada5c88b143b765406375d627e7c7f1ec639852cb64ccd1812e2  .report/packages/sunodm_0.1.0_amd64.deb
+ebb83d3237ecfa3b6fbadf91c33cb13048087f960149ba661152dad2f1d0b41c  .report/packages/sunodm-0.1.0-1.x86_64.rpm
 ```
 
 The current implementation and automated fixtures are identified by commit
