@@ -78,5 +78,5 @@ fn main() {
             commands::re_evaluate_track,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running sunodm");
+        .expect("error while running Sunodm");
 }

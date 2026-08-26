@@ -299,7 +299,7 @@ def _documentation_menu() -> None:
 
 def _print_main_menu() -> None:
     _print_menu(
-        "sunodm Console",
+        "Sunodm Console",
         "Guided access to the complete project lifecycle. Every section explains its effects before running commands.",
         [
             ("1", "Environment and dependency setup"),

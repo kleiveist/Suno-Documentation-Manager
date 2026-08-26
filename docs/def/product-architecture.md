@@ -1,7 +1,7 @@
 <!-- AUTO-GENERATED:backlink START -->
 [← Back](def.md)
 <!-- AUTO-GENERATED:backlink END -->
-# sunodm product architecture
+# Sunodm product architecture
 
 | Field | Value |
 | --- | --- |
@@ -13,7 +13,7 @@
 
 ## Purpose
 
-This document defines the runtime components, trust boundaries, command contracts, and non-goals of sunodm version 0.1. It answers how a local-first desktop application turns user input and evidence files into a portable track documentation snapshot.
+This document defines the runtime components, trust boundaries, command contracts, and non-goals of Sunodm version 0.1. It answers how a local-first desktop application turns user input and evidence files into a portable track documentation snapshot.
 
 ## Scope
 

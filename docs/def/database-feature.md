@@ -11,7 +11,7 @@
 | Audience | Backend developers and operators |
 | Related ATP | N/A — template-level optional capability |
 
-> **Unavailable in this product:** This page describes an optional upstream FastAPI, SQLAlchemy, Alembic, and PostgreSQL capability. It was not scaffolded into sunodm, whose active profile contains only `frontend` and `tauri`. The product's embedded SQLite implementation is a separate native Rust design documented in [Local persistence and recovery](persistence.md); none of the server database commands below manages it.
+> **Unavailable in this product:** This page describes an optional upstream FastAPI, SQLAlchemy, Alembic, and PostgreSQL capability. It was not scaffolded into Sunodm, whose active profile contains only `frontend` and `tauri`. The product's embedded SQLite implementation is a separate native Rust design documented in [Local persistence and recovery](persistence.md); none of the server database commands below manages it.
 
 ## Purpose
 

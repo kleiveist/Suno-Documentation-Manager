@@ -11,7 +11,7 @@
 | Audience | Developers and operators |
 | Related ATP | N/A — template-level configuration contract |
 
-> **Availability in this product:** This page is retained from the upstream template. sunodm enables only `frontend` and `tauri`; it has no Backend Settings adapter, API URL requirement, CORS boundary, `DATABASE_URL`, or container runtime. Only profile-filtered frontend development values and shared tooling behavior apply. Product persistence is defined in [Local persistence and recovery](persistence.md).
+> **Availability in this product:** This page is retained from the upstream template. Sunodm enables only `frontend` and `tauri`; it has no Backend Settings adapter, API URL requirement, CORS boundary, `DATABASE_URL`, or container runtime. Only profile-filtered frontend development values and shared tooling behavior apply. Product persistence is defined in [Local persistence and recovery](persistence.md).
 
 ## Purpose
 

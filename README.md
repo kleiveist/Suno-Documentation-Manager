@@ -1,4 +1,4 @@
-# sunodm
+# Sunodm
 
 | Field | Value |
 | --- | --- |
@@ -10,7 +10,7 @@
 
 ## Purpose
 
-sunodm is a local desktop application for creating a portable, verifiable documentation set for a music track. It guides the user through only the relevant questions, associates real evidence files, generates factual Markdown and text documents, verifies file integrity with SHA-256, and creates a Track Documentation Completion Certificate after every mandatory check passes.
+Sunodm is a local desktop application for creating a portable, verifiable documentation set for a music track. It guides the user through only the relevant questions, associates real evidence files, generates factual Markdown and text documents, verifies file integrity with SHA-256, and creates a Track Documentation Completion Certificate after every mandatory check passes.
 
 The certificate confirms completion of the configured documentation and integrity workflow. It is not governmental certification, legal advice, or an independent determination of copyright ownership or legal compliance.
 
@@ -228,7 +228,7 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 - 📝 [Provider-neutral persistence architecture — inherited template reference](docs/def/persistence-architecture.md)
 - 📝 [Local persistence and recovery](docs/def/persistence.md)
 - 📝 [Pre-release audio screening](docs/def/pre-release-audio-screening.md)
-- 📝 [sunodm product architecture](docs/def/product-architecture.md)
+- 📝 [Sunodm product architecture](docs/def/product-architecture.md)
 - 📝 [Project profiles — inherited template reference](docs/def/project-profiles.md)
 - 📝 [Track documentation model](docs/def/track-documentation-model.md)
 - 📝 [Track library organization model](docs/def/track-library-model.md)
@@ -252,7 +252,7 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 ## 📁 USR
 - 🗂️ [Overview](docs/usr/usr.md)
 - 📝 [Finalizing a track](docs/usr/finalizing-a-track.md)
-- 📝 [Getting started with sunodm](docs/usr/getting-started.md)
+- 📝 [Getting started with Sunodm](docs/usr/getting-started.md)
 
 <!-- AUTO-GENERATED:docs-index END -->
 
@@ -277,4 +277,4 @@ Acceptance execution is recorded in the files under `docs/atp/active/`. [ATP-001
 | 2026-08-14 | Clarified the collapsible album/single folder tree in the user workflow. | Project team |
 | 2026-08-14 | Added the album/single library scope, workflow, persistence boundary, and detailed model link. | Project team |
 | 2026-08-13 | Documented evidence provenance, disclosure lineage, recoverable legacy removal, marker-based recovery, the Rust MSRV, and the version 0.1 path-race limitation. | Project team |
-| 2026-08-13 | Replaced the master-template overview with the sunodm product contract. | Project team |
+| 2026-08-13 | Replaced the master-template overview with the Sunodm product contract. | Project team |

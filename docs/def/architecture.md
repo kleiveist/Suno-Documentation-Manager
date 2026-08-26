@@ -13,7 +13,7 @@
 
 ## Purpose
 
-This page is the short architecture entry point for sunodm. It replaces the generated template's full-stack context with the actual local desktop runtime and directs readers to the detailed product definitions.
+This page is the short architecture entry point for Sunodm. It replaces the generated template's full-stack context with the actual local desktop runtime and directs readers to the detailed product definitions.
 
 ## Scope
 
@@ -32,7 +32,7 @@ This page is the short architecture entry point for sunodm. It replaces the gene
 
 ## Active runtime
 
-sunodm is generated with the `desktop-local` profile. The product runtime contains a Vite/TypeScript user interface inside Tauri 2 and native Rust product services. It contains no backend directory, FastAPI service, PostgreSQL connection, deployment service, or required HTTP server. Normal product use is fully offline.
+Sunodm is generated with the `desktop-local` profile. The product runtime contains a Vite/TypeScript user interface inside Tauri 2 and native Rust product services. It contains no backend directory, FastAPI service, PostgreSQL connection, deployment service, or required HTTP server. Normal product use is fully offline.
 
 ```mermaid
 flowchart LR

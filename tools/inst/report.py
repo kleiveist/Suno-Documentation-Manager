@@ -93,7 +93,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     bootstrap = payload.get("bootstrap", {})
 
     lines: list[str] = [
-        "# 🧪 sunodm Test Report",
+        "# 🧪 Sunodm Test Report",
         "",
         "## 📋 Summary",
         "",

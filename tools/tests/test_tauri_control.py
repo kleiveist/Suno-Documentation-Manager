@@ -47,7 +47,7 @@ def test_tauri_parser_recognizes_subcommands() -> None:
 def test_tauri_identity_separates_display_and_artifact_names() -> None:
     payload = json.loads(paths.TAURI_CONFIG.read_text(encoding="utf-8"))
 
-    assert paths.APP_NAME == "sunodm"
+    assert paths.APP_NAME == "Sunodm"
     assert paths.APP_ARTIFACT_NAME == "sunodm"
     assert paths.APP_SLUG == "sunodm"
     assert payload["productName"] == "sunodm"

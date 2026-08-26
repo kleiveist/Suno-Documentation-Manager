@@ -12,6 +12,6 @@
 
 ## 📄 Pages
 - 📝 [Finalizing a track](finalizing-a-track.md)
-- 📝 [Getting started with sunodm](getting-started.md)
+- 📝 [Getting started with Sunodm](getting-started.md)
 
 <!-- AUTO-GENERATED:docs-index END -->

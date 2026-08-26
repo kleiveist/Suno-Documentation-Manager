@@ -9,7 +9,7 @@
 - [Codex CLI prompt for folder-import preparation](folder-import-preparation-prompt.md)
 - [Legacy track import and managed-document adoption](legacy-track-import.md)
 
-The template final-acceptance page below is an inherited upstream historical record, not sunodm acceptance evidence.
+The template final-acceptance page below is an inherited upstream historical record, not Sunodm acceptance evidence.
 
 <!-- AUTO-GENERATED:docs-index START -->
 

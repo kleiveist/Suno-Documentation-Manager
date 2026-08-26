@@ -1,14 +1,14 @@
 <!-- AUTO-GENERATED:backlink START -->
 [← Back](usr.md)
 <!-- AUTO-GENERATED:backlink END -->
-# Getting started with sunodm
+# Getting started with Sunodm
 
 | Field | Value |
 | --- | --- |
 | Status | Active |
 | Owner | Project team |
 | Last review | 2026-08-20 |
-| Audience | sunodm users |
+| Audience | Sunodm users |
 | Related ATP | [ATP-0001: Workspace creation and loading](../atp/active/ATP-0001-workspace-creation-and-loading.md); [ATP-0014: Track library organization](../atp/active/ATP-0014-track-library-organization.md); [ATP-0017: Pre-release audio screening](../atp/active/ATP-0017-pre-release-audio-screening.md) |
 
 ## Purpose
